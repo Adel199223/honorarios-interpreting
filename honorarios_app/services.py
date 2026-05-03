@@ -7,13 +7,16 @@ import mimetypes
 import os
 import re
 import shutil
+import secrets
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
+import httpx
 from PIL import Image
 from pypdf import PdfReader
 
@@ -65,6 +68,9 @@ DEFAULT_SOURCE_UPLOAD_DIR = ROOT / "output" / "source-uploads"
 DEFAULT_KNOWN_DESTINATIONS = ROOT / "data" / "known-destinations.json"
 DEFAULT_PROFILE_CHANGE_LOG = ROOT / "data" / "profile-change-log.json"
 GOOGLE_PHOTOS_PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
+GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_PHOTOS_PICKER_SESSIONS_URL = "https://photospicker.googleapis.com/v1/sessions"
 MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 PDF_SUFFIXES = {".pdf"}
@@ -149,7 +155,7 @@ def _configured_value_and_source(
     return "", ""
 
 
-def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
+def _google_photos_config(config_path: Path) -> dict[str, Any]:
     config = _read_json_object_if_exists(config_path)
     client_id, client_id_source = _configured_value_and_source(
         config,
@@ -169,14 +175,103 @@ def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
         "token_path",
         config_path,
     )
+    redirect_uri, redirect_uri_source = _configured_value_and_source(
+        config,
+        "GOOGLE_PHOTOS_REDIRECT_URI",
+        "redirect_uri",
+        config_path,
+    )
+    token_path = Path(token_path_text).expanduser() if token_path_text else config_path.with_name("google-photos-token.local.json")
+    return {
+        "client_id": client_id,
+        "client_id_source": client_id_source,
+        "client_secret": client_secret,
+        "client_secret_source": client_secret_source,
+        "token_path": token_path,
+        "token_path_source": token_path_source or "default_local",
+        "redirect_uri": redirect_uri or "http://127.0.0.1:8766/api/google-photos/oauth/callback",
+        "redirect_uri_source": redirect_uri_source or "default_local",
+    }
+
+
+def _read_google_photos_token(token_path: Path) -> dict[str, Any]:
+    if not token_path.exists():
+        return {}
+    try:
+        data = json.loads(token_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_google_photos_token(token_path: Path, token: dict[str, Any]) -> None:
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(json.dumps(token, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _google_photos_access_token(paths: AppPaths) -> tuple[str, dict[str, Any]]:
+    config = _google_photos_config(paths.google_photos_config)
+    token = _read_google_photos_token(config["token_path"])
+    access_token = str(token.get("access_token") or "").strip()
+    if access_token and not _token_expired(token):
+        return access_token, token
+    refresh_token = str(token.get("refresh_token") or "").strip()
+    if refresh_token and config["client_id"] and config["client_secret"]:
+        refreshed = _exchange_google_token({
+            "client_id": config["client_id"],
+            "client_secret": config["client_secret"],
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        })
+        token.update(refreshed)
+        if "refresh_token" not in token:
+            token["refresh_token"] = refresh_token
+        _write_google_photos_token(config["token_path"], token)
+        access_token = str(token.get("access_token") or "").strip()
+        if access_token:
+            return access_token, token
+    raise IntakeError("Google Photos Picker is not connected. Connect OAuth first or use selected-photo local import.")
+
+
+def _token_expired(token: dict[str, Any]) -> bool:
+    expires_at = str(token.get("expires_at") or "").strip()
+    if not expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires <= datetime.now(timezone.utc) + timedelta(seconds=60)
+
+
+def _exchange_google_token(form: dict[str, Any]) -> dict[str, Any]:
+    with httpx.Client(timeout=30) as client:
+        response = client.post(GOOGLE_OAUTH_TOKEN_URL, data=form)
+        response.raise_for_status()
+        payload = response.json()
+    output = dict(payload)
+    expires_in = int(output.get("expires_in") or 0)
+    if expires_in:
+        output["expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
+    return output
+
+
+def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
+    config = _google_photos_config(config_path)
     token_store_present = False
-    if token_path_text:
-        try:
-            token_store_present = Path(token_path_text).expanduser().exists()
-        except OSError:
-            token_store_present = False
-    configured = bool(client_id and client_secret)
-    connected = bool(configured and token_store_present)
+    access_token_present = False
+    refresh_token_present = False
+    try:
+        token_store_present = config["token_path"].exists()
+        token = _read_google_photos_token(config["token_path"])
+        access_token_present = bool(token.get("access_token"))
+        refresh_token_present = bool(token.get("refresh_token"))
+    except OSError:
+        token_store_present = False
+    configured = bool(config["client_id"] and config["client_secret"])
+    connected = bool(configured and token_store_present and (access_token_present or refresh_token_present))
     return {
         "provider": "google_photos",
         "scope": GOOGLE_PHOTOS_PICKER_SCOPE,
@@ -184,12 +279,15 @@ def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
         "connected": connected,
         "manual_import_ready": True,
         "oauth_picker_ready": connected,
-        "client_id_source": client_id_source,
-        "client_secret_configured": bool(client_secret),
-        "client_secret_source": client_secret_source,
-        "token_store_configured": bool(token_path_text),
+        "client_id_source": config["client_id_source"],
+        "client_secret_configured": bool(config["client_secret"]),
+        "client_secret_source": config["client_secret_source"],
+        "redirect_uri_source": config["redirect_uri_source"],
+        "token_store_configured": True,
         "token_store_present": token_store_present,
-        "token_path_source": token_path_source,
+        "access_token_present": access_token_present,
+        "refresh_token_present": refresh_token_present,
+        "token_path_source": config["token_path_source"],
         "message": (
             "Google Photos OAuth Picker is connected."
             if connected
@@ -197,6 +295,188 @@ def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
         ),
         "send_allowed": False,
     }
+
+
+def google_photos_oauth_start(paths: AppPaths) -> dict[str, Any]:
+    config = _google_photos_config(paths.google_photos_config)
+    if not config["client_id"] or not config["client_secret"]:
+        raise IntakeError("Google Photos OAuth needs GOOGLE_PHOTOS_CLIENT_ID and GOOGLE_PHOTOS_CLIENT_SECRET or config/google-photos.local.json.")
+    state = secrets.token_urlsafe(24)
+    token = _read_google_photos_token(config["token_path"])
+    token.update({
+        "oauth_state": state,
+        "oauth_started_at": datetime.now(timezone.utc).isoformat(),
+        "scope": GOOGLE_PHOTOS_PICKER_SCOPE,
+    })
+    _write_google_photos_token(config["token_path"], token)
+    query = urlencode({
+        "client_id": config["client_id"],
+        "redirect_uri": config["redirect_uri"],
+        "response_type": "code",
+        "scope": GOOGLE_PHOTOS_PICKER_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    return {
+        "status": "authorization_ready",
+        "authorization_url": f"{GOOGLE_OAUTH_AUTH_URL}?{query}",
+        "state": state,
+        "scope": GOOGLE_PHOTOS_PICKER_SCOPE,
+        "redirect_uri_source": config["redirect_uri_source"],
+        "send_allowed": False,
+    }
+
+
+def google_photos_oauth_callback(*, code: str, state: str, paths: AppPaths) -> dict[str, Any]:
+    config = _google_photos_config(paths.google_photos_config)
+    token = _read_google_photos_token(config["token_path"])
+    expected_state = str(token.get("oauth_state") or "").strip()
+    if not expected_state or state != expected_state:
+        raise IntakeError("Google Photos OAuth state mismatch. Start the OAuth flow again.")
+    if not code:
+        raise IntakeError("Google Photos OAuth callback is missing an authorization code.")
+    exchanged = _exchange_google_token({
+        "client_id": config["client_id"],
+        "client_secret": config["client_secret"],
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": config["redirect_uri"],
+    })
+    stored = {
+        **{key: value for key, value in token.items() if key.startswith("oauth_")},
+        **exchanged,
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+        "scope": exchanged.get("scope") or GOOGLE_PHOTOS_PICKER_SCOPE,
+    }
+    _write_google_photos_token(config["token_path"], stored)
+    return {
+        "status": "connected",
+        "provider": "google_photos",
+        "connected": True,
+        "scope": stored["scope"],
+        "token_store_present": True,
+        "send_allowed": False,
+    }
+
+
+def google_photos_create_picker_session(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    access_token, _token = _google_photos_access_token(paths)
+    max_items = int(payload.get("max_items") or 1)
+    request_body = {
+        "pickingConfig": {
+            "maxItemCount": max(1, min(max_items, 50)),
+        }
+    }
+    with httpx.Client(timeout=30) as client:
+        response = client.post(
+            GOOGLE_PHOTOS_PICKER_SESSIONS_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=request_body,
+        )
+        response.raise_for_status()
+        data = response.json()
+    return {
+        "status": "picker_session_created",
+        "session_id": data.get("id") or data.get("sessionId") or "",
+        "picker_uri": data.get("pickerUri") or data.get("picker_uri") or "",
+        "polling_config": data.get("pollingConfig") or {},
+        "send_allowed": False,
+    }
+
+
+def _extract_media_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = payload.get("mediaItems") or payload.get("media_items") or payload.get("pickedMediaItems") or []
+    return items if isinstance(items, list) else []
+
+
+def _media_file_info(item: dict[str, Any]) -> dict[str, str]:
+    media_file = item.get("mediaFile") or item.get("media_file") or item
+    return {
+        "id": str(item.get("id") or item.get("mediaItemId") or media_file.get("id") or "google-photo"),
+        "filename": str(media_file.get("filename") or media_file.get("fileName") or item.get("filename") or "google-photo.jpg"),
+        "mime_type": str(media_file.get("mimeType") or media_file.get("mime_type") or item.get("mimeType") or "image/jpeg"),
+        "base_url": str(media_file.get("baseUrl") or media_file.get("base_url") or item.get("baseUrl") or ""),
+    }
+
+
+def google_photos_list_session_media(session_id: str, paths: AppPaths) -> dict[str, Any]:
+    access_token, _token = _google_photos_access_token(paths)
+    safe_session_id = str(session_id or "").strip()
+    if not safe_session_id:
+        raise IntakeError("Google Photos Picker session ID is required.")
+    with httpx.Client(timeout=30) as client:
+        response = client.get(
+            f"{GOOGLE_PHOTOS_PICKER_SESSIONS_URL}/{safe_session_id}/mediaItems",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        response.raise_for_status()
+        data = response.json()
+    items = [_media_file_info(item) for item in _extract_media_items(data)]
+    return {
+        "status": "media_items_ready" if items else "waiting_for_selection",
+        "session_id": safe_session_id,
+        "selected_count": len(items),
+        "items": [
+            {"id": item["id"], "filename": item["filename"], "mime_type": item["mime_type"]}
+            for item in items
+        ],
+        "send_allowed": False,
+    }
+
+
+def google_photos_import_selected(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    access_token, _token = _google_photos_access_token(paths)
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise IntakeError("Google Photos Picker session ID is required.")
+    with httpx.Client(timeout=30) as client:
+        media_response = client.get(
+            f"{GOOGLE_PHOTOS_PICKER_SESSIONS_URL}/{session_id}/mediaItems",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        media_response.raise_for_status()
+        media_payload = media_response.json()
+        items = [_media_file_info(item) for item in _extract_media_items(media_payload)]
+        if not items:
+            raise IntakeError("No selected Google Photos media item is available yet.")
+        selected = items[0]
+        if not selected["base_url"]:
+            raise IntakeError("Selected Google Photos media item does not include a downloadable base URL.")
+        download_url = selected["base_url"]
+        if not download_url.endswith("=d"):
+            download_url = f"{download_url}=d"
+        download_response = client.get(download_url, headers={"Authorization": f"Bearer {access_token}"})
+        download_response.raise_for_status()
+        content = download_response.content
+        content_type = download_response.headers.get("content-type") or selected["mime_type"] or "image/jpeg"
+
+    visible_text = "\n".join(
+        part
+        for part in [
+            selected["filename"],
+            str(payload.get("visible_metadata_text") or "").strip(),
+        ]
+        if part
+    )
+    result = recover_source_upload(
+        filename=selected["filename"],
+        content_type=content_type,
+        content=content,
+        source_kind="photo",
+        profile_name=str(payload.get("profile") or ""),
+        visible_text=visible_text,
+        ai_recovery_mode=str(payload.get("ai_recovery") or "auto"),
+        paths=paths,
+    )
+    result["google_photos"] = {
+        "session_id": session_id,
+        "selected_count": len(items),
+        "imported_filename": selected["filename"],
+        "imported_mime_type": selected["mime_type"],
+    }
+    result["send_allowed"] = False
+    return result
 
 
 def sha256_hex(content: bytes) -> str:

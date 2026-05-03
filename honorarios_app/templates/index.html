@@ -166,10 +166,23 @@
                     <label for="google-photos-file">Google Photos selected-photo import</label>
                     <span class="status-chip info" id="google-photos-status-pill">checking</span>
                   </div>
+                  <div class="google-photos-actions">
+                    <button type="button" id="google-photos-oauth-start">Connect Google Photos OAuth</button>
+                    <button type="button" id="google-photos-picker-start">Open Google Photos Picker</button>
+                  </div>
+                  <div class="field google-photos-session-field">
+                    <label for="google-photos-session-id">Picker Session</label>
+                    <input id="google-photos-session-id" autocomplete="off" placeholder="Created after opening the Picker">
+                  </div>
+                  <div class="google-photos-actions">
+                    <button type="button" id="google-photos-picker-check">Check Picker selection</button>
+                    <button type="button" id="google-photos-picker-import">Import Picker selection</button>
+                  </div>
                   <input id="google-photos-file" name="file" type="file" accept="image/*">
                   <textarea id="google-photos-metadata" rows="3" placeholder="Paste visible Google Photos metadata, filename, or date text here. Example: Apr 15&#10;20260415_205459.jpg"></textarea>
                   <button type="submit">Import selected Google Photos photo</button>
-                  <p class="field-hint" id="google-photos-status-summary">OAuth Picker is not connected in this standalone app yet. Download or choose one photo from Google Photos and paste visible metadata here; full Picker import remains a later private-auth step.</p>
+                  <p class="field-hint" id="google-photos-status-summary">OAuth Picker is not connected in this standalone app yet. Connect OAuth when credentials are configured, or import one downloaded photo with pasted visible metadata.</p>
+                  <div class="result-card compact-result hidden" id="google-photos-picker-result"></div>
                 </form>
               </div>
             </section>

@@ -30,6 +30,7 @@ The app supports the main workflow:
 
 - upload a local notification PDF or photo/screenshot
 - import a selected/downloaded Google Photos image through the local photo path, with pasted visible filename/date metadata
+- connect Google Photos OAuth Picker when private local credentials are configured, choose one photo, and import it through the same review pipeline
 - use OpenAI OCR/autofill when `OPENAI_API_KEY` or ignored `config/ai.local.json` is configured
 - create an intake from a known service profile
 - review the Portuguese draft text before generating the PDF
@@ -56,7 +57,20 @@ OpenAI recovery is evidence-only. It may extract visible text, case/date/place c
 }
 ```
 
-The Google Photos panel currently provides a safe selected-photo bridge: choose or download one Google Photos image locally, paste the visible Google Photos metadata/filename/date into the metadata box, and recover through the same photo pipeline. `/api/google-photos/status` reports whether future OAuth Picker credentials are configured without showing any client secret, token, raw picker URL, media ID, or photo URL. Full OAuth Picker import is intentionally still deferred until private credential storage and sanitized publishing are ready.
+The Google Photos panel supports two safe source-import paths. The selected-photo bridge still works: choose or download one Google Photos image locally, paste the visible Google Photos metadata/filename/date into the metadata box, and recover through the same photo pipeline. When private local OAuth credentials are configured, the app can also start a Google Photos Picker session, let you choose one image in Google Photos, download only that selected image into local source evidence, and run the normal review flow. `/api/google-photos/status` reports readiness without showing any client secret, access token, refresh token, raw photo URL, media base URL, or selected media ID.
+
+Store optional Google Photos OAuth settings in ignored `config/google-photos.local.json` or environment variables. Use `config/google-photos.example.json` as the public-safe template:
+
+```json
+{
+  "client_id": "example-client-id.apps.googleusercontent.com",
+  "client_secret": "example-client-secret",
+  "redirect_uri": "http://127.0.0.1:8766/api/google-photos/oauth/callback",
+  "token_path": "config/google-photos-token.local.json"
+}
+```
+
+Equivalent environment variables are `GOOGLE_PHOTOS_CLIENT_ID`, `GOOGLE_PHOTOS_CLIENT_SECRET`, `GOOGLE_PHOTOS_REDIRECT_URI`, and `GOOGLE_PHOTOS_TOKEN_PATH`. Tokens are stored only in ignored local files. Google Photos import is source-only: it never creates a Gmail draft by itself and never sends email.
 
 ### CLI Workflow
 

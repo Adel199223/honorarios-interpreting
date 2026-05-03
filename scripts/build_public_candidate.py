@@ -126,6 +126,13 @@ def _write_synthetic_runtime_files(target_root: Path) -> None:
         "allowed_gmail_tool": "_create_draft",
         "forbidden_gmail_tools": ["_send_email", "_send_draft"],
     })
+    _write_json(target_root / "config" / "google-photos.example.json", {
+        "client_id": "example-client-id.apps.googleusercontent.com",
+        "client_secret": "example-client-secret",
+        "redirect_uri": "http://127.0.0.1:8766/api/google-photos/oauth/callback",
+        "token_path": "config/google-photos-token.local.json",
+        "notes": "Copy to config/google-photos.local.json for private local use. Do not commit real credentials or tokens.",
+    })
     _write_json(target_root / "data" / "court-emails.json", [{
         "key": "example-court",
         "name": "Example Court",

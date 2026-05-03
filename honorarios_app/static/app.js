@@ -4,6 +4,7 @@ const state = {
   lastPrepared: null,
   aiStatus: null,
   googlePhotosStatus: null,
+  googlePhotosPicker: null,
   draftLifecycle: null,
 };
 
@@ -366,6 +367,39 @@ async function loadGooglePhotosStatus() {
   renderGooglePhotosStatus(state.googlePhotosStatus);
 }
 
+function renderGooglePhotosPickerResult(data, kind = "info") {
+  const box = $("#google-photos-picker-result");
+  if (!box) return;
+  if (!data) {
+    box.className = "result-card compact-result hidden";
+    box.innerHTML = "";
+    return;
+  }
+  const status = data.status || kind || "info";
+  const chipKind = statusChipClass(status === "picker_session_created" || status === "media_items_ready" ? "ready" : status);
+  const sessionId = data.session_id ? `<div>Session: <code>${escapeHtml(data.session_id)}</code></div>` : "";
+  const selected = data.selected_count !== undefined ? `<div>Selected items: <strong>${escapeHtml(data.selected_count)}</strong></div>` : "";
+  const filename = data.google_photos?.imported_filename || data.imported_filename || "";
+  const imported = filename ? `<div>Imported: <code>${escapeHtml(filename)}</code></div>` : "";
+  const items = (data.items || []).map((item) => (
+    `<div class="data-item"><strong>${escapeHtml(item.filename || "Google Photos item")}</strong><span>${escapeHtml(item.mime_type || "")}</span></div>`
+  )).join("");
+  box.className = `result-card compact-result ${chipKind}`;
+  box.innerHTML = `
+    <div class="result-header">
+      <div>
+        <strong>${escapeHtml(data.message || status.replaceAll("_", " "))}</strong>
+        <p>Google Photos import stays source-only and draft-safe.</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${sessionId}
+    ${selected}
+    ${imported}
+    ${items}
+  `;
+}
+
 function renderAiStatus(data) {
   const summary = $("#ai-status-summary");
   const pill = $("#ai-status-pill");
@@ -391,7 +425,78 @@ function renderGooglePhotosStatus(data) {
   const configured = Boolean(data?.configured);
   pill.textContent = connected ? "picker ready" : configured ? "oauth config" : "manual bridge";
   pill.className = `status-chip ${connected ? "ready" : "info"}`;
-  summary.textContent = data?.message || "OAuth Picker is not connected in this standalone app yet. Use selected-photo import with pasted metadata.";
+  if (connected) {
+    summary.textContent = "Google Photos OAuth Picker is connected. Open the Picker, choose one photo, then import the selected item through the normal review flow.";
+  } else if (configured) {
+    summary.textContent = "Google Photos OAuth credentials are configured. Connect Google Photos OAuth, or use the selected-photo local import with pasted metadata.";
+  } else {
+    summary.textContent = data?.message || "OAuth Picker is not connected in this standalone app yet. Use selected-photo import with pasted metadata.";
+  }
+}
+
+async function startGooglePhotosOAuth() {
+  const data = await requestJson("/api/google-photos/oauth/start", { method: "POST" });
+  state.googlePhotosStatus = { ...(state.googlePhotosStatus || {}), configured: true, connected: false };
+  renderGooglePhotosPickerResult({
+    status: data.status,
+    message: "OAuth window opened. Finish Google authorization, then return here and refresh status.",
+  });
+  if (data.authorization_url) {
+    window.open(data.authorization_url, "_blank", "noopener,noreferrer");
+  }
+  return data;
+}
+
+async function createGooglePhotosPickerSession() {
+  const data = await requestJson("/api/google-photos/picker/session", {
+    method: "POST",
+    body: JSON.stringify({ max_items: 1 }),
+  });
+  state.googlePhotosPicker = data;
+  $("#google-photos-session-id").value = data.session_id || "";
+  renderGooglePhotosPickerResult({
+    ...data,
+    message: "Picker session created. Choose one image in Google Photos, then check or import the selection.",
+  });
+  if (data.picker_uri) {
+    window.open(data.picker_uri, "_blank", "noopener,noreferrer");
+  }
+  return data;
+}
+
+async function checkGooglePhotosPickerSelection() {
+  const sessionId = $("#google-photos-session-id").value.trim();
+  if (!sessionId) throw new Error("Create or paste a Google Photos Picker session first.");
+  const data = await requestJson(`/api/google-photos/picker/session/${encodeURIComponent(sessionId)}`);
+  state.googlePhotosPicker = { ...(state.googlePhotosPicker || {}), ...data };
+  renderGooglePhotosPickerResult(data);
+  return data;
+}
+
+async function importGooglePhotosPickerSelection() {
+  const sessionId = $("#google-photos-session-id").value.trim();
+  if (!sessionId) throw new Error("Create or paste a Google Photos Picker session first.");
+  const payload = {
+    session_id: sessionId,
+    profile: $("#profile").value || "",
+    visible_metadata_text: $("#google-photos-metadata").value.trim(),
+    ai_recovery: $("#ai_recovery_mode").value || "auto",
+  };
+  const data = await requestJson("/api/google-photos/picker/import", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  state.currentIntake = data.candidate_intake;
+  fillFormFromIntake(state.currentIntake);
+  renderSourceEvidence(data);
+  renderAiRecovery(data.ai_recovery);
+  renderGooglePhotosPickerResult({
+    ...data,
+    status: "imported",
+    message: "Google Photos image imported for review.",
+  });
+  applyReview(data.review);
+  return data;
 }
 
 function renderPublicReadiness(data) {
@@ -866,6 +971,7 @@ function resetReview() {
   state.currentIntake = null;
   state.lastPrepared = null;
   state.draftLifecycle = null;
+  state.googlePhotosPicker = null;
   $("#intake-form").reset();
   $("#notification-upload-form").reset();
   $("#photo-upload-form").reset();
@@ -873,6 +979,7 @@ function resetReview() {
   $("#prepare-results").innerHTML = "";
   renderSourceEvidence(null);
   renderAiRecovery(null);
+  renderGooglePhotosPickerResult(null);
   renderDraftLifecycle(null);
   $("#correction_reason").value = "";
   $("#record_supersedes").value = "";
@@ -904,7 +1011,11 @@ function bindNavigation() {
 }
 
 function bindActions() {
-  $("#refresh-reference").addEventListener("click", loadReference);
+  $("#refresh-reference").addEventListener("click", async () => {
+    await loadReference();
+    await loadAiStatus().catch(() => {});
+    await loadGooglePhotosStatus().catch(() => {});
+  });
   $("#run-public-readiness").addEventListener("click", async () => {
     try {
       await runPublicReadiness();
@@ -1013,6 +1124,46 @@ function bindActions() {
       setStatus("blocked", error.message);
       showAlert(error.message, "blocked");
       updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#google-photos-oauth-start").addEventListener("click", async () => {
+    try {
+      await startGooglePhotosOAuth();
+      setStatus("ready", "Google Photos OAuth flow opened in a separate tab.");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      renderGooglePhotosPickerResult({ status: "blocked", message: error.message }, "blocked");
+    }
+  });
+  $("#google-photos-picker-start").addEventListener("click", async () => {
+    try {
+      await createGooglePhotosPickerSession();
+      setStatus("ready", "Google Photos Picker opened. Choose one photo, then import it for review.");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      renderGooglePhotosPickerResult({ status: "blocked", message: error.message }, "blocked");
+    }
+  });
+  $("#google-photos-picker-check").addEventListener("click", async () => {
+    try {
+      const data = await checkGooglePhotosPickerSelection();
+      setStatus(data.selected_count ? "ready" : "idle", data.selected_count ? "Google Photos selection is ready to import." : "No Google Photos selection is available yet.");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      renderGooglePhotosPickerResult({ status: "blocked", message: error.message }, "blocked");
+    }
+  });
+  $("#google-photos-picker-import").addEventListener("click", async () => {
+    try {
+      await importGooglePhotosPickerSelection();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+      renderGooglePhotosPickerResult({ status: "blocked", message: error.message }, "blocked");
     }
   });
   $("#build-profile").addEventListener("click", async () => {

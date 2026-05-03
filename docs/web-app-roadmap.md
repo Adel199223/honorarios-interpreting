@@ -12,7 +12,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Local photo/screenshot upload with safe stored previews and Pillow metadata extraction.
 - Optional OpenAI OCR/autofill for photos and weak/scanned PDFs, with `/api/ai/status` and review-only AI evidence.
 - Google Photos selected-photo bridge: choose/download one photo locally, paste visible Google Photos metadata, and recover it through the existing local photo pipeline.
-- Secret-free `/api/google-photos/status` for future OAuth Picker readiness without exposing client secrets, tokens, raw picker URLs, media IDs, or photo URLs.
+- Google Photos OAuth Picker import with secret-free status, OAuth start/callback, Picker session creation, selected-media import, and no exposure of client secrets, tokens, media IDs, base URLs, or photo URLs in app output.
 - Source evidence cards for recovered filename, metadata date, case number, recipient, crop/partial-image warnings, and missing questions.
 - Synthetic rotated/cropped legal-photo fixture coverage for Google Photos metadata dates, leading-zero case normalization, and review-only AI warnings.
 - Weak/scanned notification PDF page rendering for OpenAI recovery, including multi-page source evidence thumbnails and a safe `pdftoppm`-missing warning.
@@ -58,8 +58,9 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Add full Google Photos OAuth Picker import, using the LegalPDF reference pattern, only after local credential/token storage is reviewed and sanitized diagnostics are in place.
-2. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
+1. Add batch UI flows for repeated same-case/same-profile services so morning/afternoon or multi-date runs can be reviewed as one package.
+2. Add deeper browser-flow tests for the Google Photos Picker happy path using mocked local endpoints.
+3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness
 

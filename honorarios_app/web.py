@@ -20,6 +20,11 @@ from .services import (
     build_profile_intake,
     draft_lifecycle_for_intake,
     google_photos_status_payload,
+    google_photos_create_picker_session,
+    google_photos_import_selected,
+    google_photos_list_session_media,
+    google_photos_oauth_callback,
+    google_photos_oauth_start,
     load_app_reference,
     prepare_intakes,
     record_draft,
@@ -115,6 +120,41 @@ def create_app(**path_overrides: Any) -> FastAPI:
     @app.get("/api/google-photos/status")
     async def api_google_photos_status() -> dict[str, Any]:
         return google_photos_status_payload(paths.google_photos_config)
+
+    @app.post("/api/google-photos/oauth/start")
+    async def api_google_photos_oauth_start() -> dict[str, Any]:
+        try:
+            return google_photos_oauth_start(paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/google-photos/oauth/callback")
+    async def api_google_photos_oauth_callback(code: str = "", state: str = "") -> dict[str, Any]:
+        try:
+            return google_photos_oauth_callback(code=code, state=state, paths=paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/google-photos/picker/session")
+    async def api_google_photos_picker_session(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            return google_photos_create_picker_session(payload or {}, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/google-photos/picker/session/{session_id}")
+    async def api_google_photos_picker_session_media(session_id: str) -> dict[str, Any]:
+        try:
+            return google_photos_list_session_media(session_id, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/google-photos/picker/import")
+    async def api_google_photos_picker_import(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return google_photos_import_selected(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/public-readiness")
     async def api_public_readiness() -> dict[str, Any]:
