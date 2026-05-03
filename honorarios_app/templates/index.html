@@ -577,6 +577,14 @@
             </div>
             <span class="status-chip info">Local log</span>
           </div>
+          <div class="gmail-response-parser">
+            <div>
+              <strong>Paste Gmail _create_draft response</strong>
+              <p>Paste the connector JSON or text response, then parse the draft, message, and thread IDs locally.</p>
+            </div>
+            <textarea id="gmail-response-raw" rows="4" placeholder='Example: {"id":"draft-id","message":{"id":"message-id","threadId":"thread-id"}}'></textarea>
+            <button type="button" class="mini-button" id="parse-gmail-response">Parse Gmail IDs</button>
+          </div>
           <div class="record-autofill-note">
             <div>
               <strong>Autofill from prepared payload</strong>

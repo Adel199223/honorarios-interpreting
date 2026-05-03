@@ -739,6 +739,26 @@ textarea {
   background: rgba(122, 243, 176, 0.06);
 }
 
+.gmail-response-parser {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(117, 218, 255, 0.06);
+  border: 1px solid rgba(117, 218, 255, 0.16);
+}
+
+.gmail-response-parser p {
+  margin: 5px 0 0;
+  color: var(--muted);
+}
+
+.gmail-response-parser textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
 .record-autofill-note {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

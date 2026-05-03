@@ -238,6 +238,123 @@ function renderPacketRecordHelper(packet) {
   `;
 }
 
+function getByPath(source, path) {
+  return path.split(".").reduce((value, key) => {
+    if (value && Object.prototype.hasOwnProperty.call(value, key)) {
+      return value[key];
+    }
+    return undefined;
+  }, source);
+}
+
+function firstStringAtPath(source, paths) {
+  for (const path of paths) {
+    const value = getByPath(source, path);
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function parseJsonFromText(text) {
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function matchIdText(text, patterns) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1].trim().replace(/[",;]+$/g, "");
+  }
+  return "";
+}
+
+function parseGmailDraftIds(rawText) {
+  const text = String(rawText || "").trim();
+  if (!text) {
+    throw new Error("Paste the Gmail _create_draft response before parsing IDs.");
+  }
+
+  const parsed = parseJsonFromText(text);
+  const ids = {
+    draft_id: parsed ? firstStringAtPath(parsed, [
+      "draft_id",
+      "draftId",
+      "draft.id",
+      "result.draft_id",
+      "result.draftId",
+      "result.draft.id",
+      "id",
+    ]) : "",
+    message_id: parsed ? firstStringAtPath(parsed, [
+      "message_id",
+      "messageId",
+      "message.id",
+      "draft.message.id",
+      "result.message_id",
+      "result.messageId",
+      "result.message.id",
+      "result.draft.message.id",
+    ]) : "",
+    thread_id: parsed ? firstStringAtPath(parsed, [
+      "thread_id",
+      "threadId",
+      "message.threadId",
+      "message.thread_id",
+      "draft.message.threadId",
+      "draft.message.thread_id",
+      "result.thread_id",
+      "result.threadId",
+      "result.message.threadId",
+      "result.draft.message.threadId",
+    ]) : "",
+  };
+
+  if (!ids.draft_id) {
+    ids.draft_id = matchIdText(text, [
+      /draft[_\s-]?id["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /draftId["':=\s]+([A-Za-z0-9_.:-]+)/i,
+    ]);
+  }
+  if (!ids.message_id) {
+    ids.message_id = matchIdText(text, [
+      /message[_\s-]?id["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /messageId["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /message\.id["':=\s]+([A-Za-z0-9_.:-]+)/i,
+    ]);
+  }
+  if (!ids.thread_id) {
+    ids.thread_id = matchIdText(text, [
+      /thread[_\s-]?id["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /threadId["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /message\.threadId["':=\s]+([A-Za-z0-9_.:-]+)/i,
+    ]);
+  }
+
+  if (!ids.draft_id && !ids.message_id && !ids.thread_id) {
+    throw new Error("Could not find draft_id, message_id, or thread_id in the pasted Gmail response.");
+  }
+  return ids;
+}
+
+function applyParsedGmailDraftIds(ids) {
+  if (ids.draft_id) $("#record_draft_id").value = ids.draft_id;
+  if (ids.message_id) $("#record_message_id").value = ids.message_id;
+  if (ids.thread_id) $("#record_thread_id").value = ids.thread_id;
+  return ids;
+}
+
 function preparedRecordTarget() {
   return state.lastPrepared?.packet || state.lastPrepared?.items?.[0] || null;
 }
@@ -1688,6 +1805,19 @@ function bindActions() {
       const target = preparedRecordTarget();
       await copyText(JSON.stringify(target?.gmail_create_draft_args || {}, null, 2));
       showAlert("Copied Gmail draft args JSON.", "recorded");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#parse-gmail-response").addEventListener("click", () => {
+    try {
+      const ids = applyParsedGmailDraftIds(parseGmailDraftIds($("#gmail-response-raw").value));
+      const found = [
+        ids.draft_id ? "draft_id" : "",
+        ids.message_id ? "message_id" : "",
+        ids.thread_id ? "thread_id" : "",
+      ].filter(Boolean).join(", ");
+      showAlert(`Parsed Gmail IDs: ${found}.`, "recorded");
     } catch (error) {
       showAlert(error.message, "blocked");
     }
