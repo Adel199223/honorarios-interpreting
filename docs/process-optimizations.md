@@ -19,7 +19,7 @@ python scripts/prepare_honorarios.py <intake-json> [<intake-json> ...] --render-
 
 In the browser app, use Batch Queue for the same workflow: review each request, add ready requests to the queue, then click `Prepare batch package`. This calls the same multi-intake `/api/prepare` path, so same-batch duplicates, active drafts, date conflicts, missing numbered questions, and recipient mismatches are checked before any PDF or draft payload is written.
 
-If the queued requests should be sent together, enable `Packet mode` before preparing. Packet mode is still draft-only: it requires one shared recipient, builds the individual PDFs, combines the PDFs and any already-declared supporting attachments into one packet PDF, and makes that packet the only `attachment_files` entry in the Gmail `_create_draft` args. The displayed Batch Queue order is the packet order; drag requests or use `Move up` / `Move down` before preparing when declarations or same-day periods need a specific sequence. Use `Inspect` on each queued row to review the Packet item inspector before generation; it shows the generated requerimento PDF position plus any supporting attachments that will follow that request. The packet payload carries `underlying_requests` so recording the Gmail draft still protects every case/date/period in the duplicate index. The prepared packet result includes a Packet draft recording helper with a copyable `record_gmail_draft.py` command and a JSON object, so the packet draft and all underlying duplicate blockers can be logged without retyping paths.
+If the queued requests should be sent together, enable `Packet mode` before preparing. Packet mode is still draft-only: it requires one shared recipient, builds the individual PDFs, combines the PDFs and any already-declared supporting attachments into one packet PDF, and makes that packet the only `attachment_files` entry in the Gmail `_create_draft` args. The displayed Batch Queue order is the packet order; drag requests or use `Move up` / `Move down` before preparing when declarations or same-day periods need a specific sequence. Use `Inspect` on each queued row to review the Packet item inspector before generation; it shows the generated requerimento PDF position plus any supporting attachments that will follow that request. The packet payload carries `underlying_requests` so recording the Gmail draft still protects every case/date/period in the duplicate index. The prepared packet result includes a Packet draft recording helper with a copyable `record_gmail_draft.py` command and a JSON object, so the packet draft and all underlying duplicate blockers can be logged without retyping paths. The Record Gmail Draft card can also autofill the latest prepared packet or individual payload path after Gmail IDs are pasted, and it preserves those pasted IDs.
 
 It performs the local work in this order:
 
@@ -65,6 +65,8 @@ Use `scripts/record_gmail_draft.py` after `_create_draft` returns. Prefer the pa
 ```powershell
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
+
+In the browser app, use `Autofill from prepared payload` after pasting the returned Gmail IDs. This removes the easiest-to-fumble part of recording: picking the right packet or individual payload path, especially after a correction or same-day packet.
 
 The log lives in:
 

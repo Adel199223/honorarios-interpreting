@@ -98,6 +98,8 @@ If the user wants several source files packaged together, build a combined packe
 
 The browser app exposes this as `Packet mode` in the Batch Queue. Packet mode validates that every queued request has the same recipient, prepares each request through the normal PDF pipeline, builds one combined packet PDF, and writes one draft payload whose `gmail_create_draft_args.attachment_files` array contains only the packet PDF. Before preparing, use the Batch Queue `Inspect` buttons to confirm each request's generated requerimento PDF slot and supporting attachments; this is especially important when declaration images must follow a specific morning/afternoon request. After preparing, use the Packet draft recording helper to copy either the `record_gmail_draft.py` command template or the record JSON object. Both include the packet draft payload path and the packet's underlying requests.
 
+The Review drawer also includes `Autofill from prepared payload` in the Record Gmail Draft card. After Gmail `_create_draft` returns IDs, paste the draft, message, and thread IDs first, then click the autofill button. It fills the prepared packet or individual payload path and active status while preserving the pasted Gmail IDs.
+
 ## Draft Log
 
 After `_create_draft` returns, record the returned IDs:
@@ -105,6 +107,14 @@ After `_create_draft` returns, record the returned IDs:
 ```powershell
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
+
+Browser shortcut:
+
+1. Prepare the PDF and draft payload.
+2. Create the Gmail draft with `_create_draft` using the displayed `gmail_create_draft_args`.
+3. Paste the returned Gmail draft/message/thread IDs into Record Gmail Draft.
+4. Click `Autofill from prepared payload`.
+5. Click `Record draft`.
 
 The log lives at:
 

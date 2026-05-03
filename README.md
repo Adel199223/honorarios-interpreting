@@ -41,6 +41,7 @@ The app supports the main workflow:
 - warn about duplicate `sent` or `drafted` case/date records
 - generate the PDF and Gmail `_create_draft` payload
 - record returned Gmail draft IDs so duplicates are protected immediately
+- autofill the Record Gmail Draft form from the prepared packet or individual payload while preserving pasted Gmail draft/message/thread IDs
 - handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
 - maintain known destinations/kilometers and court email aliases from the References screen
 - maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
@@ -145,7 +146,7 @@ For Polícia Judiciária sources, record the local host building and city used f
 
 For similar photo batches, either use the browser app's Batch Queue or prepare all intake files together from the CLI. The batch preflight validates every request before generating anything, and the manifest makes mismatches easier to catch before Gmail draft creation.
 
-When a batch should be sent as a single attachment, turn on `Packet mode` in the browser before clicking `Prepare batch package`. Use the packet order controls to drag queued requests or move them up/down first. Use each row's `Inspect` button to open the Packet item inspector and confirm the request's recipient, service place, kilometers, source details, and supporting attachment order. The app validates that all queued requests use the same recipient, creates the individual requerimento PDFs in the displayed order, bundles them into one packet PDF, and prepares one Gmail `_create_draft` payload with the packet as the only attachment. After the packet is prepared, use the Packet draft recording helper to copy the `record_gmail_draft.py` command or JSON object; it includes the packet payload path and the underlying requests that will become duplicate blockers once the draft is recorded.
+When a batch should be sent as a single attachment, turn on `Packet mode` in the browser before clicking `Prepare batch package`. Use the packet order controls to drag queued requests or move them up/down first. Use each row's `Inspect` button to open the Packet item inspector and confirm the request's recipient, service place, kilometers, source details, and supporting attachment order. The app validates that all queued requests use the same recipient, creates the individual requerimento PDFs in the displayed order, bundles them into one packet PDF, and prepares one Gmail `_create_draft` payload with the packet as the only attachment. After the packet is prepared, use the Packet draft recording helper to copy the `record_gmail_draft.py` command or JSON object; it includes the packet payload path and the underlying requests that will become duplicate blockers once the draft is recorded. In the Review drawer, the Record Gmail Draft card also has `Autofill from prepared payload`; paste the Gmail draft/message/thread IDs first, then use that button to fill the prepared packet or individual payload path without clearing the pasted IDs.
 
 ```powershell
 python scripts/prepare_honorarios.py examples/intake.gnr-cuba-photo-metadata-146.example.json examples/intake.gnr-cuba-photo-metadata-15.example.json --render-previews
@@ -221,6 +222,8 @@ Use the short payload-based form whenever possible:
 ```powershell
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
+
+In the browser app, the Record Gmail Draft card can fill the payload path and active status from the latest prepared packet or individual payload. It intentionally preserves already pasted Gmail IDs, so the lowest-friction path is: create the draft with `_create_draft`, paste the returned IDs, click `Autofill from prepared payload`, then click `Record draft`.
 
 The older explicit form still works:
 

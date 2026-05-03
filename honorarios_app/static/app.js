@@ -238,6 +238,44 @@ function renderPacketRecordHelper(packet) {
   `;
 }
 
+function preparedRecordTarget() {
+  return state.lastPrepared?.packet || state.lastPrepared?.items?.[0] || null;
+}
+
+function preparedRecordNote(target) {
+  if (!target) return "";
+  if (target.packet_mode) {
+    const count = target.underlying_requests?.length || 0;
+    return `Prepared packet draft for ${count} underlying request${count === 1 ? "" : "s"}.`;
+  }
+  const parts = [target.case_number, target.service_date, target.service_period_label].filter(Boolean);
+  return `Prepared draft for ${parts.join(" · ") || "reviewed request"}.`;
+}
+
+function autofillRecordFormFromPrepared() {
+  const target = preparedRecordTarget();
+  if (!target?.draft_payload) {
+    throw new Error("Prepare a PDF and Gmail draft payload before autofilling the record form.");
+  }
+
+  const pastedIds = {
+    draftId: $("#record_draft_id").value,
+    messageId: $("#record_message_id").value,
+    threadId: $("#record_thread_id").value,
+  };
+
+  $("#record_payload").value = target.draft_payload;
+  $("#record_status").value = "active";
+  if (!$("#record_notes").value.trim()) {
+    $("#record_notes").value = preparedRecordNote(target);
+  }
+
+  $("#record_draft_id").value = pastedIds.draftId;
+  $("#record_message_id").value = pastedIds.messageId;
+  $("#record_thread_id").value = pastedIds.threadId;
+  return target;
+}
+
 function moveBatchIntake(fromIndex, toIndex) {
   const from = Number(fromIndex);
   const to = Number(toIndex);
@@ -1647,9 +1685,18 @@ function bindActions() {
   });
   $("#copy-draft-args").addEventListener("click", async () => {
     try {
-      const target = state.lastPrepared?.packet || state.lastPrepared?.items?.[0];
+      const target = preparedRecordTarget();
       await copyText(JSON.stringify(target?.gmail_create_draft_args || {}, null, 2));
       showAlert("Copied Gmail draft args JSON.", "recorded");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#autofill-record-from-prepared").addEventListener("click", () => {
+    try {
+      const target = autofillRecordFormFromPrepared();
+      const label = target.packet_mode ? "packet" : "prepared";
+      showAlert(`Record form autofilled from ${label} payload; pasted Gmail IDs were preserved.`, "recorded");
     } catch (error) {
       showAlert(error.message, "blocked");
     }

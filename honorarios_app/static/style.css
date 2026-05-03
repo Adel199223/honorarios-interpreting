@@ -739,6 +739,29 @@ textarea {
   background: rgba(122, 243, 176, 0.06);
 }
 
+.record-autofill-note {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin: 14px 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(122, 243, 176, 0.07);
+  border: 1px solid rgba(122, 243, 176, 0.18);
+}
+
+.record-autofill-note p {
+  margin: 5px 0;
+  color: var(--muted);
+}
+
+.record-autofill-note span {
+  color: var(--success);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
 .workspace-action-buttons {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto auto;
@@ -958,7 +981,18 @@ pre {
   width: fit-content;
   min-height: 32px;
   padding: 6px 12px;
+  border: 1px solid rgba(117, 218, 255, 0.28);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(8, 31, 48, 0.82);
+  cursor: pointer;
   font-size: 12px;
+  font-weight: 800;
+}
+
+.mini-button:hover {
+  border-color: rgba(130, 233, 255, 0.62);
+  background: rgba(22, 64, 91, 0.9);
 }
 
 .workspace-drawer-backdrop {
