@@ -225,6 +225,22 @@
                 <span>Drag queued requests or use Move up / Move down before preparing a packet PDF.</span>
               </div>
               <div class="result-card empty-state" id="batch-queue-list">No requests queued yet.</div>
+              <div class="result-card packet-item-inspector empty-state" id="batch-item-inspector">
+                <div class="result-header">
+                  <div>
+                    <strong>Packet item inspector</strong>
+                    <p>Inspect a queued request to confirm its generated requerimento PDF and any supporting attachments before packet preparation.</p>
+                  </div>
+                  <span class="status-chip info" id="batch-item-inspector-chip">Select</span>
+                </div>
+                <div id="batch-item-inspector-body">
+                  Select `Inspect` on a queued request to review its packet position, recipient, service place, kilometers, and attachment order.
+                </div>
+                <div class="packet-sequence-template hidden">
+                  <strong>Generated requerimento PDF</strong>
+                  <strong>Supporting attachments</strong>
+                </div>
+              </div>
               <label class="checkbox-card packet-mode-card" for="batch-packet-mode">
                 <input type="checkbox" id="batch-packet-mode">
                 <span>

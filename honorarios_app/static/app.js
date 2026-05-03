@@ -2,6 +2,7 @@ const state = {
   reference: null,
   currentIntake: null,
   batchIntakes: [],
+  batchSelectedIndex: null,
   lastPrepared: null,
   aiStatus: null,
   googlePhotosStatus: null,
@@ -161,6 +162,29 @@ function batchIntakeKey(intake) {
   ].join("|");
 }
 
+function pathBasename(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.split(/[\\/]/).filter(Boolean).pop() || text;
+}
+
+function normalizeAttachmentList(value) {
+  if (!value) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function supportingAttachmentFiles(record) {
+  if (!record) return [];
+  const explicit = normalizeAttachmentList(record.additional_attachment_files);
+  if (explicit.length) return explicit;
+  const files = normalizeAttachmentList(record.attachment_files);
+  const pdf = String(record.pdf || "").trim();
+  if (!files.length) return [];
+  if (!pdf) return files.slice(1);
+  return files.filter((file) => file !== pdf);
+}
+
 function moveBatchIntake(fromIndex, toIndex) {
   const from = Number(fromIndex);
   const to = Number(toIndex);
@@ -170,9 +194,75 @@ function moveBatchIntake(fromIndex, toIndex) {
   if (from === to) return false;
   const [item] = state.batchIntakes.splice(from, 1);
   state.batchIntakes.splice(to, 0, item);
+  const selected = state.batchSelectedIndex;
+  if (selected === from) {
+    state.batchSelectedIndex = to;
+  } else if (selected !== null && from < selected && to >= selected) {
+    state.batchSelectedIndex = selected - 1;
+  } else if (selected !== null && from > selected && to <= selected) {
+    state.batchSelectedIndex = selected + 1;
+  }
   renderBatchQueue();
   setStatus("ready", "Batch order updated for packet preparation.");
   return true;
+}
+
+function renderBatchItemInspector() {
+  const card = $("#batch-item-inspector");
+  const chip = $("#batch-item-inspector-chip");
+  const body = $("#batch-item-inspector-body");
+  if (!card || !chip || !body) return;
+  const count = state.batchIntakes.length;
+  if (!count) {
+    state.batchSelectedIndex = null;
+    card.className = "result-card packet-item-inspector empty-state";
+    chip.textContent = "Select";
+    chip.className = "status-chip info";
+    body.textContent = "Select `Inspect` on a queued request to review its packet position, recipient, service place, kilometers, and attachment order.";
+    return;
+  }
+  if (state.batchSelectedIndex === null || state.batchSelectedIndex >= count) {
+    state.batchSelectedIndex = 0;
+  }
+  const index = state.batchSelectedIndex;
+  const intake = state.batchIntakes[index];
+  const attachments = supportingAttachmentFiles(intake);
+  const sequence = [
+    "Generated requerimento PDF",
+    ...attachments.map((file) => pathBasename(file)),
+  ];
+  card.className = "result-card packet-item-inspector";
+  chip.textContent = `Item ${index + 1} of ${count}`;
+  chip.className = "status-chip ready";
+  body.innerHTML = `
+    <div class="inspector-grid">
+      <div><span>Case</span><strong>${escapeHtml(intake.case_number || "case pending")}</strong></div>
+      <div><span>Service date</span><strong>${escapeHtml(intake.service_date || "date pending")}</strong></div>
+      <div><span>Period</span><strong>${escapeHtml(intake.service_period_label || "full service")}</strong></div>
+      <div><span>Recipient</span><code>${escapeHtml(intake.recipient_email || "recipient pending")}</code></div>
+      <div><span>Payment entity</span><strong>${escapeHtml(intake.payment_entity || "payment entity pending")}</strong></div>
+      <div><span>Service place</span><strong>${escapeHtml(intake.service_place || "service place pending")}</strong></div>
+      <div><span>Transport</span><strong>${escapeHtml(intake.transport?.destination || intake.service_place || "destination pending")} · ${escapeHtml(intake.transport?.km_one_way || "km pending")} km</strong></div>
+      <div><span>Source</span><strong>${escapeHtml(intake.source_filename || intake.raw_case_number || "manual/reviewed intake")}</strong></div>
+    </div>
+    <div class="packet-sequence">
+      <strong>Packet contents</strong>
+      <ol>
+        ${sequence.map((label, itemIndex) => (
+          `<li>
+            <span>${itemIndex === 0 ? "Generated requerimento PDF" : "Supporting attachment"}</span>
+            <strong>${escapeHtml(label)}</strong>
+          </li>`
+        )).join("")}
+      </ol>
+    </div>
+    <div class="supporting-attachments">
+      <strong>Supporting attachments</strong>
+      ${attachments.length
+        ? `<ul>${attachments.map((file) => `<li><code>${escapeHtml(pathBasename(file))}</code></li>`).join("")}</ul>`
+        : "<p>No supporting attachments queued for this request.</p>"}
+    </div>
+  `;
 }
 
 function renderBatchQueue() {
@@ -185,6 +275,7 @@ function renderBatchQueue() {
   if (!count) {
     list.className = "result-card empty-state";
     list.textContent = "No requests queued yet.";
+    renderBatchItemInspector();
     return;
   }
   list.className = "result-card batch-list";
@@ -193,7 +284,7 @@ function renderBatchQueue() {
       ? `${intake.service_period_label}${intake.service_start_time || intake.service_end_time ? ` ${intake.service_start_time || ""}-${intake.service_end_time || ""}` : ""}`
       : "full service";
     return `
-      <div class="batch-item" draggable="true" data-batch-index="${index}">
+      <div class="batch-item ${state.batchSelectedIndex === index ? "is-selected" : ""}" draggable="true" data-batch-index="${index}">
         <div class="batch-item-order">
           <span class="drag-handle" aria-hidden="true">::</span>
           <strong>${index + 1}</strong>
@@ -208,6 +299,7 @@ function renderBatchQueue() {
           </div>
         </div>
         <div class="batch-item-actions">
+          <button type="button" class="mini-button" data-inspect-batch-index="${index}">Inspect</button>
           <button type="button" class="mini-button" data-move-batch-index="${index}" data-move-direction="up" ${index === 0 ? "disabled" : ""}>Move up</button>
           <button type="button" class="mini-button" data-move-batch-index="${index}" data-move-direction="down" ${index === state.batchIntakes.length - 1 ? "disabled" : ""}>Move down</button>
           <button type="button" class="mini-button" data-remove-batch-index="${index}">Remove</button>
@@ -215,6 +307,7 @@ function renderBatchQueue() {
       </div>
     `;
   }).join("");
+  renderBatchItemInspector();
 }
 
 function renderDraftLifecycle(data) {
@@ -931,8 +1024,10 @@ async function addCurrentIntakeToBatch() {
   const existingIndex = state.batchIntakes.findIndex((queued) => batchIntakeKey(queued) === key);
   if (existingIndex >= 0) {
     state.batchIntakes[existingIndex] = intake;
+    state.batchSelectedIndex = existingIndex;
   } else {
     state.batchIntakes.push(intake);
+    state.batchSelectedIndex = state.batchIntakes.length - 1;
   }
   renderBatchQueue();
   setStatus("ready", `${intake.case_number || "Request"} added to the batch queue.`);
@@ -1054,6 +1149,10 @@ function renderPrepared(data) {
       </div>
       <strong>Exact gmail_create_draft_args</strong>
       <pre class="draft-args">${escapeHtml(JSON.stringify(packet.gmail_create_draft_args || {}, null, 2))}</pre>
+      <div class="packet-sequence prepared-packet-sequence">
+        <strong>Packet contents</strong>
+        ${renderPreparedPacketContents(items)}
+      </div>
     </div>
   ` : "";
   const itemCards = items.map((item) => (
@@ -1089,6 +1188,29 @@ function renderPrepared(data) {
       send_allowed: false,
     });
   }
+}
+
+function renderPreparedPacketContents(items) {
+  if (!items?.length) return "<p>No prepared request items were returned.</p>";
+  return items.map((item, index) => {
+    const supporting = supportingAttachmentFiles(item);
+    const period = item.service_period_label
+      ? ` · ${item.service_period_label}${item.service_start_time || item.service_end_time ? ` ${item.service_start_time || ""}-${item.service_end_time || ""}` : ""}`
+      : "";
+    const contents = [
+      `<li><span>Generated requerimento PDF</span><strong>${escapeHtml(pathBasename(item.pdf))}</strong></li>`,
+      ...supporting.map((file) => `<li><span>Supporting attachment</span><strong>${escapeHtml(pathBasename(file))}</strong></li>`),
+    ].join("");
+    return `
+      <div class="packet-content-item">
+        <div class="packet-content-heading">
+          <strong>${index + 1}. ${escapeHtml(item.case_number || "case pending")} · ${escapeHtml(item.service_date || "date pending")}${escapeHtml(period)}</strong>
+          <span class="status-chip info">${supporting.length} supporting</span>
+        </div>
+        <ol>${contents}</ol>
+      </div>
+    `;
+  }).join("");
 }
 
 async function recordDraft() {
@@ -1371,12 +1493,20 @@ function bindActions() {
   });
   $("#clear-batch-queue").addEventListener("click", () => {
     state.batchIntakes = [];
+    state.batchSelectedIndex = null;
     $("#batch-packet-mode").checked = false;
     renderBatchQueue();
     setStatus("idle", "Batch queue cleared.");
     showAlert("Batch queue cleared.", "recorded");
   });
   $("#batch-queue-list").addEventListener("click", (event) => {
+    const inspectButton = event.target.closest("[data-inspect-batch-index]");
+    if (inspectButton) {
+      state.batchSelectedIndex = Number(inspectButton.dataset.inspectBatchIndex);
+      renderBatchQueue();
+      showAlert("Packet item inspector updated.", "recorded");
+      return;
+    }
     const moveButton = event.target.closest("[data-move-batch-index]");
     if (moveButton) {
       const index = Number(moveButton.dataset.moveBatchIndex);
@@ -1388,7 +1518,13 @@ function bindActions() {
     }
     const button = event.target.closest("[data-remove-batch-index]");
     if (!button) return;
-    state.batchIntakes.splice(Number(button.dataset.removeBatchIndex), 1);
+    const removedIndex = Number(button.dataset.removeBatchIndex);
+    state.batchIntakes.splice(removedIndex, 1);
+    if (state.batchSelectedIndex === removedIndex) {
+      state.batchSelectedIndex = state.batchIntakes.length ? Math.min(removedIndex, state.batchIntakes.length - 1) : null;
+    } else if (state.batchSelectedIndex !== null && state.batchSelectedIndex > removedIndex) {
+      state.batchSelectedIndex -= 1;
+    }
     renderBatchQueue();
     setStatus("idle", "Removed request from the batch queue.");
   });

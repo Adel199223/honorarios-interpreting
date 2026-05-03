@@ -582,6 +582,11 @@ textarea {
   outline: 1px solid rgba(117, 218, 255, 0.72);
 }
 
+.batch-item.is-selected {
+  border-color: rgba(130, 233, 255, 0.58);
+  background: rgba(20, 61, 86, 0.62);
+}
+
 .batch-item-order {
   display: grid;
   grid-template-columns: auto auto;
@@ -626,6 +631,80 @@ textarea {
 .batch-item-actions .mini-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.packet-item-inspector {
+  margin-top: 12px;
+  display: grid;
+  gap: 14px;
+}
+
+.packet-item-inspector.empty-state {
+  display: grid;
+  align-items: stretch;
+}
+
+.inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.inspector-grid > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(2, 10, 18, 0.44);
+  border: 1px solid rgba(117, 218, 255, 0.12);
+}
+
+.inspector-grid span,
+.packet-sequence li span,
+.supporting-attachments p {
+  display: block;
+  color: var(--muted-2);
+  font-size: 0.8rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.packet-sequence,
+.supporting-attachments {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.packet-sequence ol,
+.supporting-attachments ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.packet-sequence li,
+.supporting-attachments li {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(2, 10, 18, 0.38);
+}
+
+.packet-content-item {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(2, 10, 18, 0.42);
+  border: 1px solid rgba(117, 218, 255, 0.12);
+}
+
+.packet-content-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .workspace-action-buttons {
