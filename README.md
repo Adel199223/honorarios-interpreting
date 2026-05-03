@@ -230,6 +230,12 @@ Keep that file local. It contains payment details that should not be shared publ
 
 For future public GitHub publishing, keep real runtime files local and ignored: `config/profile.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, `data/profile-change-log.json`, `data/precedents.json`, `output/`, and `tmp/`. Publish only sanitized seed examples and synthetic tests.
 
+Public sanitized repository:
+
+<https://github.com/Adel199223/honorarios-interpreting>
+
+That repository was created from a sanitized candidate, not from this private working folder.
+
 Run the executable privacy/readiness gate before creating a public repository:
 
 ```powershell

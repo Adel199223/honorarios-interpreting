@@ -82,6 +82,24 @@ def _copy_tree(source: Path, target: Path) -> None:
         _copy_and_sanitize_file(path, target / relative)
 
 
+def _reset_target(target: Path) -> None:
+    if not target.exists():
+        target.mkdir(parents=True)
+        return
+    if not (target / ".git").exists():
+        shutil.rmtree(target)
+        target.mkdir(parents=True)
+        return
+
+    for child in target.iterdir():
+        if child.name == ".git":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -248,9 +266,7 @@ def build_public_candidate(source_root: str | Path = ROOT, target_root: str | Pa
     source = Path(source_root).resolve()
     target = Path(target_root or (source / "output" / "public-candidate")).resolve()
     _ensure_safe_target(source, target)
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
+    _reset_target(target)
 
     for relative in COPY_FILES:
         source_file = source / relative

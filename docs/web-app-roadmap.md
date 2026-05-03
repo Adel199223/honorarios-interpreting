@@ -48,14 +48,22 @@ Project-specific behavior must remain here until a later integration adapter exi
 - Duplicate protection, service profiles, PJ/GNR host-building rules, numbered questions, and translation set-aside rules come from this project.
 - Gmail handling stays draft-only through prepared `_create_draft` payloads; no send action should be added to the UI.
 
+## Public Repository
+
+The sanitized public repository is live at:
+
+<https://github.com/Adel199223/honorarios-interpreting>
+
+It was published from `output/public-candidate` after the privacy and repository metadata gate passed, not from the private working folder.
+
 ## Next Stages
 
 1. Add full Google Photos OAuth Picker import, using the LegalPDF reference pattern, only after local credential/token storage is reviewed and sanitized diagnostics are in place.
-2. Review the generated sanitized public candidate, add final repo metadata such as license/release notes, then initialize and publish from that candidate only.
+2. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness
 
-Public GitHub is deliberately blocked for the current working folder. It contains private local configuration, real generated PDFs, draft logs, duplicate records, and workflow history. Use `scripts/build_public_candidate.py` or the app's Build sanitized candidate button to create `output/public-candidate`, then publish only after reviewing that candidate and confirming its privacy gate passes.
+Public GitHub is deliberately blocked for the current working folder. It contains private local configuration, real generated PDFs, draft logs, duplicate records, and workflow history. Use `scripts/build_public_candidate.py` or the app's Build sanitized candidate button to create `output/public-candidate`, then publish updates only after reviewing that candidate and confirming its privacy gate passes.
 
 ## Non-Negotiable Safety Rules
 
