@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.playwright-mcp/
+
+# Local personal/payment data and real case history.
+config/profile.json
+config/*.local.json
+data/gmail-draft-log.json
+data/duplicate-index.json
+data/profile-change-log.json
+data/precedents.json
+data/*.local.json
+
+# Generated PDFs, draft payloads, manifests, intake snapshots, and previews.
+output/
+tmp/

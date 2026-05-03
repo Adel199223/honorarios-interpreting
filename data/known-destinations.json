@@ -1,0 +1,10 @@
+[
+  {
+    "destination": "Example City",
+    "institution_examples": [
+      "Example Police Station"
+    ],
+    "km_one_way": 12,
+    "notes": "Synthetic public fixture."
+  }
+]

@@ -1,0 +1,1126 @@
+const state = {
+  reference: null,
+  currentIntake: null,
+  lastPrepared: null,
+  aiStatus: null,
+  googlePhotosStatus: null,
+  draftLifecycle: null,
+};
+
+const $ = (selector) => document.querySelector(selector);
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function setStatus(status, message) {
+  const pill = $("#status-pill");
+  const summary = $("#review-status");
+  const drawerStatus = $("#drawer-review-status");
+  const normalized = status || "idle";
+
+  pill.textContent = normalized.replaceAll("_", " ");
+  pill.className = "status-chip";
+  if (["ready", "prepared", "recorded"].includes(normalized)) {
+    pill.classList.add("ready");
+  } else if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked"].includes(normalized)) {
+    pill.classList.add("blocked");
+  } else if (normalized === "error") {
+    pill.classList.add("error");
+  } else {
+    pill.classList.add("info");
+  }
+
+  const text = message || "";
+  summary.textContent = text;
+  drawerStatus.textContent = text || "Review the Portuguese text, then create the PDF and Gmail draft payload.";
+}
+
+function setCard(element, message, kind = "") {
+  if (!message) {
+    element.className = "result-card hidden";
+    element.textContent = "";
+    return;
+  }
+  element.className = `result-card ${kind}`.trim();
+  element.textContent = message;
+}
+
+function statusChipClass(status) {
+  if (["ready", "prepared", "recorded", "clear", "active", "drafted", "sent"].includes(status)) return "ready";
+  if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "superseded", "trashed", "not_found"].includes(status)) return "blocked";
+  if (status === "error") return "error";
+  return "info";
+}
+
+async function copyText(value) {
+  const text = String(value || "");
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function parseReferenceLines(value) {
+  return String(value || "")
+    .split(/\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function fillFormFromIntake(intake) {
+  const values = {
+    case_number: intake.case_number,
+    service_date: intake.service_date,
+    photo_metadata_date: intake.photo_metadata_date,
+    service_period_label: intake.service_period_label,
+    service_start_time: intake.service_start_time,
+    service_end_time: intake.service_end_time,
+    payment_entity: intake.payment_entity,
+    recipient_email: intake.recipient_email,
+    service_place: intake.service_place,
+    km_one_way: intake.transport?.km_one_way,
+    source_text: intake.source_text,
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const input = $(`#${id}`);
+    if (input && value !== undefined && value !== null && value !== "") {
+      input.value = value;
+    }
+  });
+}
+
+function mergeFormIntoCurrentIntake() {
+  if (!state.currentIntake) return null;
+  const payload = collectProfilePayload();
+  const intake = { ...state.currentIntake };
+  [
+    "case_number",
+    "service_date",
+    "photo_metadata_date",
+    "service_period_label",
+    "service_start_time",
+    "service_end_time",
+    "payment_entity",
+    "recipient_email",
+    "service_place",
+    "source_text",
+  ].forEach((key) => {
+    if (payload[key]) intake[key] = payload[key];
+  });
+  if (payload.km_one_way) {
+    intake.transport = { ...(intake.transport || {}), km_one_way: Number(payload.km_one_way) || payload.km_one_way };
+  }
+  state.currentIntake = intake;
+  return intake;
+}
+
+function showAlert(message, kind = "") {
+  setCard($("#alert"), message, kind);
+}
+
+function showQuestions(data) {
+  const box = $("#questions");
+  if (!data.questions || !data.questions.length) {
+    box.className = "result-card hidden";
+    box.innerHTML = "";
+    return;
+  }
+  box.className = "result-card blocked";
+  box.innerHTML = data.questions.map((question) => (
+    `<div><strong>${question.number}.</strong> ${escapeHtml(question.question)} <span>${escapeHtml(question.answer_hint)}</span></div>`
+  )).join("");
+}
+
+function renderDraftLifecycle(data) {
+  const chip = $("#draft-lifecycle-chip");
+  const body = $("#draft-lifecycle-body");
+  if (!chip || !body) return;
+  const lifecycle = data || state.draftLifecycle;
+  if (!lifecycle) {
+    chip.textContent = "Check";
+    chip.className = "status-chip info";
+    body.textContent = "No active draft check yet.";
+    return;
+  }
+  const status = lifecycle.status || "clear";
+  chip.textContent = status.replaceAll("_", " ");
+  chip.className = `status-chip ${statusChipClass(status)}`;
+  const active = lifecycle.active_gmail_drafts || [];
+  const duplicates = lifecycle.duplicate_records || (lifecycle.duplicate ? [lifecycle.duplicate] : []);
+  const rows = [
+    `<div>${escapeHtml(lifecycle.message || "Draft lifecycle checked.")}</div>`,
+    `<div>Replacement allowed: <strong>${lifecycle.replacement_allowed ? "yes" : "no"}</strong></div>`,
+  ];
+  active.forEach((record) => {
+    rows.push(`<div class="data-item"><strong>Active draft</strong><code>${escapeHtml(record.draft_id || "")}</code><span>${escapeHtml(record.recipient || "")}</span></div>`);
+  });
+  duplicates.forEach((record) => {
+    rows.push(`<div class="data-item"><strong>${escapeHtml(record.status || "duplicate")}</strong><code>${escapeHtml(record.draft_id || record.pdf || "")}</code><span>${escapeHtml(record.recipient_email || record.recipient || "")}</span></div>`);
+  });
+  body.innerHTML = rows.join("");
+  if (active.length && !$("#record_supersedes").value) {
+    $("#record_supersedes").value = active.map((record) => record.draft_id).filter(Boolean).join(", ");
+  } else if (!active.length && duplicates.length && !$("#record_supersedes").value) {
+    $("#record_supersedes").value = duplicates.map((record) => record.draft_id).filter(Boolean).join(", ");
+  }
+}
+
+function updateHomeReviewCard(data) {
+  const card = $("#interpretation-review-home-result");
+  const status = data.status || "idle";
+  const title = data.case_number ? `${data.case_number} · ${data.service_date || "date pending"}` : status.replaceAll("_", " ");
+  const recipient = data.recipient ? `<div>Recipient: <code>${escapeHtml(data.recipient)}</code></div>` : "";
+  const duplicate = data.duplicate?.draft_id ? `<div>Existing draft: <code>${escapeHtml(data.duplicate.draft_id)}</code></div>` : "";
+  const questions = data.questions?.length ? `<div>${data.questions.length} numbered question${data.questions.length === 1 ? "" : "s"} need an answer.</div>` : "";
+
+  card.className = `result-card ${["ready", "prepared", "recorded"].includes(status) ? "ready" : ""}`.trim();
+  if (["duplicate", "active_draft", "set_aside", "blocked", "needs_info"].includes(status)) {
+    card.className = `result-card blocked`;
+  }
+  if (status === "error") {
+    card.className = "result-card error";
+  }
+  card.innerHTML = `
+    <div class="result-header">
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(data.message || "Review the recovered details before creating the PDF.")}</p>
+      </div>
+      <span class="status-chip ${status === "ready" ? "ready" : status === "error" ? "error" : status === "idle" ? "info" : "blocked"}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${recipient}
+    ${duplicate}
+    ${questions}
+  `;
+}
+
+function renderSourceEvidence(data) {
+  const box = $("#source-evidence");
+  const body = $("#source-evidence-body");
+  if (!data?.source) {
+    box.className = "result-card hidden";
+    body.innerHTML = "";
+    return;
+  }
+  const evidence = data.source_evidence || {};
+  const source = data.source;
+  const metadata = source.metadata || {};
+  const warnings = evidence.warnings || metadata.warnings || [];
+  const renderedPageUrls = evidence.rendered_page_urls || [];
+  const preview = source.source_kind === "photo"
+    ? `<img class="source-preview-image" src="${escapeHtml(source.artifact_url)}" alt="Uploaded source preview">`
+    : renderedPageUrls.length
+      ? `<div class="rendered-page-strip">
+          <strong>Rendered PDF pages</strong>
+          ${renderedPageUrls.map((url, index) => `<img class="source-preview-image rendered-page-image" src="${escapeHtml(url)}" alt="Rendered PDF page ${index + 1}">`).join("")}
+          <a class="source-preview-link" href="${escapeHtml(source.artifact_url)}" target="_blank" rel="noreferrer">Open original PDF source</a>
+        </div>`
+      : `<a class="source-preview-link" href="${escapeHtml(source.artifact_url)}" target="_blank" rel="noreferrer">Open uploaded PDF source</a>`;
+  body.innerHTML = `
+    <div class="source-evidence-layout">
+      <div class="source-evidence-list">
+        <div><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>
+        <div><span>Case</span><code>${escapeHtml(evidence.case_number || "not recovered")}</code></div>
+        <div><span>Raw case</span><code>${escapeHtml(evidence.raw_case_number || "")}</code></div>
+        <div><span>Service date</span><code>${escapeHtml(evidence.service_date || "needs review")}</code></div>
+        <div><span>Metadata date</span><code>${escapeHtml(evidence.photo_metadata_date || metadata.exif_date || metadata.visible_metadata_date || "")}</code></div>
+        <div><span>Recipient</span><code>${escapeHtml(evidence.recipient_email || "profile/default")}</code></div>
+        <div><span>AI Recovery</span><code>${escapeHtml(evidence.ai_status || "not attempted")}</code></div>
+        <div><span>Warnings</span><code>${escapeHtml(warnings.join("; ") || "none")}</code></div>
+        <div><span>Rendered pages</span><strong>${escapeHtml(evidence.rendered_page_count || renderedPageUrls.length || 0)}</strong></div>
+        <div><span>Questions</span><strong>${escapeHtml(evidence.question_count || 0)}</strong></div>
+        <div><span>SHA-256</span><code>${escapeHtml((source.sha256 || "").slice(0, 16))}</code></div>
+      </div>
+      <div>${preview}</div>
+    </div>
+  `;
+  box.className = "result-card";
+}
+
+function renderAiRecovery(aiRecovery) {
+  const box = $("#ai-recovery-evidence");
+  const body = $("#ai-recovery-evidence-body");
+  const chip = $("#ai-recovery-status-chip");
+  if (!aiRecovery) {
+    box.className = "result-card hidden";
+    body.innerHTML = "";
+    chip.textContent = "AI";
+    chip.className = "status-chip info";
+    return;
+  }
+  const status = aiRecovery.status || "unknown";
+  const fields = aiRecovery.fields || {};
+  const warnings = aiRecovery.warnings || [];
+  const indicators = aiRecovery.translation_indicators || [];
+  const rawText = aiRecovery.raw_visible_text || "";
+  chip.textContent = status.replaceAll("_", " ");
+  chip.className = `status-chip ${status === "ok" ? "ready" : status === "failed" ? "error" : "info"}`;
+  body.innerHTML = `
+    <div class="source-evidence-list ai-recovery-list">
+      <div><span>Provider</span><code>${escapeHtml(aiRecovery.provider || "openai")}</code></div>
+      <div><span>Model</span><code>${escapeHtml(aiRecovery.model || "")}</code></div>
+      <div><span>Attempted</span><strong>${aiRecovery.attempted ? "yes" : "no"}</strong></div>
+      <div><span>Reason</span><code>${escapeHtml(aiRecovery.reason || "")}</code></div>
+      <div><span>Fields found</span><code>${escapeHtml(Object.keys(fields).join(", ") || "none")}</code></div>
+      <div><span>Warnings</span><code>${escapeHtml(warnings.join("; "))}</code></div>
+      <div><span>Translation indicators</span><code>${escapeHtml(indicators.join("; "))}</code></div>
+    </div>
+    ${rawText ? `<details class="ai-raw-text"><summary>Raw visible text</summary><pre>${escapeHtml(rawText)}</pre></details>` : ""}
+  `;
+  box.className = "result-card";
+}
+
+function openReviewDrawer() {
+  const backdrop = $("#interpretation-review-drawer-backdrop");
+  backdrop.classList.remove("hidden");
+  document.body.dataset.interpretationReviewDrawer = "open";
+}
+
+function closeReviewDrawer() {
+  const backdrop = $("#interpretation-review-drawer-backdrop");
+  backdrop.classList.add("hidden");
+  document.body.dataset.interpretationReviewDrawer = "closed";
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || data.message || `Request failed: ${response.status}`);
+  }
+  return data;
+}
+
+async function uploadSource(sourceKind) {
+  const fileInput = sourceKind === "notification_pdf"
+    ? $("#notification-file")
+    : sourceKind === "google_photos"
+      ? $("#google-photos-file")
+      : $("#photo-file");
+  const file = fileInput.files?.[0];
+  if (!file) {
+    if (sourceKind === "notification_pdf") throw new Error("Choose a PDF first.");
+    if (sourceKind === "google_photos") throw new Error("Choose a Google Photos image first.");
+    throw new Error("Choose a photo or screenshot first.");
+  }
+  const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
+  const visibleText = [$("#source_text").value.trim(), googlePhotosMetadata].filter(Boolean).join("\n\n");
+  const form = new FormData();
+  form.append("file", file);
+  form.append("source_kind", sourceKind === "google_photos" ? "photo" : sourceKind);
+  form.append("profile", $("#profile").value || "");
+  form.append("visible_text", visibleText);
+  if (googlePhotosMetadata) {
+    form.append("visible_metadata_text", googlePhotosMetadata);
+  }
+  form.append("ai_recovery", $("#ai_recovery_mode").value || "auto");
+
+  const response = await fetch("/api/sources/upload", {
+    method: "POST",
+    body: form,
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
+  }
+  state.currentIntake = data.candidate_intake;
+  fillFormFromIntake(state.currentIntake);
+  renderSourceEvidence(data);
+  renderAiRecovery(data.ai_recovery);
+  applyReview(data.review);
+  return data;
+}
+
+async function loadReference() {
+  state.reference = await requestJson("/api/reference");
+  state.aiStatus = state.reference?.ai || null;
+  renderReference();
+  renderAiStatus(state.aiStatus);
+}
+
+async function loadAiStatus() {
+  state.aiStatus = await requestJson("/api/ai/status");
+  renderAiStatus(state.aiStatus);
+}
+
+async function loadGooglePhotosStatus() {
+  state.googlePhotosStatus = await requestJson("/api/google-photos/status");
+  renderGooglePhotosStatus(state.googlePhotosStatus);
+}
+
+function renderAiStatus(data) {
+  const summary = $("#ai-status-summary");
+  const pill = $("#ai-status-pill");
+  if (!summary || !pill) return;
+  const configured = Boolean(data?.configured);
+  const keyConfigured = Boolean(data?.key_configured);
+  pill.textContent = configured ? "ready" : keyConfigured ? "install needed" : "key missing";
+  pill.className = `status-chip ${configured ? "ready" : "blocked"}`;
+  if (configured) {
+    summary.textContent = `OpenAI recovery is available through ${data.key_source || "configured key"} using ${data.model || "default model"}.`;
+  } else if (keyConfigured && data?.package_available === false) {
+    summary.textContent = "An OpenAI key is configured, but the openai Python package is not installed in this environment.";
+  } else {
+    summary.textContent = "Set OPENAI_API_KEY or config/ai.local.json to enable OCR/autofill. The key is never shown here.";
+  }
+}
+
+function renderGooglePhotosStatus(data) {
+  const summary = $("#google-photos-status-summary");
+  const pill = $("#google-photos-status-pill");
+  if (!summary || !pill) return;
+  const connected = Boolean(data?.connected);
+  const configured = Boolean(data?.configured);
+  pill.textContent = connected ? "picker ready" : configured ? "oauth config" : "manual bridge";
+  pill.className = `status-chip ${connected ? "ready" : "info"}`;
+  summary.textContent = data?.message || "OAuth Picker is not connected in this standalone app yet. Use selected-photo import with pasted metadata.";
+}
+
+function renderPublicReadiness(data) {
+  const chip = $("#public-readiness-chip");
+  const body = $("#public-readiness-result");
+  if (!chip || !body) return;
+  const ready = Boolean(data?.public_ready);
+  chip.textContent = ready ? "ready" : "blocked";
+  chip.className = `status-chip ${ready ? "ready" : "blocked"}`;
+  const blockedPaths = (data?.blocked_paths || []).slice(0, 8);
+  const metadataBlockers = (data?.metadata_blockers || []).slice(0, 8);
+  const findings = (data?.content_findings || []).slice(0, 8);
+  const gitBlockers = data?.git_blockers || [];
+  body.className = `result-card ${ready ? "ready" : "blocked"}`;
+  body.innerHTML = `
+    <div class="result-header">
+      <div>
+        <strong>${escapeHtml(data?.message || "Run the privacy gate before publishing.")}</strong>
+        <p>${escapeHtml(data?.blocker_count ?? 0)} blocker${Number(data?.blocker_count || 0) === 1 ? "" : "s"} found.</p>
+      </div>
+      <span class="status-chip ${ready ? "ready" : "blocked"}">${ready ? "ready" : "blocked"}</span>
+    </div>
+    ${gitBlockers.map((item) => `<div class="data-item"><strong>Git</strong><span>${escapeHtml(item)}</span></div>`).join("")}
+    ${blockedPaths.map((item) => `<div class="data-item"><strong>Private path</strong><code>${escapeHtml(item)}</code></div>`).join("")}
+    ${metadataBlockers.map((item) => `<div class="data-item"><strong>Missing metadata</strong><code>${escapeHtml(item)}</code></div>`).join("")}
+    ${findings.map((item) => `<div class="data-item"><strong>${escapeHtml(item.kind)}</strong><code>${escapeHtml(item.path)}:${escapeHtml(item.line)}</code></div>`).join("")}
+  `;
+}
+
+async function runPublicReadiness() {
+  const data = await requestJson("/api/public-readiness");
+  renderPublicReadiness(data);
+  return data;
+}
+
+async function buildPublicCandidate() {
+  const data = await requestJson("/api/public-candidate/build", { method: "POST" });
+  renderPublicReadiness({
+    ...data.gate,
+    message: `${data.gate.message} Candidate: ${data.candidate_path}`,
+  });
+  return data;
+}
+
+function renderReference() {
+  const profiles = state.reference?.service_profiles || {};
+  const profileSelect = $("#profile");
+  profileSelect.innerHTML = Object.entries(profiles)
+    .map(([key, value]) => `<option value="${escapeHtml(key)}">${escapeHtml(key)} - ${escapeHtml(value.description || "")}</option>`)
+    .join("");
+
+  $("#profile-list").innerHTML = Object.entries(profiles).map(([key, value]) => (
+    `<div class="data-item">
+      <strong>${escapeHtml(key)}</strong>
+      <span>${escapeHtml(value.description || "")}</span>
+      <button type="button" class="mini-button" data-edit-profile="${escapeHtml(key)}">Edit guarded profile</button>
+    </div>`
+  )).join("");
+
+  $("#court-list").innerHTML = (state.reference?.court_emails || []).map((item, index) => (
+    `<div class="data-item">
+      <strong>${escapeHtml(item.key || item.email)}</strong>
+      <span>${escapeHtml(item.name || "")}</span>
+      <code>${escapeHtml(item.email || "")}</code>
+      <button type="button" class="mini-button" data-edit-court="${index}">Edit</button>
+    </div>`
+  )).join("");
+
+  $("#destination-list").innerHTML = (state.reference?.known_destinations || []).map((item, index) => (
+    `<div class="data-item">
+      <strong>${escapeHtml(item.name || item.destination || item.city || "Destination")}</strong>
+      <span>${escapeHtml(item.km_one_way ?? item.km ?? "")} km</span>
+      <button type="button" class="mini-button" data-edit-destination="${index}">Edit</button>
+    </div>`
+  )).join("");
+
+  $("#duplicate-list").innerHTML = (state.reference?.duplicates || []).slice().reverse().map((item) => (
+    `<div class="data-item"><strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong><span class="status-chip ${statusChipClass(item.status || "sent")}">${escapeHtml(item.status || "sent")}</span><code>${escapeHtml(item.draft_id || item.pdf || "")}</code></div>`
+  )).join("");
+
+  $("#draft-log-list").innerHTML = (state.reference?.draft_log || []).slice().reverse().map((item) => (
+    `<div class="data-item"><strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong><span class="status-chip ${statusChipClass(item.status || "")}">${escapeHtml(item.status || "")}</span><code>${escapeHtml(item.draft_id || "")}</code></div>`
+  )).join("");
+
+  $("#profile-change-list").innerHTML = (state.reference?.profile_change_log || [])
+    .map((item, index) => ({ item, index }))
+    .reverse()
+    .map(({ item, index }) => (
+    `<div class="data-item">
+      <strong>${escapeHtml(item.profile_key || "")} · ${escapeHtml(item.action || "")}</strong>
+      <span>${escapeHtml((item.changes || []).length)} change(s)</span>
+      <code>${escapeHtml(item.reason || item.changed_at || "")}</code>
+      <div class="button-row">
+        <button type="button" class="mini-button" data-preview-profile-rollback="${index}">Preview rollback</button>
+        <button type="button" class="mini-button" data-restore-profile-rollback="${index}">Restore previous profile</button>
+      </div>
+    </div>`
+  )).join("");
+}
+
+async function saveDestinationReference() {
+  const payload = {
+    destination: $("#destination_name").value.trim(),
+    km_one_way: $("#destination_km").value.trim(),
+    institution_examples: parseReferenceLines($("#destination_examples").value),
+    notes: $("#destination_notes").value.trim(),
+  };
+  const data = await requestJson("/api/reference/destinations", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(payload)),
+  });
+  setStatus("recorded", `Saved destination ${data.record.destination}.`);
+  showAlert(`Saved destination ${data.record.destination}.`, "recorded");
+  await loadReference();
+}
+
+async function saveCourtEmailReference() {
+  const payload = {
+    key: $("#court_key").value.trim(),
+    name: $("#court_name").value.trim(),
+    email: $("#court_email").value.trim(),
+    payment_entity_aliases: parseReferenceLines($("#court_aliases").value),
+    source: $("#court_source").value.trim(),
+  };
+  const data = await requestJson("/api/reference/court-emails", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(payload)),
+  });
+  setStatus("recorded", `Saved court email ${data.record.email}.`);
+  showAlert(`Saved court email ${data.record.email}.`, "recorded");
+  await loadReference();
+}
+
+function collectServiceProfileReferencePayload() {
+  return {
+    key: $("#profile_key").value.trim(),
+    description: $("#profile_description").value.trim(),
+    service_date_source: $("#profile_service_date_source").value,
+    addressee: $("#profile_addressee").value.trim(),
+    payment_entity: $("#profile_payment_entity").value.trim(),
+    recipient_email: $("#profile_recipient_email").value.trim(),
+    court_email_key: $("#profile_court_email_key").value.trim(),
+    service_entity: $("#profile_service_entity").value.trim(),
+    service_entity_type: $("#profile_service_entity_type").value,
+    entities_differ: $("#profile_entities_differ").checked,
+    service_place: $("#profile_service_place").value.trim(),
+    service_place_phrase: $("#profile_service_place_phrase").value.trim(),
+    claim_transport: $("#profile_claim_transport").checked,
+    transport_destination: $("#profile_transport_destination").value.trim(),
+    km_one_way: $("#profile_km_one_way").value.trim(),
+    closing_city: $("#profile_closing_city").value.trim(),
+    source_text_template: $("#profile_source_text_template").value.trim(),
+    notes_template: $("#profile_notes_template").value.trim(),
+    change_reason: $("#profile_change_reason").value.trim(),
+  };
+}
+
+async function previewServiceProfileReference() {
+  const data = await requestJson("/api/reference/service-profiles/preview", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(collectServiceProfileReferencePayload())),
+  });
+  renderProfilePreview(data);
+  setStatus("ready", `Previewed guarded service profile ${data.key}.`);
+  showAlert("Profile diff previewed. Nothing was saved.", "recorded");
+}
+
+async function saveServiceProfileReference() {
+  const payload = collectServiceProfileReferencePayload();
+  const data = await requestJson("/api/reference/service-profiles", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(payload)),
+  });
+  renderProfilePreview(data);
+  setStatus("recorded", `Saved guarded service profile ${data.key}.`);
+  showAlert(`Saved guarded service profile ${data.key}.`, "recorded");
+  await loadReference();
+}
+
+async function previewProfileRollback(index) {
+  const data = await requestJson("/api/reference/service-profiles/rollback-preview", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty({
+      change_index: index,
+      reason: $("#profile_change_reason").value.trim(),
+    })),
+  });
+  renderProfilePreview(data);
+  setStatus("ready", `Previewed rollback for ${data.key}.`);
+  showAlert("Rollback previewed. Nothing was saved.", "recorded");
+}
+
+async function restoreProfileRollback(index) {
+  const data = await requestJson("/api/reference/service-profiles/rollback", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty({
+      change_index: index,
+      reason: $("#profile_change_reason").value.trim(),
+    })),
+  });
+  renderProfilePreview(data);
+  setStatus("recorded", `Restored previous profile for ${data.key}.`);
+  showAlert(`Restored previous profile for ${data.key}.`, "recorded");
+  await loadReference();
+}
+
+function fillDestinationReferenceForm(index) {
+  const item = state.reference?.known_destinations?.[index];
+  if (!item) return;
+  $("#destination_name").value = item.destination || item.name || item.city || "";
+  $("#destination_km").value = item.km_one_way ?? item.km ?? "";
+  $("#destination_examples").value = (item.institution_examples || []).join("\n");
+  $("#destination_notes").value = item.notes || "";
+}
+
+function fillCourtEmailReferenceForm(index) {
+  const item = state.reference?.court_emails?.[index];
+  if (!item) return;
+  $("#court_key").value = item.key || "";
+  $("#court_name").value = item.name || "";
+  $("#court_email").value = item.email || "";
+  $("#court_aliases").value = (item.payment_entity_aliases || []).join("\n");
+  $("#court_source").value = item.source || "";
+}
+
+function fillServiceProfileReferenceForm(key) {
+  const item = state.reference?.service_profiles?.[key];
+  if (!item) return;
+  const defaults = item.defaults || {};
+  const transport = defaults.transport || {};
+  $("#profile_key").value = key;
+  $("#profile_description").value = item.description || "";
+  $("#profile_service_date_source").value = defaults.service_date_source || "user_confirmed";
+  $("#profile_addressee").value = defaults.addressee || "";
+  $("#profile_payment_entity").value = defaults.payment_entity || "";
+  $("#profile_recipient_email").value = defaults.recipient_email || "";
+  $("#profile_court_email_key").value = defaults.court_email_key || "";
+  $("#profile_service_entity").value = defaults.service_entity || "";
+  $("#profile_service_entity_type").value = defaults.service_entity_type || "court";
+  $("#profile_entities_differ").checked = Boolean(defaults.entities_differ);
+  $("#profile_service_place").value = defaults.service_place || "";
+  $("#profile_service_place_phrase").value = defaults.service_place_phrase || "";
+  $("#profile_claim_transport").checked = defaults.claim_transport !== false;
+  $("#profile_transport_destination").value = transport.destination || "";
+  $("#profile_km_one_way").value = transport.km_one_way ?? "";
+  $("#profile_closing_city").value = defaults.closing_city || "";
+  $("#profile_source_text_template").value = item.source_text_template || "";
+  $("#profile_notes_template").value = item.notes_template || "";
+  $("#profile_change_reason").value = "";
+}
+
+function renderProfilePreview(data) {
+  const card = $("#profile-preview-card");
+  const text = $("#profile-preview-text");
+  if (!data) {
+    card.classList.add("hidden");
+    text.textContent = "";
+    return;
+  }
+  const preview = data.preview || data;
+  const change = data.profile_change || null;
+  const changeLines = change
+    ? [
+        `Profile change: ${change.action || ""}`,
+        `Reason: ${change.reason || ""}`,
+        ...(change.changes || []).map((item) => `${item.change}: ${item.path}\n  before: ${JSON.stringify(item.before)}\n  after: ${JSON.stringify(item.after)}`),
+        "",
+      ]
+    : [];
+  card.classList.remove("hidden");
+  text.textContent = [
+    ...changeLines,
+    preview.draft_text || preview.question_text || JSON.stringify(preview.sample_intake || preview, null, 2),
+  ].join("\n");
+}
+
+function collectProfilePayload() {
+  return {
+    profile: $("#profile").value,
+    case_number: $("#case_number").value.trim(),
+    service_date: $("#service_date").value,
+    photo_metadata_date: $("#photo_metadata_date").value,
+    service_period_label: $("#service_period_label").value.trim(),
+    service_start_time: $("#service_start_time").value.trim(),
+    service_end_time: $("#service_end_time").value.trim(),
+    payment_entity: $("#payment_entity").value.trim(),
+    recipient_email: $("#recipient_email").value.trim(),
+    service_place: $("#service_place").value.trim(),
+    km_one_way: $("#km_one_way").value.trim(),
+    source_text: $("#source_text").value.trim(),
+  };
+}
+
+function removeEmpty(value) {
+  if (Array.isArray(value)) {
+    return value.map(removeEmpty).filter((item) => item !== undefined);
+  }
+  if (value && typeof value === "object") {
+    const output = {};
+    Object.entries(value).forEach(([key, entry]) => {
+      const cleaned = removeEmpty(entry);
+      if (cleaned !== undefined) output[key] = cleaned;
+    });
+    return Object.keys(output).length ? output : undefined;
+  }
+  if (value === "" || value === null || value === undefined) return undefined;
+  return value;
+}
+
+async function buildIntakeFromProfile() {
+  const payload = removeEmpty(collectProfilePayload());
+  const data = await requestJson("/api/intake/from-profile", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  state.currentIntake = data.intake;
+  applyReview(data.review);
+}
+
+async function reviewIntake() {
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+    return;
+  }
+  mergeFormIntoCurrentIntake();
+  const data = await requestJson("/api/review", {
+    method: "POST",
+    body: JSON.stringify({ intake: state.currentIntake }),
+  });
+  applyReview(data);
+}
+
+async function activeCheck() {
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+  }
+  mergeFormIntoCurrentIntake();
+  const data = await requestJson("/api/drafts/active-check", {
+    method: "POST",
+    body: JSON.stringify({ intake: state.currentIntake }),
+  });
+  state.draftLifecycle = data;
+  renderDraftLifecycle(data);
+  return data;
+}
+
+function applyReview(data) {
+  setStatus(data.status, data.message);
+  showQuestions(data);
+  const alertNeeded = ["duplicate", "active_draft", "set_aside", "error"].includes(data.status);
+  showAlert(alertNeeded ? data.message : "", data.status === "error" ? "error" : "blocked");
+  updateHomeReviewCard(data);
+  $("#draft-text").textContent = data.draft_text || data.question_text || "The Portuguese draft will appear here before the PDF is created.";
+  $("#recipient-summary").textContent = data.recipient ? `To: ${data.recipient}` : "Recipient appears here after review.";
+  if (data.active_gmail_drafts || data.duplicate) {
+    state.draftLifecycle = {
+      status: ["duplicate", "active_draft"].includes(data.status) ? "blocked" : data.status,
+      message: data.message,
+      active_gmail_drafts: data.active_gmail_drafts || [],
+      duplicate: data.duplicate || null,
+      duplicate_records: data.duplicate ? [data.duplicate] : [],
+      replacement_allowed: data.status === "duplicate" && data.duplicate?.status === "drafted" || data.status === "active_draft",
+      send_allowed: false,
+    };
+    renderDraftLifecycle(state.draftLifecycle);
+  }
+
+  if (["ready", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
+    openReviewDrawer();
+  }
+}
+
+async function prepareIntake(options = {}) {
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+  }
+  mergeFormIntoCurrentIntake();
+  const requestPayload = { intakes: [state.currentIntake], render_previews: true };
+  if (options.correctionMode) {
+    requestPayload.correction_mode = true;
+    requestPayload.correction_reason = ($("#correction_reason").value || "").trim();
+    if (!requestPayload.correction_reason) {
+      throw new Error("Correction mode requires a reason before preparing a replacement draft.");
+    }
+  }
+  const data = await requestJson("/api/prepare", {
+    method: "POST",
+    body: JSON.stringify(requestPayload),
+  });
+  state.lastPrepared = data;
+  setStatus(data.status, "PDF and Gmail draft payload prepared. Review before using Gmail _create_draft.");
+  showAlert("", "");
+  renderPrepared(data);
+  openReviewDrawer();
+  await loadReference();
+}
+
+function renderPrepared(data) {
+  const first = data.items?.[0];
+  const previewPanel = $("#pdf-preview-panel");
+  const previewBox = $("#pdf-preview");
+  if (first?.png_preview_urls?.length) {
+    previewPanel.classList.remove("hidden");
+    previewBox.innerHTML = `<img class="pdf-preview-image" src="${escapeHtml(first.png_preview_urls[0])}" alt="Generated PDF preview">`;
+  } else if (first?.preview_warning) {
+    previewPanel.classList.remove("hidden");
+    previewBox.innerHTML = `<div class="result-card blocked">${escapeHtml(first.preview_warning)}</div>`;
+  } else {
+    previewPanel.classList.add("hidden");
+    previewBox.innerHTML = "";
+  }
+  $("#prepare-results").innerHTML = (data.items || []).map((item) => (
+    `<div class="result-card prepared">
+      <div class="result-header">
+        <div>
+          <strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong>
+          <p>Prepared for Gmail _create_draft. No send action exists here.</p>
+        </div>
+        <span class="status-chip ready">prepared</span>
+      </div>
+      <div class="prepared-meta">
+        <div>Recipient: <code>${escapeHtml(item.recipient)}</code></div>
+        <div>PDF: <code>${escapeHtml(item.pdf)}</code></div>
+        <div>Payload: <code>${escapeHtml(item.draft_payload)}</code></div>
+        <div>Attachment count: ${escapeHtml(item.attachment_count)}</div>
+      </div>
+      <strong>Exact gmail_create_draft_args</strong>
+      <pre class="draft-args">${escapeHtml(JSON.stringify(item.gmail_create_draft_args || {}, null, 2))}</pre>
+    </div>`
+  )).join("");
+  if (first?.draft_payload) {
+    $("#record_payload").value = first.draft_payload;
+  }
+  if (data.correction_mode) {
+    renderDraftLifecycle({
+      status: "blocked",
+      message: `Replacement payload prepared. Reason: ${data.correction_reason || "not provided"}`,
+      active_gmail_drafts: first?.active_gmail_drafts || first?.draft_lifecycle?.active_gmail_drafts || [],
+      duplicate_records: first?.draft_lifecycle?.duplicate_records || [],
+      replacement_allowed: true,
+      send_allowed: false,
+    });
+  }
+}
+
+async function recordDraft() {
+  const supersedes = $("#record_supersedes").value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const payload = {
+    payload: $("#record_payload").value.trim(),
+    draft_id: $("#record_draft_id").value.trim(),
+    message_id: $("#record_message_id").value.trim(),
+    thread_id: $("#record_thread_id").value.trim(),
+    status: $("#record_status").value,
+    sent_date: $("#record_sent_date").value,
+    notes: $("#record_notes").value.trim(),
+    supersedes,
+  };
+  const data = await requestJson("/api/drafts/status", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(payload)),
+  });
+  setStatus(data.status, `Recorded Gmail draft ${data.draft_id}.`);
+  const superseded = data.superseded_drafts?.length ? ` Superseded: ${data.superseded_drafts.join(", ")}.` : "";
+  showAlert(`Draft recorded locally. The duplicate index now protects this case/date.${superseded}`, "recorded");
+  await loadReference();
+}
+
+function resetReview() {
+  state.currentIntake = null;
+  state.lastPrepared = null;
+  state.draftLifecycle = null;
+  $("#intake-form").reset();
+  $("#notification-upload-form").reset();
+  $("#photo-upload-form").reset();
+  $("#google-photos-upload-form").reset();
+  $("#prepare-results").innerHTML = "";
+  renderSourceEvidence(null);
+  renderAiRecovery(null);
+  renderDraftLifecycle(null);
+  $("#correction_reason").value = "";
+  $("#record_supersedes").value = "";
+  $("#record_sent_date").value = "";
+  $("#record_notes").value = "";
+  $("#pdf-preview-panel").classList.add("hidden");
+  $("#pdf-preview").innerHTML = "";
+  $("#record-form").reset();
+  $("#draft-text").textContent = "The Portuguese draft will appear here before the PDF is created.";
+  $("#recipient-summary").textContent = "Recipient appears here after review.";
+  $("#interpretation-review-home-result").className = "result-card empty-state";
+  $("#interpretation-review-home-result").textContent = "Upload a notification PDF or screenshot to recover the case details, or start a blank request.";
+  showAlert("", "");
+  showQuestions({});
+  setStatus("idle", "Upload a notification or start a blank request to begin.");
+  closeReviewDrawer();
+}
+
+function bindNavigation() {
+  document.querySelectorAll(".nav-button[data-panel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll(".nav-button[data-panel]").forEach((item) => item.classList.remove("active", "is-active"));
+      button.classList.add("active");
+      ["new-job", "references", "history"].forEach((panel) => {
+        $(`#panel-${panel}`).classList.toggle("hidden", panel !== button.dataset.panel);
+      });
+    });
+  });
+}
+
+function bindActions() {
+  $("#refresh-reference").addEventListener("click", loadReference);
+  $("#run-public-readiness").addEventListener("click", async () => {
+    try {
+      await runPublicReadiness();
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#build-public-candidate").addEventListener("click", async () => {
+    try {
+      await buildPublicCandidate();
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#service-profile-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await saveServiceProfileReference();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#preview-profile-change").addEventListener("click", async () => {
+    try {
+      await previewServiceProfileReference();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#profile-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-edit-profile]");
+    if (!button) return;
+    fillServiceProfileReferenceForm(button.dataset.editProfile);
+  });
+  $("#profile-change-list").addEventListener("click", async (event) => {
+    const previewButton = event.target.closest("[data-preview-profile-rollback]");
+    const restoreButton = event.target.closest("[data-restore-profile-rollback]");
+    if (!previewButton && !restoreButton) return;
+    try {
+      const index = Number((previewButton || restoreButton).dataset.previewProfileRollback ?? (previewButton || restoreButton).dataset.restoreProfileRollback);
+      if (previewButton) {
+        await previewProfileRollback(index);
+      } else {
+        await restoreProfileRollback(index);
+      }
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#destination-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await saveDestinationReference();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#court-email-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await saveCourtEmailReference();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#destination-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-edit-destination]");
+    if (!button) return;
+    fillDestinationReferenceForm(Number(button.dataset.editDestination));
+  });
+  $("#court-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-edit-court]");
+    if (!button) return;
+    fillCourtEmailReferenceForm(Number(button.dataset.editCourt));
+  });
+  $("#notification-upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await uploadSource("notification_pdf");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#photo-upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await uploadSource("photo");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#google-photos-upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await uploadSource("google_photos");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#build-profile").addEventListener("click", async () => {
+    try {
+      await buildIntakeFromProfile();
+    } catch (error) {
+      setStatus("error", error.message);
+      showAlert(error.message, "error");
+      updateHomeReviewCard({ status: "error", message: error.message });
+    }
+  });
+  $("#review-intake").addEventListener("click", async () => {
+    try {
+      await reviewIntake();
+    } catch (error) {
+      setStatus("error", error.message);
+      showAlert(error.message, "error");
+      updateHomeReviewCard({ status: "error", message: error.message });
+    }
+  });
+  $("#prepare-intake").addEventListener("click", async () => {
+    try {
+      await prepareIntake();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#drawer-prepare-intake").addEventListener("click", async () => {
+    try {
+      await prepareIntake();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#check-active-drafts").addEventListener("click", async () => {
+    try {
+      const data = await activeCheck();
+      setStatus(data.status, data.message);
+      if (data.status === "blocked") {
+        showAlert(data.message, "blocked");
+      }
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#prepare-replacement-draft").addEventListener("click", async () => {
+    try {
+      await prepareIntake({ correctionMode: true });
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#copy-draft-args").addEventListener("click", async () => {
+    try {
+      const first = state.lastPrepared?.items?.[0];
+      await copyText(JSON.stringify(first?.gmail_create_draft_args || {}, null, 2));
+      showAlert("Copied Gmail draft args JSON.", "recorded");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#copy-record-values").addEventListener("click", async () => {
+    try {
+      const recordValues = {
+        payload: $("#record_payload").value.trim(),
+        draft_id: $("#record_draft_id").value.trim(),
+        message_id: $("#record_message_id").value.trim(),
+        thread_id: $("#record_thread_id").value.trim(),
+        status: $("#record_status").value,
+        sent_date: $("#record_sent_date").value,
+        supersedes: $("#record_supersedes").value.split(",").map((item) => item.trim()).filter(Boolean),
+        notes: $("#record_notes").value.trim(),
+      };
+      await copyText(JSON.stringify(removeEmpty(recordValues), null, 2));
+      showAlert("Copied draft lifecycle record values.", "recorded");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#record-draft").addEventListener("click", async () => {
+    try {
+      await recordDraft();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#interpretation-clear-review").addEventListener("click", resetReview);
+  $("#interpretation-close-review").addEventListener("click", closeReviewDrawer);
+  $("#interpretation-close-review-footer").addEventListener("click", closeReviewDrawer);
+  $("#interpretation-review-drawer-backdrop").addEventListener("click", (event) => {
+    if (event.target.id === "interpretation-review-drawer-backdrop") {
+      closeReviewDrawer();
+    }
+  });
+}
+
+bindNavigation();
+bindActions();
+loadReference().catch((error) => {
+  setStatus("error", error.message);
+  showAlert(error.message, "error");
+  updateHomeReviewCard({ status: "error", message: error.message });
+});
+loadAiStatus().catch(() => {});
+loadGooglePhotosStatus().catch(() => {});

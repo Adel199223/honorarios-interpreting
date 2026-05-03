@@ -1,0 +1,279 @@
+# Honorários Interpreting PDF Project
+
+This project helps create Portuguese `requerimento de honorários` PDFs for in-person interpreting services.
+
+It is built from the confirmed interpreting honorários PDFs sent between 2026-02-02 and 2026-05-02. It deliberately excludes translation/word-count requests.
+
+## Quick Start
+
+### Local Browser App
+
+This project now includes a local-first browser app inspired by the LegalPDF Translate interpretation workflow, while keeping this project's PDF-only generator, duplicate checks, and Gmail draft safety rules as the source of truth.
+
+Install the dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Start the app:
+
+```powershell
+python -m honorarios_app.web --host 127.0.0.1 --port 8765
+```
+
+Then open:
+
+`http://127.0.0.1:8765`
+
+The app supports the main workflow:
+
+- upload a local notification PDF or photo/screenshot
+- import a selected/downloaded Google Photos image through the local photo path, with pasted visible filename/date metadata
+- use OpenAI OCR/autofill when `OPENAI_API_KEY` or ignored `config/ai.local.json` is configured
+- create an intake from a known service profile
+- review the Portuguese draft text before generating the PDF
+- show numbered missing-information questions
+- block translation/word-count requests
+- warn about duplicate `sent` or `drafted` case/date records
+- generate the PDF and Gmail `_create_draft` payload
+- record returned Gmail draft IDs so duplicates are protected immediately
+- handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
+- maintain known destinations/kilometers and court email aliases from the References screen
+- maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
+- run a local Public GitHub Readiness privacy gate before any public publishing attempt
+
+Service profile edits are guarded because they affect legal wording, payment entities, and recipient logic. The browser app validates the profile, checks recipient consistency against the court email directory, shows a sample draft preview, and records a local profile-change log after saving. Use the preview button when you want to inspect the diff without writing anything. Profile rollbacks must also be previewed first; they are blocked if the current profile no longer matches the selected change log entry.
+
+The browser app does not send email. It prepares connector-ready Gmail draft arguments only.
+
+OpenAI recovery is evidence-only. It may extract visible text, case/date/place clues, court email, and translation indicators from photos or scanned documents, but the existing duplicate checks, date-conflict questions, profile defaults, PDF generator, and Gmail draft safety rules remain authoritative. For Google Photos-style screenshots or selected-photo imports, compact filenames such as `20260415_205459.jpg` are treated as visible photo metadata and surfaced as `photo_metadata_date`; crop/partial-image warnings stay visible in Source Evidence. For weak/scanned notification PDFs, the app renders the first pages to local PNG evidence with `pdftoppm` when available and gives those images to OpenAI recovery. The app exposes `/api/ai/status` to show whether OpenAI OCR is ready without revealing the API key. Store optional local settings in ignored `config/ai.local.json`:
+
+```json
+{
+  "openai_api_key": "sk-...",
+  "model": "gpt-4o-mini"
+}
+```
+
+The Google Photos panel currently provides a safe selected-photo bridge: choose or download one Google Photos image locally, paste the visible Google Photos metadata/filename/date into the metadata box, and recover through the same photo pipeline. `/api/google-photos/status` reports whether future OAuth Picker credentials are configured without showing any client secret, token, raw picker URL, media ID, or photo URL. Full OAuth Picker import is intentionally still deferred until private credential storage and sanitized publishing are ready.
+
+### CLI Workflow
+
+1. For a familiar service pattern, create the intake from a reusable profile:
+
+   ```powershell
+   python scripts/create_intake.py --profile pj_gnr_ferreira --case-number 86/26.8GAFAL --service-date 2026-02-15
+   ```
+
+   Current profiles live in `data/service-profiles.json`: `pj_gnr_ferreira`, `pj_medico_legal_beja`, `pj_gnr_beja`, `beja_trabalho`, `gnr_beringel_beja_mp`, `gnr_ferreira_falentejo`, `gnr_serpa_judicial`, `gnr_cuba`, and `court_mp_generic`.
+
+   For a new or unusual pattern, put the details from the photo/document into an intake JSON file manually. Start from:
+
+   `examples/intake.example.json`
+
+2. Prepare the PDF and Gmail draft payload in one checked batch:
+
+   ```powershell
+   python scripts/prepare_honorarios.py examples/intake.example.json --allow-duplicate --render-previews
+   ```
+
+3. Review the printed summary before creating any Gmail draft. It shows the case number, effective service date, payment entity, physical service entity, recipient email, PDF path, draft payload path, and `gmail_create_draft_args`.
+
+4. The PDF is written to `output/pdf/`, the local draft payload to `output/email-drafts/`, and a review manifest to `output/manifests/`.
+
+The older single-purpose commands still exist for debugging:
+
+```powershell
+python scripts/check_duplicate.py examples/intake.example.json
+python scripts/generate_pdf.py examples/intake.example.json --allow-duplicate
+python scripts/build_email_draft.py examples/intake.example.json --pdf output/pdf/398-24.5T8BJA_2026-02-05.pdf
+```
+
+`service_date_source` should be one of: `document_text`, `photo_metadata`, `document_text_and_photo_metadata`, `user_confirmed`, `user_confirmed_exception`, `document_text_user_confirmed`, or `photo_metadata_user_confirmed`.
+
+Profile selection shortcuts:
+
+- `pj_gnr_ferreira`: Polícia Judiciária using the Posto da GNR de Ferreira do Alentejo, paid by the Ferreira court.
+- `pj_gnr_beja`: Polícia Judiciária using the Posto da GNR de Beja, paid by Ministério Público de Beja.
+- `pj_medico_legal_beja`: Polícia Judiciária victim accompaniment to Gabinete Médico-Legal de Beja / Hospital José Joaquim Fernandes - Beja.
+- `beja_trabalho`: Tribunal do Trabalho de Beja / Juízo do Trabalho de Beja only.
+- `gnr_beringel_beja_mp`: GNR service in Beringel, paid by Ministério Público de Beja.
+- `gnr_ferreira_falentejo`: GNR service at the Posto da GNR de Ferreira do Alentejo without PJ context.
+- `gnr_serpa_judicial`: GNR service at the Posto Territorial de Serpa, paid by the Serpa court.
+- `gnr_cuba`: GNR Cuba, with payment entity supplied by the source/user.
+- `court_mp_generic`: fallback for court/MP services where payment and service entity are the same.
+
+## What This Project Needs From A New Photo
+
+The minimum information needed for an interpreting honorarios PDF is:
+
+- Process number (`Numero de processo`)
+- Service date, meaning the date the interpreting service happened
+- Time period, when the same case has more than one service on the same date
+- Photo metadata date, when the visible image details show the service/capture date and the paper itself does not clearly state the service date
+- Institution/place attended in person, such as a tribunal, GNR post, PSP station, or court service
+- Addressee/court or Ministerio Publico destination
+- Payment entity, meaning the court/Ministério Público/entity from which payment is requested
+- Service entity, meaning where the interpreting service actually happened
+- Whether transport expenses should be claimed
+- If transport is claimed: origin, destination, and one-way kilometers
+
+If a photo contains only a document date or signature date, that is not enough for the service date.
+
+If the phone/gallery metadata shown beside the image gives the relevant service/capture date, use that as `photo_metadata_date` and treat it as the priority signal. Printed timestamps inside the legal paper, such as appointment or document timestamps, should not override the photo metadata unless you confirm the exception. If there is a conflict, ask a numbered question before generating anything.
+
+If the photo header shows a court or Ministério Público office and there is no separate GNR/PSP/police clue, the header usually counts as both payment entity and service place. If the service was done at GNR, PSP, police, or another non-court entity, the payment entity and service entity differ, so the PDF body must explicitly say where the service happened.
+
+For Polícia Judiciária sources, record the local host building and city used for the service. PJ often travels from elsewhere and uses a GNR building, hospital, or medical-legal office, so `Polícia Judiciária` alone is not enough as the service place. Use a physical place such as `Posto da GNR de Ferreira do Alentejo` or `Gabinete Médico-Legal de Beja, Hospital José Joaquim Fernandes - Beja`. Inspector names are optional; include them if visible and useful, but do not ask for them when missing.
+
+For similar photo batches, prepare all intake files together. The batch manifest makes mismatches easier to catch before Gmail draft creation:
+
+```powershell
+python scripts/prepare_honorarios.py examples/intake.gnr-cuba-photo-metadata-146.example.json examples/intake.gnr-cuba-photo-metadata-15.example.json --render-previews
+```
+
+When information is missing, questions must be numbered so you can answer compactly:
+
+```text
+1. What was the service date? (Use YYYY-MM-DD.)
+2. What was the destination? (A city name is enough.)
+```
+
+You can reply with short numbered answers:
+
+```text
+1. 2026-05-02
+2. Beja
+```
+
+## Translation Requests Are Set Aside
+
+Do not use this project for requests that mention:
+
+- `tradutor`
+- `traducao`
+- `documento traduzido`
+- `numero de palavras`
+- word counts such as `contém 1500 palavras`
+
+Those are translation honorarios, not in-person interpreting honorarios.
+
+## Duplicate Check
+
+Before creating a new PDF, check whether the same case number and service date already exist:
+
+```powershell
+python scripts/check_duplicate.py examples/intake.example.json
+```
+
+The duplicate list lives in:
+
+`data/duplicate-index.json`
+
+This file is the single duplicate-warning source for both sent and drafted honorários. Records with `status: sent` or `status: drafted` block future generation. Older records without a `status` are treated as already sent. Superseded, trashed, and not-found draft records remain auditable but do not block.
+
+If a match is found, stop and treat the new paper as most likely a duplicate until the user confirms otherwise. For repeated same-day work, the check also uses `service_period_label`: exact same case/date/period blocks, while different periods such as morning and afternoon can coexist.
+
+The PDF generator also checks this by default. Use `--allow-duplicate` only when intentionally regenerating an existing example or when the user has confirmed the match is not a problem.
+
+## Gmail Drafts Only
+
+After a PDF is ready, the project prepares a Gmail draft payload. It does not send email.
+
+- If the source document/image contains a court email address, use that recipient.
+- If no court email is present, use `court@example.test` only when it is consistent with the payment entity; otherwise use the matching known profile/key or ask before drafting.
+- The draft recipient is the payment entity/court email, not necessarily the place where the service physically happened.
+- Draft payloads include case number, service date, payment entity, service entity, attachment filename, and a PDF hash.
+- Draft payloads also include `gmail_create_draft_args`, which can be passed directly to Gmail `_create_draft`. Its `attachment_files` value is always an array, even for a single PDF.
+- Subject is always `Requerimento de honorários`.
+- Body is stored in `config/email.json`.
+- If supporting proof such as a `declaração` should be attached, add it to `additional_attachment_files` in the intake. If the email must mention it, set `email_body` for that intake. Pass `attachment_files` to `_create_draft` as an array of absolute local file paths.
+- When the user wants several source files bundled together, create a combined packet PDF and attach that PDF.
+- Future assistant sessions must use Gmail `_create_draft` only and must not use send tools unless you explicitly ask after review.
+
+After `_create_draft` returns, record the Gmail draft IDs in:
+
+`data/gmail-draft-log.json`
+
+Recording a draft also writes a `status: drafted` duplicate record to `data/duplicate-index.json` immediately, so future requests warn before you accidentally ask for the same case/date again. Do not wait for the email to be sent before adding duplicate protection.
+
+Use the short payload-based form whenever possible:
+
+```powershell
+python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
+```
+
+The older explicit form still works:
+
+```powershell
+python scripts/record_gmail_draft.py --case-number <case> --service-date <YYYY-MM-DD> --recipient <email> --pdf <pdf> --draft-payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
+```
+
+If a draft needs correction, create a new corrected draft first, then mark the old record as superseded/trashed in the log and only then move the old Gmail message to Trash. Use `--allow-existing-draft` with `scripts/prepare_honorarios.py` only when you are intentionally correcting/replacing a logged active draft. Never send either draft automatically.
+
+When a draft is manually sent later, update the matching duplicate-index record from `status: drafted` to `status: sent` and add `sent_date`:
+
+```powershell
+python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --status sent --sent-date <YYYY-MM-DD>
+```
+
+For packet emails containing multiple honorários requests, store one duplicate-index record per underlying request, not just one record for the packet attachment.
+
+## Stored Defaults
+
+Reusable personal and payment details live in:
+
+`config/profile.json`
+
+Keep that file local. It contains payment details that should not be shared publicly.
+
+For future public GitHub publishing, keep real runtime files local and ignored: `config/profile.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, `data/profile-change-log.json`, `data/precedents.json`, `output/`, and `tmp/`. Publish only sanitized seed examples and synthetic tests.
+
+Run the executable privacy/readiness gate before creating a public repository:
+
+```powershell
+python scripts/public_release_gate.py --json
+```
+
+The same check is available in the browser app under References -> Public GitHub Readiness. A blocked result is expected in this working folder because it contains real local profile/payment data, generated artifacts, draft logs, and case history. Publish only from a separate sanitized candidate after the gate passes.
+
+To build that separate sanitized candidate, use:
+
+```powershell
+python scripts/build_public_candidate.py --target output/public-candidate --json
+```
+
+The browser app exposes the same step under References -> Public GitHub Readiness -> Build sanitized candidate. The generated candidate uses synthetic profile, email, court, destination, service-profile, and intake examples, then runs the same privacy gate against the candidate tree. Review that candidate before initializing or pushing a public GitHub repository.
+
+## Improving The Project
+
+Each time a new document reveals a better wording pattern, update:
+
+- `docs/template-patterns.md`
+- `docs/question-rules.md`
+- `data/known-destinations.json`
+- `data/precedents.json`
+- `data/duplicate-index.json`
+- `data/court-emails.json`
+
+Then add or update a sample intake file and run the tests.
+
+For simple kilometer/destination updates, recurring court email aliases, or guarded service-profile defaults, you can also use the browser app's References screen. It validates `km_one_way`, email format, aliases, service date sources, service entity types, and recipient consistency; it writes only the reference JSON/change log and does not create or send Gmail messages.
+
+## Verification
+
+Run:
+
+```powershell
+python scripts/generate_pdf.py examples/intake.example.json --allow-duplicate
+python scripts/build_email_draft.py examples/intake.example.json --pdf output/pdf/398-24.5T8BJA_2026-02-05.pdf
+python scripts/prepare_honorarios.py examples/intake.gnr-cuba-photo-metadata-15.example.json
+python -m unittest discover tests
+```
+
+For visual checks, render the generated PDF:
+
+```powershell
+pdftoppm -png output/pdf/398-24.5T8BJA_2026-02-05.pdf tmp/pdfs/rendered
+```

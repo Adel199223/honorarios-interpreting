@@ -1,0 +1,12 @@
+[
+  {
+    "key": "example-court",
+    "name": "Example Court",
+    "email": "court@example.test",
+    "payment_entity_aliases": [
+      "Example Court",
+      "Example Ministério Público"
+    ],
+    "source": "Synthetic public fixture."
+  }
+]

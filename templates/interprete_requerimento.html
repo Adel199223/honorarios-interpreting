@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <title>Requerimento de Honorários</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 28mm 24mm 24mm 24mm;
+    }
+    body {
+      color: #111111;
+      font-family: "Times New Roman", Times, serif;
+      font-size: 12pt;
+      line-height: 1.45;
+    }
+    .process {
+      margin-bottom: 28px;
+    }
+    .addressee {
+      margin-bottom: 28px;
+      white-space: pre-line;
+    }
+    .identity {
+      margin-bottom: 26px;
+    }
+    .body {
+      margin-bottom: 28px;
+      text-align: justify;
+    }
+    .closing {
+      margin-top: 42px;
+    }
+    .signature {
+      margin-top: 34px;
+    }
+  </style>
+</head>
+<body>
+  <p class="process"><strong>Número de processo:</strong> {{ case_number }}</p>
+
+  <div class="addressee">{{ addressee }}</div>
+
+  <div class="identity">
+    <p><strong>Nome:</strong> {{ applicant_name }}</p>
+    <p><strong>Morada:</strong> {{ address }}</p>
+  </div>
+
+  <div class="body">
+    <p>{{ service_paragraph }}</p>
+    {{ transport_paragraph }}
+    <p>{{ vat_irs_phrase }}</p>
+    <p>{{ payment_phrase }} {{ iban }}</p>
+  </div>
+
+  <div class="closing">
+    <p>{{ closing_phrase }}</p>
+    <p>{{ closing_city }}, {{ closing_date_long }}</p>
+  </div>
+
+  <div class="signature">
+    <p>{{ signature_label }}</p>
+    <p>{{ signature_name }}</p>
+  </div>
+</body>
+</html>

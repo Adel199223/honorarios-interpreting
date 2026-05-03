@@ -1,0 +1,11 @@
+{
+  "default_to": "court@example.test",
+  "subject": "Requerimento de honorários",
+  "body": "Bom dia,\n\nVenho por este meio requerer o pagamento dos honorários devidos.\n\nPoderão encontrar o requerimento em anexo.\n\nMelhores cumprimentos,\n\nExample Interpreter",
+  "draft_only": true,
+  "allowed_gmail_tool": "_create_draft",
+  "forbidden_gmail_tools": [
+    "_send_email",
+    "_send_draft"
+  ]
+}

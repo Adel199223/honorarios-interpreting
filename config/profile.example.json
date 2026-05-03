@@ -1,0 +1,12 @@
+{
+  "applicant_name": "Example Interpreter",
+  "address": "Example Street 1, 1000-000 Example City",
+  "default_origin": "Example City",
+  "iban": "EXAMPLE_IBAN",
+  "vat_irs_phrase": "Este serviço inclui a taxa de IVA de 23% e não está sujeito a retenção de IRS.",
+  "payment_phrase": "O pagamento deverá ser efetuado para o seguinte IBAN:",
+  "default_closing_city": "Example City",
+  "default_closing_phrase": "Pede deferimento,",
+  "signature_label": "O Requerente,",
+  "signature_name": "Example Interpreter"
+}

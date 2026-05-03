@@ -1,0 +1,27 @@
+{
+  "example_interpreting": {
+    "description": "Synthetic in-person interpreting service profile.",
+    "defaults": {
+      "service_date_source": "user_confirmed",
+      "addressee": "Exmo. Senhor Procurador da República\nExample Court",
+      "payment_entity": "Example Court",
+      "service_entity": "Example Police / Example Police Station",
+      "service_entity_type": "police",
+      "entities_differ": true,
+      "service_place": "Example Police Station",
+      "service_place_phrase": "em diligência realizada no Example Police Station",
+      "claim_transport": true,
+      "transport": {
+        "origin": "Example City",
+        "destination": "Example City",
+        "km_one_way": 12,
+        "round_trip_phrase": "ida_volta"
+      },
+      "closing_city": "Example City",
+      "recipient_email": "court@example.test",
+      "source_filename": "synthetic-source"
+    },
+    "source_text_template": "Synthetic interpreting service on {service_date}, case {case_number}.",
+    "notes_template": "Synthetic public profile."
+  }
+}

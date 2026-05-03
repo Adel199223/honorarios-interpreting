@@ -1,0 +1,29 @@
+# Public Release Checklist
+
+Create a public GitHub repo only after this checklist is complete.
+
+## Privacy Gate
+
+- Build a sanitized publish candidate first:
+  `python scripts/build_public_candidate.py --target output/public-candidate --json`
+- Run `python scripts/public_release_gate.py --json` on the exact candidate tree and require `public_ready: true`.
+- In the browser app, use References -> Public GitHub Readiness to run the current-workspace gate and Build sanitized candidate to create a candidate tree.
+- Remove or ignore real `config/profile.json`.
+- Remove or ignore real `config/email.json`.
+- Remove or ignore `data/gmail-draft-log.json`, `data/duplicate-index.json`, and `data/precedents.json`.
+- Remove or ignore all `output/` and `tmp/` artifacts.
+- Remove root-level browser QA screenshots before publishing.
+- Replace real examples with synthetic case numbers, fake Gmail IDs, fake PDFs, and fake profile/payment details.
+- Confirm the scan has no IBANs, personal names/addresses, real `@tribunais.org.pt` emails, OpenAI keys, Google OAuth secrets, Gmail draft IDs, or real case history.
+
+## Repository Gate
+
+- Add a license before public publishing.
+- Keep `.env` and local overlays ignored.
+- Confirm `python -m unittest discover tests` passes from a clean clone.
+- Confirm the browser app starts with `python -m honorarios_app.web --host 127.0.0.1 --port 8765`.
+- Confirm CI uses only synthetic fixtures.
+
+## Publishing Rule
+
+Publish from the clean sanitized candidate repo, not directly from the current working directory that contains real operational data. Keep the current workspace private even when the candidate passes.
