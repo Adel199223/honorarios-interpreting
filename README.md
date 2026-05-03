@@ -34,6 +34,7 @@ The app supports the main workflow:
 - use OpenAI OCR/autofill when `OPENAI_API_KEY` or ignored `config/ai.local.json` is configured
 - create an intake from a known service profile
 - review the Portuguese draft text before generating the PDF
+- queue multiple reviewed requests and prepare a batch package through the same all-or-nothing preflight
 - show numbered missing-information questions
 - block translation/word-count requests
 - warn about duplicate `sent` or `drafted` case/date records
@@ -141,7 +142,7 @@ If the photo header shows a court or Ministério Público office and there is no
 
 For Polícia Judiciária sources, record the local host building and city used for the service. PJ often travels from elsewhere and uses a GNR building, hospital, or medical-legal office, so `Polícia Judiciária` alone is not enough as the service place. Use a physical place such as `Posto da GNR de Ferreira do Alentejo` or `Gabinete Médico-Legal de Beja, Hospital José Joaquim Fernandes - Beja`. Inspector names are optional; include them if visible and useful, but do not ask for them when missing.
 
-For similar photo batches, prepare all intake files together. The batch manifest makes mismatches easier to catch before Gmail draft creation:
+For similar photo batches, either use the browser app's Batch Queue or prepare all intake files together from the CLI. The batch preflight validates every request before generating anything, and the manifest makes mismatches easier to catch before Gmail draft creation:
 
 ```powershell
 python scripts/prepare_honorarios.py examples/intake.gnr-cuba-photo-metadata-146.example.json examples/intake.gnr-cuba-photo-metadata-15.example.json --render-previews

@@ -24,6 +24,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Exact `gmail_create_draft_args` display in the review drawer.
 - Draft lifecycle panel with active-check, correction mode, copyable draft handoff args, status recording, and replacement/superseded draft tracking.
 - Draft recording endpoints that update the draft log and duplicate index without adding any Gmail send/trash action.
+- Browser Batch Queue for repeated same-profile or same-case services, using the existing all-or-nothing multi-intake `/api/prepare` contract.
 - Editable reference screens for known destinations/kilometers and court email directory entries, with validation and no send-capable behavior.
 - Guarded service-profile editor with recipient validation, service/date/entity checks, and a sample Portuguese draft preview before saving.
 - Profile diff preview and local profile-change history so service profile edits are auditable without publishing private runtime logs.
@@ -58,8 +59,8 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Add batch UI flows for repeated same-case/same-profile services so morning/afternoon or multi-date runs can be reviewed as one package.
-2. Add deeper browser-flow tests for the Google Photos Picker happy path using mocked local endpoints.
+1. Add deeper browser-flow tests for the Google Photos Picker and Batch Queue happy paths using mocked local endpoints.
+2. Add packet-building controls for cases where the batch should be sent as one combined PDF attachment.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

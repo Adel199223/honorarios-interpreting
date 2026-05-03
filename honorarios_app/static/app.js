@@ -1,6 +1,7 @@
 const state = {
   reference: null,
   currentIntake: null,
+  batchIntakes: [],
   lastPrepared: null,
   aiStatus: null,
   googlePhotosStatus: null,
@@ -145,6 +146,53 @@ function showQuestions(data) {
   box.innerHTML = data.questions.map((question) => (
     `<div><strong>${question.number}.</strong> ${escapeHtml(question.question)} <span>${escapeHtml(question.answer_hint)}</span></div>`
   )).join("");
+}
+
+function cloneIntake(intake) {
+  return JSON.parse(JSON.stringify(intake || {}));
+}
+
+function batchIntakeKey(intake) {
+  const period = String(intake?.service_period_label || "").trim().toLowerCase();
+  return [
+    String(intake?.case_number || "").trim().toUpperCase(),
+    String(intake?.service_date || "").trim(),
+    period,
+  ].join("|");
+}
+
+function renderBatchQueue() {
+  const list = $("#batch-queue-list");
+  const chip = $("#batch-count-chip");
+  if (!list || !chip) return;
+  const count = state.batchIntakes.length;
+  chip.textContent = `${count} queued`;
+  chip.className = `status-chip ${count ? "ready" : "info"}`;
+  if (!count) {
+    list.className = "result-card empty-state";
+    list.textContent = "No requests queued yet.";
+    return;
+  }
+  list.className = "result-card batch-list";
+  list.innerHTML = state.batchIntakes.map((intake, index) => {
+    const period = intake.service_period_label
+      ? `${intake.service_period_label}${intake.service_start_time || intake.service_end_time ? ` ${intake.service_start_time || ""}-${intake.service_end_time || ""}` : ""}`
+      : "full service";
+    return `
+      <div class="batch-item">
+        <div>
+          <strong>${escapeHtml(intake.case_number || "case pending")}</strong>
+          <div class="batch-item-meta">
+            <span>${escapeHtml(intake.service_date || "date pending")}</span>
+            <span>${escapeHtml(period)}</span>
+            <span>${escapeHtml(intake.payment_entity || "payment entity pending")}</span>
+            <code>${escapeHtml(intake.recipient_email || "recipient pending")}</code>
+          </div>
+        </div>
+        <button type="button" class="mini-button" data-remove-batch-index="${index}">Remove</button>
+      </div>
+    `;
+  }).join("");
 }
 
 function renderDraftLifecycle(data) {
@@ -843,6 +891,48 @@ async function activeCheck() {
   return data;
 }
 
+async function addCurrentIntakeToBatch() {
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+  }
+  mergeFormIntoCurrentIntake();
+  const review = await requestJson("/api/review", {
+    method: "POST",
+    body: JSON.stringify({ intake: state.currentIntake }),
+  });
+  applyReview(review);
+  if (review.status !== "ready") {
+    throw new Error("Only a ready reviewed request can be added to the batch queue.");
+  }
+  const intake = cloneIntake(state.currentIntake);
+  const key = batchIntakeKey(intake);
+  const existingIndex = state.batchIntakes.findIndex((queued) => batchIntakeKey(queued) === key);
+  if (existingIndex >= 0) {
+    state.batchIntakes[existingIndex] = intake;
+  } else {
+    state.batchIntakes.push(intake);
+  }
+  renderBatchQueue();
+  setStatus("ready", `${intake.case_number || "Request"} added to the batch queue.`);
+  showAlert("Batch queue updated. Prepare the package when all related requests are queued.", "recorded");
+}
+
+async function prepareBatchIntakes() {
+  if (!state.batchIntakes.length) {
+    throw new Error("Add at least one ready request to the batch queue first.");
+  }
+  const data = await requestJson("/api/prepare", {
+    method: "POST",
+    body: JSON.stringify({ intakes: state.batchIntakes, render_previews: true }),
+  });
+  state.lastPrepared = data;
+  setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared as one checked package.`);
+  showAlert("", "");
+  renderPrepared(data);
+  openReviewDrawer();
+  await loadReference();
+}
+
 function applyReview(data) {
   setStatus(data.status, data.message);
   showQuestions(data);
@@ -895,12 +985,21 @@ async function prepareIntake(options = {}) {
 }
 
 function renderPrepared(data) {
-  const first = data.items?.[0];
+  const items = data.items || [];
+  const first = items[0];
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
-  if (first?.png_preview_urls?.length) {
+  const previewImages = items.flatMap((item) => (
+    (item.png_preview_urls || []).slice(0, 1).map((url) => ({ url, item }))
+  ));
+  if (previewImages.length) {
     previewPanel.classList.remove("hidden");
-    previewBox.innerHTML = `<img class="pdf-preview-image" src="${escapeHtml(first.png_preview_urls[0])}" alt="Generated PDF preview">`;
+    previewBox.innerHTML = previewImages.map(({ url, item }) => (
+      `<figure class="pdf-preview-figure">
+        <img class="pdf-preview-image" src="${escapeHtml(url)}" alt="Generated PDF preview for ${escapeHtml(item.case_number)}">
+        <figcaption>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</figcaption>
+      </figure>`
+    )).join("");
   } else if (first?.preview_warning) {
     previewPanel.classList.remove("hidden");
     previewBox.innerHTML = `<div class="result-card blocked">${escapeHtml(first.preview_warning)}</div>`;
@@ -908,7 +1007,7 @@ function renderPrepared(data) {
     previewPanel.classList.add("hidden");
     previewBox.innerHTML = "";
   }
-  $("#prepare-results").innerHTML = (data.items || []).map((item) => (
+  $("#prepare-results").innerHTML = items.map((item) => (
     `<div class="result-card prepared">
       <div class="result-header">
         <div>
@@ -980,6 +1079,7 @@ function resetReview() {
   renderSourceEvidence(null);
   renderAiRecovery(null);
   renderGooglePhotosPickerResult(null);
+  renderBatchQueue();
   renderDraftLifecycle(null);
   $("#correction_reason").value = "";
   $("#record_supersedes").value = "";
@@ -1201,6 +1301,37 @@ function bindActions() {
       showAlert(error.message, "blocked");
     }
   });
+  $("#add-current-to-batch").addEventListener("click", async () => {
+    try {
+      await addCurrentIntakeToBatch();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#prepare-batch-intakes").addEventListener("click", async () => {
+    try {
+      await prepareBatchIntakes();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#clear-batch-queue").addEventListener("click", () => {
+    state.batchIntakes = [];
+    renderBatchQueue();
+    setStatus("idle", "Batch queue cleared.");
+    showAlert("Batch queue cleared.", "recorded");
+  });
+  $("#batch-queue-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-batch-index]");
+    if (!button) return;
+    state.batchIntakes.splice(Number(button.dataset.removeBatchIndex), 1);
+    renderBatchQueue();
+    setStatus("idle", "Removed request from the batch queue.");
+  });
   $("#check-active-drafts").addEventListener("click", async () => {
     try {
       const data = await activeCheck();
@@ -1268,6 +1399,7 @@ function bindActions() {
 
 bindNavigation();
 bindActions();
+renderBatchQueue();
 loadReference().catch((error) => {
   setStatus("error", error.message);
   showAlert(error.message, "error");

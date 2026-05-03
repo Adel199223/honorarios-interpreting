@@ -17,6 +17,8 @@ Use one local preflight command for complete intakes:
 python scripts/prepare_honorarios.py <intake-json> [<intake-json> ...] --render-previews
 ```
 
+In the browser app, use Batch Queue for the same workflow: review each request, add ready requests to the queue, then click `Prepare batch package`. This calls the same multi-intake `/api/prepare` path, so same-batch duplicates, active drafts, date conflicts, missing numbered questions, and recipient mismatches are checked before any PDF or draft payload is written.
+
 It performs the local work in this order:
 
 1. Classify every source and set aside translation/word-count requests before asking intake questions.
