@@ -23,8 +23,11 @@ from pypdf import PdfReader
 from scripts.build_email_draft import (
     DEFAULT_COURT_EMAILS,
     DEFAULT_EMAIL_CONFIG,
+    build_email_payload,
     resolve_recipient,
+    validate_draft_payload,
 )
+from scripts.build_packet_pdf import PacketError, build_packet_pdf
 from scripts.create_intake import DEFAULT_SERVICE_PROFILES, build_intake, current_lisbon_date, load_profiles
 from scripts.generate_pdf import (
     BLOCKING_DUPLICATE_STATUSES,
@@ -53,6 +56,7 @@ from scripts.prepare_honorarios import (
     active_drafts_for,
     load_draft_log,
     prepare_one,
+    render_png,
     validate_intake_before_generation,
 )
 from scripts.record_gmail_draft import main as record_gmail_draft_main
@@ -65,6 +69,7 @@ from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INTAKE_OUTPUT_DIR = ROOT / "output" / "intakes"
 DEFAULT_SOURCE_UPLOAD_DIR = ROOT / "output" / "source-uploads"
+DEFAULT_PACKET_OUTPUT_DIR = ROOT / "output" / "packets"
 DEFAULT_KNOWN_DESTINATIONS = ROOT / "data" / "known-destinations.json"
 DEFAULT_PROFILE_CHANGE_LOG = ROOT / "data" / "profile-change-log.json"
 GOOGLE_PHOTOS_PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
@@ -110,6 +115,7 @@ class AppPaths:
     render_dir: Path = DEFAULT_RENDER_DIR
     intake_output_dir: Path = DEFAULT_INTAKE_OUTPUT_DIR
     source_upload_dir: Path = DEFAULT_SOURCE_UPLOAD_DIR
+    packet_output_dir: Path = DEFAULT_PACKET_OUTPUT_DIR
     ai_config: Path = ROOT / "config" / "ai.local.json"
     google_photos_config: Path = ROOT / "config" / "google-photos.local.json"
 
@@ -1716,6 +1722,122 @@ def write_intake_files(intakes: list[dict[str, Any]], intake_paths: list[Path]) 
         path.write_text(json.dumps(intake, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def underlying_requests_for_packet(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    for item in items:
+        request = {
+            "case_number": item.get("case_number", ""),
+            "service_date": item.get("service_date", ""),
+        }
+        for key in ("service_period_label", "service_start_time", "service_end_time"):
+            if item.get(key):
+                request[key] = item[key]
+        requests.append(request)
+    return requests
+
+
+def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[str, Any]) -> str:
+    default_body = str(email_config.get("body") or "")
+    signature = "Example Interpreter"
+    if "Melhores cumprimentos," in default_body:
+        signature = default_body.split("Melhores cumprimentos,", 1)[1].strip() or signature
+    count = len(items)
+    request_word = "requerimento" if count == 1 else "requerimentos"
+    return (
+        "Bom dia,\n\n"
+        "Venho por este meio, requerer o pagamento dos honorários devidos, "
+        "em virtude de ter sido nomeado intérprete.\n\n"
+        f"Poderão encontrar em anexo um pacote PDF com {count} {request_word} de honorários "
+        "correspondentes aos serviços identificados.\n\n"
+        "Melhores cumprimentos,\n\n"
+        f"{signature}"
+    )
+
+
+def validate_packet_recipients(intakes: list[dict[str, Any]], email_config: dict[str, Any], court_directory: list[dict[str, Any]]) -> str:
+    recipients: list[str] = []
+    for intake in intakes:
+        recipient, _source = resolve_recipient(intake, email_config, court_directory)
+        recipients.append(recipient)
+    unique = sorted(set(recipients))
+    if len(unique) != 1:
+        raise IntakeError(
+            "Packet mode requires all queued requests to use the same recipient. "
+            f"Found: {', '.join(unique)}"
+        )
+    return unique[0]
+
+
+def build_packet_result(
+    *,
+    intakes: list[dict[str, Any]],
+    items: list[dict[str, Any]],
+    paths: AppPaths,
+    email_config: dict[str, Any],
+    court_directory: list[dict[str, Any]],
+    render_previews: bool,
+    preview_warning: str,
+) -> dict[str, Any]:
+    packet_sources: list[Path] = []
+    for item in items:
+        for attachment in item.get("attachment_files") or []:
+            path = Path(attachment).resolve()
+            if path not in packet_sources:
+                packet_sources.append(path)
+
+    packet_pdf = paths.packet_output_dir / f"honorarios_packet_{timestamp_slug()}_{secrets.token_hex(4)}.pdf"
+    try:
+        page_count = build_packet_pdf(packet_sources, packet_pdf)
+    except PacketError as exc:
+        raise IntakeError(str(exc)) from exc
+
+    packet_intake = copy.deepcopy(intakes[0])
+    packet_intake["service_period_label"] = "packet"
+    packet_intake.pop("additional_attachment_files", None)
+    packet_intake["underlying_requests"] = underlying_requests_for_packet(items)
+    packet_intake["email_body"] = str(packet_intake.get("packet_email_body") or "").strip() or default_packet_email_body(items, email_config)
+
+    payload = build_email_payload(packet_intake, packet_pdf, email_config, court_directory)
+    payload_errors = validate_draft_payload(payload)
+    if payload_errors:
+        raise IntakeError(f"Packet draft payload is not Gmail-ready: {'; '.join(payload_errors)}")
+
+    payload_path = paths.draft_output_dir / f"{packet_pdf.stem}.draft.json"
+    payload_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    png_previews = render_png(packet_pdf, paths.render_dir) if render_previews else []
+    return {
+        "packet_mode": True,
+        "case_number": payload["case_number"],
+        "service_date": payload["service_date"],
+        "service_period_label": payload["service_period_label"],
+        "recipient": payload["to"],
+        "subject": payload["subject"],
+        "pdf": str(packet_pdf.resolve()),
+        "page_count": page_count,
+        "attachment_files": payload["attachment_files"],
+        "attachment_count": len(payload["attachment_files"]),
+        "attachment_sha256": payload.get("attachment_sha256", {}),
+        "draft_payload": str(payload_path.resolve()),
+        "gmail_tool": "_create_draft",
+        "gmail_create_draft_args": payload["gmail_create_draft_args"],
+        "underlying_requests": payload.get("underlying_requests", []),
+        "png_previews": png_previews,
+        "png_preview_path": png_previews[0] if png_previews else "",
+        "png_preview_urls": [
+            artifact_url_for_path(preview, paths)
+            for preview in png_previews
+            if artifact_url_for_path(preview, paths)
+        ],
+        "preview_warning": preview_warning,
+        "draft_only": True,
+        "send_allowed": False,
+        "gmail_create_draft_ready": bool(payload.get("gmail_create_draft_ready", True)),
+        "gmail_create_draft_blocker": str(payload.get("gmail_create_draft_blocker") or ""),
+    }
+
+
 def prepare_intakes(
     intakes: list[dict[str, Any]],
     paths: AppPaths,
@@ -1724,6 +1846,7 @@ def prepare_intakes(
     allow_duplicate: bool = False,
     allow_existing_draft: bool = False,
     correction_reason: str = "",
+    packet_mode: bool = False,
 ) -> dict[str, Any]:
     if not intakes:
         raise IntakeError("At least one intake is required.")
@@ -1767,6 +1890,9 @@ def prepare_intakes(
             raise IntakeError(f"Duplicate request appears more than once in this batch: {intake_path} duplicates {seen_keys[key]}")
         seen_keys[key] = intake_path
 
+    if packet_mode:
+        validate_packet_recipients(intakes, email_config, court_directory)
+
     write_intake_files(intakes, intake_paths)
 
     effective_render_previews = render_previews
@@ -1807,6 +1933,17 @@ def prepare_intakes(
             if artifact_url_for_path(preview, paths)
         ]
         item["preview_warning"] = preview_warning
+    packet = None
+    if packet_mode:
+        packet = build_packet_result(
+            intakes=intakes,
+            items=items,
+            paths=paths,
+            email_config=email_config,
+            court_directory=court_directory,
+            render_previews=effective_render_previews,
+            preview_warning=preview_warning,
+        )
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"
     manifest = {
@@ -1816,9 +1953,12 @@ def prepare_intakes(
         "send_allowed": False,
         "correction_mode": correction_mode,
         "correction_reason": normalized_correction_reason,
+        "packet_mode": bool(packet_mode),
         "items": items,
         "manifest": str(manifest_path.resolve()),
     }
+    if packet:
+        manifest["packet"] = packet
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest
 

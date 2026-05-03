@@ -35,6 +35,7 @@ The app supports the main workflow:
 - create an intake from a known service profile
 - review the Portuguese draft text before generating the PDF
 - queue multiple reviewed requests and prepare a batch package through the same all-or-nothing preflight
+- enable Packet mode for a batch when several requerimentos should become one combined PDF attachment
 - show numbered missing-information questions
 - block translation/word-count requests
 - warn about duplicate `sent` or `drafted` case/date records
@@ -142,7 +143,9 @@ If the photo header shows a court or Ministério Público office and there is no
 
 For Polícia Judiciária sources, record the local host building and city used for the service. PJ often travels from elsewhere and uses a GNR building, hospital, or medical-legal office, so `Polícia Judiciária` alone is not enough as the service place. Use a physical place such as `Posto da GNR de Ferreira do Alentejo` or `Gabinete Médico-Legal de Beja, Hospital José Joaquim Fernandes - Beja`. Inspector names are optional; include them if visible and useful, but do not ask for them when missing.
 
-For similar photo batches, either use the browser app's Batch Queue or prepare all intake files together from the CLI. The batch preflight validates every request before generating anything, and the manifest makes mismatches easier to catch before Gmail draft creation:
+For similar photo batches, either use the browser app's Batch Queue or prepare all intake files together from the CLI. The batch preflight validates every request before generating anything, and the manifest makes mismatches easier to catch before Gmail draft creation.
+
+When a batch should be sent as a single attachment, turn on `Packet mode` in the browser before clicking `Prepare batch package`. The app validates that all queued requests use the same recipient, creates the individual requerimento PDFs, bundles them into one packet PDF, and prepares one Gmail `_create_draft` payload with the packet as the only attachment.
 
 ```powershell
 python scripts/prepare_honorarios.py examples/intake.gnr-cuba-photo-metadata-146.example.json examples/intake.gnr-cuba-photo-metadata-15.example.json --render-previews

@@ -96,6 +96,8 @@ When the user asks to include supporting proof, such as a `declaração`, add th
 
 If the user wants several source files packaged together, build a combined packet PDF with `scripts/build_packet_pdf.py`. Use the packet PDF as the only `attachment_files` item and mention every included requerimento/declaração in `email_body`.
 
+The browser app exposes this as `Packet mode` in the Batch Queue. Packet mode validates that every queued request has the same recipient, prepares each request through the normal PDF pipeline, builds one combined packet PDF, and writes one draft payload whose `gmail_create_draft_args.attachment_files` array contains only the packet PDF.
+
 ## Draft Log
 
 After `_create_draft` returns, record the returned IDs:

@@ -19,6 +19,8 @@ python scripts/prepare_honorarios.py <intake-json> [<intake-json> ...] --render-
 
 In the browser app, use Batch Queue for the same workflow: review each request, add ready requests to the queue, then click `Prepare batch package`. This calls the same multi-intake `/api/prepare` path, so same-batch duplicates, active drafts, date conflicts, missing numbered questions, and recipient mismatches are checked before any PDF or draft payload is written.
 
+If the queued requests should be sent together, enable `Packet mode` before preparing. Packet mode is still draft-only: it requires one shared recipient, builds the individual PDFs, combines the PDFs and any already-declared supporting attachments into one packet PDF, and makes that packet the only `attachment_files` entry in the Gmail `_create_draft` args. The packet payload carries `underlying_requests` so recording the Gmail draft still protects every case/date/period in the duplicate index.
+
 It performs the local work in this order:
 
 1. Classify every source and set aside translation/word-count requests before asking intake questions.

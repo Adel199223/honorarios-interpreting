@@ -921,12 +921,14 @@ async function prepareBatchIntakes() {
   if (!state.batchIntakes.length) {
     throw new Error("Add at least one ready request to the batch queue first.");
   }
+  const packetMode = Boolean($("#batch-packet-mode")?.checked);
   const data = await requestJson("/api/prepare", {
     method: "POST",
-    body: JSON.stringify({ intakes: state.batchIntakes, render_previews: true }),
+    body: JSON.stringify({ intakes: state.batchIntakes, render_previews: true, packet_mode: packetMode }),
   });
   state.lastPrepared = data;
-  setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared as one checked package.`);
+  const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
+  setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared ${modeText}.`);
   showAlert("", "");
   renderPrepared(data);
   openReviewDrawer();
@@ -986,33 +988,58 @@ async function prepareIntake(options = {}) {
 
 function renderPrepared(data) {
   const items = data.items || [];
+  const packet = data.packet || null;
   const first = items[0];
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
-  const previewImages = items.flatMap((item) => (
+  const packetPreviews = packet
+    ? (packet.png_preview_urls || []).slice(0, 1).map((url) => ({ url, item: packet, label: "Packet PDF" }))
+    : [];
+  const itemPreviews = items.flatMap((item) => (
     (item.png_preview_urls || []).slice(0, 1).map((url) => ({ url, item }))
   ));
+  const previewImages = [...packetPreviews, ...itemPreviews];
   if (previewImages.length) {
     previewPanel.classList.remove("hidden");
     previewBox.innerHTML = previewImages.map(({ url, item }) => (
       `<figure class="pdf-preview-figure">
         <img class="pdf-preview-image" src="${escapeHtml(url)}" alt="Generated PDF preview for ${escapeHtml(item.case_number)}">
-        <figcaption>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</figcaption>
+        <figcaption>${escapeHtml(item.case_number || "packet")} · ${escapeHtml(item.service_date || "packet")} ${item.packet_mode ? "· packet" : ""}</figcaption>
       </figure>`
     )).join("");
-  } else if (first?.preview_warning) {
+  } else if (packet?.preview_warning || first?.preview_warning) {
     previewPanel.classList.remove("hidden");
-    previewBox.innerHTML = `<div class="result-card blocked">${escapeHtml(first.preview_warning)}</div>`;
+    previewBox.innerHTML = `<div class="result-card blocked">${escapeHtml(packet?.preview_warning || first.preview_warning)}</div>`;
   } else {
     previewPanel.classList.add("hidden");
     previewBox.innerHTML = "";
   }
-  $("#prepare-results").innerHTML = items.map((item) => (
+  const packetCard = packet ? `
+    <div class="result-card prepared packet-prepared-card">
+      <div class="result-header">
+        <div>
+          <strong>Combined packet PDF · ${escapeHtml(packet.underlying_requests?.length || items.length)} request${(packet.underlying_requests?.length || items.length) === 1 ? "" : "s"}</strong>
+          <p>Prepared for Gmail _create_draft with one attachment. No send action exists here.</p>
+        </div>
+        <span class="status-chip ready">packet ready</span>
+      </div>
+      <div class="prepared-meta">
+        <div>Recipient: <code>${escapeHtml(packet.recipient)}</code></div>
+        <div>Packet PDF: <code>${escapeHtml(packet.pdf)}</code></div>
+        <div>Packet payload: <code>${escapeHtml(packet.draft_payload)}</code></div>
+        <div>Attachment count: ${escapeHtml(packet.attachment_count)}</div>
+        <div>Underlying requests: ${escapeHtml(packet.underlying_requests?.length || 0)}</div>
+      </div>
+      <strong>Exact gmail_create_draft_args</strong>
+      <pre class="draft-args">${escapeHtml(JSON.stringify(packet.gmail_create_draft_args || {}, null, 2))}</pre>
+    </div>
+  ` : "";
+  const itemCards = items.map((item) => (
     `<div class="result-card prepared">
       <div class="result-header">
         <div>
           <strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong>
-          <p>Prepared for Gmail _create_draft. No send action exists here.</p>
+          <p>${packet ? "Source PDF generated for the packet." : "Prepared for Gmail _create_draft. No send action exists here."}</p>
         </div>
         <span class="status-chip ready">prepared</span>
       </div>
@@ -1026,8 +1053,9 @@ function renderPrepared(data) {
       <pre class="draft-args">${escapeHtml(JSON.stringify(item.gmail_create_draft_args || {}, null, 2))}</pre>
     </div>`
   )).join("");
-  if (first?.draft_payload) {
-    $("#record_payload").value = first.draft_payload;
+  $("#prepare-results").innerHTML = packetCard + itemCards;
+  if (packet?.draft_payload || first?.draft_payload) {
+    $("#record_payload").value = packet?.draft_payload || first.draft_payload;
   }
   if (data.correction_mode) {
     renderDraftLifecycle({
@@ -1321,6 +1349,7 @@ function bindActions() {
   });
   $("#clear-batch-queue").addEventListener("click", () => {
     state.batchIntakes = [];
+    $("#batch-packet-mode").checked = false;
     renderBatchQueue();
     setStatus("idle", "Batch queue cleared.");
     showAlert("Batch queue cleared.", "recorded");
@@ -1354,8 +1383,8 @@ function bindActions() {
   });
   $("#copy-draft-args").addEventListener("click", async () => {
     try {
-      const first = state.lastPrepared?.items?.[0];
-      await copyText(JSON.stringify(first?.gmail_create_draft_args || {}, null, 2));
+      const target = state.lastPrepared?.packet || state.lastPrepared?.items?.[0];
+      await copyText(JSON.stringify(target?.gmail_create_draft_args || {}, null, 2));
       showAlert("Copied Gmail draft args JSON.", "recorded");
     } catch (error) {
       showAlert(error.message, "blocked");

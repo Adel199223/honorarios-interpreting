@@ -221,6 +221,13 @@
                 <span class="status-chip info" id="batch-count-chip">0 queued</span>
               </div>
               <div class="result-card empty-state" id="batch-queue-list">No requests queued yet.</div>
+              <label class="checkbox-card packet-mode-card" for="batch-packet-mode">
+                <input type="checkbox" id="batch-packet-mode">
+                <span>
+                  <strong>Packet mode</strong>
+                  <small>Prepare as one packet PDF with one Gmail attachment. All queued requests must use the same recipient.</small>
+                </span>
+              </label>
               <div class="button-row batch-actions">
                 <button type="button" id="add-current-to-batch">Add reviewed request to batch</button>
                 <button type="button" id="prepare-batch-intakes">Prepare batch package</button>

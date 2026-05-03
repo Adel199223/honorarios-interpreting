@@ -257,6 +257,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 allow_duplicate=bool(payload.get("allow_duplicate", False)),
                 allow_existing_draft=bool(payload.get("allow_existing_draft", False)),
                 correction_reason=correction_reason if correction_mode or payload.get("allow_existing_draft") else "",
+                packet_mode=bool(payload.get("packet_mode", False)),
             )
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
