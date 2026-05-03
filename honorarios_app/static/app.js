@@ -185,6 +185,59 @@ function supportingAttachmentFiles(record) {
   return files.filter((file) => file !== pdf);
 }
 
+function buildPacketRecordObject(packet) {
+  return {
+    payload: packet?.draft_payload || "",
+    draft_id: "<paste Gmail draft id>",
+    message_id: "<paste Gmail message id>",
+    thread_id: "<paste Gmail thread id>",
+    status: "active",
+    gmail_tool: "_create_draft",
+    send_allowed: false,
+    underlying_requests: packet?.underlying_requests || [],
+  };
+}
+
+function buildPacketRecordCommand(packet) {
+  const payload = packet?.draft_payload || "<packet draft payload path>";
+  return `python scripts/record_gmail_draft.py --payload "${payload}" --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>`;
+}
+
+function renderPacketRecordHelper(packet) {
+  if (!packet) return "";
+  const recordObject = buildPacketRecordObject(packet);
+  const command = buildPacketRecordCommand(packet);
+  const blockers = packet.underlying_requests || [];
+  return `
+    <div class="packet-record-helper">
+      <div class="result-header">
+        <div>
+          <strong>Packet draft recording helper</strong>
+          <p>After Gmail _create_draft returns IDs, use this to record the packet draft and all underlying duplicate blockers together.</p>
+        </div>
+        <span class="status-chip info">Record</span>
+      </div>
+      <div class="button-row compact-button-row">
+        <button type="button" class="mini-button" data-copy-packet-record="json">Copy packet record JSON</button>
+        <button type="button" class="mini-button" data-copy-packet-record="command">Copy packet record command</button>
+      </div>
+      <strong>Record command</strong>
+      <pre class="draft-args">${escapeHtml(command)}</pre>
+      <strong>Record JSON</strong>
+      <pre class="draft-args">${escapeHtml(JSON.stringify(recordObject, null, 2))}</pre>
+      <div class="underlying-duplicate-blockers">
+        <strong>Underlying duplicate blockers</strong>
+        ${blockers.length
+          ? `<ul>${blockers.map((request) => {
+              const period = request.service_period_label ? ` · ${request.service_period_label}` : "";
+              return `<li><code>${escapeHtml(request.case_number || "case pending")}</code> · ${escapeHtml(request.service_date || "date pending")}${escapeHtml(period)}</li>`;
+            }).join("")}</ul>`
+          : "<p>No underlying requests returned for this packet.</p>"}
+      </div>
+    </div>
+  `;
+}
+
 function moveBatchIntake(fromIndex, toIndex) {
   const from = Number(fromIndex);
   const to = Number(toIndex);
@@ -1153,6 +1206,7 @@ function renderPrepared(data) {
         <strong>Packet contents</strong>
         ${renderPreparedPacketContents(items)}
       </div>
+      ${renderPacketRecordHelper(packet)}
     </div>
   ` : "";
   const itemCards = items.map((item) => (
@@ -1553,6 +1607,22 @@ function bindActions() {
     const toIndex = Number(row.dataset.batchIndex);
     if (moveBatchIntake(fromIndex, toIndex)) {
       showAlert("Batch order updated. Packet mode will use this order.", "recorded");
+    }
+  });
+  $("#prepare-results").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-packet-record]");
+    if (!button) return;
+    try {
+      const packet = state.lastPrepared?.packet;
+      if (!packet) throw new Error("Prepare a packet PDF before copying packet record values.");
+      const mode = button.dataset.copyPacketRecord;
+      const value = mode === "command"
+        ? buildPacketRecordCommand(packet)
+        : JSON.stringify(buildPacketRecordObject(packet), null, 2);
+      await copyText(value);
+      showAlert(`Copied packet record ${mode === "command" ? "command" : "JSON"}.`, "recorded");
+    } catch (error) {
+      showAlert(error.message, "blocked");
     }
   });
   $("#check-active-drafts").addEventListener("click", async () => {

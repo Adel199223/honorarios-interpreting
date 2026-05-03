@@ -28,6 +28,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Packet mode in the Batch Queue for same-recipient batches that should produce one combined PDF attachment and one Gmail draft payload while still tracking every underlying case/date/period.
 - Packet-order controls in the Batch Queue, with drag/drop plus `Move up` / `Move down`, so the combined PDF order is explicit before packet generation.
 - Packet item inspector in the Batch Queue, so each queued request can be checked beside its generated requerimento PDF slot and any supporting attachments before packet generation.
+- Prepared-packet draft recording helper that copies a `record_gmail_draft.py` command template and JSON object for logging the packet draft plus its underlying duplicate blockers.
 - Editable reference screens for known destinations/kilometers and court email directory entries, with validation and no send-capable behavior.
 - Guarded service-profile editor with recipient validation, service/date/entity checks, and a sample Portuguese draft preview before saving.
 - Profile diff preview and local profile-change history so service profile edits are auditable without publishing private runtime logs.
@@ -62,8 +63,8 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Add deeper browser-flow tests for the Google Photos Picker, Batch Queue, Packet mode, packet-ordering, and packet-inspector happy paths using mocked local endpoints.
-2. Add a prepared-packet record helper in the UI that copies one complete record-draft command/object for packet drafts and their underlying duplicate blockers.
+1. Add deeper browser-flow tests for the Google Photos Picker, Batch Queue, Packet mode, packet-ordering, packet-inspector, and packet-record-helper happy paths using mocked local endpoints.
+2. Add a one-click local draft-record autofill from prepared packet/individual payloads into the Record Gmail Draft form after the Gmail draft IDs are pasted.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness
