@@ -70,6 +70,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INTAKE_OUTPUT_DIR = ROOT / "output" / "intakes"
 DEFAULT_SOURCE_UPLOAD_DIR = ROOT / "output" / "source-uploads"
 DEFAULT_PACKET_OUTPUT_DIR = ROOT / "output" / "packets"
+DEFAULT_BACKUP_OUTPUT_DIR = ROOT / "output" / "backups"
 DEFAULT_KNOWN_DESTINATIONS = ROOT / "data" / "known-destinations.json"
 DEFAULT_PROFILE_CHANGE_LOG = ROOT / "data" / "profile-change-log.json"
 GOOGLE_PHOTOS_PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
@@ -116,6 +117,7 @@ class AppPaths:
     intake_output_dir: Path = DEFAULT_INTAKE_OUTPUT_DIR
     source_upload_dir: Path = DEFAULT_SOURCE_UPLOAD_DIR
     packet_output_dir: Path = DEFAULT_PACKET_OUTPUT_DIR
+    backup_output_dir: Path = DEFAULT_BACKUP_OUTPUT_DIR
     ai_config: Path = ROOT / "config" / "ai.local.json"
     google_photos_config: Path = ROOT / "config" / "google-photos.local.json"
 
@@ -1125,6 +1127,160 @@ def upsert_court_email(payload: dict[str, Any], paths: AppPaths) -> dict[str, An
 def write_json_object(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+BACKUP_SCHEMA_VERSION = 1
+BACKUP_KIND = "honorarios_local_backup"
+
+
+def backup_dataset_paths(paths: AppPaths) -> dict[str, tuple[Path, type]]:
+    return {
+        "service_profiles": (paths.service_profiles, dict),
+        "court_emails": (paths.court_emails, list),
+        "known_destinations": (paths.known_destinations, list),
+        "duplicate_index": (paths.duplicate_index, list),
+        "gmail_draft_log": (paths.draft_log, list),
+        "profile_change_log": (paths.profile_change_log, list),
+    }
+
+
+def read_backup_dataset(path: Path, expected_type: type) -> Any:
+    if not path.exists():
+        return {} if expected_type is dict else []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, expected_type):
+        type_name = "object" if expected_type is dict else "list"
+        raise IntakeError(f"Expected backup dataset source to be a JSON {type_name}: {path}")
+    return data
+
+
+def backup_counts(datasets: dict[str, Any]) -> dict[str, int]:
+    return {
+        key: len(value) if isinstance(value, (dict, list)) else 0
+        for key, value in datasets.items()
+    }
+
+
+def backup_payload(paths: AppPaths) -> dict[str, Any]:
+    datasets = {
+        key: read_backup_dataset(path, expected_type)
+        for key, (path, expected_type) in backup_dataset_paths(paths).items()
+    }
+    return {
+        "kind": BACKUP_KIND,
+        "schema_version": BACKUP_SCHEMA_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "datasets": datasets,
+        "counts": backup_counts(datasets),
+        "contains_private_local_data": True,
+        "notes": "Local honorários backup for private app data. Do not publish this file.",
+        "send_allowed": False,
+    }
+
+
+def write_backup_file(backup: dict[str, Any], paths: AppPaths, *, prefix: str = "honorarios-backup") -> Path:
+    paths.backup_output_dir.mkdir(parents=True, exist_ok=True)
+    path = paths.backup_output_dir / f"{prefix}-{timestamp_slug()}-{secrets.token_hex(4)}.json"
+    path.write_text(json.dumps(backup, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def export_local_backup(paths: AppPaths) -> dict[str, Any]:
+    backup = backup_payload(paths)
+    backup_file = write_backup_file(backup, paths)
+    return {
+        "status": "exported",
+        "message": "Local backup exported. Keep this file private.",
+        "backup_file": str(backup_file),
+        "backup": backup,
+        "counts": backup["counts"],
+        "send_allowed": False,
+    }
+
+
+def parse_backup_input(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_backup = payload.get("backup")
+    if raw_backup is None:
+        backup_json = str(payload.get("backup_json") or "").strip()
+        if not backup_json:
+            raise IntakeError("Missing backup JSON.")
+        try:
+            raw_backup = json.loads(backup_json)
+        except json.JSONDecodeError as exc:
+            raise IntakeError(f"Backup JSON is invalid: {exc}") from exc
+    if not isinstance(raw_backup, dict):
+        raise IntakeError("Backup must be a JSON object.")
+    return raw_backup
+
+
+def validate_backup_payload(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    backup = parse_backup_input(payload)
+    if backup.get("kind") != BACKUP_KIND:
+        raise IntakeError("Backup kind is not supported.")
+    if backup.get("schema_version") != BACKUP_SCHEMA_VERSION:
+        raise IntakeError("Backup schema_version is not supported.")
+    datasets = backup.get("datasets")
+    if not isinstance(datasets, dict):
+        raise IntakeError("Backup must include a datasets object.")
+
+    allowed = backup_dataset_paths(paths)
+    unknown = sorted(set(datasets) - set(allowed))
+    if unknown:
+        raise IntakeError(f"Backup contains unsupported dataset(s): {', '.join(unknown)}")
+    if not datasets:
+        raise IntakeError("Backup does not contain any restorable datasets.")
+
+    validated: dict[str, Any] = {}
+    for key, value in datasets.items():
+        expected_type = allowed[key][1]
+        if not isinstance(value, expected_type):
+            type_name = "object" if expected_type is dict else "list"
+            raise IntakeError(f"Backup dataset {key} must be a JSON {type_name}.")
+        validated[key] = value
+
+    return {
+        "backup": backup,
+        "datasets": validated,
+        "counts": backup_counts(validated),
+        "dataset_names": list(validated.keys()),
+    }
+
+
+def preview_local_backup_import(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    validation = validate_backup_payload(payload, paths)
+    return {
+        "status": "ready",
+        "message": "Backup import is valid. Preview only; no local files were changed.",
+        "counts": validation["counts"],
+        "dataset_names": validation["dataset_names"],
+        "send_allowed": False,
+    }
+
+
+def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    if not bool(payload.get("confirm_restore")):
+        raise IntakeError("Backup restore requires confirm_restore=true.")
+    validation = validate_backup_payload(payload, paths)
+    pre_restore_backup = backup_payload(paths)
+    pre_restore_backup["reason"] = "Automatic backup before local restore."
+    pre_restore_file = write_backup_file(pre_restore_backup, paths, prefix="pre-restore-backup")
+
+    dataset_paths = backup_dataset_paths(paths)
+    for key, data in validation["datasets"].items():
+        target_path, expected_type = dataset_paths[key]
+        if expected_type is dict:
+            write_json_object(target_path, data)
+        else:
+            write_json_list(target_path, data)
+
+    return {
+        "status": "restored",
+        "message": "Backup restored locally. A pre-restore backup was written first.",
+        "restored_datasets": validation["dataset_names"],
+        "counts": validation["counts"],
+        "pre_restore_backup_file": str(pre_restore_file),
+        "send_allowed": False,
+    }
 
 
 def stable_json_hash(value: Any) -> str:

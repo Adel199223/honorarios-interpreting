@@ -295,6 +295,31 @@
             </div>
             <div class="result-card" id="public-readiness-result">Public publishing is blocked until this gate passes on a sanitized candidate.</div>
           </div>
+          <div class="panel local-backup-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Local Safety</p>
+                <h3>Local Backup</h3>
+                <p class="panel-copy">Export or restore reference data, duplicate records, and draft lifecycle logs. Backups are private local JSON and must not be published.</p>
+              </div>
+              <span class="status-chip info" id="backup-status-chip">idle</span>
+            </div>
+            <div class="button-row">
+              <button type="button" id="export-local-backup">Export backup</button>
+              <button type="button" id="copy-local-backup">Copy backup JSON</button>
+              <button type="button" id="preview-local-backup-import">Preview backup import</button>
+              <button type="button" id="restore-local-backup">Restore backup after preview</button>
+            </div>
+            <div class="field">
+              <label for="local-backup-json">Backup JSON</label>
+              <textarea id="local-backup-json" rows="8" placeholder="Exported backup JSON appears here. Paste a backup here to preview before restoring."></textarea>
+            </div>
+            <label class="check-row">
+              <input id="confirm-local-backup-restore" type="checkbox">
+              <span>I reviewed the import preview and want to restore these local JSON datasets.</span>
+            </label>
+            <div class="result-card" id="local-backup-result">No backup action has run yet.</div>
+          </div>
           <div class="reference-columns">
             <div class="panel profile-reference-panel">
               <h3>Profiles</h3>

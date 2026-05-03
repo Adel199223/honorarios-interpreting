@@ -19,6 +19,7 @@ from .services import (
     ai_status_payload,
     build_profile_intake,
     draft_lifecycle_for_intake,
+    export_local_backup,
     google_photos_status_payload,
     google_photos_create_picker_session,
     google_photos_import_selected,
@@ -31,9 +32,11 @@ from .services import (
     recover_source_upload,
     review_intake,
     resolve_artifact_path,
+    preview_local_backup_import,
     preview_service_profile_upsert,
     preview_profile_rollback,
     rollback_service_profile,
+    restore_local_backup,
     upsert_court_email,
     upsert_known_destination,
     upsert_service_profile,
@@ -165,6 +168,27 @@ def create_app(**path_overrides: Any) -> FastAPI:
         try:
             return build_public_candidate(paths.profile.parents[1])
         except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/backup/export")
+    async def api_backup_export() -> dict[str, Any]:
+        try:
+            return export_local_backup(paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/backup/import-preview")
+    async def api_backup_import_preview(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return preview_local_backup_import(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/backup/import")
+    async def api_backup_import(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return restore_local_backup(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/intake/from-profile")

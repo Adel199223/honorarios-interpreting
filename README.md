@@ -47,11 +47,18 @@ The app supports the main workflow:
 - handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
 - maintain known destinations/kilometers and court email aliases from the References screen
 - maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
+- export and restore private local backups for reference data, duplicate records, and draft lifecycle logs
 - run a local Public GitHub Readiness privacy gate before any public publishing attempt
 
 Service profile edits are guarded because they affect legal wording, payment entities, and recipient logic. The browser app validates the profile, checks recipient consistency against the court email directory, shows a sample draft preview, and records a local profile-change log after saving. Use the preview button when you want to inspect the diff without writing anything. Profile rollbacks must also be previewed first; they are blocked if the current profile no longer matches the selected change log entry.
 
 The browser app does not send email. It prepares connector-ready Gmail draft arguments only.
+
+## Local Backups
+
+Use References -> Local Backup before moving the app, making large reference edits, or preparing future LegalPDF integration work. `Export backup` writes a private JSON file under `output/backups/` and also shows the JSON in the app for copying. The backup includes service profiles, court emails, known destinations, duplicate index records, Gmail draft log records, and profile-change history.
+
+Restores are preview-first. Paste backup JSON, click `Preview backup import`, review dataset counts, check the restore confirmation box, then click `Restore backup after preview`. The app writes an automatic pre-restore backup before replacing any local JSON file. These backup files contain private case/draft history and must not be published.
 
 OpenAI recovery is evidence-only. It may extract visible text, case/date/place clues, court email, and translation indicators from photos or scanned documents, but the existing duplicate checks, date-conflict questions, profile defaults, PDF generator, and Gmail draft safety rules remain authoritative. For Google Photos-style screenshots or selected-photo imports, compact filenames such as `20260415_205459.jpg` are treated as visible photo metadata and surfaced as `photo_metadata_date`; crop/partial-image warnings stay visible in Source Evidence. For weak/scanned notification PDFs, the app renders the first pages to local PNG evidence with `pdftoppm` when available and gives those images to OpenAI recovery. The app exposes `/api/ai/status` to show whether OpenAI OCR is ready without revealing the API key. Store optional local settings in ignored `config/ai.local.json`:
 

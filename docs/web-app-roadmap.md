@@ -36,6 +36,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Guarded service-profile editor with recipient validation, service/date/entity checks, and a sample Portuguese draft preview before saving.
 - Profile diff preview and local profile-change history so service profile edits are auditable without publishing private runtime logs.
 - Profile rollback from local profile-change history, with preview-first restore controls and stale-current-profile protection.
+- Local Backup panel and API for exporting/restoring service profiles, court emails, known destinations, duplicate records, Gmail draft lifecycle logs, and profile-change history, with preview-first import and automatic pre-restore backup.
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
 
@@ -67,7 +68,7 @@ It was published from `output/public-candidate` after the privacy and repository
 ## Next Stages
 
 1. Add deeper browser-flow tests for the Google Photos Picker, Batch Queue, Packet mode, packet-ordering, packet-inspector, and packet-record-helper happy paths using mocked local endpoints.
-2. Add a local export/import backup for reference data, duplicate records, and draft lifecycle logs so the standalone app can be moved or backed up before future LegalPDF integration work.
+2. Add guided backup reminders before high-risk reference/profile imports, large restores, and future LegalPDF integration migrations.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

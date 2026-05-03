@@ -76,6 +76,12 @@ data/gmail-draft-log.json
 
 The log should show active, superseded, trashed, or not-found drafts. Corrections should create a new draft first, then mark and trash the old one after verifying the message ID.
 
+## Local Backup State
+
+Use the browser app's References -> Local Backup panel before large edits, machine moves, or future LegalPDF integration work. The backup covers only local app state that needs to travel with the workflow: service profiles, court email aliases, known destinations/kilometers, duplicate-index records, Gmail draft lifecycle records, and profile-change history. It deliberately excludes generated PDFs, source screenshots, Gmail tokens, OpenAI keys, and personal payment/profile config.
+
+`Export backup` writes a private JSON file under `output/backups/` and displays the same JSON for copying. Import is preview-first: paste JSON, run `Preview backup import`, confirm the restore checkbox, then use `Restore backup after preview`. The restore endpoint writes a pre-restore backup before replacing any managed JSON file, so a mistaken restore has a local rollback source.
+
 ## Similar Photo Cases
 
 For photographed notices like the GNR Cuba pair:

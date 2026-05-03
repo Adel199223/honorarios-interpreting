@@ -8,6 +8,7 @@ const state = {
   googlePhotosStatus: null,
   googlePhotosPicker: null,
   draftLifecycle: null,
+  localBackupPreview: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -922,6 +923,84 @@ async function buildPublicCandidate() {
   return data;
 }
 
+function renderLocalBackupResult(data, kind = "info") {
+  const chip = $("#backup-status-chip");
+  const body = $("#local-backup-result");
+  if (!chip || !body) return;
+  const status = data?.status || kind || "idle";
+  const chipKind = statusChipClass(status === "exported" || status === "restored" ? "ready" : status);
+  chip.textContent = status.replaceAll("_", " ");
+  chip.className = `status-chip ${chipKind}`;
+  const counts = data?.counts || {};
+  const countRows = Object.entries(counts).map(([key, value]) => (
+    `<div class="data-item"><strong>${escapeHtml(key)}</strong><span>${escapeHtml(value)} record${Number(value) === 1 ? "" : "s"}</span></div>`
+  )).join("");
+  const backupFile = data?.backup_file ? `<div class="data-item"><strong>Backup file</strong><code>${escapeHtml(data.backup_file)}</code></div>` : "";
+  const preRestore = data?.pre_restore_backup_file ? `<div class="data-item"><strong>Pre-restore backup</strong><code>${escapeHtml(data.pre_restore_backup_file)}</code></div>` : "";
+  const datasets = data?.dataset_names || data?.restored_datasets || [];
+  const datasetRow = datasets.length ? `<div class="data-item"><strong>Datasets</strong><span>${escapeHtml(datasets.join(", "))}</span></div>` : "";
+  body.className = `result-card ${chipKind}`;
+  body.innerHTML = `
+    <div class="result-header">
+      <div>
+        <strong>${escapeHtml(data?.message || "No backup action has run yet.")}</strong>
+        <p>Local backup actions never create or send Gmail messages.</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${backupFile}
+    ${preRestore}
+    ${datasetRow}
+    ${countRows}
+  `;
+}
+
+function localBackupJsonText() {
+  const value = $("#local-backup-json").value.trim();
+  if (!value) {
+    throw new Error("Paste or export backup JSON before previewing a restore.");
+  }
+  return value;
+}
+
+async function exportLocalBackup() {
+  const data = await requestJson("/api/backup/export", { method: "POST" });
+  $("#local-backup-json").value = JSON.stringify(data.backup, null, 2);
+  state.localBackupPreview = null;
+  $("#confirm-local-backup-restore").checked = false;
+  renderLocalBackupResult(data, "exported");
+  return data;
+}
+
+async function previewLocalBackupImport() {
+  const data = await requestJson("/api/backup/import-preview", {
+    method: "POST",
+    body: JSON.stringify({ backup_json: localBackupJsonText() }),
+  });
+  state.localBackupPreview = data;
+  $("#confirm-local-backup-restore").checked = false;
+  renderLocalBackupResult(data, "ready");
+  return data;
+}
+
+async function restoreLocalBackupImport() {
+  if (!state.localBackupPreview) {
+    throw new Error("Preview backup import before restoring local data.");
+  }
+  if (!$("#confirm-local-backup-restore").checked) {
+    throw new Error("Check the restore confirmation box before using Restore backup after preview.");
+  }
+  const data = await requestJson("/api/backup/import", {
+    method: "POST",
+    body: JSON.stringify({ backup_json: localBackupJsonText(), confirm_restore: true }),
+  });
+  state.localBackupPreview = null;
+  $("#confirm-local-backup-restore").checked = false;
+  renderLocalBackupResult(data, "restored");
+  await loadReference();
+  return data;
+}
+
 function renderReference() {
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
@@ -1519,6 +1598,43 @@ function bindActions() {
     try {
       await buildPublicCandidate();
     } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#export-local-backup").addEventListener("click", async () => {
+    try {
+      const data = await exportLocalBackup();
+      showAlert(`Local backup exported to ${data.backup_file}.`, "recorded");
+    } catch (error) {
+      renderLocalBackupResult({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#copy-local-backup").addEventListener("click", async () => {
+    try {
+      await copyText(localBackupJsonText());
+      showAlert("Copied local backup JSON.", "recorded");
+    } catch (error) {
+      renderLocalBackupResult({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#preview-local-backup-import").addEventListener("click", async () => {
+    try {
+      await previewLocalBackupImport();
+      showAlert("Backup import preview is valid. No local files were changed.", "recorded");
+    } catch (error) {
+      state.localBackupPreview = null;
+      renderLocalBackupResult({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#restore-local-backup").addEventListener("click", async () => {
+    try {
+      const data = await restoreLocalBackupImport();
+      showAlert(`Backup restored locally. Pre-restore backup: ${data.pre_restore_backup_file}.`, "recorded");
+    } catch (error) {
+      renderLocalBackupResult({ status: "blocked", message: error.message }, "blocked");
       showAlert(error.message, "blocked");
     }
   });
