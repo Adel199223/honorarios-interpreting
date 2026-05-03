@@ -145,7 +145,7 @@ For Polícia Judiciária sources, record the local host building and city used f
 
 For similar photo batches, either use the browser app's Batch Queue or prepare all intake files together from the CLI. The batch preflight validates every request before generating anything, and the manifest makes mismatches easier to catch before Gmail draft creation.
 
-When a batch should be sent as a single attachment, turn on `Packet mode` in the browser before clicking `Prepare batch package`. The app validates that all queued requests use the same recipient, creates the individual requerimento PDFs, bundles them into one packet PDF, and prepares one Gmail `_create_draft` payload with the packet as the only attachment.
+When a batch should be sent as a single attachment, turn on `Packet mode` in the browser before clicking `Prepare batch package`. Use the packet order controls to drag queued requests or move them up/down first. The app validates that all queued requests use the same recipient, creates the individual requerimento PDFs in the displayed order, bundles them into one packet PDF, and prepares one Gmail `_create_draft` payload with the packet as the only attachment.
 
 ```powershell
 python scripts/prepare_honorarios.py examples/intake.gnr-cuba-photo-metadata-146.example.json examples/intake.gnr-cuba-photo-metadata-15.example.json --render-previews

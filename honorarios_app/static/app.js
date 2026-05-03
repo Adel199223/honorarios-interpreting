@@ -161,6 +161,20 @@ function batchIntakeKey(intake) {
   ].join("|");
 }
 
+function moveBatchIntake(fromIndex, toIndex) {
+  const from = Number(fromIndex);
+  const to = Number(toIndex);
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return false;
+  if (from < 0 || from >= state.batchIntakes.length) return false;
+  if (to < 0 || to >= state.batchIntakes.length) return false;
+  if (from === to) return false;
+  const [item] = state.batchIntakes.splice(from, 1);
+  state.batchIntakes.splice(to, 0, item);
+  renderBatchQueue();
+  setStatus("ready", "Batch order updated for packet preparation.");
+  return true;
+}
+
 function renderBatchQueue() {
   const list = $("#batch-queue-list");
   const chip = $("#batch-count-chip");
@@ -179,8 +193,12 @@ function renderBatchQueue() {
       ? `${intake.service_period_label}${intake.service_start_time || intake.service_end_time ? ` ${intake.service_start_time || ""}-${intake.service_end_time || ""}` : ""}`
       : "full service";
     return `
-      <div class="batch-item">
-        <div>
+      <div class="batch-item" draggable="true" data-batch-index="${index}">
+        <div class="batch-item-order">
+          <span class="drag-handle" aria-hidden="true">::</span>
+          <strong>${index + 1}</strong>
+        </div>
+        <div class="batch-item-main">
           <strong>${escapeHtml(intake.case_number || "case pending")}</strong>
           <div class="batch-item-meta">
             <span>${escapeHtml(intake.service_date || "date pending")}</span>
@@ -189,7 +207,11 @@ function renderBatchQueue() {
             <code>${escapeHtml(intake.recipient_email || "recipient pending")}</code>
           </div>
         </div>
-        <button type="button" class="mini-button" data-remove-batch-index="${index}">Remove</button>
+        <div class="batch-item-actions">
+          <button type="button" class="mini-button" data-move-batch-index="${index}" data-move-direction="up" ${index === 0 ? "disabled" : ""}>Move up</button>
+          <button type="button" class="mini-button" data-move-batch-index="${index}" data-move-direction="down" ${index === state.batchIntakes.length - 1 ? "disabled" : ""}>Move down</button>
+          <button type="button" class="mini-button" data-remove-batch-index="${index}">Remove</button>
+        </div>
       </div>
     `;
   }).join("");
@@ -1355,11 +1377,47 @@ function bindActions() {
     showAlert("Batch queue cleared.", "recorded");
   });
   $("#batch-queue-list").addEventListener("click", (event) => {
+    const moveButton = event.target.closest("[data-move-batch-index]");
+    if (moveButton) {
+      const index = Number(moveButton.dataset.moveBatchIndex);
+      const direction = moveButton.dataset.moveDirection === "up" ? -1 : 1;
+      if (moveBatchIntake(index, index + direction)) {
+        showAlert("Batch order updated. Packet mode will use this order.", "recorded");
+      }
+      return;
+    }
     const button = event.target.closest("[data-remove-batch-index]");
     if (!button) return;
     state.batchIntakes.splice(Number(button.dataset.removeBatchIndex), 1);
     renderBatchQueue();
     setStatus("idle", "Removed request from the batch queue.");
+  });
+  $("#batch-queue-list").addEventListener("dragstart", (event) => {
+    const row = event.target.closest("[data-batch-index]");
+    if (!row) return;
+    event.dataTransfer.setData("text/plain", row.dataset.batchIndex);
+    event.dataTransfer.effectAllowed = "move";
+    row.classList.add("is-dragging");
+  });
+  $("#batch-queue-list").addEventListener("dragend", (event) => {
+    const row = event.target.closest("[data-batch-index]");
+    if (row) row.classList.remove("is-dragging");
+  });
+  $("#batch-queue-list").addEventListener("dragover", (event) => {
+    if (event.target.closest("[data-batch-index]")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+    }
+  });
+  $("#batch-queue-list").addEventListener("drop", (event) => {
+    const row = event.target.closest("[data-batch-index]");
+    if (!row) return;
+    event.preventDefault();
+    const fromIndex = Number(event.dataTransfer.getData("text/plain"));
+    const toIndex = Number(row.dataset.batchIndex);
+    if (moveBatchIntake(fromIndex, toIndex)) {
+      showAlert("Batch order updated. Packet mode will use this order.", "recorded");
+    }
   });
   $("#check-active-drafts").addEventListener("click", async () => {
     try {

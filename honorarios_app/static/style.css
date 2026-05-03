@@ -521,6 +521,20 @@ textarea {
   margin-top: 14px;
 }
 
+.batch-order-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  margin: 12px 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.batch-order-note strong {
+  color: var(--text);
+}
+
 .batch-list {
   display: grid;
   gap: 10px;
@@ -554,13 +568,38 @@ textarea {
 
 .batch-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;
   border: 1px solid rgba(117, 218, 255, 0.16);
   border-radius: var(--radius-sm);
   background: rgba(4, 14, 24, 0.62);
+}
+
+.batch-item.is-dragging {
+  opacity: 0.58;
+  outline: 1px solid rgba(117, 218, 255, 0.72);
+}
+
+.batch-item-order {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  min-width: 42px;
+}
+
+.drag-handle {
+  cursor: grab;
+  color: var(--accent);
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.batch-item-main {
+  min-width: 0;
 }
 
 .batch-item strong,
@@ -575,6 +614,18 @@ textarea {
   color: var(--muted);
   font-size: 0.88rem;
   margin-top: 4px;
+}
+
+.batch-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.batch-item-actions .mini-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .workspace-action-buttons {
