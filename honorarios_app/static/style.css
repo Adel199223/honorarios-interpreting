@@ -782,6 +782,15 @@ textarea {
   font-weight: 800;
 }
 
+.record-combined-note {
+  background: rgba(117, 218, 255, 0.08);
+  border-color: rgba(117, 218, 255, 0.2);
+}
+
+.record-combined-note span {
+  color: var(--accent);
+}
+
 .workspace-action-buttons {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto auto;

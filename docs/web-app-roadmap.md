@@ -31,6 +31,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Prepared-packet draft recording helper that copies a `record_gmail_draft.py` command template and JSON object for logging the packet draft plus its underlying duplicate blockers.
 - Record Gmail Draft autofill from the latest prepared packet or individual payload, preserving pasted Gmail draft/message/thread IDs so the local draft log can be updated with fewer manual path mistakes.
 - Gmail connector response parser in Record Gmail Draft, so pasted `_create_draft` JSON/text can fill draft/message/thread IDs before the prepared-payload autofill.
+- One-click local `Record parsed response + prepared payload` action that parses a pasted `_create_draft` response, autofills the latest packet or individual payload, and records the draft locally without adding any Gmail send-capable behavior.
 - Editable reference screens for known destinations/kilometers and court email directory entries, with validation and no send-capable behavior.
 - Guarded service-profile editor with recipient validation, service/date/entity checks, and a sample Portuguese draft preview before saving.
 - Profile diff preview and local profile-change history so service profile edits are auditable without publishing private runtime logs.
@@ -66,7 +67,7 @@ It was published from `output/public-candidate` after the privacy and repository
 ## Next Stages
 
 1. Add deeper browser-flow tests for the Google Photos Picker, Batch Queue, Packet mode, packet-ordering, packet-inspector, and packet-record-helper happy paths using mocked local endpoints.
-2. Add a one-click "record from parsed response and latest payload" safe path that combines the current parser and payload autofill after review, while still requiring the user to create the Gmail draft outside the app.
+2. Add a local export/import backup for reference data, duplicate records, and draft lifecycle logs so the standalone app can be moved or backed up before future LegalPDF integration work.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

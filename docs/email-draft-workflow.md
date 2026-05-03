@@ -98,7 +98,7 @@ If the user wants several source files packaged together, build a combined packe
 
 The browser app exposes this as `Packet mode` in the Batch Queue. Packet mode validates that every queued request has the same recipient, prepares each request through the normal PDF pipeline, builds one combined packet PDF, and writes one draft payload whose `gmail_create_draft_args.attachment_files` array contains only the packet PDF. Before preparing, use the Batch Queue `Inspect` buttons to confirm each request's generated requerimento PDF slot and supporting attachments; this is especially important when declaration images must follow a specific morning/afternoon request. After preparing, use the Packet draft recording helper to copy either the `record_gmail_draft.py` command template or the record JSON object. Both include the packet draft payload path and the packet's underlying requests.
 
-The Review drawer also includes two local handoff helpers in the Record Gmail Draft card. `Parse Gmail IDs` reads a pasted Gmail `_create_draft` connector response and fills draft/message/thread IDs without sending anything. `Autofill from prepared payload` fills the prepared packet or individual payload path and active status while preserving those pasted IDs.
+The Review drawer also includes local handoff helpers in the Record Gmail Draft card. `Parse Gmail IDs` reads a pasted Gmail `_create_draft` connector response and fills draft/message/thread IDs without sending anything. `Autofill from prepared payload` fills the prepared packet or individual payload path and active status while preserving those pasted IDs. `Record parsed response + prepared payload` combines those two local steps with `Record draft`; use it after the Gmail draft has already been created outside the app.
 
 ## Draft Log
 
@@ -113,9 +113,9 @@ Browser shortcut:
 1. Prepare the PDF and draft payload.
 2. Create the Gmail draft with `_create_draft` using the displayed `gmail_create_draft_args`.
 3. Paste the returned Gmail connector response into `Paste Gmail _create_draft response`.
-4. Click `Parse Gmail IDs`.
-5. Click `Autofill from prepared payload`.
-6. Click `Record draft`.
+4. Click `Record parsed response + prepared payload` to parse the IDs, fill the latest prepared packet or individual payload, and update the local draft log and duplicate index.
+
+The separate `Parse Gmail IDs`, `Autofill from prepared payload`, and `Record draft` buttons remain available when you need to inspect each value before recording.
 
 The log lives at:
 

@@ -393,6 +393,16 @@ function autofillRecordFormFromPrepared() {
   return target;
 }
 
+async function recordFromParsedResponseAndPreparedPayload() {
+  const ids = applyParsedGmailDraftIds(parseGmailDraftIds($("#gmail-response-raw").value));
+  const target = autofillRecordFormFromPrepared();
+  if (!ids.draft_id || !ids.message_id) {
+    throw new Error("Parsed Gmail response must include draft_id and message_id before recording locally.");
+  }
+  const data = await recordDraft();
+  return { ids, target, record: data };
+}
+
 function moveBatchIntake(fromIndex, toIndex) {
   const from = Number(fromIndex);
   const to = Number(toIndex);
@@ -1445,6 +1455,7 @@ async function recordDraft() {
   const superseded = data.superseded_drafts?.length ? ` Superseded: ${data.superseded_drafts.join(", ")}.` : "";
   showAlert(`Draft recorded locally. The duplicate index now protects this case/date.${superseded}`, "recorded");
   await loadReference();
+  return data;
 }
 
 function resetReview() {
@@ -1828,6 +1839,15 @@ function bindActions() {
       const label = target.packet_mode ? "packet" : "prepared";
       showAlert(`Record form autofilled from ${label} payload; pasted Gmail IDs were preserved.`, "recorded");
     } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#record-parsed-prepared-draft").addEventListener("click", async () => {
+    try {
+      const result = await recordFromParsedResponseAndPreparedPayload();
+      showAlert(`Gmail draft response and prepared payload recorded locally for ${result.record.draft_id}.`, "recorded");
+    } catch (error) {
+      setStatus("blocked", error.message);
       showAlert(error.message, "blocked");
     }
   });

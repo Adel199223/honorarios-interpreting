@@ -593,6 +593,14 @@
             </div>
             <button type="button" class="mini-button" id="autofill-record-from-prepared">Autofill from prepared payload</button>
           </div>
+          <div class="record-autofill-note record-combined-note">
+            <div>
+              <strong>Record parsed response + prepared payload</strong>
+              <p>Parse IDs, autofill the prepared payload, and record locally in one step after you create the Gmail draft with `_create_draft`.</p>
+              <span>Still local-only; it does not create, send, or modify Gmail messages.</span>
+            </div>
+            <button type="button" class="mini-button" id="record-parsed-prepared-draft">Record parsed response + prepared payload</button>
+          </div>
           <form id="record-form" class="form-grid compact-grid">
             <div class="field field-wide">
               <label for="record_payload">Draft Payload Path</label>
