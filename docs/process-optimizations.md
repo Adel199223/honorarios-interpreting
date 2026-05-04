@@ -148,6 +148,20 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This exercises the `Prepare replacement draft` button and allows `/api/prepare`, so it may create local PDF and draft-payload artifacts. It still blocks `/api/drafts/record` and `/api/drafts/status`, does not call Gmail, and does not record draft IDs.
 
+The safer version is the isolated smoke launcher, which creates a temporary runtime with synthetic config, reference data, duplicate index, draft log, and output folders:
+
+```powershell
+python scripts/isolated_app_smoke.py --interaction-checks --json
+```
+
+For replacement smoke, the isolated launcher can seed a synthetic active draft and target that case:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-click-through --browser-correction-mode --browser-prepare-replacement --json
+```
+
+The isolated launcher never writes to the real `data/`, `output/`, or `tmp/` folders. Browser click-through still depends on optional Python Playwright; when it is unavailable, the smoke reports that as a tooling blocker rather than falling back to unsafe real-state checks.
+
 For disposable or synthetic state, add `--interaction-checks` to exercise profile intake, active-draft checking, and packet-mode prepare in one pass:
 
 ```powershell

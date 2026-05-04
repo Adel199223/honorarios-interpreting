@@ -47,6 +47,7 @@ from .services import (
     upsert_known_destination,
     upsert_service_profile,
 )
+from .runtime import create_synthetic_runtime, runtime_path_overrides
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -387,9 +388,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument("--runtime-root", type=Path, help="Use config/data/output paths under this disposable runtime root.")
+    parser.add_argument("--init-synthetic-runtime", action="store_true", help="Create synthetic local runtime files under --runtime-root before starting.")
+    parser.add_argument("--seed-active-draft", action="store_true", help="With --init-synthetic-runtime, seed one synthetic active draft for replacement smoke.")
     args = parser.parse_args(argv)
 
-    uvicorn.run("honorarios_app.web:app", host=args.host, port=args.port, reload=args.reload)
+    if args.runtime_root:
+        if args.init_synthetic_runtime:
+            create_synthetic_runtime(args.runtime_root, seed_active_draft=args.seed_active_draft)
+        runtime_app = create_app(**runtime_path_overrides(args.runtime_root))
+        uvicorn.run(runtime_app, host=args.host, port=args.port, reload=False)
+    else:
+        uvicorn.run("honorarios_app.web:app", host=args.host, port=args.port, reload=args.reload)
     return 0
 
 

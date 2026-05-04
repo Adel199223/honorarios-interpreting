@@ -92,6 +92,20 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This clicks `Prepare replacement draft` with a synthetic correction reason and allows `/api/prepare`, so it may create local PDF and draft-payload artifacts. It still blocks `/api/drafts/record` and `/api/drafts/status`, never calls Gmail, and never records or sends a draft.
 
+For the safest artifact-writing smoke, run the app against a fully isolated synthetic runtime instead of the real private workspace state:
+
+```powershell
+python scripts/isolated_app_smoke.py --interaction-checks --json
+```
+
+This starts a temporary local app whose `config/`, `data/`, `output/`, and `tmp/` paths all live in a disposable folder, then runs the draft-only smoke checks against that app. To exercise the replacement browser path against a seeded synthetic active draft, use:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-click-through --browser-correction-mode --browser-prepare-replacement --json
+```
+
+That command still never records drafts or calls Gmail. If Python Playwright is not installed, the browser part reports a clean tooling blocker; the isolated API smoke remains usable.
+
 For a deeper opt-in workflow smoke against disposable/synthetic app state, add `--interaction-checks`:
 
 ```powershell
