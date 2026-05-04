@@ -1545,6 +1545,136 @@ def legalpdf_import_report_markdown(preview: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _profile_checklist_task(row: dict[str, Any]) -> dict[str, Any]:
+    source_key = str(row.get("source_key") or "").strip()
+    target_key = str(row.get("target_key") or source_key).strip()
+    action = str(row.get("action") or "").strip()
+    mapping = f"{source_key} -> {target_key}" if source_key and target_key and source_key != target_key else target_key or source_key
+    change_count = int(row.get("change_count") or 0)
+    if action == "create":
+        task_action = "create"
+        title = f"Create service profile {target_key}."
+        detail = f"Review the incoming LegalPDF profile {source_key} and add a sanitized honorários profile only when it matches this project's PDF-only rules."
+    elif action == "update":
+        task_action = "review_update"
+        title = f"Review service profile mapping {mapping}."
+        detail = f"Reconcile {change_count} proposed profile change{'' if change_count == 1 else 's'} before any future adapter import."
+    elif action == "unchanged":
+        task_action = "verify_unchanged"
+        title = f"Verify unchanged service profile {mapping}."
+        detail = "No data change is proposed; keep this as evidence that the LegalPDF and honorários profile already align."
+    else:
+        task_action = "review"
+        title = f"Review service profile {mapping}."
+        detail = "Unknown preview action; review this row manually before any future integration work."
+    return {
+        "category": "service_profile",
+        "action": task_action,
+        "title": title,
+        "detail": detail,
+        "source_key": source_key,
+        "target_key": target_key,
+        "change_count": change_count,
+        "blocking": False,
+    }
+
+
+def _court_email_checklist_task(row: dict[str, Any]) -> dict[str, Any]:
+    key = str(row.get("key") or "").strip()
+    action = str(row.get("action") or "").strip()
+    incoming_email = str(row.get("incoming_email") or "").strip()
+    current_email = str(row.get("current_email") or "").strip()
+    change_count = int(row.get("change_count") or 0)
+    if action == "create":
+        task_action = "create"
+        title = f"Add court email alias {key}."
+        detail = f"Review and add {incoming_email} only if it is the correct payment-entity recipient for this workflow."
+    elif action == "update":
+        task_action = "review_update"
+        title = f"Review court email {key}."
+        detail = f"Compare current {current_email or 'blank'} with incoming {incoming_email or 'blank'} across {change_count} proposed change{'' if change_count == 1 else 's'}."
+    elif action == "unchanged":
+        task_action = "verify_unchanged"
+        title = f"Verify unchanged court email {key}."
+        detail = "No court-email change is proposed; keep this as evidence for a later LegalPDF adapter."
+    else:
+        task_action = "review"
+        title = f"Review court email {key}."
+        detail = "Unknown preview action; review this row manually before any future integration work."
+    return {
+        "category": "court_email",
+        "action": task_action,
+        "title": title,
+        "detail": detail,
+        "source_key": key,
+        "target_key": key,
+        "incoming_email": incoming_email,
+        "current_email": current_email,
+        "change_count": change_count,
+        "blocking": False,
+    }
+
+
+def legalpdf_integration_checklist_markdown(checklist: list[dict[str, Any]], preview: dict[str, Any]) -> str:
+    rows = [
+        [
+            task.get("number", ""),
+            task.get("category", ""),
+            task.get("action", ""),
+            f"{task.get('source_key', '')} -> {task.get('target_key', '')}" if task.get("source_key") != task.get("target_key") else task.get("target_key", ""),
+            task.get("title", ""),
+        ]
+        for task in checklist
+    ]
+    lines = [
+        "# LegalPDF Integration Checklist",
+        "",
+        "Concrete future-adapter tasks derived from the read-only LegalPDF integration preview.",
+        "",
+        "No local reference files were changed. Gmail draft behavior is not involved.",
+        "",
+        "## Preview Summary",
+        "",
+        f"- Profiles: {json.dumps(preview.get('profile_action_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        f"- Court emails: {json.dumps(preview.get('court_email_action_summary') or {}, ensure_ascii=False, sort_keys=True)}",
+        "",
+        "## Tasks",
+        "",
+        _markdown_table(["#", "Category", "Action", "Key", "Task"], rows),
+        "",
+        "## Safety",
+        "",
+        "- `write_allowed`: false",
+        "- `send_allowed`: false",
+        "- `managed_data_changed`: false",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_legalpdf_integration_checklist(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    preview = preview_legalpdf_import(payload, paths)
+    tasks: list[dict[str, Any]] = []
+    for row in preview.get("profile_mappings") or []:
+        if isinstance(row, dict):
+            tasks.append(_profile_checklist_task(row))
+    for row in preview.get("court_email_differences") or []:
+        if isinstance(row, dict):
+            tasks.append(_court_email_checklist_task(row))
+    for index, task in enumerate(tasks, start=1):
+        task["number"] = index
+    return {
+        "status": "checklist_ready",
+        "message": "LegalPDF integration checklist is ready. No local files were changed.",
+        "checklist": tasks,
+        "checklist_markdown": legalpdf_integration_checklist_markdown(tasks, preview),
+        "preview": preview,
+        "write_allowed": False,
+        "send_allowed": False,
+        "managed_data_changed": False,
+    }
+
+
 def export_legalpdf_import_report(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     preview = preview_legalpdf_import(payload, paths)
     report_id = f"legalpdf-import-preview-{timestamp_slug()}-{secrets.token_hex(4)}"

@@ -1152,6 +1152,29 @@ function renderImportDiffRows(rows, keyLabel) {
   }).join("");
 }
 
+function renderIntegrationChecklistRows(tasks) {
+  if (!tasks?.length) {
+    return `<div class="data-item"><strong>Integration checklist</strong><span>No adapter tasks were generated.</span></div>`;
+  }
+  return tasks.map((task) => {
+    const key = task.source_key && task.source_key !== task.target_key
+      ? `${task.source_key} -> ${task.target_key}`
+      : task.target_key || task.source_key || "record";
+    const changeCount = Number(task.change_count || 0);
+    return `
+      <div class="data-item import-diff-row">
+        <strong>${escapeHtml(task.number || "")}. ${escapeHtml(task.title || "Review integration task")}</strong>
+        <span>
+          <span class="status-chip ${statusChipClass(task.action)}">${escapeHtml(task.action || "review")}</span>
+          ${escapeHtml(task.category || "integration")} · ${escapeHtml(key)}
+          ${changeCount ? ` · ${escapeHtml(changeCount)} change${changeCount === 1 ? "" : "s"}` : ""}
+        </span>
+        <span>${escapeHtml(task.detail || "")}</span>
+      </div>
+    `;
+  }).join("");
+}
+
 function renderLegalPdfImportPreview(data, kind = "info") {
   const chip = $("#legalpdf-import-chip");
   const body = $("#legalpdf-import-preview-result");
@@ -1179,6 +1202,13 @@ function renderLegalPdfImportPreview(data, kind = "info") {
   const courtSummary = data?.court_email_action_summary
     ? `<div class="data-item"><strong>Court email summary</strong><span>${escapeHtml(JSON.stringify(data.court_email_action_summary))}</span></div>`
     : "";
+  const checklistRows = data?.checklist
+    ? `
+      <h4>Integration checklist</h4>
+      <div class="data-list">${renderIntegrationChecklistRows(data.checklist)}</div>
+      ${data.checklist_markdown ? `<details class="inline-details"><summary>Checklist Markdown</summary><pre class="draft-args">${escapeHtml(data.checklist_markdown)}</pre></details>` : ""}
+    `
+    : "";
   body.className = `result-card ${chipKind}`;
   body.innerHTML = `
     <div class="result-header">
@@ -1198,6 +1228,7 @@ function renderLegalPdfImportPreview(data, kind = "info") {
     ${courtSummary}
     <h4>Court-email differences</h4>
     <div class="data-list">${renderImportDiffRows(data?.court_email_differences || [], "Court emails")}</div>
+    ${checklistRows}
   `;
 }
 
@@ -1229,6 +1260,25 @@ async function exportLegalPdfImportReport() {
     message: data.message,
     preview_report_markdown_file: data.preview_report_markdown_file,
     preview_report_json_file: data.preview_report_json_file,
+  }, "ready");
+  return data;
+}
+
+async function buildLegalPdfIntegrationChecklist() {
+  const data = await requestJson("/api/integration/checklist", {
+    method: "POST",
+    body: JSON.stringify({
+      backup_json: legalPdfImportJsonText(),
+      profile_mapping_text: $("#legalpdf-profile-mapping").value,
+    }),
+  });
+  state.legalPdfImportPreview = data.preview || null;
+  renderLegalPdfImportPreview({
+    ...(data.preview || {}),
+    status: data.status,
+    message: data.message,
+    checklist: data.checklist || [],
+    checklist_markdown: data.checklist_markdown || "",
   }, "ready");
   return data;
 }
@@ -1900,6 +1950,15 @@ function bindActions() {
     try {
       const data = await exportLegalPdfImportReport();
       showAlert(`LegalPDF preview report exported to ${data.preview_report_markdown_file}.`, "recorded");
+    } catch (error) {
+      renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#build-legalpdf-integration-checklist").addEventListener("click", async () => {
+    try {
+      const data = await buildLegalPdfIntegrationChecklist();
+      showAlert(`Integration checklist built with ${data.checklist.length} task${data.checklist.length === 1 ? "" : "s"}. No local files were changed.`, "recorded");
     } catch (error) {
       renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
       showAlert(error.message, "blocked");
