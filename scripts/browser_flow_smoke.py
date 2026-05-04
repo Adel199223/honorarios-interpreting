@@ -155,6 +155,7 @@ def run_browser_flow_smoke(
     service_date: str = DEFAULT_SERVICE_DATE,
     upload_photo: bool = False,
     upload_pdf: bool = False,
+    answer_questions: bool = False,
     photo_upload_path: str | Path | None = None,
     pdf_upload_path: str | Path | None = None,
     correction_mode: bool = False,
@@ -204,16 +205,32 @@ def run_browser_flow_smoke(
         )):
             return _report(base, checks)
 
-        if not _safe_step(checks, "browser_review_drawer", "Browser opened review drawer with Portuguese draft text.", lambda: (
-            driver.select("#profile", profile),
-            driver.fill("#case_number", case_number),
-            driver.fill("#service_date", service_date),
-            driver.click("#review-intake"),
-            driver.expect_selector_text("#drawer-next-safe-action", "Next Safe Action"),
-            driver.expect_selector_text("#draft-text", "Número de processo"),
-            driver.expect_selector_text("#recipient-summary", "To:"),
-        )):
+        def _review_drawer() -> None:
+            driver.select("#profile", profile)
+            driver.fill("#case_number", case_number)
+            driver.fill("#service_date", "" if answer_questions else service_date)
+            driver.click("#review-intake")
+            driver.expect_selector_text("#drawer-next-safe-action", "Next Safe Action")
+            if answer_questions:
+                driver.expect_text("Answer the numbered questions")
+                driver.expect_selector_visible("#numbered-answers")
+                driver.expect_text("Apply numbered answers")
+            else:
+                driver.expect_selector_text("#draft-text", "Número de processo")
+                driver.expect_selector_text("#recipient-summary", "To:")
+
+        if not _safe_step(checks, "browser_review_drawer", "Browser opened review drawer with Portuguese draft text.", _review_drawer):
             return _report(base, checks)
+
+        if answer_questions:
+            if not _safe_step(checks, "browser_answer_questions", "Browser applied numbered missing-info answers and reran review without preparing artifacts.", lambda: (
+                driver.fill("#numbered-answers", f"1. {service_date}"),
+                driver.click("#apply-numbered-answers"),
+                driver.expect_selector_value("#service_date", service_date),
+                driver.expect_selector_text("#draft-text", "Número de processo"),
+                driver.expect_selector_text("#recipient-summary", "To:"),
+            )):
+                return _report(base, checks)
 
         if upload_photo:
             if not photo_upload_path:
@@ -326,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--service-date", default=DEFAULT_SERVICE_DATE)
     parser.add_argument("--upload-photo", action="store_true", help="Upload a disposable synthetic photo and verify source evidence. Does not click prepare or record.")
     parser.add_argument("--upload-pdf", action="store_true", help="Upload a disposable synthetic notification PDF and verify recovered review fields. Does not click prepare or record.")
+    parser.add_argument("--answer-questions", action="store_true", help="Intentionally leave a required field blank, apply compact numbered answers, and rerun review without preparing artifacts.")
     parser.add_argument("--photo-upload-path", type=Path, default=None, help="Optional explicit local photo path for --upload-photo.")
     parser.add_argument("--pdf-upload-path", type=Path, default=None, help="Optional explicit local PDF path for --upload-pdf.")
     parser.add_argument("--correction-mode", action="store_true", help="Check the draft lifecycle/correction UI without preparing a replacement draft.")
@@ -344,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         service_date=args.service_date,
         upload_photo=args.upload_photo,
         upload_pdf=args.upload_pdf,
+        answer_questions=args.answer_questions,
         photo_upload_path=args.photo_upload_path,
         pdf_upload_path=args.pdf_upload_path,
         correction_mode=args.correction_mode,

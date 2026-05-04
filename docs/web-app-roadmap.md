@@ -56,7 +56,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Optional browser upload/correction smoke flags (`--browser-upload-photo`, `--browser-upload-pdf`, and `--browser-correction-mode`) that verify local Source Evidence and draft-lifecycle UI with disposable synthetic files while still blocking prepare, record, and draft-status endpoints by default.
 - Opt-in artifact-writing browser replacement smoke (`--browser-prepare-replacement` with `--browser-correction-mode`) that exercises the replacement-draft prepare button against disposable/synthetic active-draft state while still blocking draft recording/status endpoints and all Gmail actions.
 - Isolated synthetic runtime support for artifact-writing smoke: `honorarios_app.web --runtime-root ... --init-synthetic-runtime` and `scripts/isolated_app_smoke.py` keep synthetic config, reference data, duplicate/draft logs, PDFs, payloads, manifests, and previews out of the real private workspace state.
-- Browser/IAB-native smoke runner (`scripts/browser_iab_smoke.mjs`) for Codex's in-app Browser runtime, importable from the Node REPL, covering the LegalPDF shell, review drawer, batch queue, correction mode, isolated replacement prepare, and read-only LegalPDF Apply History/Detail/Restore Plan checks without relying on optional Python Playwright.
+- Browser/IAB-native smoke runner (`scripts/browser_iab_smoke.mjs`) for Codex's in-app Browser runtime, importable from the Node REPL, covering the LegalPDF shell, review drawer, numbered missing-info answers, batch queue, correction mode, isolated replacement prepare, and read-only LegalPDF Apply History/Detail/Restore Plan checks without relying on optional Python Playwright.
 
 ## LegalPDF UI Alignment
 

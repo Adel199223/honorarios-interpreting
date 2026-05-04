@@ -2197,7 +2197,7 @@ function applyReview(data) {
     renderDraftLifecycle(state.draftLifecycle);
   }
 
-  if (["ready", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
+  if (["ready", "needs_info", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
     openReviewDrawer();
   }
 }

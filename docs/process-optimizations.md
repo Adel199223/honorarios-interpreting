@@ -135,7 +135,7 @@ This check deliberately stops before `Prepare batch package`, `Record draft`, an
 When working inside Codex with the Browser plugin, use the Browser/IAB runner instead of optional Python Playwright for the normal review/batch path. The Python smoke command can print the exact Node REPL handoff cell:
 
 ```powershell
-python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --json
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-answer-questions --json
 ```
 
 Raw shell subprocesses cannot drive the Codex in-app Browser runtime, so that command reports a short blocker with `details.node_repl_cell`. Paste that cell into the Codex Node REPL Browser surface, or import the runner directly there:
@@ -147,12 +147,13 @@ const result = await runBrowserIabSmoke({
   profile: 'gnr_serpa_judicial',
   caseNumber: '999/26.0IAB',
   serviceDate: '2026-05-04',
+  answerQuestions: true,
   applyHistory: true
 });
 nodeRepl.write(JSON.stringify(result, null, 2));
 ```
 
-This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, confirms draft-only review evidence, adds the reviewed request to the batch queue, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
+This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 

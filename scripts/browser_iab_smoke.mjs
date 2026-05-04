@@ -18,6 +18,7 @@ function parseArgs(argv) {
     json: false,
     uploadPhoto: false,
     uploadPdf: false,
+    answerQuestions: false,
     correctionMode: false,
     prepareReplacement: false,
     preparePacket: false,
@@ -42,6 +43,7 @@ function parseArgs(argv) {
     else if (item === "--json") args.json = true;
     else if (item === "--upload-photo") args.uploadPhoto = true;
     else if (item === "--upload-pdf") args.uploadPdf = true;
+    else if (item === "--answer-questions") args.answerQuestions = true;
     else if (item === "--correction-mode") args.correctionMode = true;
     else if (item === "--prepare-replacement") args.prepareReplacement = true;
     else if (item === "--prepare-packet") args.preparePacket = true;
@@ -146,6 +148,12 @@ async function expectValueContains(tab, selector, value, timeoutMs) {
   }
 }
 
+function portugueseDate(value) {
+  const parts = String(value || "").split("-");
+  if (parts.length !== 3) return String(value || "");
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
 async function countLocator(tab, selector) {
   return tab.playwright.locator(selector).count();
 }
@@ -213,15 +221,33 @@ export async function runBrowserIabSmoke(options = {}) {
   if (!(await runStep(checks, "browser_review_drawer", "Browser/IAB opened review drawer with Portuguese draft text.", async () => {
     await select(tab, "#profile", args.profile, args.timeoutMs);
     await fill(tab, "#case_number", args.caseNumber, args.timeoutMs);
-    await fill(tab, "#service_date", args.serviceDate, args.timeoutMs);
+    await fill(tab, "#service_date", args.answerQuestions ? "" : args.serviceDate, args.timeoutMs);
     await click(tab, "#review-intake", args.timeoutMs);
     await expectBodyText(tab, "Next Safe Action", args.timeoutMs);
-    await expectAnyBodyText(tab, ["Número de processo", "Possible duplicate found"], args.timeoutMs);
-    if (!args.correctionMode) {
+    if (args.answerQuestions) {
+      await expectBodyText(tab, "Answer the numbered questions", args.timeoutMs);
+      await uniqueLocator(tab, "#numbered-answers", args.timeoutMs);
+      await expectBodyText(tab, "Apply numbered answers", args.timeoutMs);
+    } else {
+      await expectAnyBodyText(tab, ["Número de processo", "Possible duplicate found"], args.timeoutMs);
+    }
+    if (!args.correctionMode && !args.answerQuestions) {
       await expectBodyText(tab, "To:", args.timeoutMs);
     }
   }))) {
     return report(baseUrl, checks);
+  }
+
+  if (args.answerQuestions) {
+    if (!(await runStep(checks, "browser_answer_questions", "Browser/IAB applied numbered missing-info answers and reran review without preparing artifacts.", async () => {
+      await fill(tab, "#numbered-answers", `1. ${args.serviceDate}`, args.timeoutMs);
+      await click(tab, "#apply-numbered-answers", args.timeoutMs);
+      await expectBodyText(tab, "Número de processo", args.timeoutMs);
+      await expectBodyText(tab, portugueseDate(args.serviceDate), args.timeoutMs);
+      await expectBodyText(tab, "To:", args.timeoutMs);
+    }))) {
+      return report(baseUrl, checks);
+    }
   }
 
   if (!args.prepareReplacement || args.preparePacket) {
@@ -313,7 +339,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--correction-mode] [--prepare-replacement] [--prepare-packet] [--apply-history]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--apply-history]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);

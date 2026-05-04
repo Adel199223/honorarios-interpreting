@@ -77,10 +77,10 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
 
-Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can also verify the References -> LegalPDF Apply History, redacted Details, and read-only Restore Plan surface without preparing PDFs, writing reference files, recording drafts, or calling Gmail:
+Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can also verify the numbered missing-info answer loop and the References -> LegalPDF Apply History, redacted Details, and read-only Restore Plan surface without preparing PDFs, writing reference files, recording drafts, or calling Gmail:
 
 ```powershell
-python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-apply-history --json
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-answer-questions --browser-apply-history --json
 ```
 
 The shell command returns a Node REPL handoff cell because raw subprocesses should not drive the in-app Browser directly.

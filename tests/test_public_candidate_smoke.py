@@ -252,6 +252,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 "status": "ready",
                 "checks": [
                     {"name": "browser_review_drawer", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_answer_questions", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_photo_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_pdf_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_correction_mode", "status": "ready", "message": "ok", "details": {}},
@@ -266,6 +267,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             fetch_text=fetch_text,
             fetch_json=fetch_json,
             browser_click_through=True,
+            browser_answer_questions=True,
             browser_upload_photo=True,
             browser_upload_pdf=True,
             browser_correction_mode=True,
@@ -275,10 +277,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         )
         self.assertEqual(report["status"], "ready", report)
         self.assertIn("browser_review_drawer", {check["name"] for check in report["checks"]})
+        self.assertIn("browser_answer_questions", {check["name"] for check in report["checks"]})
         self.assertIn("browser_photo_upload_evidence", {check["name"] for check in report["checks"]})
         self.assertIn("browser_pdf_upload_evidence", {check["name"] for check in report["checks"]})
         self.assertIn("browser_correction_mode", {check["name"] for check in report["checks"]})
         self.assertIn("browser_replacement_prepare", {check["name"] for check in report["checks"]})
+        self.assertTrue(seen_kwargs["answer_questions"])
         self.assertTrue(seen_kwargs["upload_photo"])
         self.assertTrue(seen_kwargs["upload_pdf"])
         self.assertTrue(seen_kwargs["correction_mode"])
