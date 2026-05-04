@@ -140,6 +140,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This creates disposable synthetic upload files, verifies the Source Evidence card and recovered PDF candidate fields, checks the draft lifecycle/correction reason surface, and still blocks prepare, record, and draft-status POSTs. The app may store synthetic source-preview artifacts from the upload, but it must not create PDF/draft payloads or Gmail draft-log records in this mode.
 
+To cover replacement-draft preparation itself, use the opt-in artifact-writing flag only against disposable/synthetic state with an existing active draft blocker:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-correction-mode --browser-prepare-replacement --json
+```
+
+This exercises the `Prepare replacement draft` button and allows `/api/prepare`, so it may create local PDF and draft-payload artifacts. It still blocks `/api/drafts/record` and `/api/drafts/status`, does not call Gmail, and does not record draft IDs.
+
 For disposable or synthetic state, add `--interaction-checks` to exercise profile intake, active-draft checking, and packet-mode prepare in one pass:
 
 ```powershell

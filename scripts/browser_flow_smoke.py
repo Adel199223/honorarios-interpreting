@@ -159,6 +159,7 @@ def run_browser_flow_smoke(
     pdf_upload_path: str | Path | None = None,
     correction_mode: bool = False,
     correction_reason: str = "synthetic correction smoke check",
+    prepare_replacement: bool = False,
     prepare_packet: bool = False,
     record_helper: bool = False,
     headless: bool = True,
@@ -190,7 +191,7 @@ def run_browser_flow_smoke(
             if upload_pdf and not pdf_upload_path:
                 pdf_upload_path = _make_synthetic_pdf(temp_path, case_number=case_number, service_date=service_date)
 
-        forbidden = FORBIDDEN_PREPARE_POSTS if prepare_packet else FORBIDDEN_DEFAULT_POSTS
+        forbidden = FORBIDDEN_PREPARE_POSTS if (prepare_packet or prepare_replacement) else FORBIDDEN_DEFAULT_POSTS
         if hasattr(driver, "forbid_requests"):
             driver.forbid_requests(forbidden)
 
@@ -258,6 +259,22 @@ def run_browser_flow_smoke(
             )):
                 return _report(base, checks)
 
+        if prepare_replacement:
+            if not correction_mode:
+                checks.append(_check(
+                    "browser_replacement_prepare",
+                    False,
+                    "Replacement preparation smoke requires --correction-mode so a correction reason is present.",
+                ))
+                return _report(base, checks)
+            if not _safe_step(checks, "browser_replacement_prepare", "Browser prepared a replacement payload without recording a draft or calling Gmail.", lambda: (
+                driver.click("#prepare-replacement-draft"),
+                driver.expect_text("Replacement payload prepared"),
+                driver.expect_selector_visible("#prepare-results"),
+                driver.expect_text("Draft-only Gmail"),
+            )):
+                return _report(base, checks)
+
         if prepare_packet:
             if not _safe_step(checks, "browser_packet_prepare", "Browser prepared packet mode and exposed packet draft helpers.", lambda: (
                 driver.check("#batch-packet-mode"),
@@ -313,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pdf-upload-path", type=Path, default=None, help="Optional explicit local PDF path for --upload-pdf.")
     parser.add_argument("--correction-mode", action="store_true", help="Check the draft lifecycle/correction UI without preparing a replacement draft.")
     parser.add_argument("--correction-reason", default="synthetic correction smoke check")
+    parser.add_argument("--prepare-replacement", action="store_true", help="With --correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still blocks record/status writes.")
     parser.add_argument("--prepare-packet", action="store_true", help="Also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--record-helper", action="store_true", help="After packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
     parser.add_argument("--headed", action="store_true")
@@ -330,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         pdf_upload_path=args.pdf_upload_path,
         correction_mode=args.correction_mode,
         correction_reason=args.correction_reason,
+        prepare_replacement=args.prepare_replacement,
         prepare_packet=args.prepare_packet,
         record_helper=args.record_helper,
         headless=not args.headed,

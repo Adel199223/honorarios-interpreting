@@ -74,7 +74,7 @@ For a real browser review-flow click-through, use the opt-in browser smoke:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` option is for disposable/synthetic state only because it can create local PDF/payload artifacts.
+This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
 
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 
@@ -83,6 +83,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 ```
 
 These flags use disposable synthetic upload files, verify the `Source Evidence` card, check recovered PDF candidate fields, and exercise the draft lifecycle/correction reason surface. The upload endpoint can store synthetic source-preview artifacts locally, but the smoke still blocks prepare, record, and draft-status endpoints by default.
+
+To verify the artifact-writing replacement path against disposable state that already has an active draft blocker, add `--browser-prepare-replacement`:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-correction-mode --browser-prepare-replacement --json
+```
+
+This clicks `Prepare replacement draft` with a synthetic correction reason and allows `/api/prepare`, so it may create local PDF and draft-payload artifacts. It still blocks `/api/drafts/record` and `/api/drafts/status`, never calls Gmail, and never records or sends a draft.
 
 For a deeper opt-in workflow smoke against disposable/synthetic app state, add `--interaction-checks`:
 

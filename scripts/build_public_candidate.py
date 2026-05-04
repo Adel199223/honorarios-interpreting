@@ -441,6 +441,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     {"name": "browser_photo_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_pdf_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_correction_mode", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_replacement_prepare", "status": "ready", "message": "ok", "details": {}},
                 ],
                 "failure_count": 0,
                 "send_allowed": False,
@@ -454,6 +455,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             browser_upload_photo=True,
             browser_upload_pdf=True,
             browser_correction_mode=True,
+            browser_prepare_replacement=True,
             browser_runner=browser_runner,
         )
         self.assertEqual(report["status"], "ready", report)
@@ -461,9 +463,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("browser_photo_upload_evidence", {check["name"] for check in report["checks"]})
         self.assertIn("browser_pdf_upload_evidence", {check["name"] for check in report["checks"]})
         self.assertIn("browser_correction_mode", {check["name"] for check in report["checks"]})
+        self.assertIn("browser_replacement_prepare", {check["name"] for check in report["checks"]})
         self.assertTrue(seen_kwargs["upload_photo"])
         self.assertTrue(seen_kwargs["upload_pdf"])
         self.assertTrue(seen_kwargs["correction_mode"])
+        self.assertTrue(seen_kwargs["prepare_replacement"])
 
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)

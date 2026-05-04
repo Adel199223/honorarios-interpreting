@@ -275,6 +275,7 @@ def run_smoke(
     interaction_service_date: str = "2026-05-04",
     browser_click_through: bool = False,
     browser_prepare_packet: bool = False,
+    browser_prepare_replacement: bool = False,
     browser_record_helper: bool = False,
     browser_upload_photo: bool = False,
     browser_upload_pdf: bool = False,
@@ -377,6 +378,7 @@ def run_smoke(
                     upload_photo=browser_upload_photo,
                     upload_pdf=browser_upload_pdf,
                     correction_mode=browser_correction_mode,
+                    prepare_replacement=browser_prepare_replacement,
                     prepare_packet=browser_prepare_packet,
                     record_helper=browser_record_helper,
                 )
@@ -389,6 +391,7 @@ def run_smoke(
                 upload_photo=browser_upload_photo,
                 upload_pdf=browser_upload_pdf,
                 correction_mode=browser_correction_mode,
+                prepare_replacement=browser_prepare_replacement,
                 prepare_packet=browser_prepare_packet,
                 record_helper=browser_record_helper,
             )
@@ -421,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-upload-photo", action="store_true", help="With --browser-click-through, upload a disposable synthetic photo and verify source evidence without preparing artifacts.")
     parser.add_argument("--browser-upload-pdf", action="store_true", help="With --browser-click-through, upload a disposable synthetic notification PDF and verify recovered review fields without preparing artifacts.")
     parser.add_argument("--browser-correction-mode", action="store_true", help="With --browser-click-through, check draft lifecycle/correction UI without preparing a replacement draft.")
+    parser.add_argument("--browser-prepare-replacement", action="store_true", help="With --browser-click-through and --browser-correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still never records drafts or calls Gmail.")
     parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--browser-record-helper", action="store_true", help="With --browser-click-through and packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
     parser.add_argument("--json", action="store_true")
@@ -437,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_upload_photo=args.browser_upload_photo,
         browser_upload_pdf=args.browser_upload_pdf,
         browser_correction_mode=args.browser_correction_mode,
+        browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,
         browser_record_helper=args.browser_record_helper,
     )
