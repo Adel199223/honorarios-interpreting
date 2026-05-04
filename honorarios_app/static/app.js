@@ -13,6 +13,7 @@ const state = {
   legalPdfImportPreview: null,
   backupStatus: null,
   historyStatusFilter: "all",
+  currentNextSafeAction: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -66,6 +67,91 @@ function statusChipClass(status) {
 }
 
 const HISTORY_STATUS_FILTERS = ["all", "active", "drafted", "sent", "superseded", "trashed", "not_found"];
+
+const SAFE_ACTION_GATES = {
+  "apply-numbered-answers": {
+    states: ["answer_questions"],
+    reason: "Answer the numbered questions before continuing.",
+  },
+  "prepare-intake": {
+    states: ["prepare_pdf"],
+    reason: "Review a ready interpretation request before generating the PDF.",
+  },
+  "drawer-prepare-intake": {
+    states: ["prepare_pdf"],
+    reason: "Review a ready interpretation request before generating the PDF.",
+  },
+  "add-current-to-batch": {
+    states: ["prepare_pdf"],
+    reason: "Review a ready request before adding it to the batch queue.",
+  },
+  "prepare-batch-intakes": {
+    states: [],
+    reason: "Add at least one reviewed request to the batch queue first.",
+  },
+  "prepare-replacement-draft": {
+    states: ["choose_correction_mode"],
+    reason: "Correction mode requires an active draft and a short correction reason.",
+  },
+  "copy-draft-args": {
+    states: ["review_gmail_draft_args"],
+    reason: "Prepare the PDF and Gmail draft payload before copying draft args.",
+  },
+  "autofill-record-from-prepared": {
+    states: ["review_gmail_draft_args"],
+    reason: "Prepare the PDF and Gmail draft payload before autofilling record values.",
+  },
+  "record-parsed-prepared-draft": {
+    states: ["review_gmail_draft_args"],
+    reason: "Prepare the payload, create the Gmail draft manually, then paste the Gmail response.",
+  },
+  "record-draft": {
+    states: ["review_gmail_draft_args"],
+    reason: "Prepare the payload and paste Gmail draft IDs before recording locally.",
+  },
+};
+
+function setActionGate(id, enabled, reason = "", actionState = "idle") {
+  const button = document.getElementById(id);
+  if (!button) return;
+  button.disabled = !enabled;
+  button.setAttribute("aria-disabled", enabled ? "false" : "true");
+  button.setAttribute("data-safe-action-state", actionState);
+  button.classList.toggle("is-gated", !enabled);
+  if (reason) {
+    button.title = reason;
+  } else {
+    button.removeAttribute("title");
+  }
+}
+
+function syncActionGates(action = state.currentNextSafeAction) {
+  state.currentNextSafeAction = action || null;
+  const actionState = String(action?.state || "idle");
+  const actionDetail = String(action?.detail || "");
+  Object.entries(SAFE_ACTION_GATES).forEach(([id, gate]) => {
+    let enabled = (gate.states || []).includes(actionState);
+    if (id === "prepare-batch-intakes") {
+      enabled = state.batchIntakes.length > 0;
+    }
+    if (id === "prepare-replacement-draft") {
+      enabled = enabled && Boolean($("#correction_reason")?.value.trim());
+    }
+    if (id === "apply-numbered-answers") {
+      enabled = enabled && Boolean($("#numbered-answers")?.value.trim());
+    }
+    if (id === "record-parsed-prepared-draft") {
+      enabled = enabled && Boolean($("#gmail-response-raw")?.value.trim());
+    }
+    if (id === "record-draft") {
+      enabled = enabled
+        && Boolean($("#record_payload")?.value.trim())
+        && Boolean($("#record_draft_id")?.value.trim())
+        && Boolean($("#record_message_id")?.value.trim());
+    }
+    setActionGate(id, enabled, enabled ? actionDetail : gate.reason, actionState);
+  });
+}
 
 function historyRecordStatus(record, defaultStatus = "") {
   return String(record?.status || defaultStatus || "").trim() || defaultStatus;
@@ -203,6 +289,7 @@ function showQuestions(data) {
 }
 
 function renderNextSafeAction(action) {
+  syncActionGates(action);
   const targets = [
     {
       card: $("#next-safe-action"),
@@ -443,6 +530,7 @@ function applyParsedGmailDraftIds(ids) {
   if (ids.draft_id) $("#record_draft_id").value = ids.draft_id;
   if (ids.message_id) $("#record_message_id").value = ids.message_id;
   if (ids.thread_id) $("#record_thread_id").value = ids.thread_id;
+  syncActionGates();
   return ids;
 }
 
@@ -481,6 +569,7 @@ function autofillRecordFormFromPrepared() {
   $("#record_draft_id").value = pastedIds.draftId;
   $("#record_message_id").value = pastedIds.messageId;
   $("#record_thread_id").value = pastedIds.threadId;
+  syncActionGates();
   return target;
 }
 
@@ -585,6 +674,7 @@ function renderBatchQueue() {
     list.className = "result-card empty-state";
     list.textContent = "No requests queued yet.";
     renderBatchItemInspector();
+    syncActionGates();
     return;
   }
   list.className = "result-card batch-list";
@@ -617,6 +707,7 @@ function renderBatchQueue() {
     `;
   }).join("");
   renderBatchItemInspector();
+  syncActionGates();
 }
 
 function renderDraftLifecycle(data) {
@@ -1944,6 +2035,7 @@ function renderPrepared(data) {
       send_allowed: false,
     });
   }
+  syncActionGates();
 }
 
 function renderPreparedPacketContents(items) {
@@ -2018,6 +2110,7 @@ function resetReview() {
   renderBatchQueue();
   renderDraftLifecycle(null);
   renderNextSafeAction(null);
+  syncActionGates(null);
   $("#correction_reason").value = "";
   $("#numbered-answers").value = "";
   $("#record_supersedes").value = "";
@@ -2062,6 +2155,20 @@ function bindActions() {
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     if (typeof target.focus === "function") target.focus({ preventScroll: true });
+  });
+  [
+    "correction_reason",
+    "numbered-answers",
+    "gmail-response-raw",
+    "record_payload",
+    "record_draft_id",
+    "record_message_id",
+    "record_thread_id",
+  ].forEach((id) => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.addEventListener("input", () => syncActionGates());
+    input.addEventListener("change", () => syncActionGates());
   });
   $("#refresh-reference").addEventListener("click", async () => {
     await loadReference();

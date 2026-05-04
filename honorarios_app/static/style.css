@@ -529,6 +529,22 @@ textarea {
   border-color: rgba(117, 218, 255, 0.1);
 }
 
+button.is-gated,
+button[aria-disabled="true"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  filter: saturate(0.72);
+}
+
+.primary-button.is-gated,
+.workspace-action-buttons button.is-gated,
+.button-row button.is-gated {
+  box-shadow: none;
+  background: rgba(6, 17, 28, 0.64);
+  border-color: rgba(117, 218, 255, 0.16);
+  color: rgba(243, 251, 255, 0.58);
+}
+
 .workspace-action-rail {
   padding: 20px 24px;
 }

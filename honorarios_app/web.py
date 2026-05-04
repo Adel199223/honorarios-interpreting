@@ -57,6 +57,13 @@ def build_paths(**overrides: Any) -> AppPaths:
     return AppPaths(**values)
 
 
+def static_asset_version() -> str:
+    static_dir = PACKAGE_DIR / "static"
+    asset_paths = [static_dir / "app.js", static_dir / "style.css"]
+    mtimes = [path.stat().st_mtime for path in asset_paths if path.exists()]
+    return str(int(max(mtimes))) if mtimes else "dev"
+
+
 def create_app(**path_overrides: Any) -> FastAPI:
     paths = build_paths(**path_overrides)
     app = FastAPI(
@@ -71,7 +78,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse(request, "index.html", {})
+        return templates.TemplateResponse(request, "index.html", {"asset_version": static_asset_version()})
 
     @app.get("/api/reference")
     async def api_reference() -> dict[str, Any]:
