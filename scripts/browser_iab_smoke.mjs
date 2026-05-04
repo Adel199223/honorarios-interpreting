@@ -22,6 +22,7 @@ function parseArgs(argv) {
     prepareReplacement: false,
     preparePacket: false,
     recordHelper: false,
+    applyHistory: false,
     timeoutMs: 10000,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -45,6 +46,7 @@ function parseArgs(argv) {
     else if (item === "--prepare-replacement") args.prepareReplacement = true;
     else if (item === "--prepare-packet") args.preparePacket = true;
     else if (item === "--record-helper") args.recordHelper = true;
+    else if (item === "--apply-history") args.applyHistory = true;
     else if (item === "--help" || item === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${item}`);
   }
@@ -142,6 +144,21 @@ async function expectValueContains(tab, selector, value, timeoutMs) {
   if (!String(actual || "").includes(value)) {
     throw new Error(`Expected ${selector} value to contain ${JSON.stringify(value)}; got ${JSON.stringify(actual)}.`);
   }
+}
+
+async function countLocator(tab, selector) {
+  return tab.playwright.locator(selector).count();
+}
+
+async function openReferencesPanel(tab, timeoutMs) {
+  const referencesButton = tab.playwright.locator('button[data-panel="references"]');
+  try {
+    await referencesButton.waitFor({ state: "visible", timeoutMs: Math.min(1000, timeoutMs) });
+  } catch (_error) {
+    await click(tab, "details.sidebar-more > summary", timeoutMs);
+    await referencesButton.waitFor({ state: "visible", timeoutMs });
+  }
+  await referencesButton.click({ timeoutMs });
 }
 
 async function runStep(checks, name, successMessage, action) {
@@ -262,13 +279,41 @@ export async function runBrowserIabSmoke(options = {}) {
     return report(baseUrl, checks);
   }
 
+  if (args.applyHistory) {
+    if (!(await runStep(checks, "browser_apply_history", "Browser/IAB checked LegalPDF Apply History, detail, and restore-plan surfaces without writing.", async () => {
+      // The References surface is independent from the intake drawer/batch flow.
+      // Reload before checking it so prior drawer state cannot mask sidebar controls.
+      await tab.goto(`${baseUrl}/`);
+      await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await openReferencesPanel(tab, args.timeoutMs);
+      await expectBodyText(tab, "LegalPDF Apply History", args.timeoutMs);
+      await expectBodyText(tab, "LegalPDF Restore Plan", args.timeoutMs);
+      await click(tab, "#refresh-legalpdf-apply-history", args.timeoutMs);
+      await expectAnyBodyText(tab, ["No guarded LegalPDF import has been applied yet", "JSON report", "Pre-apply backup"], args.timeoutMs);
+      const detailCount = await countLocator(tab, "[data-legalpdf-report-id]");
+      if (detailCount > 0) {
+        await tab.playwright.locator("[data-legalpdf-report-id]").first().click({ timeoutMs: args.timeoutMs });
+        await expectBodyText(tab, "LegalPDF Apply Detail", args.timeoutMs);
+        await expectAnyBodyText(tab, ["read-only", "Read-only"], args.timeoutMs);
+      }
+      const restoreCount = await countLocator(tab, "[data-legalpdf-restore-report-id]");
+      if (restoreCount > 0) {
+        await tab.playwright.locator("[data-legalpdf-restore-report-id]").first().click({ timeoutMs: args.timeoutMs });
+        await expectBodyText(tab, "LegalPDF Restore Plan", args.timeoutMs);
+        await expectAnyBodyText(tab, ["preview only", "read-only", "Read-only"], args.timeoutMs);
+      }
+    }))) {
+      return report(baseUrl, checks);
+    }
+  }
+
   return report(baseUrl, checks);
 }
 
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--correction-mode] [--prepare-replacement] [--prepare-packet]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--correction-mode] [--prepare-replacement] [--prepare-packet] [--apply-history]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);

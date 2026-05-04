@@ -478,6 +478,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             browser_upload_pdf=True,
             browser_correction_mode=True,
             browser_prepare_replacement=True,
+            browser_apply_history=True,
             browser_runner=browser_runner,
         )
         self.assertEqual(report["status"], "ready", report)
@@ -490,6 +491,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(seen_kwargs["upload_pdf"])
         self.assertTrue(seen_kwargs["correction_mode"])
         self.assertTrue(seen_kwargs["prepare_replacement"])
+        self.assertTrue(seen_kwargs["apply_history"])
 
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)

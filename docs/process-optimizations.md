@@ -146,12 +146,13 @@ const result = await runBrowserIabSmoke({
   baseUrl: 'http://127.0.0.1:8765',
   profile: 'gnr_serpa_judicial',
   caseNumber: '999/26.0IAB',
-  serviceDate: '2026-05-04'
+  serviceDate: '2026-05-04',
+  applyHistory: true
 });
 nodeRepl.write(JSON.stringify(result, null, 2));
 ```
 
-This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, confirms draft-only review evidence, and adds the reviewed request to the batch queue without preparing PDFs, recording drafts, or calling Gmail.
+This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, confirms draft-only review evidence, adds the reviewed request to the batch queue, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 

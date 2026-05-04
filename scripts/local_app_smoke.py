@@ -35,6 +35,7 @@ LANDMARKS = [
     "LegalPDF Integration Preview",
     "Build adapter import plan",
     "LegalPDF Apply History",
+    "LegalPDF Restore Plan",
     "Refresh apply history",
     "Draft-only Gmail",
 ]
@@ -137,6 +138,7 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         f"  prepareReplacement: {str(bool(kwargs.get('prepare_replacement'))).lower()},\n"
         f"  preparePacket: {str(bool(kwargs.get('prepare_packet'))).lower()},\n"
         f"  recordHelper: {str(bool(kwargs.get('record_helper'))).lower()},\n"
+        f"  applyHistory: {str(bool(kwargs.get('apply_history'))).lower()},\n"
         "  timeoutMs: 15000,\n"
         "});\n"
         "nodeRepl.write(JSON.stringify(result, null, 2));"
@@ -178,6 +180,8 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         cmd.append("--prepare-packet")
     if kwargs.get("record_helper"):
         cmd.append("--record-helper")
+    if kwargs.get("apply_history"):
+        cmd.append("--apply-history")
     correction_reason = kwargs.get("correction_reason")
     if correction_reason:
         cmd.extend(["--correction-reason", str(correction_reason)])
@@ -387,6 +391,7 @@ def run_smoke(
     browser_upload_photo: bool = False,
     browser_upload_pdf: bool = False,
     browser_correction_mode: bool = False,
+    browser_apply_history: bool = False,
     browser_iab_click_through: bool = False,
     browser_runner: BrowserRunner | None = None,
 ) -> dict[str, Any]:
@@ -480,6 +485,7 @@ def run_smoke(
                     prepare_replacement=browser_prepare_replacement,
                     prepare_packet=browser_prepare_packet,
                     record_helper=browser_record_helper,
+                    apply_history=browser_apply_history,
                 )
             else:
                 try:
@@ -516,6 +522,7 @@ def run_smoke(
                 prepare_replacement=browser_prepare_replacement,
                 prepare_packet=browser_prepare_packet,
                 record_helper=browser_record_helper,
+                apply_history=browser_apply_history,
                 iab_click_through=browser_iab_click_through,
             )
         checks.extend(browser_report.get("checks", []) if isinstance(browser_report, dict) else [])
@@ -548,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-upload-photo", action="store_true", help="With --browser-click-through, upload a disposable synthetic photo and verify source evidence without preparing artifacts.")
     parser.add_argument("--browser-upload-pdf", action="store_true", help="With --browser-click-through, upload a disposable synthetic notification PDF and verify recovered review fields without preparing artifacts.")
     parser.add_argument("--browser-correction-mode", action="store_true", help="With --browser-click-through, check draft lifecycle/correction UI without preparing a replacement draft.")
+    parser.add_argument("--browser-apply-history", action="store_true", help="With --browser-iab-click-through, check the LegalPDF Apply History, Detail, and read-only Restore Plan UI without writing artifacts.")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With --browser-click-through and --browser-correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still never records drafts or calls Gmail.")
     parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--browser-record-helper", action="store_true", help="With --browser-click-through and packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
@@ -566,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_upload_photo=args.browser_upload_photo,
         browser_upload_pdf=args.browser_upload_pdf,
         browser_correction_mode=args.browser_correction_mode,
+        browser_apply_history=args.browser_apply_history,
         browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,
         browser_record_helper=args.browser_record_helper,
