@@ -1417,6 +1417,15 @@ function renderLegalPdfImportPreview(data, kind = "info") {
   const jsonFile = data?.preview_report_json_file
     ? `<div class="data-item"><strong>JSON report</strong><code>${escapeHtml(data.preview_report_json_file)}</code></div>`
     : "";
+  const applyJsonFile = data?.apply_report_json_file
+    ? `<div class="data-item"><strong>Apply report</strong><code>${escapeHtml(data.apply_report_json_file)}</code></div>`
+    : "";
+  const applyMarkdownFile = data?.apply_report_markdown_file
+    ? `<div class="data-item"><strong>Apply Markdown report</strong><code>${escapeHtml(data.apply_report_markdown_file)}</code></div>`
+    : "";
+  const preApplyBackup = data?.pre_apply_backup_file
+    ? `<div class="data-item"><strong>Pre-apply backup</strong><code>${escapeHtml(data.pre_apply_backup_file)}</code></div>`
+    : "";
   const profileSummary = data?.profile_action_summary
     ? `<div class="data-item"><strong>Profile summary</strong><span>${escapeHtml(JSON.stringify(data.profile_action_summary))}</span></div>`
     : "";
@@ -1438,18 +1447,46 @@ function renderLegalPdfImportPreview(data, kind = "info") {
       ${data.plan_markdown ? `<details class="inline-details"><summary>Adapter Plan Markdown</summary><pre class="draft-args">${escapeHtml(data.plan_markdown)}</pre></details>` : ""}
     `
     : "";
+  const appliedProfiles = data?.applied_profiles?.length
+    ? `
+      <h4>Applied service profiles</h4>
+      <div class="data-list">${data.applied_profiles.map((item) => `
+        <div class="data-item">
+          <strong>${escapeHtml(item.target_key || item.source_key || "profile")}</strong>
+          <span>${escapeHtml(item.action || "applied")}${item.preserved_required_default_paths?.length ? ` · preserved ${escapeHtml(item.preserved_required_default_paths.join(", "))}` : ""}</span>
+        </div>
+      `).join("")}</div>
+    `
+    : "";
+  const appliedCourts = data?.applied_court_emails?.length
+    ? `
+      <h4>Applied court emails</h4>
+      <div class="data-list">${data.applied_court_emails.map((item) => `
+        <div class="data-item">
+          <strong>${escapeHtml(item.key || "court email")}</strong>
+          <span>${escapeHtml(item.action || "applied")}</span>
+        </div>
+      `).join("")}</div>
+    `
+    : "";
+  const changedText = data?.managed_data_changed
+    ? "Local Honorários reference files were changed after explicit confirmation. LegalPDF Translate was not modified. Gmail is not involved."
+    : "No local files were changed. This wizard cannot create or send Gmail messages.";
   body.className = `result-card ${chipKind}`;
   body.innerHTML = `
     <div class="result-header">
       <div>
         <strong>${escapeHtml(data?.message || "No LegalPDF integration preview has run yet.")}</strong>
-        <p>No local files were changed. This wizard is preview-only and cannot create or send Gmail messages.</p>
+        <p>${escapeHtml(changedText)}</p>
       </div>
       <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>
     ${datasets}
     ${markdownFile}
     ${jsonFile}
+    ${applyJsonFile}
+    ${applyMarkdownFile}
+    ${preApplyBackup}
     ${countRows}
     ${profileSummary}
     <h4>Profile mappings</h4>
@@ -1459,6 +1496,8 @@ function renderLegalPdfImportPreview(data, kind = "info") {
     <div class="data-list">${renderImportDiffRows(data?.court_email_differences || [], "Court emails")}</div>
     ${checklistRows}
     ${adapterPlanRows}
+    ${appliedProfiles}
+    ${appliedCourts}
   `;
 }
 
@@ -1530,6 +1569,40 @@ async function buildLegalPdfAdapterImportPlan() {
     blocking_count: data.blocking_count,
     plan_markdown: data.plan_markdown || "",
   }, "ready");
+  return data;
+}
+
+async function applyLegalPdfAdapterImportPlan() {
+  const data = await requestJson("/api/integration/apply-import-plan", {
+    method: "POST",
+    body: JSON.stringify({
+      backup_json: legalPdfImportJsonText(),
+      profile_mapping_text: $("#legalpdf-profile-mapping").value,
+      confirm_apply: $("#confirm-legalpdf-import-apply")?.checked || false,
+      confirmation_phrase: $("#legalpdf-apply-phrase")?.value || "",
+      apply_reason: $("#legalpdf-apply-reason")?.value || "",
+    }),
+  });
+  state.legalPdfImportPreview = data.plan?.preview || null;
+  renderLegalPdfImportPreview({
+    ...(data.plan?.preview || {}),
+    status: data.status,
+    message: data.message,
+    adapter_plan_tasks: data.plan?.tasks || [],
+    blocking_count: data.plan?.blocking_count,
+    plan_markdown: data.plan?.plan_markdown || "",
+    applied_profiles: data.applied_profiles || [],
+    applied_court_emails: data.applied_court_emails || [],
+    apply_report_json_file: data.apply_report_json_file || "",
+    apply_report_markdown_file: data.apply_report_markdown_file || "",
+    pre_apply_backup_file: data.pre_apply_backup_file || "",
+    managed_data_changed: data.managed_data_changed,
+  }, "ready");
+  await loadReference();
+  if (data.backup_status) {
+    state.backupStatus = data.backup_status;
+    renderBackupStatus(state.backupStatus);
+  }
   return data;
 }
 
@@ -2308,6 +2381,18 @@ function bindActions() {
         ? ` ${data.blocking_count} blocker${data.blocking_count === 1 ? "" : "s"} require review.`
         : " No blockers were detected.";
       showAlert(`Adapter import plan built.${blockerText} No local files were changed.`, "recorded");
+    } catch (error) {
+      renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#apply-legalpdf-import-plan").addEventListener("click", async () => {
+    try {
+      maybeShowBackupReminder("applying a reviewed LegalPDF import plan");
+      const data = await applyLegalPdfAdapterImportPlan();
+      const profileCount = data.applied_profiles?.length || 0;
+      const courtCount = data.applied_court_emails?.length || 0;
+      showAlert(`Applied ${profileCount} profile change${profileCount === 1 ? "" : "s"} and ${courtCount} court email change${courtCount === 1 ? "" : "s"} locally. LegalPDF was not modified.`, "recorded");
     } catch (error) {
       renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
       showAlert(error.message, "blocked");

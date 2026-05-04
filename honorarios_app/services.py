@@ -2390,7 +2390,7 @@ def legalpdf_adapter_import_plan_markdown(plan: dict[str, Any]) -> str:
         "- `write_allowed`: false",
         "- `send_allowed`: false",
         "- `managed_data_changed`: false",
-        "- `apply_endpoint_available`: false",
+        "- `apply_endpoint_available`: true",
         f"- Blocking tasks: {plan.get('blocking_count', 0)}",
         "",
         "## Tasks",
@@ -2438,17 +2438,325 @@ def build_legalpdf_adapter_import_plan(payload: dict[str, Any], paths: AppPaths)
     blocking_count = sum(1 for task in tasks if task.get("blocking"))
     plan = {
         "status": "plan_ready",
-        "message": "LegalPDF adapter import plan is ready. No local files were changed and no apply endpoint exists.",
+        "message": "LegalPDF adapter import plan is ready. No local files were changed. A guarded apply endpoint is available with explicit confirmation.",
         "tasks": tasks,
         "blocking_count": blocking_count,
         "preview": preview,
         "write_allowed": False,
         "send_allowed": False,
         "managed_data_changed": False,
-        "apply_endpoint_available": False,
+        "apply_endpoint_available": True,
+        "apply_endpoint": "/api/integration/apply-import-plan",
+        "apply_confirmation_phrase": LEGALPDF_IMPORT_CONFIRMATION_PHRASE,
     }
     plan["plan_markdown"] = legalpdf_adapter_import_plan_markdown(plan)
     return plan
+
+
+LEGALPDF_IMPORT_CONFIRMATION_PHRASE = "APPLY LEGALPDF IMPORT PLAN"
+PROFILE_REQUIRED_PRESERVE_PATHS = tuple(PROFILE_DEFAULT_REMOVAL_BLOCK_PREFIXES)
+
+
+def _nested_exists(value: dict[str, Any], path: str) -> bool:
+    current: Any = value
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return True
+
+
+def _nested_get(value: dict[str, Any], path: str) -> Any:
+    current: Any = value
+    for part in path.split("."):
+        current = current[part]
+    return current
+
+
+def _nested_set(value: dict[str, Any], path: str, replacement: Any) -> None:
+    current: Any = value
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current, dict):
+            raise IntakeError(f"Cannot preserve nested import field through non-object path: {path}")
+        current = current.setdefault(part, {})
+    if not isinstance(current, dict):
+        raise IntakeError(f"Cannot preserve nested import field through non-object path: {path}")
+    current[parts[-1]] = copy.deepcopy(replacement)
+
+
+def _preserve_local_profile_defaults(
+    *,
+    target_key: str,
+    current_record: dict[str, Any],
+    incoming_record: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    merged = copy.deepcopy(incoming_record)
+    preserved: list[str] = []
+    for path in PROFILE_REQUIRED_PRESERVE_PATHS:
+        if _nested_exists(current_record, path):
+            current_value = _nested_get(current_record, path)
+            incoming_value = _nested_get(incoming_record, path) if _nested_exists(incoming_record, path) else None
+            if stable_json_hash(current_value) != stable_json_hash(incoming_value):
+                preserved.append(path)
+            _nested_set(merged, path, current_value)
+    if not isinstance(merged.get("defaults"), dict):
+        raise IntakeError(f"Imported service profile {target_key} is missing defaults.")
+    return merged, preserved
+
+
+def _validate_import_profile_record(profile_key: str, record: dict[str, Any], paths: AppPaths) -> None:
+    preview = preview_service_profile(profile_key, record, paths)
+    if preview.get("status") != "ready":
+        questions = preview.get("question_text") or "missing required profile defaults"
+        raise IntakeError(f"Imported service profile {profile_key} is incomplete: {questions}")
+
+
+def _incoming_profile_records_for_apply(
+    payload: dict[str, Any],
+    paths: AppPaths,
+    plan: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    validation = validate_backup_payload(payload, paths)
+    datasets = validation["datasets"]
+    incoming_profiles = datasets.get("service_profiles", {})
+    if not isinstance(incoming_profiles, dict):
+        raise IntakeError("Incoming service_profiles dataset must be a JSON object.")
+    current_profiles = load_profiles(paths.service_profiles)
+    records: dict[str, dict[str, Any]] = {}
+    applied: list[dict[str, Any]] = []
+
+    for task in plan.get("tasks") or []:
+        if not isinstance(task, dict) or task.get("category") != "service_profile":
+            continue
+        action = str(task.get("action") or "")
+        if action not in {"create", "review_update"}:
+            continue
+        source_key = str(task.get("source_key") or "").strip()
+        target_key = str(task.get("target_key") or source_key).strip()
+        incoming = incoming_profiles.get(source_key)
+        if not isinstance(incoming, dict):
+            raise IntakeError(f"Incoming service profile is missing or invalid: {source_key}")
+        if action == "review_update":
+            current = current_profiles.get(target_key)
+            if not isinstance(current, dict):
+                raise IntakeError(f"Cannot update missing service profile: {target_key}")
+            record, preserved_paths = _preserve_local_profile_defaults(
+                target_key=target_key,
+                current_record=current,
+                incoming_record=incoming,
+            )
+        else:
+            record = copy.deepcopy(incoming)
+            preserved_paths = []
+        _validate_import_profile_record(target_key, record, paths)
+        records[target_key] = record
+        applied.append({
+            "source_key": source_key,
+            "target_key": target_key,
+            "action": "update" if action == "review_update" else "create",
+            "preserved_required_default_paths": preserved_paths,
+            "incoming_hash": stable_json_hash(incoming),
+            "applied_hash": stable_json_hash(record),
+        })
+    return records, applied
+
+
+def _incoming_court_email_records_for_apply(
+    payload: dict[str, Any],
+    paths: AppPaths,
+    plan: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    validation = validate_backup_payload(payload, paths)
+    datasets = validation["datasets"]
+    incoming_records = datasets.get("court_emails", [])
+    if not isinstance(incoming_records, list):
+        raise IntakeError("Incoming court_emails dataset must be a JSON list.")
+    current_records = read_json_list(paths.court_emails)
+    current_by_key = {
+        str(record.get("key") or "").strip(): record
+        for record in current_records
+        if str(record.get("key") or "").strip()
+    }
+    incoming_by_key = {
+        str(record.get("key") or "").strip(): record
+        for record in incoming_records
+        if isinstance(record, dict) and str(record.get("key") or "").strip()
+    }
+    records: dict[str, dict[str, Any]] = {}
+    applied: list[dict[str, Any]] = []
+    for task in plan.get("tasks") or []:
+        if not isinstance(task, dict) or task.get("category") != "court_email":
+            continue
+        action = str(task.get("action") or "")
+        if action not in {"create", "review_update"}:
+            continue
+        key = str(task.get("target_key") or task.get("source_key") or "").strip()
+        incoming = incoming_by_key.get(key)
+        if not isinstance(incoming, dict):
+            raise IntakeError(f"Incoming court email is missing or invalid: {key}")
+        normalized = normalize_court_email_record(incoming, current_by_key.get(key))
+        records[key] = normalized
+        applied.append({
+            "key": key,
+            "action": "update" if action == "review_update" else "create",
+            "incoming_hash": stable_json_hash(incoming),
+            "applied_hash": stable_json_hash(normalized),
+        })
+    return records, applied
+
+
+def _legalpdf_apply_report_markdown(report: dict[str, Any]) -> str:
+    profile_rows = [
+        [item.get("target_key", ""), item.get("action", ""), ", ".join(item.get("preserved_required_default_paths") or [])]
+        for item in report.get("applied_profiles") or []
+    ]
+    court_rows = [
+        [item.get("key", ""), item.get("action", "")]
+        for item in report.get("applied_court_emails") or []
+    ]
+    lines = [
+        "# LegalPDF Adapter Import Apply Report",
+        "",
+        report.get("message") or "Guarded import applied.",
+        "",
+        "This report is private runtime output. LegalPDF Translate was not modified. Gmail was not involved.",
+        "",
+        "## Applied Service Profiles",
+        "",
+        _markdown_table(["Profile", "Action", "Preserved local required defaults"], profile_rows),
+        "",
+        "## Applied Court Emails",
+        "",
+        _markdown_table(["Court email key", "Action"], court_rows),
+        "",
+        "## Safety",
+        "",
+        "- `send_allowed`: false",
+        "- `legalpdf_write_allowed`: false",
+        f"- Pre-apply backup: `{report.get('pre_apply_backup_file', '')}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def apply_legalpdf_adapter_import_plan(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    if not bool(payload.get("confirm_apply")):
+        raise IntakeError("LegalPDF import apply requires confirm_apply=true and the exact confirmation phrase.")
+    phrase = str(payload.get("confirmation_phrase") or "").strip()
+    if phrase != LEGALPDF_IMPORT_CONFIRMATION_PHRASE:
+        raise IntakeError(f'LegalPDF import apply requires confirmation phrase "{LEGALPDF_IMPORT_CONFIRMATION_PHRASE}".')
+    reason = str(payload.get("apply_reason") or payload.get("reason") or "").strip()
+    if len(reason) < 8:
+        raise IntakeError("LegalPDF import apply requires a short apply_reason explaining why this import is safe.")
+
+    plan = build_legalpdf_adapter_import_plan(payload, paths)
+    if int(plan.get("blocking_count") or 0) > 0:
+        return {
+            "status": "blocked",
+            "message": "LegalPDF import apply is blocked because the adapter plan contains blocking tasks.",
+            "blocking_count": plan.get("blocking_count", 0),
+            "tasks": plan.get("tasks", []),
+            "plan": plan,
+            "write_allowed": False,
+            "managed_data_changed": False,
+            "legalpdf_write_allowed": False,
+            "send_allowed": False,
+        }
+
+    profile_records, applied_profiles = _incoming_profile_records_for_apply(payload, paths, plan)
+    court_records, applied_court_emails = _incoming_court_email_records_for_apply(payload, paths, plan)
+    unchanged_tasks = [
+        {
+            "category": task.get("category", ""),
+            "target_key": task.get("target_key", task.get("source_key", "")),
+            "action": task.get("action", ""),
+        }
+        for task in plan.get("tasks") or []
+        if isinstance(task, dict) and str(task.get("action") or "") in {"verify_unchanged"}
+    ]
+
+    if not profile_records and not court_records:
+        return {
+            "status": "no_changes",
+            "message": "LegalPDF import apply found no create/update tasks to write.",
+            "applied_profiles": [],
+            "applied_court_emails": [],
+            "skipped_tasks": unchanged_tasks,
+            "write_allowed": False,
+            "managed_data_changed": False,
+            "legalpdf_write_allowed": False,
+            "send_allowed": False,
+        }
+
+    pre_apply_backup = backup_payload(paths)
+    pre_apply_backup["reason"] = f"Automatic backup before LegalPDF adapter import apply: {reason}"
+    pre_apply_backup_file = write_backup_file(pre_apply_backup, paths, prefix="pre-legalpdf-import-backup")
+
+    current_profiles = load_profiles(paths.service_profiles)
+    updated_profiles = copy.deepcopy(current_profiles)
+    profile_changes: list[dict[str, Any]] = []
+    for item in applied_profiles:
+        key = item["target_key"]
+        before = copy.deepcopy(current_profiles.get(key)) if key in current_profiles else None
+        after = profile_records[key]
+        updated_profiles[key] = after
+        change = profile_change_payload(
+            profile_key=key,
+            before=before,
+            after=after,
+            reason=f"LegalPDF adapter import apply: {reason}",
+        )
+        if change.get("changes"):
+            change["import_source"] = "legalpdf_adapter_import_plan"
+            profile_changes.append(change)
+    write_json_object(paths.service_profiles, updated_profiles)
+    for change in profile_changes:
+        append_profile_change_log(change, paths)
+
+    current_courts = read_json_list(paths.court_emails)
+    court_by_key = {
+        str(record.get("key") or "").strip(): copy.deepcopy(record)
+        for record in current_courts
+        if str(record.get("key") or "").strip()
+    }
+    for key, record in court_records.items():
+        court_by_key[key] = record
+    ordered_existing_keys = [str(record.get("key") or "").strip() for record in current_courts if str(record.get("key") or "").strip()]
+    new_keys = sorted(key for key in court_records if key not in ordered_existing_keys)
+    ordered_keys = ordered_existing_keys + new_keys
+    write_json_list(paths.court_emails, [court_by_key[key] for key in ordered_keys])
+
+    report = {
+        "kind": "legalpdf_adapter_import_apply_report",
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "applied",
+        "message": "LegalPDF adapter import applied to local Honorários reference data. LegalPDF Translate was not modified.",
+        "apply_reason": reason,
+        "applied_profiles": applied_profiles,
+        "applied_court_emails": applied_court_emails,
+        "skipped_tasks": unchanged_tasks,
+        "profile_change_ids": [change.get("change_id") for change in profile_changes],
+        "pre_apply_backup_file": str(pre_apply_backup_file),
+        "plan": plan,
+        "write_allowed": True,
+        "managed_data_changed": True,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+    paths.integration_report_output_dir.mkdir(parents=True, exist_ok=True)
+    report_id = f"legalpdf-import-apply-{timestamp_slug()}-{secrets.token_hex(4)}"
+    report_json_file = paths.integration_report_output_dir / f"{report_id}.json"
+    report_md_file = paths.integration_report_output_dir / f"{report_id}.md"
+    report_json_file.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    report_md_file.write_text(_legalpdf_apply_report_markdown(report), encoding="utf-8")
+    return {
+        **report,
+        "apply_report_json_file": str(report_json_file),
+        "apply_report_markdown_file": str(report_md_file),
+        "backup_status": backup_status_payload(paths),
+    }
 
 
 def export_legalpdf_import_report(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:

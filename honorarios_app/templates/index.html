@@ -365,6 +365,23 @@
               <button type="button" id="build-legalpdf-integration-checklist">Build integration checklist</button>
               <button type="button" id="build-legalpdf-adapter-import-plan">Build adapter import plan</button>
             </div>
+            <div class="apply-confirmation-grid">
+              <div class="field">
+                <label for="legalpdf-apply-reason">Apply reason</label>
+                <input id="legalpdf-apply-reason" autocomplete="off" placeholder="Reviewed safe profile/email additions from LegalPDF backup.">
+              </div>
+              <div class="field">
+                <label for="legalpdf-apply-phrase">Confirmation phrase</label>
+                <input id="legalpdf-apply-phrase" autocomplete="off" placeholder="APPLY LEGALPDF IMPORT PLAN">
+              </div>
+            </div>
+            <label class="check-row">
+              <input id="confirm-legalpdf-import-apply" type="checkbox">
+              <span>I reviewed the adapter import plan and want to apply only the safe, non-blocked reference changes to this Honorários app.</span>
+            </label>
+            <div class="button-row">
+              <button type="button" id="apply-legalpdf-import-plan">Apply reviewed safe import plan</button>
+            </div>
             <div class="result-card" id="legalpdf-import-preview-result">No LegalPDF integration preview has run yet.</div>
           </div>
           <div class="reference-columns">

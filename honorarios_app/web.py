@@ -17,6 +17,7 @@ from scripts.public_release_gate import analyze_public_readiness
 from .services import (
     AppPaths,
     ai_status_payload,
+    apply_legalpdf_adapter_import_plan,
     apply_numbered_answers,
     backup_status_payload,
     build_legalpdf_adapter_import_plan,
@@ -239,6 +240,23 @@ def create_app(**path_overrides: Any) -> FastAPI:
             return build_legalpdf_adapter_import_plan(payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/integration/apply-import-plan")
+    async def api_integration_apply_import_plan(payload: dict[str, Any]) -> Any:
+        try:
+            result = apply_legalpdf_adapter_import_plan(payload, paths)
+            if result.get("status") == "blocked":
+                return JSONResponse(status_code=400, content=result)
+            return result
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "write_allowed": False,
+                "managed_data_changed": False,
+                "legalpdf_write_allowed": False,
+                "send_allowed": False,
+            })
 
     @app.post("/api/intake/from-profile")
     async def api_intake_from_profile(payload: dict[str, Any]) -> dict[str, Any]:
