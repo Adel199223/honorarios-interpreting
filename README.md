@@ -283,7 +283,7 @@ The older explicit form still works:
 python scripts/record_gmail_draft.py --case-number <case> --service-date <YYYY-MM-DD> --recipient <email> --pdf <pdf> --draft-payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
 
-If a draft needs correction, create a new corrected draft first, then mark the old record as superseded/trashed in the log and only then move the old Gmail message to Trash. Use `--allow-existing-draft` with `scripts/prepare_honorarios.py` only when you are intentionally correcting/replacing a logged active draft. Never send either draft automatically.
+If a draft needs correction, create a new corrected draft first, then mark the old record as superseded/trashed in the log and only then move the old Gmail message to Trash. Use `--allow-existing-draft` with `scripts/prepare_honorarios.py` only when you are intentionally correcting/replacing a logged active draft, and always include `--correction-reason "<short reason>"` so the manifest keeps an audit trail. Never send either draft automatically.
 
 When a draft is manually sent later, update the matching duplicate-index record from `status: drafted` to `status: sent` and add `sent_date`:
 

@@ -52,7 +52,7 @@ Profiles live in `data/service-profiles.json` and fill stable defaults such as p
 - Multiple source court emails are treated as ambiguous.
 - Draft payloads include case number, service date, payment entity, service entity, PDF basename, and PDF SHA-256 hash.
 - Draft payloads and manifests include `gmail_create_draft_args`, ready to pass to `_create_draft`; `attachment_files` is always an array.
-- `scripts/prepare_honorarios.py` blocks a case/date that already has an active local Gmail draft log entry unless `--allow-existing-draft` is used intentionally.
+- `scripts/prepare_honorarios.py` blocks a case/date that already has an active local Gmail draft log entry unless `--allow-existing-draft` is used with `--correction-reason "<short reason>"`, matching the browser correction-mode safety rule.
 - Active draft blocking is period-aware: same case/date with different `service_period_label` values can coexist, while exact duplicates still block.
 - Duplicate matching normalizes leading-zero case numbers and period-label capitalization/spacing.
 - Draft payload validation blocks stale payloads before Gmail if attachments are not an array of absolute existing files, if `gmail_create_draft_args` is missing, or if draft-only safety fields are wrong.

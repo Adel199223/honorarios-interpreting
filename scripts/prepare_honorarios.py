@@ -168,6 +168,7 @@ def validate_intake_before_generation(
     draft_log: list[dict[str, Any]],
     allow_duplicate: bool,
     allow_existing_draft: bool,
+    correction_reason: str = "",
 ) -> tuple[str, str, str]:
     translation_matches = detect_translation_source(intake)
     if translation_matches:
@@ -186,7 +187,13 @@ def validate_intake_before_generation(
         draft_ids = ", ".join(str(record.get("draft_id") or "") for record in active_drafts)
         raise IntakeError(
             "Active Gmail draft already recorded for this case number and service date. "
-            f"Draft ID(s): {draft_ids}. Use --allow-existing-draft only when correcting/replacing intentionally."
+            f"Draft ID(s): {draft_ids}. Use --allow-existing-draft with --correction-reason only when correcting/replacing intentionally."
+        )
+    if active_drafts and allow_existing_draft and not str(correction_reason or "").strip():
+        draft_ids = ", ".join(str(record.get("draft_id") or "") for record in active_drafts)
+        raise IntakeError(
+            "Correction reason required when using --allow-existing-draft over an active Gmail draft. "
+            f"Draft ID(s): {draft_ids}. Add --correction-reason with a short audit reason."
         )
 
     build_rendered_request(intake, profile)
@@ -218,6 +225,7 @@ def prepare_one(
     allow_duplicate: bool,
     allow_existing_draft: bool,
     render_previews: bool,
+    correction_reason: str = "",
 ) -> dict[str, Any]:
     intake = load_json(intake_path)
 
@@ -234,7 +242,13 @@ def prepare_one(
         draft_ids = ", ".join(str(record.get("draft_id") or "") for record in active_drafts)
         raise IntakeError(
             "Active Gmail draft already recorded for this case number and service date. "
-            f"Draft ID(s): {draft_ids}. Use --allow-existing-draft only when correcting/replacing intentionally."
+            f"Draft ID(s): {draft_ids}. Use --allow-existing-draft with --correction-reason only when correcting/replacing intentionally."
+        )
+    if active_drafts and allow_existing_draft and not str(correction_reason or "").strip():
+        draft_ids = ", ".join(str(record.get("draft_id") or "") for record in active_drafts)
+        raise IntakeError(
+            "Correction reason required when using --allow-existing-draft over an active Gmail draft. "
+            f"Draft ID(s): {draft_ids}. Add --correction-reason with a short audit reason."
         )
 
     rendered = build_rendered_request(intake, profile)
@@ -259,7 +273,7 @@ def prepare_one(
     conflict = service_date_conflict(intake)
     transport = intake.get("transport") if isinstance(intake.get("transport"), dict) else {}
 
-    return {
+    result = {
         "intake": str(intake_path.resolve()),
         "source_filename": str(intake.get("source_filename") or "").strip(),
         "raw_case_number": str(intake.get("raw_case_number") or intake.get("source_case_number") or "").strip(),
@@ -308,6 +322,10 @@ def prepare_one(
             for record in active_drafts
         ],
     }
+    if active_drafts and str(correction_reason or "").strip():
+        result["correction_mode"] = True
+        result["correction_reason"] = str(correction_reason or "").strip()
+    return result
 
 
 def print_summary(items: list[dict[str, Any]]) -> None:
@@ -357,10 +375,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--allow-duplicate", action="store_true")
     parser.add_argument("--allow-existing-draft", action="store_true", help="Allow preparing a case/date that already has an active draft in the local draft log.")
+    parser.add_argument("--correction-reason", default="", help="Required audit reason when --allow-existing-draft is used to prepare a replacement.")
     parser.add_argument("--render-previews", action="store_true", help="Render PDF pages to PNG with pdftoppm.")
     args = parser.parse_args(argv)
 
     try:
+        correction_reason = str(args.correction_reason or "").strip()
+        if args.allow_existing_draft and not correction_reason:
+            raise IntakeError("Correction reason required with --allow-existing-draft. Add --correction-reason with a short audit reason.")
         profile = load_json(args.profile)
         email_config = load_json(args.email_config)
         court_directory = json.loads(args.court_emails.read_text(encoding="utf-8"))
@@ -378,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
                 draft_log=draft_log,
                 allow_duplicate=args.allow_duplicate,
                 allow_existing_draft=args.allow_existing_draft,
+                correction_reason=correction_reason,
             )
             if key in seen_keys:
                 raise IntakeError(
@@ -402,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_duplicate=args.allow_duplicate,
                 allow_existing_draft=args.allow_existing_draft,
                 render_previews=args.render_previews,
+                correction_reason=correction_reason,
             )
             for intake_path in args.intakes
         ]
@@ -411,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "draft_creation_tool": "_create_draft",
             "send_allowed": False,
+            "correction_mode": bool(correction_reason),
+            "correction_reason": correction_reason,
             "items": items,
         }
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

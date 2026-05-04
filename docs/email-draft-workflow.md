@@ -65,7 +65,7 @@ The command writes:
 
 Review the manifest summary before using Gmail. It should make the case number, service date, payment entity, service entity, recipient, and attachment path visible in one place.
 
-By default, the command blocks if `data/gmail-draft-log.json` already has an active Gmail draft for the same case number and service date. Use `--allow-existing-draft` only when intentionally preparing a corrected replacement.
+By default, the command blocks if `data/gmail-draft-log.json` already has an active Gmail draft for the same case number and service date. Use `--allow-existing-draft --correction-reason "<short reason>"` only when intentionally preparing a corrected replacement. The correction reason is written into the prepared manifest and item result so the replacement remains auditable.
 
 ## Single Payload Command
 
@@ -152,7 +152,7 @@ For packet emails containing multiple honorários requests, write one duplicate-
 If a draft has the wrong recipient, attachment, or case mapping:
 
 1. Do not send or edit the mistaken draft.
-2. Correct the intake and run `scripts/prepare_honorarios.py --allow-existing-draft` again.
+2. Correct the intake and run `scripts/prepare_honorarios.py --allow-existing-draft --correction-reason "<short reason>"` again.
 3. Create a new Gmail draft with `_create_draft`.
 4. Record the new draft in `data/gmail-draft-log.json`.
 5. Ensure the corrected draft remains `status: drafted` in `data/duplicate-index.json`.

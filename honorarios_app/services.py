@@ -3078,6 +3078,7 @@ def prepare_intakes(
             draft_log=draft_log,
             allow_duplicate=effective_allow_duplicate,
             allow_existing_draft=effective_allow_existing_draft,
+            correction_reason=normalized_correction_reason,
         )
         if key in seen_keys:
             raise IntakeError(f"Duplicate request appears more than once in this batch: {intake_path} duplicates {seen_keys[key]}")
@@ -3110,6 +3111,7 @@ def prepare_intakes(
             allow_duplicate=effective_allow_duplicate,
             allow_existing_draft=effective_allow_existing_draft,
             render_previews=effective_render_previews,
+            correction_reason=normalized_correction_reason,
         )
         for intake_path in intake_paths
     ]

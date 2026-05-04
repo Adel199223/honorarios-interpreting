@@ -21,6 +21,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Numbered missing-information questions.
 - Review-drawer `Numbered answers` application, so compact replies like `1. Beja` update the active intake and rerun review without manual JSON edits.
 - Duplicate and active-draft warnings before generation.
+- CLI and browser correction preflight parity: preparing a replacement over an active draft requires an explicit correction reason, and the manifest keeps that reason for audit.
 - Portuguese draft-text preview before PDF creation.
 - PDF plus Gmail `_create_draft` payload preparation through the existing preflight path.
 - PNG PDF preview URLs when `pdftoppm` is available; otherwise a non-send preview warning.
