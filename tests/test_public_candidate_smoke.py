@@ -201,6 +201,22 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 }
             if url.endswith("/api/drafts/active-check"):
                 return {"status": "clear", "send_allowed": False}
+            if url.endswith("/api/prepare/preflight"):
+                return {
+                    "status": "ready",
+                    "artifact_effect": "none",
+                    "write_allowed": False,
+                    "send_allowed": False,
+                    "packet_mode": True,
+                    "items": [{
+                        "status": "ready",
+                        "case_number": "999/26.0SMOKE",
+                        "service_date": "2026-05-04",
+                        "recipient": "court@example.test",
+                        "send_allowed": False,
+                        "write_allowed": False,
+                    }],
+                }
             if url.endswith("/api/prepare"):
                 return {
                     "status": "prepared",
@@ -230,6 +246,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             interaction_checks=True,
         )
         self.assertEqual(report["status"], "ready", report)
+        self.assertIn("workflow_batch_preflight", {check["name"] for check in report["checks"]})
         self.assertIn("workflow_prepare_packet_payload", {check["name"] for check in report["checks"]})
 
     def test_local_app_smoke_runner_browser_click_through_contract_is_injectable(self):

@@ -17,7 +17,7 @@ Use one local preflight command for complete intakes:
 python scripts/prepare_honorarios.py <intake-json> [<intake-json> ...] --render-previews
 ```
 
-In the browser app, use Batch Queue for the same workflow: review each request, add ready requests to the queue, then click `Prepare batch package`. This calls the same multi-intake `/api/prepare` path, so same-batch duplicates, active drafts, date conflicts, missing numbered questions, and recipient mismatches are checked before any PDF or draft payload is written.
+In the browser app, use Batch Queue for the same workflow: review each request, add ready requests to the queue, then click `Check batch preflight`. This calls `/api/prepare/preflight`, validates same-batch duplicates, active drafts, date conflicts, missing numbered questions, additional-attachment email-body rules, and packet recipient mismatches without writing PDFs, draft payloads, intake JSON, or manifests. Only after that non-writing check is clean should you click `Prepare batch package`, which calls the artifact-writing `/api/prepare` path.
 
 When the Review drawer shows missing numbered questions, paste compact answers in the `Numbered answers` card, such as `1. 39` or `2. Beja`, then click `Apply numbered answers`. The app maps those answers back to the current intake fields, reruns the same review endpoint, and keeps generation blocked until duplicate checks, date-conflict rules, and recipient validation are clean. This avoids recreating JSON or re-uploading the source just to fill one missing city, date, or kilometer value.
 
@@ -130,7 +130,7 @@ Use `--browser-click-through` when you want a real browser to verify the profile
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This check deliberately stops before `Prepare batch package`, `Record draft`, and any Gmail action. It also verifies the `Next Safe Action` surface in the review drawer. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
+This check deliberately stops before artifact-writing preparation, `Record draft`, and any Gmail action. It also verifies the `Next Safe Action` surface in the review drawer and the browser `Check batch preflight` card. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
 
 When working inside Codex with the Browser plugin, use the Browser/IAB runner instead of optional Python Playwright for the normal review/batch path. The Python smoke command can print the exact Node REPL handoff cell:
 
@@ -153,7 +153,7 @@ const result = await runBrowserIabSmoke({
 nodeRepl.write(JSON.stringify(result, null, 2));
 ```
 
-This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
+This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 

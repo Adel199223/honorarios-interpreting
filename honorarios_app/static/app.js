@@ -3,6 +3,7 @@ const state = {
   currentIntake: null,
   batchIntakes: [],
   batchSelectedIndex: null,
+  batchPreflight: null,
   lastPrepared: null,
   aiStatus: null,
   googlePhotosStatus: null,
@@ -89,6 +90,10 @@ const SAFE_ACTION_GATES = {
     states: [],
     reason: "Add at least one reviewed request to the batch queue first.",
   },
+  "preflight-batch-intakes": {
+    states: [],
+    reason: "Add at least one reviewed request to the batch queue first.",
+  },
   "prepare-replacement-draft": {
     states: ["choose_correction_mode"],
     reason: "Correction mode requires an active draft and a short correction reason.",
@@ -131,7 +136,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
   const actionDetail = String(action?.detail || "");
   Object.entries(SAFE_ACTION_GATES).forEach(([id, gate]) => {
     let enabled = (gate.states || []).includes(actionState);
-    if (id === "prepare-batch-intakes") {
+    if (id === "prepare-batch-intakes" || id === "preflight-batch-intakes") {
       enabled = state.batchIntakes.length > 0;
     }
     if (id === "prepare-replacement-draft") {
@@ -592,6 +597,7 @@ function moveBatchIntake(fromIndex, toIndex) {
   if (from === to) return false;
   const [item] = state.batchIntakes.splice(from, 1);
   state.batchIntakes.splice(to, 0, item);
+  state.batchPreflight = null;
   const selected = state.batchSelectedIndex;
   if (selected === from) {
     state.batchSelectedIndex = to;
@@ -674,6 +680,7 @@ function renderBatchQueue() {
     list.className = "result-card empty-state";
     list.textContent = "No requests queued yet.";
     renderBatchItemInspector();
+    renderBatchPreflight();
     syncActionGates();
     return;
   }
@@ -707,7 +714,68 @@ function renderBatchQueue() {
     `;
   }).join("");
   renderBatchItemInspector();
+  renderBatchPreflight();
   syncActionGates();
+}
+
+function renderBatchPreflight() {
+  const card = $("#batch-preflight-result");
+  if (!card) return;
+  const data = state.batchPreflight;
+  if (!data) {
+    card.className = "result-card empty-state";
+    card.textContent = state.batchIntakes.length
+      ? "Run a non-writing batch preflight before preparing artifacts."
+      : "Add reviewed requests, then run a non-writing batch preflight.";
+    return;
+  }
+  const status = data.status || "blocked";
+  const items = Array.isArray(data.items) ? data.items : [];
+  const blockers = Array.isArray(data.blockers) ? data.blockers : [];
+  const packet = data.packet || null;
+  card.className = `result-card ${status === "ready" ? "ready-card" : "blocked-card"}`;
+  card.innerHTML = `
+    <div class="result-header">
+      <div>
+        <strong>Batch preflight</strong>
+        <p>${escapeHtml(data.message || "Preflight checked without writing files.")}</p>
+      </div>
+      <span class="status-chip ${statusChipClass(status)}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    <div class="data-grid">
+      <div><span>Artifact effect</span><strong>${escapeHtml(data.artifact_effect || "none")}</strong></div>
+      <div><span>Write allowed</span><strong>${data.write_allowed ? "yes" : "no"}</strong></div>
+      <div><span>Send allowed</span><strong>${data.send_allowed ? "yes" : "no"}</strong></div>
+      <div><span>Packet mode</span><strong>${data.packet_mode ? "yes" : "no"}</strong></div>
+    </div>
+    ${packet ? `
+      <div class="data-item">
+        <strong>Packet check</strong>
+        <code>${escapeHtml(packet.recipient || packet.status || "")}</code>
+        <span>${escapeHtml(packet.message || "")}</span>
+      </div>
+    ` : ""}
+    ${blockers.length ? `
+      <div class="supporting-attachments">
+        <strong>Blockers</strong>
+        <ul>${blockers.map((blocker) => `<li>${escapeHtml(blocker.message || "")}</li>`).join("")}</ul>
+      </div>
+    ` : ""}
+    <div class="supporting-attachments">
+      <strong>Queued request checks</strong>
+      <ul>
+        ${items.map((item) => `
+          <li>
+            <span class="status-chip ${statusChipClass(item.status || "blocked")}">${escapeHtml(item.status || "blocked")}</span>
+            <strong>${escapeHtml(item.case_number || "case pending")}</strong>
+            <span>${escapeHtml(item.service_date || "date pending")}</span>
+            <code>${escapeHtml(item.recipient || "")}</code>
+            <span>${escapeHtml(item.message || "")}</span>
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  `;
 }
 
 function renderDraftLifecycle(data) {
@@ -2152,9 +2220,15 @@ async function addCurrentIntakeToBatch() {
     state.batchIntakes.push(intake);
     state.batchSelectedIndex = state.batchIntakes.length - 1;
   }
+  state.batchPreflight = null;
   renderBatchQueue();
   setStatus("ready", `${intake.case_number || "Request"} added to the batch queue.`);
   showAlert("Batch queue updated. Prepare the package when all related requests are queued.", "recorded");
+  try {
+    await preflightBatchIntakes({ openDrawer: false, showResultAlert: false });
+  } catch (_error) {
+    renderBatchPreflight();
+  }
 }
 
 async function prepareBatchIntakes() {
@@ -2173,6 +2247,35 @@ async function prepareBatchIntakes() {
   renderPrepared(data);
   openReviewDrawer();
   await loadReference();
+}
+
+async function preflightBatchIntakes(options = {}) {
+  if (!state.batchIntakes.length) {
+    throw new Error("Add at least one ready request to the batch queue first.");
+  }
+  const openDrawerAfter = options.openDrawer !== false;
+  const showResultAlert = options.showResultAlert !== false;
+  const packetMode = Boolean($("#batch-packet-mode")?.checked);
+  const data = await requestJson("/api/prepare/preflight", {
+    method: "POST",
+    body: JSON.stringify({ intakes: state.batchIntakes, packet_mode: packetMode }),
+  });
+  state.batchPreflight = data;
+  renderBatchPreflight();
+  renderNextSafeAction(data.next_safe_action || null);
+  const modeText = packetMode ? "packet mode" : "separate-payload mode";
+  setStatus(data.status, `Batch preflight checked in ${modeText}; no PDFs or draft payloads were created.`);
+  if (showResultAlert) {
+    if (data.status === "blocked") {
+      showAlert(data.message || "Batch preflight blocked.", "blocked");
+    } else {
+      showAlert("Batch preflight clear. Review once more before preparing artifacts.", "recorded");
+    }
+  }
+  if (openDrawerAfter) {
+    openReviewDrawer();
+  }
+  return data;
 }
 
 function applyReview(data) {
@@ -2804,13 +2907,27 @@ function bindActions() {
       updateHomeReviewCard({ status: "blocked", message: error.message });
     }
   });
+  $("#preflight-batch-intakes").addEventListener("click", async () => {
+    try {
+      await preflightBatchIntakes();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
   $("#clear-batch-queue").addEventListener("click", () => {
     state.batchIntakes = [];
     state.batchSelectedIndex = null;
+    state.batchPreflight = null;
     $("#batch-packet-mode").checked = false;
     renderBatchQueue();
     setStatus("idle", "Batch queue cleared.");
     showAlert("Batch queue cleared.", "recorded");
+  });
+  $("#batch-packet-mode").addEventListener("change", () => {
+    state.batchPreflight = null;
+    renderBatchPreflight();
   });
   $("#batch-queue-list").addEventListener("click", (event) => {
     const inspectButton = event.target.closest("[data-inspect-batch-index]");
@@ -2833,6 +2950,7 @@ function bindActions() {
     if (!button) return;
     const removedIndex = Number(button.dataset.removeBatchIndex);
     state.batchIntakes.splice(removedIndex, 1);
+    state.batchPreflight = null;
     if (state.batchSelectedIndex === removedIndex) {
       state.batchSelectedIndex = state.batchIntakes.length ? Math.min(removedIndex, state.batchIntakes.length - 1) : null;
     } else if (state.batchSelectedIndex !== null && state.batchSelectedIndex > removedIndex) {

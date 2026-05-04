@@ -36,6 +36,7 @@ from .services import (
     legalpdf_apply_history,
     legalpdf_apply_restore_plan,
     load_app_reference,
+    preflight_intakes,
     prepare_intakes,
     record_draft,
     recover_source_upload,
@@ -401,6 +402,32 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 "status": "blocked",
                 "message": str(exc),
                 "send_allowed": False,
+            })
+
+    @app.post("/api/prepare/preflight")
+    async def api_prepare_preflight(payload: dict[str, Any]) -> dict[str, Any]:
+        intakes = payload.get("intakes")
+        if intakes is None and isinstance(payload.get("intake"), dict):
+            intakes = [payload["intake"]]
+        if not isinstance(intakes, list) or not all(isinstance(item, dict) for item in intakes):
+            raise HTTPException(status_code=400, detail="Request must include intakes as a list of objects.")
+        correction_mode = bool(payload.get("correction_mode", False))
+        correction_reason = str(payload.get("correction_reason") or "").strip()
+        try:
+            return preflight_intakes(
+                intakes,
+                paths,
+                allow_duplicate=bool(payload.get("allow_duplicate", False)),
+                allow_existing_draft=bool(payload.get("allow_existing_draft", False)),
+                correction_reason=correction_reason if correction_mode or payload.get("allow_existing_draft") else "",
+                packet_mode=bool(payload.get("packet_mode", False)),
+            )
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "send_allowed": False,
+                "write_allowed": False,
             })
 
     @app.post("/api/drafts/record")

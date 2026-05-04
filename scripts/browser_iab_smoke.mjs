@@ -6,6 +6,16 @@ const DEFAULT_BROWSER_CLIENT = "%USERPROFILE%/example-path";
 const DEFAULT_CASE_NUMBER = "999/26.0SMOKE";
 const DEFAULT_SERVICE_DATE = "2026-05-04";
 const DEFAULT_PROFILE = "example_interpreting";
+const PROFILE_FALLBACKS = [
+  "gnr_serpa_judicial",
+  "gnr_ferreira_falentejo",
+  "gnr_beringel_beja_mp",
+  "pj_gnr_ferreira",
+  "pj_gnr_beja",
+  "beja_trabalho",
+  "gnr_cuba",
+  "court_mp_generic",
+];
 
 function parseArgs(argv) {
   const args = {
@@ -99,6 +109,19 @@ async function expectBodyText(tab, text, timeoutMs) {
   if (!found.ok) throw new Error(`Expected page to include ${JSON.stringify(text)}.`);
 }
 
+async function expectSelectorText(tab, selector, text, timeoutMs) {
+  const locator = await uniqueLocator(tab, selector, timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  const expected = String(text).toLocaleLowerCase();
+  while (Date.now() < deadline) {
+    last = await locator.innerText({ timeoutMs: Math.min(1000, timeoutMs) });
+    if (last.toLocaleLowerCase().includes(expected)) return;
+    await tab.playwright.waitForTimeout(100);
+  }
+  throw new Error(`Expected ${selector} to include ${JSON.stringify(text)}; got ${JSON.stringify(last)}.`);
+}
+
 async function expectAnyBodyText(tab, texts, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   const expected = texts.map((item) => String(item).toLocaleLowerCase());
@@ -127,12 +150,26 @@ async function fill(tab, selector, value, timeoutMs) {
 
 async function click(tab, selector, timeoutMs) {
   const locator = await uniqueLocator(tab, selector, timeoutMs);
+  try {
+    await locator.scrollIntoViewIfNeeded({ timeoutMs });
+  } catch (_error) {
+    // Browser/IAB locator adapters may not expose this Playwright helper.
+  }
   await locator.click({ timeoutMs });
 }
 
 async function select(tab, selector, value, timeoutMs) {
   const locator = await uniqueLocator(tab, selector, timeoutMs);
-  await locator.selectOption(value, { timeoutMs });
+  let lastError = null;
+  for (const option of [value, ...PROFILE_FALLBACKS]) {
+    try {
+      await locator.selectOption(option, { timeoutMs });
+      return option;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error(`Could not select ${selector}.`);
 }
 
 async function setChecked(tab, selector, value, timeoutMs) {
@@ -254,8 +291,14 @@ export async function runBrowserIabSmoke(options = {}) {
     if (!(await runStep(checks, "browser_batch_queue", "Browser/IAB added the reviewed request to the batch queue without preparing artifacts.", async () => {
       await click(tab, "#interpretation-close-review", args.timeoutMs);
       await click(tab, "#add-current-to-batch", args.timeoutMs);
-      await expectBodyText(tab, "1 queued", args.timeoutMs);
+      await expectSelectorText(tab, "#batch-count-chip", "1 queued", args.timeoutMs);
       await expectBodyText(tab, "Packet item inspector", args.timeoutMs);
+    }))) {
+      return report(baseUrl, checks);
+    }
+    if (!(await runStep(checks, "browser_batch_preflight", "Browser/IAB ran non-writing batch preflight before artifact preparation.", async () => {
+      await expectSelectorText(tab, "#batch-preflight-result", "Batch preflight", args.timeoutMs);
+      await expectSelectorText(tab, "#batch-preflight-result", "Artifact effect", args.timeoutMs);
     }))) {
       return report(baseUrl, checks);
     }

@@ -37,7 +37,7 @@ The app supports the main workflow:
 - create an intake from a known service profile
 - show a `Next Safe Action` card that points to the safest next step after each review or preparation result
 - review the Portuguese draft text before generating the PDF
-- queue multiple reviewed requests and prepare a batch package through the same all-or-nothing preflight
+- queue multiple reviewed requests, run a non-writing batch preflight, and prepare a batch package only after the queue is clean
 - enable Packet mode for a batch when several requerimentos should become one combined PDF attachment
 - show numbered missing-information questions
 - apply short numbered answers directly in the review drawer, then re-run the same review without rebuilding the intake manually
@@ -75,7 +75,7 @@ For a real browser review-flow click-through, use the opt-in browser smoke:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
+This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, adds it to the batch queue, and runs the non-writing `Check batch preflight` action. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
 
 Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can also verify the numbered missing-info answer loop and the References -> LegalPDF Apply History, redacted Details, and read-only Restore Plan surface without preparing PDFs, writing reference files, recording drafts, or calling Gmail:
 
@@ -230,7 +230,7 @@ If the photo header shows a court or Ministério Público office and there is no
 
 For Polícia Judiciária sources, record the local host building and city used for the service. PJ often travels from elsewhere and uses a GNR building, hospital, or medical-legal office, so `Polícia Judiciária` alone is not enough as the service place. Use a physical place such as `Posto da GNR de Ferreira do Alentejo` or `Gabinete Médico-Legal de Beja, Hospital José Joaquim Fernandes - Beja`. Inspector names are optional; include them if visible and useful, but do not ask for them when missing.
 
-For similar photo batches, either use the browser app's Batch Queue or prepare all intake files together from the CLI. The batch preflight validates every request before generating anything, and the manifest makes mismatches easier to catch before Gmail draft creation.
+For similar photo batches, either use the browser app's Batch Queue or prepare all intake files together from the CLI. In the browser, click `Check batch preflight` first: it validates the queued requests, same-batch duplicates, active draft blockers, and packet recipient compatibility without writing PDFs, draft payloads, intake JSON, or manifests. When that check is clean, click `Prepare batch package`; the generated manifest then makes mismatches easier to catch before Gmail draft creation.
 
 When a batch should be sent as a single attachment, turn on `Packet mode` in the browser before clicking `Prepare batch package`. Use the packet order controls to drag queued requests or move them up/down first. Use each row's `Inspect` button to open the Packet item inspector and confirm the request's recipient, service place, kilometers, source details, and supporting attachment order. The app validates that all queued requests use the same recipient, creates the individual requerimento PDFs in the displayed order, bundles them into one packet PDF, and prepares one Gmail `_create_draft` payload with the packet as the only attachment. After the packet is prepared, use the Packet draft recording helper to copy the `record_gmail_draft.py` command or JSON object; it includes the packet payload path and the underlying requests that will become duplicate blockers once the draft is recorded. In the Review drawer, the Record Gmail Draft card also has `Autofill from prepared payload`; paste the Gmail draft/message/thread IDs first, then use that button to fill the prepared packet or individual payload path without clearing the pasted IDs.
 

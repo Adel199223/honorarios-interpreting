@@ -4162,6 +4162,198 @@ def build_packet_result(
     }
 
 
+def preflight_next_safe_action(status: str, *, packet_mode: bool = False) -> dict[str, Any]:
+    if status == "ready":
+        mode = "packet PDF" if packet_mode else "batch package"
+        return next_safe_action(
+            state="prepare_batch",
+            title="Batch preflight clear",
+            detail=f"No files were created. Review the queued requests, then prepare the {mode} when ready.",
+            button_id="prepare-batch-intakes",
+            blocked=False,
+        )
+    return next_safe_action(
+        state="fix_batch_blockers",
+        title="Fix batch blockers before preparing",
+        detail="The batch has duplicate, recipient, active-draft, or intake blockers. No PDF or draft payload was created.",
+        button_id="",
+        blocked=True,
+    )
+
+
+def preflight_item_summary(
+    *,
+    index: int,
+    intake: dict[str, Any],
+    status: str,
+    message: str,
+    key: tuple[str, str, str] | None = None,
+    recipient: str = "",
+    recipient_source: str = "",
+    lifecycle: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    case_number = key[0] if key else normalize_case_number(str(intake.get("case_number") or ""))
+    service_date = key[1] if key else str(intake.get("service_date") or intake.get("photo_metadata_date") or "")
+    period = key[2] if key else str(intake.get("service_period_label") or "").strip()
+    transport = intake.get("transport") if isinstance(intake.get("transport"), dict) else {}
+    attachments = intake.get("additional_attachment_files") if isinstance(intake.get("additional_attachment_files"), list) else []
+    summary = {
+        "index": index,
+        "status": status,
+        "message": message,
+        "case_number": case_number,
+        "raw_case_number": str(intake.get("raw_case_number") or intake.get("source_case_number") or ""),
+        "service_date": service_date,
+        "service_date_source": str(intake.get("service_date_source") or ""),
+        "photo_metadata_date": str(intake.get("photo_metadata_date") or ""),
+        "source_document_timestamp": str(intake.get("source_document_timestamp") or ""),
+        "service_period_label": period,
+        "service_start_time": str(intake.get("service_start_time") or ""),
+        "service_end_time": str(intake.get("service_end_time") or ""),
+        "payment_entity": str(intake.get("payment_entity") or ""),
+        "service_entity": str(intake.get("service_entity") or ""),
+        "service_place": str(intake.get("service_place") or ""),
+        "recipient": recipient,
+        "recipient_source": recipient_source,
+        "transport_destination": str(transport.get("destination") or intake.get("transport_destination") or ""),
+        "km_one_way": str(transport.get("km_one_way") or intake.get("km_one_way") or ""),
+        "source_filename": str(intake.get("source_filename") or ""),
+        "additional_attachment_count": len(attachments),
+        "draft_lifecycle": lifecycle or {},
+        "send_allowed": False,
+        "write_allowed": False,
+    }
+    if key:
+        summary["duplicate_key"] = {
+            "case_number": key[0],
+            "service_date": key[1],
+            "service_period_label": key[2],
+        }
+    return summary
+
+
+def preflight_intakes(
+    intakes: list[dict[str, Any]],
+    paths: AppPaths,
+    *,
+    allow_duplicate: bool = False,
+    allow_existing_draft: bool = False,
+    correction_reason: str = "",
+    packet_mode: bool = False,
+) -> dict[str, Any]:
+    if not intakes:
+        raise IntakeError("At least one intake is required.")
+
+    normalized_correction_reason = str(correction_reason or "").strip()
+    correction_mode = bool(normalized_correction_reason)
+    profile = load_json(paths.profile)
+    email_config = load_json(paths.email_config)
+    court_directory = read_json_list(paths.court_emails)
+    draft_log = load_draft_log(paths.draft_log)
+    intake_paths = planned_intake_paths(intakes, paths)
+    effective_allow_duplicate = bool(allow_duplicate or correction_mode)
+    effective_allow_existing_draft = bool(allow_existing_draft or correction_mode)
+
+    items: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    seen_keys: dict[tuple[str, str, str], str] = {}
+
+    for index, (intake_path, intake) in enumerate(zip(intake_paths, intakes), start=1):
+        lifecycle = draft_lifecycle_for_intake(intake, paths)
+        try:
+            key = validate_intake_before_generation(
+                intake_path,
+                intake,
+                profile=profile,
+                email_config=email_config,
+                court_directory=court_directory,
+                duplicate_index=paths.duplicate_index,
+                draft_log=draft_log,
+                allow_duplicate=effective_allow_duplicate,
+                allow_existing_draft=effective_allow_existing_draft,
+                correction_reason=normalized_correction_reason,
+            )
+            if key in seen_keys:
+                raise IntakeError(f"Duplicate request appears more than once in this batch: item {index} duplicates {seen_keys[key]}")
+            seen_keys[key] = f"item {index}"
+            recipient, recipient_source = resolve_recipient(intake, email_config, court_directory)
+            items.append(preflight_item_summary(
+                index=index,
+                intake=intake,
+                status="ready",
+                message="Ready for artifact preparation.",
+                key=key,
+                recipient=recipient,
+                recipient_source=recipient_source,
+                lifecycle=lifecycle,
+            ))
+        except (IntakeError, OSError, ValueError) as exc:
+            message = str(exc)
+            blocker = {
+                "index": index,
+                "message": message,
+                "send_allowed": False,
+                "write_allowed": False,
+            }
+            blockers.append(blocker)
+            items.append(preflight_item_summary(
+                index=index,
+                intake=intake,
+                status="blocked",
+                message=message,
+                lifecycle=lifecycle,
+            ))
+
+    packet: dict[str, Any] | None = None
+    if packet_mode and not blockers:
+        try:
+            recipient = validate_packet_recipients(intakes, email_config, court_directory)
+            packet = {
+                "status": "ready",
+                "recipient": recipient,
+                "request_count": len(intakes),
+                "message": "Packet mode is valid. All queued requests resolve to the same recipient.",
+                "send_allowed": False,
+                "write_allowed": False,
+            }
+        except IntakeError as exc:
+            message = str(exc)
+            blockers.append({
+                "index": None,
+                "message": message,
+                "send_allowed": False,
+                "write_allowed": False,
+            })
+            packet = {
+                "status": "blocked",
+                "message": message,
+                "send_allowed": False,
+                "write_allowed": False,
+            }
+
+    status = "blocked" if blockers else "ready"
+    if blockers:
+        message = "Batch preflight blocked: " + " | ".join(blocker["message"] for blocker in blockers)
+    else:
+        mode = "packet PDF" if packet_mode else "separate PDF/draft payloads"
+        message = f"Batch preflight clear for {len(intakes)} request(s). No files were created. Next step: prepare {mode}."
+
+    return {
+        "status": status,
+        "message": message,
+        "artifact_effect": "none",
+        "write_allowed": False,
+        "send_allowed": False,
+        "packet_mode": bool(packet_mode),
+        "correction_mode": correction_mode,
+        "correction_reason": normalized_correction_reason,
+        "items": items,
+        "blockers": blockers,
+        "packet": packet,
+        "next_safe_action": preflight_next_safe_action(status, packet_mode=bool(packet_mode)),
+    }
+
+
 def prepare_intakes(
     intakes: list[dict[str, Any]],
     paths: AppPaths,

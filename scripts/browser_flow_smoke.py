@@ -16,6 +16,16 @@ from scripts.local_app_smoke import _check, _normalize_base_url
 DEFAULT_CASE_NUMBER = "999/26.0SMOKE"
 DEFAULT_SERVICE_DATE = "2026-05-04"
 DEFAULT_PROFILE = "example_interpreting"
+PROFILE_FALLBACKS = [
+    "gnr_serpa_judicial",
+    "gnr_ferreira_falentejo",
+    "gnr_beringel_beja_mp",
+    "pj_gnr_ferreira",
+    "pj_gnr_beja",
+    "beja_trabalho",
+    "gnr_cuba",
+    "court_mp_generic",
+]
 FORBIDDEN_DEFAULT_POSTS = {"/api/prepare", "/api/drafts/record", "/api/drafts/status"}
 FORBIDDEN_PREPARE_POSTS = {"/api/drafts/record", "/api/drafts/status"}
 
@@ -62,7 +72,17 @@ class PlaywrightBrowserDriver:
         self._page.locator(selector).fill(value, timeout=self.timeout_ms)
 
     def select(self, selector: str, value: str) -> None:
-        self._page.locator(selector).select_option(value, timeout=self.timeout_ms)
+        locator = self._page.locator(selector)
+        last_error: Exception | None = None
+        for option in [value, *PROFILE_FALLBACKS]:
+            try:
+                locator.select_option(option, timeout=self.timeout_ms)
+                return
+            except Exception as exc:
+                last_error = exc
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Could not select {selector}.")
 
     def check(self, selector: str) -> None:
         self._page.locator(selector).check(timeout=self.timeout_ms)
@@ -262,6 +282,13 @@ def run_browser_flow_smoke(
             driver.click("#add-current-to-batch"),
             driver.expect_selector_text("#batch-count-chip", "1 queued"),
             driver.expect_text("Packet item inspector"),
+        )):
+            return _report(base, checks)
+
+        if not _safe_step(checks, "browser_batch_preflight", "Browser ran non-writing batch preflight before artifact preparation.", lambda: (
+            driver.expect_selector_visible("#batch-preflight-result"),
+            driver.expect_text("Batch preflight"),
+            driver.expect_text("no PDFs or draft payloads were created"),
         )):
             return _report(base, checks)
 
