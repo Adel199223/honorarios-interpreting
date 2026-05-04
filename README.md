@@ -64,6 +64,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 
 The smoke runner checks the LegalPDF-style workflow landmarks, draft-only Gmail contract, Google Photos/AI status endpoints, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
 
+For a deeper opt-in workflow smoke against disposable/synthetic app state, add `--interaction-checks`:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --interaction-checks --json
+```
+
+This exercises profile intake creation, active-draft checking, and packet-mode PDF/draft-payload preparation. It can write local PDF/payload artifacts on a real app, so keep it for test/synthetic state or intentional verification. It still checks that every response keeps `send_allowed: false` and never calls Gmail.
+
 ## Local Backups
 
 Use References -> Local Backup before moving the app, making large reference edits, or preparing future LegalPDF integration work. `Export backup` writes a private JSON file under `output/backups/` and also shows the JSON in the app for copying. The backup includes service profiles, court emails, known destinations, duplicate index records, Gmail draft log records, and profile-change history.

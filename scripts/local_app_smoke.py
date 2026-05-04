@@ -10,6 +10,10 @@ from collections.abc import Callable
 from typing import Any
 
 
+TextFetcher = Callable[[str], str]
+JsonFetcher = Callable[[str], Any]
+PostJsonFetcher = Callable[[str, dict[str, Any]], Any]
+
 LANDMARKS = [
     "LegalPDF Honorários",
     "Start Interpretation Request",
@@ -58,6 +62,21 @@ def _http_json(url: str, timeout: float) -> Any:
         return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
+def _http_post_json(url: str, payload: dict[str, Any], timeout: float) -> Any:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
 def _check(name: str, passed: bool, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "name": name,
@@ -81,16 +100,178 @@ def _send_allowed_values(value: Any, path: str = "$") -> list[dict[str, Any]]:
     return found
 
 
+def _send_allowed_check(name: str, payload: Any, success_message: str) -> dict[str, Any]:
+    send_values = _send_allowed_values(payload)
+    non_false = [item for item in send_values if item["value"] is not False]
+    return _check(
+        name,
+        not non_false,
+        success_message if not non_false else "Response exposes a non-false send_allowed value.",
+        {"non_false_send_allowed": non_false, "send_allowed_paths": send_values},
+    )
+
+
+def _post_workflow_json(
+    post_json: PostJsonFetcher,
+    url: str,
+    payload: dict[str, Any],
+    check_name: str,
+) -> tuple[Any | None, dict[str, Any] | None]:
+    try:
+        return post_json(url, payload), None
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        return None, _check(check_name, False, f"Could not call {url}: {exc}")
+
+
+def _workflow_prepare_payload_ready(payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    items = payload.get("items")
+    first_item = items[0] if isinstance(items, list) and items else {}
+    item_args = first_item.get("gmail_create_draft_args") if isinstance(first_item, dict) else {}
+    item_attachments = item_args.get("attachment_files") if isinstance(item_args, dict) else None
+    packet = payload.get("packet") if isinstance(payload.get("packet"), dict) else {}
+    packet_args = packet.get("gmail_create_draft_args") if isinstance(packet.get("gmail_create_draft_args"), dict) else {}
+    packet_attachments = packet_args.get("attachment_files") if isinstance(packet_args, dict) else None
+    underlying = packet.get("underlying_requests")
+    details = {
+        "status": payload.get("status"),
+        "packet_mode": payload.get("packet_mode"),
+        "item_attachment_count": len(item_attachments) if isinstance(item_attachments, list) else None,
+        "packet_attachment_count": len(packet_attachments) if isinstance(packet_attachments, list) else None,
+        "underlying_request_count": len(underlying) if isinstance(underlying, list) else None,
+    }
+    ready = (
+        isinstance(payload, dict)
+        and payload.get("status") == "prepared"
+        and payload.get("send_allowed") is False
+        and isinstance(items, list)
+        and bool(items)
+        and isinstance(item_attachments, list)
+        and first_item.get("gmail_create_draft_ready") is not False
+        and isinstance(packet, dict)
+        and packet.get("gmail_create_draft_ready") is not False
+        and isinstance(packet_attachments, list)
+        and isinstance(underlying, list)
+        and bool(underlying)
+    )
+    return ready, details
+
+
+def _run_interaction_checks(
+    base: str,
+    *,
+    post_json: PostJsonFetcher,
+    profile: str,
+    case_number: str,
+    service_date: str,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    intake_payload = {
+        "profile": profile,
+        "case_number": case_number,
+        "service_date": service_date,
+    }
+    intake_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/intake/from-profile"),
+        intake_payload,
+        "workflow_build_intake",
+    )
+    if error_check:
+        return [error_check]
+    checks.append(_send_allowed_check(
+        "workflow_build_intake_send_allowed",
+        intake_response,
+        "Profile intake creation keeps send_allowed false.",
+    ))
+    review = intake_response.get("review") if isinstance(intake_response, dict) else {}
+    intake = intake_response.get("intake") if isinstance(intake_response, dict) else None
+    draft_text = str(review.get("draft_text") or "") if isinstance(review, dict) else ""
+    intake_ready = (
+        isinstance(intake_response, dict)
+        and intake_response.get("status") == "created"
+        and isinstance(intake, dict)
+        and isinstance(review, dict)
+        and review.get("status") == "ready"
+        and bool(draft_text.strip())
+        and ("Número de processo" in draft_text or "Numero de processo" in draft_text)
+    )
+    checks.append(_check(
+        "workflow_build_intake",
+        intake_ready,
+        "Profile intake produces a ready review and Portuguese draft text." if intake_ready else "Profile intake did not produce a ready review.",
+        {"status": intake_response.get("status") if isinstance(intake_response, dict) else None},
+    ))
+    if not intake_ready or not isinstance(intake, dict):
+        return checks
+
+    lifecycle_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/drafts/active-check"),
+        {"intake": intake},
+        "workflow_active_draft_check",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "workflow_active_draft_check_send_allowed",
+        lifecycle_response,
+        "Active-draft check keeps send_allowed false.",
+    ))
+    lifecycle_status = lifecycle_response.get("status") if isinstance(lifecycle_response, dict) else None
+    lifecycle_ready = lifecycle_status in {"clear", "ready"}
+    checks.append(_check(
+        "workflow_active_draft_check",
+        lifecycle_ready,
+        "Active-draft check is clear for the synthetic request." if lifecycle_ready else "Active-draft check blocked the synthetic request.",
+        {"status": lifecycle_status},
+    ))
+    if not lifecycle_ready:
+        return checks
+
+    prepare_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/prepare"),
+        {"intakes": [intake], "render_previews": False, "packet_mode": True},
+        "workflow_prepare_packet_payload",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "workflow_prepare_packet_payload_send_allowed",
+        prepare_response,
+        "Prepare response keeps send_allowed false.",
+    ))
+    packet_ready = False
+    details: dict[str, Any] = {}
+    if isinstance(prepare_response, dict):
+        packet_ready, details = _workflow_prepare_payload_ready(prepare_response)
+    checks.append(_check(
+        "workflow_prepare_packet_payload",
+        packet_ready,
+        "Packet prepare result exposes draft-only Gmail args with attachment arrays and underlying requests." if packet_ready else "Packet prepare result is missing its draft-only packet contract.",
+        details,
+    ))
+    return checks
+
+
 def run_smoke(
     base_url: str = "http://127.0.0.1:8766",
     *,
     timeout: float = 5.0,
-    fetch_text: Callable[[str], str] | None = None,
-    fetch_json: Callable[[str], Any] | None = None,
+    fetch_text: TextFetcher | None = None,
+    fetch_json: JsonFetcher | None = None,
+    post_json: PostJsonFetcher | None = None,
+    interaction_checks: bool = False,
+    interaction_profile: str = "example_interpreting",
+    interaction_case_number: str = "999/26.0SMOKE",
+    interaction_service_date: str = "2026-05-04",
 ) -> dict[str, Any]:
     base = _normalize_base_url(base_url)
     text_fetcher = fetch_text or (lambda url: _http_text(url, timeout))
     json_fetcher = fetch_json or (lambda url: _http_json(url, timeout))
+    json_poster = post_json or (lambda url, payload: _http_post_json(url, payload, timeout))
     checks: list[dict[str, Any]] = []
     endpoint_payloads: dict[str, Any] = {}
 
@@ -154,6 +335,15 @@ def run_smoke(
             {"exposed": exposed},
         ))
 
+    if interaction_checks:
+        checks.extend(_run_interaction_checks(
+            base,
+            post_json=json_poster,
+            profile=interaction_profile,
+            case_number=interaction_case_number,
+            service_date=interaction_service_date,
+        ))
+
     failure_count = sum(1 for check in checks if check["status"] != "ready")
     return {
         "status": "ready" if failure_count == 0 else "blocked",
@@ -168,10 +358,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Smoke-check the live local Honorários browser app.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--interaction-checks", action="store_true", help="Also exercise the opt-in profile/review/packet-prepare contract. This may create local draft payload/PDF artifacts on a real app.")
+    parser.add_argument("--interaction-profile", default="example_interpreting")
+    parser.add_argument("--interaction-case-number", default="999/26.0SMOKE")
+    parser.add_argument("--interaction-service-date", default="2026-05-04")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    report = run_smoke(args.base_url, timeout=args.timeout)
+    report = run_smoke(
+        args.base_url,
+        timeout=args.timeout,
+        interaction_checks=args.interaction_checks,
+        interaction_profile=args.interaction_profile,
+        interaction_case_number=args.interaction_case_number,
+        interaction_service_date=args.interaction_service_date,
+    )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

@@ -21,9 +21,10 @@ Create a public GitHub repo only after this checklist is complete.
 - Add a license before public publishing.
 - Keep `.env` and local overlays ignored.
 - Confirm `python -m unittest discover tests` passes from a clean clone.
-- Confirm the generated public smoke suite covers the LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF integration preview/report/checklist/import-plan APIs, and the privacy gate.
+- Confirm the generated public smoke suite covers the LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF integration preview/report/checklist/import-plan APIs, injected optional interaction smoke, and the privacy gate.
 - Confirm the browser app starts with `python -m honorarios_app.web --host 127.0.0.1 --port 8765`.
 - With the app running, confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json` returns `status: ready`.
+- For disposable/synthetic state only, confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --interaction-checks --json` returns `status: ready`; this opt-in mode can write local PDF/payload artifacts but still never calls Gmail.
 - Confirm CI uses only synthetic fixtures.
 
 ## Publishing Rule

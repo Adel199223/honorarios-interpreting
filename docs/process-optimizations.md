@@ -108,3 +108,19 @@ For photographed notices like the GNR Cuba pair:
   - attached PDF path
 
 This makes swapped Cuba/Beja-style mistakes visible before drafts are created.
+
+## Workflow Smoke Checks
+
+Use the default smoke runner for a non-writing live-app check:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
+```
+
+For disposable or synthetic state, add `--interaction-checks` to exercise profile intake, active-draft checking, and packet-mode prepare in one pass:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --interaction-checks --json
+```
+
+The interaction mode validates that the prepared packet exposes `gmail_create_draft_args.attachment_files` as an array and includes `underlying_requests` for duplicate protection. It may create local PDF/draft payload artifacts on a real app, but it never calls Gmail and fails if any response exposes a non-false `send_allowed` value.

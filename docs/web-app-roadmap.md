@@ -42,7 +42,8 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
 - Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist/import-plan APIs, and the privacy gate.
-- Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts.
+- Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts by default.
+- Opt-in interaction smoke mode (`--interaction-checks`) that exercises profile intake, active-draft checking, packet-mode prepare, attachment-array validation, and underlying-request duplicate-tracking contract through injected test hooks or disposable local state while still requiring `send_allowed: false` throughout.
 
 ## LegalPDF UI Alignment
 
@@ -72,7 +73,7 @@ It was published from `output/public-candidate` after the privacy and repository
 ## Next Stages
 
 1. Add a write-confirmed adapter import prototype only after the read-only import plan proves its blockers and merge-policy labels are conservative enough.
-2. Add deeper optional Browser/IAB interaction checks that click through local upload, review drawer, batch/packet preparation, and draft-recording helper flows using disposable test state.
+2. Add true Browser/IAB click-through checks for local upload, review drawer, batch queue, packet preparation, and draft-recording helper flows using disposable test state; the current `--interaction-checks` smoke validates the backend contract without browser automation.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

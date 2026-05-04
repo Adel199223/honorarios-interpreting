@@ -145,6 +145,71 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertEqual(report["status"], "ready", report)
         self.assertFalse(report["send_allowed"])
 
+    def test_local_app_smoke_runner_optional_interaction_contract_is_injectable(self):
+        client = self.make_client()
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        def post_json(url, payload):
+            if url.endswith("/api/intake/from-profile"):
+                intake = {
+                    "case_number": payload["case_number"],
+                    "service_date": payload["service_date"],
+                    "recipient_email": "court@example.test",
+                    "payment_entity": "Example Court",
+                    "service_place": "Example Police Station",
+                }
+                return {
+                    "status": "created",
+                    "intake": intake,
+                    "review": {
+                        "status": "ready",
+                        "draft_text": "Número de processo: 999/26.0SMOKE\n\nPede deferimento,",
+                        "send_allowed": False,
+                    },
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/drafts/active-check"):
+                return {"status": "clear", "send_allowed": False}
+            if url.endswith("/api/prepare"):
+                return {
+                    "status": "prepared",
+                    "packet_mode": True,
+                    "send_allowed": False,
+                    "items": [{
+                        "case_number": "999/26.0SMOKE",
+                        "service_date": "2026-05-04",
+                        "send_allowed": False,
+                        "gmail_create_draft_ready": True,
+                        "gmail_create_draft_args": {"attachment_files": ["/tmp/synthetic.pdf"]},
+                    }],
+                    "packet": {
+                        "send_allowed": False,
+                        "gmail_create_draft_ready": True,
+                        "gmail_create_draft_args": {"attachment_files": ["/tmp/synthetic-packet.pdf"]},
+                        "underlying_requests": [{"case_number": "999/26.0SMOKE", "service_date": "2026-05-04"}],
+                    },
+                }
+            raise AssertionError(url)
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+            post_json=post_json,
+            interaction_checks=True,
+        )
+        self.assertEqual(report["status"], "ready", report)
+        self.assertIn("workflow_prepare_packet_payload", {check["name"] for check in report["checks"]})
+
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)
         self.assertTrue(report["public_ready"], report)
