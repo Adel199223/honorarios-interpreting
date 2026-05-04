@@ -1131,6 +1131,7 @@ def write_json_object(path: Path, data: dict[str, Any]) -> None:
 
 BACKUP_SCHEMA_VERSION = 1
 BACKUP_KIND = "honorarios_local_backup"
+BACKUP_RECENT_SECONDS = 24 * 60 * 60
 
 
 def backup_dataset_paths(paths: AppPaths) -> dict[str, tuple[Path, type]]:
@@ -1158,6 +1159,62 @@ def backup_counts(datasets: dict[str, Any]) -> dict[str, int]:
     return {
         key: len(value) if isinstance(value, (dict, list)) else 0
         for key, value in datasets.items()
+    }
+
+
+def managed_backup_counts(paths: AppPaths) -> dict[str, int]:
+    datasets = {
+        key: read_backup_dataset(path, expected_type)
+        for key, (path, expected_type) in backup_dataset_paths(paths).items()
+    }
+    return backup_counts(datasets)
+
+
+def backup_file_records(paths: AppPaths) -> list[dict[str, Any]]:
+    if not paths.backup_output_dir.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in paths.backup_output_dir.glob("*backup-*.json"):
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        created_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+        prefix = path.name.split("-backup-", 1)[0]
+        records.append({
+            "path": path,
+            "created_at": created_at,
+            "size_bytes": stat.st_size,
+            "prefix": prefix,
+        })
+    return sorted(records, key=lambda item: item["created_at"], reverse=True)
+
+
+def backup_status_payload(paths: AppPaths) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    records = backup_file_records(paths)
+    latest = records[0] if records else None
+    age_seconds = int((now - latest["created_at"]).total_seconds()) if latest else None
+    backup_recommended = latest is None or age_seconds is None or age_seconds > BACKUP_RECENT_SECONDS
+    status = "recommended" if backup_recommended else "ready"
+    if latest is None:
+        message = "No local backup found. Export a backup before high-risk local edits."
+    elif backup_recommended:
+        message = "Latest local backup is older than 24 hours. Export a fresh backup before high-risk local edits."
+    else:
+        message = "Recent local backup found. Reference edits and restores have a current rollback point."
+    return {
+        "status": status,
+        "message": message,
+        "backup_recommended": backup_recommended,
+        "latest_backup_file": str(latest["path"]) if latest else "",
+        "latest_backup_created_at": latest["created_at"].isoformat() if latest else "",
+        "latest_backup_age_seconds": age_seconds,
+        "latest_backup_size_bytes": latest["size_bytes"] if latest else 0,
+        "latest_backup_prefix": latest["prefix"] if latest else "",
+        "backup_file_count": len(records),
+        "managed_counts": managed_backup_counts(paths),
+        "recent_threshold_seconds": BACKUP_RECENT_SECONDS,
+        "send_allowed": False,
     }
 
 
@@ -1194,6 +1251,7 @@ def export_local_backup(paths: AppPaths) -> dict[str, Any]:
         "backup_file": str(backup_file),
         "backup": backup,
         "counts": backup["counts"],
+        "backup_status": backup_status_payload(paths),
         "send_allowed": False,
     }
 
@@ -1279,6 +1337,7 @@ def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
         "restored_datasets": validation["dataset_names"],
         "counts": validation["counts"],
         "pre_restore_backup_file": str(pre_restore_file),
+        "backup_status": backup_status_payload(paths),
         "send_allowed": False,
     }
 
@@ -1754,6 +1813,7 @@ def load_app_reference(paths: AppPaths) -> dict[str, Any]:
             "draft_only": True,
         },
         "ai": ai_status_payload(paths.ai_config),
+        "backup": backup_status_payload(paths),
     }
 
 

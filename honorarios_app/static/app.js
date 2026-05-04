@@ -9,6 +9,7 @@ const state = {
   googlePhotosPicker: null,
   draftLifecycle: null,
   localBackupPreview: null,
+  backupStatus: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -735,13 +736,21 @@ async function uploadSource(sourceKind) {
 async function loadReference() {
   state.reference = await requestJson("/api/reference");
   state.aiStatus = state.reference?.ai || null;
+  state.backupStatus = state.reference?.backup || null;
   renderReference();
   renderAiStatus(state.aiStatus);
+  renderBackupStatus(state.backupStatus);
 }
 
 async function loadAiStatus() {
   state.aiStatus = await requestJson("/api/ai/status");
   renderAiStatus(state.aiStatus);
+}
+
+async function loadBackupStatus() {
+  state.backupStatus = await requestJson("/api/backup/status");
+  renderBackupStatus(state.backupStatus);
+  return state.backupStatus;
 }
 
 async function loadGooglePhotosStatus() {
@@ -923,6 +932,57 @@ async function buildPublicCandidate() {
   return data;
 }
 
+function formatBackupAge(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "No backup yet";
+  const value = Number(seconds);
+  if (value < 60) return "just now";
+  if (value < 3600) return `${Math.floor(value / 60)} min ago`;
+  if (value < 86400) return `${Math.floor(value / 3600)} h ago`;
+  return `${Math.floor(value / 86400)} d ago`;
+}
+
+function renderBackupStatus(data) {
+  const chip = $("#backup-status-chip");
+  const body = $("#local-backup-status");
+  if (!chip || !body) return;
+  const status = data?.status || "recommended";
+  const chipKind = statusChipClass(status);
+  chip.textContent = status.replaceAll("_", " ");
+  chip.className = `status-chip ${chipKind}`;
+  const latest = data?.latest_backup_file
+    ? `<div class="data-item"><strong>Backup file</strong><code>${escapeHtml(data.latest_backup_file)}</code></div>`
+    : `<div class="data-item"><strong>Backup file</strong><span>No backup file found yet.</span></div>`;
+  const age = `<div class="data-item"><strong>Age</strong><span>${escapeHtml(formatBackupAge(data?.latest_backup_age_seconds))}</span></div>`;
+  const counts = data?.managed_counts || {};
+  const countRows = Object.entries(counts).map(([key, value]) => (
+    `<div class="data-item"><strong>${escapeHtml(key)}</strong><span>${escapeHtml(value)} record${Number(value) === 1 ? "" : "s"}</span></div>`
+  )).join("");
+  body.className = `result-card compact-result ${chipKind}`;
+  body.innerHTML = `
+    <div class="result-header">
+      <div>
+        <strong>Latest backup</strong>
+        <p>${escapeHtml(data?.message || "Backup recommended before high-risk local edits.")}</p>
+        <p>Backup recommended before high-risk local edits to profiles, court emails, destinations, or restores.</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${latest}
+    ${age}
+    ${countRows}
+  `;
+}
+
+function maybeShowBackupReminder(actionName) {
+  if (!state.backupStatus?.backup_recommended) return false;
+  renderLocalBackupResult({
+    status: "recommended",
+    message: `Backup recommended before ${actionName}. Use Export backup first if this edit is not trivial.`,
+    counts: state.backupStatus.managed_counts || {},
+  }, "recommended");
+  return true;
+}
+
 function renderLocalBackupResult(data, kind = "info") {
   const chip = $("#backup-status-chip");
   const body = $("#local-backup-result");
@@ -969,6 +1029,10 @@ async function exportLocalBackup() {
   state.localBackupPreview = null;
   $("#confirm-local-backup-restore").checked = false;
   renderLocalBackupResult(data, "exported");
+  if (data.backup_status) {
+    state.backupStatus = data.backup_status;
+    renderBackupStatus(state.backupStatus);
+  }
   return data;
 }
 
@@ -984,6 +1048,7 @@ async function previewLocalBackupImport() {
 }
 
 async function restoreLocalBackupImport() {
+  maybeShowBackupReminder("restoring backup data");
   if (!state.localBackupPreview) {
     throw new Error("Preview backup import before restoring local data.");
   }
@@ -997,6 +1062,10 @@ async function restoreLocalBackupImport() {
   state.localBackupPreview = null;
   $("#confirm-local-backup-restore").checked = false;
   renderLocalBackupResult(data, "restored");
+  if (data.backup_status) {
+    state.backupStatus = data.backup_status;
+    renderBackupStatus(state.backupStatus);
+  }
   await loadReference();
   return data;
 }
@@ -1058,6 +1127,7 @@ function renderReference() {
 }
 
 async function saveDestinationReference() {
+  maybeShowBackupReminder("saving destinations");
   const payload = {
     destination: $("#destination_name").value.trim(),
     km_one_way: $("#destination_km").value.trim(),
@@ -1074,6 +1144,7 @@ async function saveDestinationReference() {
 }
 
 async function saveCourtEmailReference() {
+  maybeShowBackupReminder("saving court emails");
   const payload = {
     key: $("#court_key").value.trim(),
     name: $("#court_name").value.trim(),
@@ -1125,6 +1196,7 @@ async function previewServiceProfileReference() {
 }
 
 async function saveServiceProfileReference() {
+  maybeShowBackupReminder("saving a service profile");
   const payload = collectServiceProfileReferencePayload();
   const data = await requestJson("/api/reference/service-profiles", {
     method: "POST",
@@ -1150,6 +1222,7 @@ async function previewProfileRollback(index) {
 }
 
 async function restoreProfileRollback(index) {
+  maybeShowBackupReminder("restoring a service profile");
   const data = await requestJson("/api/reference/service-profiles/rollback", {
     method: "POST",
     body: JSON.stringify(removeEmpty({
@@ -1586,6 +1659,7 @@ function bindActions() {
     await loadReference();
     await loadAiStatus().catch(() => {});
     await loadGooglePhotosStatus().catch(() => {});
+    await loadBackupStatus().catch(() => {});
   });
   $("#run-public-readiness").addEventListener("click", async () => {
     try {
@@ -2013,3 +2087,4 @@ loadReference().catch((error) => {
 });
 loadAiStatus().catch(() => {});
 loadGooglePhotosStatus().catch(() => {});
+loadBackupStatus().catch(() => {});

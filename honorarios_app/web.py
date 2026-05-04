@@ -17,6 +17,7 @@ from scripts.public_release_gate import analyze_public_readiness
 from .services import (
     AppPaths,
     ai_status_payload,
+    backup_status_payload,
     build_profile_intake,
     draft_lifecycle_for_intake,
     export_local_backup,
@@ -174,6 +175,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
     async def api_backup_export() -> dict[str, Any]:
         try:
             return export_local_backup(paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/backup/status")
+    async def api_backup_status() -> dict[str, Any]:
+        try:
+            return backup_status_payload(paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

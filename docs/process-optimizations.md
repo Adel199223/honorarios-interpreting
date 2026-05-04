@@ -82,6 +82,8 @@ Use the browser app's References -> Local Backup panel before large edits, machi
 
 `Export backup` writes a private JSON file under `output/backups/` and displays the same JSON for copying. Import is preview-first: paste JSON, run `Preview backup import`, confirm the restore checkbox, then use `Restore backup after preview`. The restore endpoint writes a pre-restore backup before replacing any managed JSON file, so a mistaken restore has a local rollback source.
 
+The app also exposes `/api/backup/status` and renders a `Latest backup` reminder in References. If there is no local backup, or the newest backup is older than 24 hours, the UI warns before saving service profiles, court email records, known destinations, profile rollbacks, or backup restores. The warning is non-send-capable and does not call Gmail; it is only a local safety prompt to export a fresh private backup first.
+
 ## Similar Photo Cases
 
 For photographed notices like the GNR Cuba pair:
