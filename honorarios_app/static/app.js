@@ -1605,7 +1605,14 @@ async function recordDraft() {
   });
   setStatus(data.status, `Recorded Gmail draft ${data.draft_id}.`);
   const superseded = data.superseded_drafts?.length ? ` Superseded: ${data.superseded_drafts.join(", ")}.` : "";
-  showAlert(`Draft recorded locally. The duplicate index now protects this case/date.${superseded}`, "recorded");
+  const blockerCount = Number(data.recorded_duplicate_count || 0);
+  const duplicateKeys = (data.duplicate_keys || [])
+    .map((item) => [item.case_number, item.service_date, item.service_period_label].filter(Boolean).join(" · "))
+    .filter(Boolean);
+  const blockerText = blockerCount
+    ? ` The duplicate index now protects ${blockerCount} duplicate blocker${blockerCount === 1 ? "" : "s"}${duplicateKeys.length ? `: ${duplicateKeys.join("; ")}` : ""}.`
+    : " The duplicate index now protects this case/date.";
+  showAlert(`Draft recorded locally.${blockerText}${superseded}`, "recorded");
   await loadReference();
   return data;
 }

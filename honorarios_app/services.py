@@ -2267,6 +2267,44 @@ def _payload_from_existing_draft(record: dict[str, Any], *, status: str, superse
     return payload
 
 
+def duplicate_key_payload(record: dict[str, Any]) -> dict[str, str]:
+    case_number, service_date, period = request_identity_key(record)
+    return {
+        "case_number": case_number,
+        "service_date": service_date,
+        "service_period_label": period,
+    }
+
+
+def _load_draft_payload_for_response(payload: dict[str, Any]) -> dict[str, Any]:
+    payload_path = str(payload.get("payload") or "").strip()
+    if not payload_path:
+        return {}
+    try:
+        loaded = json.loads(Path(payload_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def recorded_duplicate_keys(payload: dict[str, Any], loaded_payload: dict[str, Any]) -> list[dict[str, str]]:
+    underlying = payload.get("underlying_requests") or loaded_payload.get("underlying_requests") or []
+    if isinstance(underlying, list) and underlying:
+        return [
+            duplicate_key_payload(request)
+            for request in underlying
+            if isinstance(request, dict) and request.get("case_number") and request.get("service_date")
+        ]
+    request = {
+        "case_number": payload.get("case_number") or loaded_payload.get("case_number") or "",
+        "service_date": payload.get("service_date") or loaded_payload.get("service_date") or "",
+        "service_period_label": payload.get("service_period_label") or loaded_payload.get("service_period_label") or "",
+    }
+    if request["case_number"] and request["service_date"]:
+        return [duplicate_key_payload(request)]
+    return []
+
+
 def record_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     supersedes = _coerce_supersedes(payload.get("supersedes"))
     _record_draft_once(payload, paths)
@@ -2289,17 +2327,13 @@ def record_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             )
             superseded_drafts.append(old_draft_id)
 
+    loaded_payload = _load_draft_payload_for_response(payload)
     service_date = str(payload.get("service_date") or "").strip()
     case_number = str(payload.get("case_number") or "").strip()
     if not service_date or not case_number:
-        payload_path = str(payload.get("payload") or "").strip()
-        if payload_path:
-            try:
-                loaded_payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                loaded_payload = {}
-            case_number = case_number or str(loaded_payload.get("case_number") or "")
-            service_date = service_date or str(loaded_payload.get("service_date") or "")
+        case_number = case_number or str(loaded_payload.get("case_number") or "")
+        service_date = service_date or str(loaded_payload.get("service_date") or "")
+    duplicate_keys = recorded_duplicate_keys(payload, loaded_payload)
     thread_id = str(payload.get("thread_id") or "").strip()
     return {
         "status": "recorded",
@@ -2312,4 +2346,6 @@ def record_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "service_date": service_date,
             "service_period_label": payload.get("service_period_label") or "",
         }) if case_number and service_date else None,
+        "duplicate_keys": duplicate_keys,
+        "recorded_duplicate_count": len(duplicate_keys),
     }
