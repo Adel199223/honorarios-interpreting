@@ -691,6 +691,159 @@ def choose_service_profile(
     }
 
 
+def slug_token(value: Any) -> str:
+    text = fold_match_text(value)
+    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return text
+
+
+def _profile_locality(candidate: dict[str, Any]) -> str:
+    ai_locality = _first_ai_field(candidate.get("ai_recovery") or {}, "locality", "city")
+    if ai_locality:
+        return ai_locality
+    place = str(candidate.get("service_place") or "").strip()
+    replacements = [
+        r"^posto\s+territorial\s+(?:da\s+)?(?:gnr\s+)?(?:de|do|da)\s+",
+        r"^posto\s+da\s+gnr\s+(?:de|do|da)\s+",
+        r"^esquadra\s+(?:da\s+)?psp\s+(?:de|do|da)\s+",
+        r"^tribunal\s+(?:judicial\s+)?(?:de|do|da)\s+",
+    ]
+    folded = fold_match_text(place)
+    for pattern in replacements:
+        cleaned = re.sub(pattern, "", folded).strip()
+        if cleaned != folded and cleaned:
+            return cleaned.title()
+    return place
+
+
+def _payment_suffix(payment_entity: str, recipient_email: str) -> str:
+    payment = fold_match_text(payment_entity)
+    recipient = fold_match_text(recipient_email)
+    if "ministerio publico de beja" in payment or recipient.startswith("beja.ministeriopublico"):
+        return "beja_mp"
+    if "trabalho" in payment or "trabalho" in recipient:
+        return "beja_trabalho"
+    if "serpa" in payment or recipient.startswith("serpa."):
+        return "serpa_judicial"
+    if "ferreira do alentejo" in payment or recipient.startswith("falentejo."):
+        return "falentejo_judicial"
+    if "cuba" in payment or recipient.startswith("cuba."):
+        return "cuba_judicial"
+    token = slug_token(payment_entity or recipient_email)
+    return token or "payment_pending"
+
+
+def _default_addressee(payment_entity: str) -> str:
+    entity = str(payment_entity or "").strip()
+    if not entity:
+        return ""
+    if "procurador" in fold_match_text(entity):
+        return entity
+    return f"Exmo. Senhor Procurador da República\n{entity}"
+
+
+def build_profile_proposal(candidate: dict[str, Any], profile_decision: dict[str, Any], profiles: dict[str, Any]) -> dict[str, Any]:
+    if profile_decision.get("auto_applied"):
+        return {
+            "status": "not_needed",
+            "reason": "A known service profile was auto-applied.",
+            "send_allowed": False,
+        }
+    if profile_decision.get("mode") == "explicit_profile":
+        return {
+            "status": "not_needed",
+            "reason": "A user-selected service profile is already in use.",
+            "send_allowed": False,
+        }
+
+    service_place = str(candidate.get("service_place") or "").strip()
+    service_entity_type = str(candidate.get("service_entity_type") or "").strip() or "other"
+    payment_entity = str(candidate.get("payment_entity") or "").strip()
+    recipient_email = str(candidate.get("recipient_email") or "").strip().lower()
+    service_entity = str(candidate.get("service_entity") or "").strip()
+    locality = _profile_locality(candidate).strip()
+    ai_recovery = candidate.get("ai_recovery") or {}
+    ai_km = _first_ai_field(ai_recovery, "km_one_way", "transport_km_one_way", "one_way_km")
+    existing_transport = candidate.get("transport") if isinstance(candidate.get("transport"), dict) else {}
+    km_one_way = existing_transport.get("km_one_way") or ai_km
+
+    missing = []
+    if not service_place:
+        missing.append("service_place")
+    if not payment_entity:
+        missing.append("payment_entity")
+    if not recipient_email:
+        missing.append("recipient_email")
+    if not locality:
+        missing.append("transport_destination")
+    if km_one_way in (None, ""):
+        missing.append("km_one_way")
+
+    if not service_place and not service_entity and not payment_entity:
+        return {
+            "status": "insufficient",
+            "reason": "Not enough recovered evidence to propose a reusable profile.",
+            "missing": missing,
+            "send_allowed": False,
+        }
+
+    has_pj = "policia judiciaria" in fold_match_text(combine_text_parts(service_entity, str(candidate.get("source_text") or "")))
+    prefix = "pj" if has_pj else slug_token(service_entity_type or "service")
+    place_slug = slug_token(locality or service_place or service_entity)
+    payment_slug = _payment_suffix(payment_entity, recipient_email)
+    key_parts = [part for part in [prefix, place_slug, payment_slug] if part]
+    profile_key = "_".join(key_parts) or "new_interpreting_profile"
+    if not re.match(r"^[a-z]", profile_key):
+        profile_key = f"profile_{profile_key}"
+    original_key = profile_key
+    suffix = 2
+    while profile_key in profiles:
+        profile_key = f"{original_key}_{suffix}"
+        suffix += 1
+
+    phrase = str(candidate.get("service_place_phrase") or "").strip()
+    if not phrase and service_place:
+        if has_pj:
+            phrase = f"em diligência da Polícia Judiciária realizada em {service_place}"
+        elif service_entity_type == "gnr":
+            phrase = f"em diligência da Guarda Nacional Republicana realizada em {service_place}"
+        elif service_entity_type == "psp":
+            phrase = f"em diligência da Polícia de Segurança Pública realizada em {service_place}"
+        else:
+            phrase = f"em diligência realizada em {service_place}"
+
+    payload: dict[str, Any] = {
+        "key": profile_key,
+        "description": f"Proposed reusable profile for {service_place or service_entity or payment_entity}.",
+        "service_date_source": str(candidate.get("service_date_source") or "user_confirmed"),
+        "addressee": _default_addressee(payment_entity),
+        "payment_entity": payment_entity,
+        "recipient_email": recipient_email,
+        "service_entity": service_entity,
+        "service_entity_type": service_entity_type,
+        "entities_differ": bool(candidate.get("entities_differ", service_entity_type in {"gnr", "psp", "police", "other"})),
+        "service_place": service_place,
+        "service_place_phrase": phrase,
+        "claim_transport": bool(candidate.get("claim_transport", True)),
+        "transport_destination": locality or service_place,
+        "km_one_way": int(km_one_way) if str(km_one_way or "").isdigit() else km_one_way,
+        "closing_city": str(candidate.get("closing_city") or locality or payment_entity or "").strip(),
+        "source_text_template": f"Serviço de interpretação em {{service_date}}, no âmbito do NUIPC {{case_number}}, {phrase or 'no local de serviço indicado'}.",
+        "notes_template": "Created from an app-proposed service profile. Review recipient, kilometers, and service-place wording before saving.",
+        "change_reason": "Proposed from uploaded source evidence; review before saving.",
+    }
+    payload = {key: value for key, value in payload.items() if value not in (None, "")}
+    return {
+        "status": "proposed" if not missing else "needs_review",
+        "reason": "No known profile matched, so the app proposed a guarded reusable profile from recovered evidence.",
+        "missing": missing,
+        "payload": payload,
+        "preview_endpoint": "/api/reference/service-profiles/preview",
+        "save_endpoint": "/api/reference/service-profiles",
+        "send_allowed": False,
+    }
+
+
 def _first_ai_field(ai_recovery: dict[str, Any], *names: str) -> str:
     fields = ai_recovery.get("fields") if isinstance(ai_recovery, dict) else {}
     if not isinstance(fields, dict):
@@ -778,7 +931,10 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         "service_place_phrase": _first_ai_field(ai_recovery, "service_place_phrase"),
     }
     for key, value in fill_if_missing.items():
-        if value and not str(intake.get(key) or "").strip():
+        existing_value = str(intake.get(key) or "").strip()
+        if key == "service_entity_type" and value and existing_value == "court" and value in {"gnr", "psp", "police", "other"}:
+            intake[key] = value
+        elif value and not existing_value:
             intake[key] = value
 
     entity_type = str(intake.get("service_entity_type") or "").strip().casefold()
@@ -1057,6 +1213,7 @@ def recover_source_upload(
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
     candidate["auto_profile"] = profile_decision
+    profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
     review = review_intake(candidate, paths)
     combined_text = str(candidate.get("source_text") or extracted_text or "").strip()
 
@@ -1079,6 +1236,7 @@ def recover_source_upload(
         },
         "extracted_text": combined_text,
         "ai_recovery": ai_recovery,
+        "profile_proposal": profile_proposal,
         "candidate_intake": candidate,
         "review": review,
         "source_evidence": {
@@ -1094,6 +1252,7 @@ def recover_source_upload(
             "ai_status": ai_recovery.get("status", ""),
             "ai_attempted": bool(ai_recovery.get("attempted")),
             "auto_profile": profile_decision,
+            "profile_proposal": profile_proposal,
             "warnings": source_warnings,
             "rendered_page_urls": [item["artifact_url"] for item in metadata.get("rendered_pages", [])],
             "rendered_page_count": metadata.get("rendered_page_count", 0),

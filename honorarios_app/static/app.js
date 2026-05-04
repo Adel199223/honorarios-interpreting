@@ -8,6 +8,7 @@ const state = {
   googlePhotosStatus: null,
   googlePhotosPicker: null,
   draftLifecycle: null,
+  lastProfileProposal: null,
   localBackupPreview: null,
   legalPdfImportPreview: null,
   backupStatus: null,
@@ -656,9 +657,21 @@ function renderSourceEvidence(data) {
   const metadata = source.metadata || {};
   const warnings = evidence.warnings || metadata.warnings || [];
   const profileDecision = evidence.auto_profile || data.candidate_intake?.auto_profile || {};
+  const profileProposal = evidence.profile_proposal || data.profile_proposal || {};
   const profileSummary = profileDecision.profile_key
     ? `${profileDecision.mode || "auto"}: ${profileDecision.profile_key}${profileDecision.suggested_profile_key && profileDecision.suggested_profile_key !== profileDecision.profile_key ? ` (suggested ${profileDecision.suggested_profile_key})` : ""}`
     : "not decided";
+  const proposalPayload = profileProposal.payload || {};
+  const proposal = profileProposal.status && profileProposal.status !== "not_needed"
+    ? `<div class="profile-proposal-card">
+        <strong>Profile proposal</strong>
+        <p>${escapeHtml(profileProposal.reason || "A reusable profile can be proposed from this source.")}</p>
+        <div><span>Key</span><code>${escapeHtml(proposalPayload.key || "pending")}</code></div>
+        <div><span>Status</span><code>${escapeHtml(profileProposal.status || "")}</code></div>
+        <div><span>Missing</span><code>${escapeHtml((profileProposal.missing || []).join(", ") || "none")}</code></div>
+        <button type="button" class="mini-button" data-use-profile-proposal="true">Preview proposed profile</button>
+      </div>`
+    : "";
   const renderedPageUrls = evidence.rendered_page_urls || [];
   const preview = source.source_kind === "photo"
     ? `<img class="source-preview-image" src="${escapeHtml(source.artifact_url)}" alt="Uploaded source preview">`
@@ -685,6 +698,7 @@ function renderSourceEvidence(data) {
         <div><span>Rendered pages</span><strong>${escapeHtml(evidence.rendered_page_count || renderedPageUrls.length || 0)}</strong></div>
         <div><span>Questions</span><strong>${escapeHtml(evidence.question_count || 0)}</strong></div>
         <div><span>SHA-256</span><code>${escapeHtml((source.sha256 || "").slice(0, 16))}</code></div>
+        ${proposal}
       </div>
       <div>${preview}</div>
     </div>
@@ -782,6 +796,7 @@ async function uploadSource(sourceKind) {
     throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
   }
   state.currentIntake = data.candidate_intake;
+  state.lastProfileProposal = data.profile_proposal || null;
   fillFormFromIntake(state.currentIntake);
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
@@ -1558,6 +1573,32 @@ function fillServiceProfileReferenceForm(key) {
   $("#profile_change_reason").value = "";
 }
 
+function fillServiceProfileProposalForm(proposal) {
+  const payload = proposal?.payload || {};
+  if (!payload.key) {
+    throw new Error("No proposed profile is available from the latest source.");
+  }
+  $("#profile_key").value = payload.key || "";
+  $("#profile_description").value = payload.description || "";
+  $("#profile_service_date_source").value = payload.service_date_source || "user_confirmed";
+  $("#profile_addressee").value = payload.addressee || "";
+  $("#profile_payment_entity").value = payload.payment_entity || "";
+  $("#profile_recipient_email").value = payload.recipient_email || "";
+  $("#profile_court_email_key").value = payload.court_email_key || "";
+  $("#profile_service_entity").value = payload.service_entity || "";
+  $("#profile_service_entity_type").value = payload.service_entity_type || "court";
+  $("#profile_entities_differ").checked = Boolean(payload.entities_differ);
+  $("#profile_service_place").value = payload.service_place || "";
+  $("#profile_service_place_phrase").value = payload.service_place_phrase || "";
+  $("#profile_claim_transport").checked = payload.claim_transport !== false;
+  $("#profile_transport_destination").value = payload.transport_destination || "";
+  $("#profile_km_one_way").value = payload.km_one_way ?? "";
+  $("#profile_closing_city").value = payload.closing_city || "";
+  $("#profile_source_text_template").value = payload.source_text_template || "";
+  $("#profile_notes_template").value = payload.notes_template || "";
+  $("#profile_change_reason").value = payload.change_reason || "Proposed from uploaded source evidence; review before saving.";
+}
+
 function renderProfilePreview(data) {
   const card = $("#profile-preview-card");
   const text = $("#profile-preview-text");
@@ -1929,14 +1970,20 @@ function resetReview() {
   closeReviewDrawer();
 }
 
+function showPanel(panelName) {
+  document.querySelectorAll(".nav-button[data-panel]").forEach((item) => {
+    item.classList.toggle("active", item.dataset.panel === panelName);
+    item.classList.toggle("is-active", item.dataset.panel === panelName);
+  });
+  ["new-job", "references", "history"].forEach((panel) => {
+    $(`#panel-${panel}`).classList.toggle("hidden", panel !== panelName);
+  });
+}
+
 function bindNavigation() {
   document.querySelectorAll(".nav-button[data-panel]").forEach((button) => {
     button.addEventListener("click", () => {
-      document.querySelectorAll(".nav-button[data-panel]").forEach((item) => item.classList.remove("active", "is-active"));
-      button.classList.add("active");
-      ["new-job", "references", "history"].forEach((panel) => {
-        $(`#panel-${panel}`).classList.toggle("hidden", panel !== button.dataset.panel);
-      });
+      showPanel(button.dataset.panel);
     });
   });
 }
@@ -2060,6 +2107,17 @@ function bindActions() {
     const button = event.target.closest("[data-edit-profile]");
     if (!button) return;
     fillServiceProfileReferenceForm(button.dataset.editProfile);
+  });
+  $("#source-evidence").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-use-profile-proposal]");
+    if (!button) return;
+    try {
+      fillServiceProfileProposalForm(state.lastProfileProposal);
+      showPanel("references");
+      showAlert("Proposed profile loaded into the guarded profile editor. Preview it before saving.", "recorded");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
   });
   $("#profile-change-list").addEventListener("click", async (event) => {
     const previewButton = event.target.closest("[data-preview-profile-rollback]");
