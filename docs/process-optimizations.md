@@ -125,6 +125,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This check deliberately stops before `Prepare batch package`, `Record draft`, and any Gmail action. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
 
+To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-upload-photo --browser-upload-pdf --browser-correction-mode --json
+```
+
+This creates disposable synthetic upload files, verifies the Source Evidence card and recovered PDF candidate fields, checks the draft lifecycle/correction reason surface, and still blocks prepare, record, and draft-status POSTs. The app may store synthetic source-preview artifacts from the upload, but it must not create PDF/draft payloads or Gmail draft-log records in this mode.
+
 For disposable or synthetic state, add `--interaction-checks` to exercise profile intake, active-draft checking, and packet-mode prepare in one pass:
 
 ```powershell

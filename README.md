@@ -72,6 +72,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` option is for disposable/synthetic state only because it can create local PDF/payload artifacts.
 
+To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-upload-photo --browser-upload-pdf --browser-correction-mode --json
+```
+
+These flags use disposable synthetic upload files, verify the `Source Evidence` card, check recovered PDF candidate fields, and exercise the draft lifecycle/correction reason surface. The upload endpoint can store synthetic source-preview artifacts locally, but the smoke still blocks prepare, record, and draft-status endpoints by default.
+
 For a deeper opt-in workflow smoke against disposable/synthetic app state, add `--interaction-checks`:
 
 ```powershell

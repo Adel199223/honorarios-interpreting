@@ -420,6 +420,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
     def test_local_app_smoke_runner_browser_click_through_contract_is_injectable(self):
         client = self.make_client()
+        seen_kwargs = {}
 
         def fetch_text(url):
             path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
@@ -431,10 +432,16 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             return response.json()
 
-        def browser_runner(_base_url, **_kwargs):
+        def browser_runner(_base_url, **kwargs):
+            seen_kwargs.update(kwargs)
             return {
                 "status": "ready",
-                "checks": [{"name": "browser_review_drawer", "status": "ready", "message": "ok", "details": {}}],
+                "checks": [
+                    {"name": "browser_review_drawer", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_photo_upload_evidence", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_pdf_upload_evidence", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_correction_mode", "status": "ready", "message": "ok", "details": {}},
+                ],
                 "failure_count": 0,
                 "send_allowed": False,
             }
@@ -444,10 +451,19 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             fetch_text=fetch_text,
             fetch_json=fetch_json,
             browser_click_through=True,
+            browser_upload_photo=True,
+            browser_upload_pdf=True,
+            browser_correction_mode=True,
             browser_runner=browser_runner,
         )
         self.assertEqual(report["status"], "ready", report)
         self.assertIn("browser_review_drawer", {check["name"] for check in report["checks"]})
+        self.assertIn("browser_photo_upload_evidence", {check["name"] for check in report["checks"]})
+        self.assertIn("browser_pdf_upload_evidence", {check["name"] for check in report["checks"]})
+        self.assertIn("browser_correction_mode", {check["name"] for check in report["checks"]})
+        self.assertTrue(seen_kwargs["upload_photo"])
+        self.assertTrue(seen_kwargs["upload_pdf"])
+        self.assertTrue(seen_kwargs["correction_mode"])
 
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)

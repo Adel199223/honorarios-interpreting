@@ -45,6 +45,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts by default.
 - Opt-in interaction smoke mode (`--interaction-checks`) that exercises profile intake, active-draft checking, packet-mode prepare, attachment-array validation, and underlying-request duplicate-tracking contract through injected test hooks or disposable local state while still requiring `send_allowed: false` throughout.
 - Opt-in browser click-through smoke (`--browser-click-through`) that opens the app in a real browser driver when available, verifies the profile-to-review-drawer path, and adds a reviewed request to the batch queue without clicking prepare or recording drafts by default.
+- Optional browser upload/correction smoke flags (`--browser-upload-photo`, `--browser-upload-pdf`, and `--browser-correction-mode`) that verify local Source Evidence and draft-lifecycle UI with disposable synthetic files while still blocking prepare, record, and draft-status endpoints by default.
 
 ## LegalPDF UI Alignment
 
@@ -74,7 +75,7 @@ It was published from `output/public-candidate` after the privacy and repository
 ## Next Stages
 
 1. Add a write-confirmed adapter import prototype only after the read-only import plan proves its blockers and merge-policy labels are conservative enough.
-2. Extend the browser click-through smoke to local upload/photo evidence and correction-mode drawer flows using disposable test state; the current browser smoke covers blank profile review and batch queue, while `--interaction-checks` covers the backend packet prepare contract.
+2. Add a future explicit artifact-writing browser smoke for replacement-draft preparation only if it can run against disposable/synthetic state and preserve the no-Gmail-send rule.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

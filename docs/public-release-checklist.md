@@ -25,6 +25,7 @@ Create a public GitHub repo only after this checklist is complete.
 - Confirm the browser app starts with `python -m honorarios_app.web --host 127.0.0.1 --port 8765`.
 - With the app running, confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json` returns `status: ready`.
 - If optional browser tooling is installed, confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json` returns `status: ready`; this default browser path does not prepare PDFs or record drafts.
+- If optional browser tooling is installed, confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-upload-photo --browser-upload-pdf --browser-correction-mode --json` returns `status: ready`; this browser UI path uses disposable synthetic uploads, may store synthetic source-preview artifacts, and still blocks prepare, record, and draft-status writes.
 - For disposable/synthetic state only, confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --interaction-checks --json` returns `status: ready`; this opt-in mode can write local PDF/payload artifacts but still never calls Gmail.
 - Confirm CI uses only synthetic fixtures.
 

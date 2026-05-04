@@ -7,7 +7,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 TextFetcher = Callable[[str], str]
@@ -271,6 +275,9 @@ def run_smoke(
     browser_click_through: bool = False,
     browser_prepare_packet: bool = False,
     browser_record_helper: bool = False,
+    browser_upload_photo: bool = False,
+    browser_upload_pdf: bool = False,
+    browser_correction_mode: bool = False,
     browser_runner: BrowserRunner | None = None,
 ) -> dict[str, Any]:
     base = _normalize_base_url(base_url)
@@ -366,6 +373,9 @@ def run_smoke(
                     profile=interaction_profile,
                     case_number=interaction_case_number,
                     service_date=interaction_service_date,
+                    upload_photo=browser_upload_photo,
+                    upload_pdf=browser_upload_pdf,
+                    correction_mode=browser_correction_mode,
                     prepare_packet=browser_prepare_packet,
                     record_helper=browser_record_helper,
                 )
@@ -375,6 +385,9 @@ def run_smoke(
                 profile=interaction_profile,
                 case_number=interaction_case_number,
                 service_date=interaction_service_date,
+                upload_photo=browser_upload_photo,
+                upload_pdf=browser_upload_pdf,
+                correction_mode=browser_correction_mode,
                 prepare_packet=browser_prepare_packet,
                 record_helper=browser_record_helper,
             )
@@ -404,6 +417,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interaction-case-number", default="999/26.0SMOKE")
     parser.add_argument("--interaction-service-date", default="2026-05-04")
     parser.add_argument("--browser-click-through", action="store_true", help="Opt-in real browser review-flow click-through. Does not click prepare or record drafts unless the explicit browser prepare flags are used.")
+    parser.add_argument("--browser-upload-photo", action="store_true", help="With --browser-click-through, upload a disposable synthetic photo and verify source evidence without preparing artifacts.")
+    parser.add_argument("--browser-upload-pdf", action="store_true", help="With --browser-click-through, upload a disposable synthetic notification PDF and verify recovered review fields without preparing artifacts.")
+    parser.add_argument("--browser-correction-mode", action="store_true", help="With --browser-click-through, check draft lifecycle/correction UI without preparing a replacement draft.")
     parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--browser-record-helper", action="store_true", help="With --browser-click-through and packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
     parser.add_argument("--json", action="store_true")
@@ -417,6 +433,9 @@ def main(argv: list[str] | None = None) -> int:
         interaction_case_number=args.interaction_case_number,
         interaction_service_date=args.interaction_service_date,
         browser_click_through=args.browser_click_through,
+        browser_upload_photo=args.browser_upload_photo,
+        browser_upload_pdf=args.browser_upload_pdf,
+        browser_correction_mode=args.browser_correction_mode,
         browser_prepare_packet=args.browser_prepare_packet,
         browser_record_helper=args.browser_record_helper,
     )
