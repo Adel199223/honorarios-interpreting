@@ -333,6 +333,26 @@ pre {
   color: var(--danger);
 }
 
+.history-filter-panel {
+  padding: 18px 22px;
+}
+
+.history-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.history-filter-chip {
+  cursor: pointer;
+  text-transform: none;
+}
+
+.history-filter-chip.is-active {
+  box-shadow: inset 0 0 0 1px rgba(130, 233, 255, 0.28), 0 0 0 2px rgba(130, 233, 255, 0.1);
+}
+
 .task-switcher {
   display: flex;
   gap: 12px;

@@ -10,6 +10,7 @@ const state = {
   draftLifecycle: null,
   localBackupPreview: null,
   backupStatus: null,
+  historyStatusFilter: "all",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -60,6 +61,54 @@ function statusChipClass(status) {
   if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "superseded", "trashed", "not_found"].includes(status)) return "blocked";
   if (status === "error") return "error";
   return "info";
+}
+
+const HISTORY_STATUS_FILTERS = ["all", "active", "drafted", "sent", "superseded", "trashed", "not_found"];
+
+function historyRecordStatus(record, defaultStatus = "") {
+  return String(record?.status || defaultStatus || "").trim() || defaultStatus;
+}
+
+function filterHistoryRecords(records, defaultStatus = "") {
+  const filter = state.historyStatusFilter || "all";
+  const values = Array.isArray(records) ? records : [];
+  if (filter === "all") return values;
+  return values.filter((record) => historyRecordStatus(record, defaultStatus) === filter);
+}
+
+function historyStatusCounts() {
+  const counts = Object.fromEntries(HISTORY_STATUS_FILTERS.map((status) => [status, 0]));
+  const duplicates = state.reference?.duplicates || [];
+  const draftLog = state.reference?.draft_log || [];
+  duplicates.forEach((record) => {
+    const status = historyRecordStatus(record, "sent");
+    if (counts[status] !== undefined) counts[status] += 1;
+  });
+  draftLog.forEach((record) => {
+    const status = historyRecordStatus(record, "");
+    if (counts[status] !== undefined) counts[status] += 1;
+  });
+  counts.all = duplicates.length + draftLog.length;
+  return counts;
+}
+
+function renderHistoryStatusFilters() {
+  const box = $("#history-status-filters");
+  if (!box) return;
+  const counts = historyStatusCounts();
+  box.innerHTML = HISTORY_STATUS_FILTERS.map((status) => {
+    const active = state.historyStatusFilter === status;
+    const label = status === "all" ? "All" : status;
+    return `
+      <button
+        type="button"
+        class="history-filter-chip status-chip ${active ? "ready is-active" : statusChipClass(status)}"
+        data-history-status-filter="${escapeHtml(status)}"
+        aria-pressed="${active ? "true" : "false"}">
+        ${escapeHtml(label.replaceAll("_", " "))} · ${escapeHtml(counts[status] || 0)}
+      </button>
+    `;
+  }).join("");
 }
 
 async function copyText(value) {
@@ -1073,6 +1122,8 @@ async function restoreLocalBackupImport() {
 function renderReference() {
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
+  const duplicateRecords = filterHistoryRecords(state.reference?.duplicates || [], "sent").slice().reverse();
+  const draftLogRecords = filterHistoryRecords(state.reference?.draft_log || [], "").slice().reverse();
   profileSelect.innerHTML = Object.entries(profiles)
     .map(([key, value]) => `<option value="${escapeHtml(key)}">${escapeHtml(key)} - ${escapeHtml(value.description || "")}</option>`)
     .join("");
@@ -1102,13 +1153,15 @@ function renderReference() {
     </div>`
   )).join("");
 
-  $("#duplicate-list").innerHTML = (state.reference?.duplicates || []).slice().reverse().map((item) => (
-    `<div class="data-item"><strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong><span class="status-chip ${statusChipClass(item.status || "sent")}">${escapeHtml(item.status || "sent")}</span><code>${escapeHtml(item.draft_id || item.pdf || "")}</code></div>`
-  )).join("");
+  renderHistoryStatusFilters();
 
-  $("#draft-log-list").innerHTML = (state.reference?.draft_log || []).slice().reverse().map((item) => (
+  $("#duplicate-list").innerHTML = duplicateRecords.length ? duplicateRecords.map((item) => (
+    `<div class="data-item"><strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong><span class="status-chip ${statusChipClass(item.status || "sent")}">${escapeHtml(item.status || "sent")}</span><code>${escapeHtml(item.draft_id || item.pdf || "")}</code></div>`
+  )).join("") : `<div class="data-item empty-history-item">No duplicate records for the selected history filter.</div>`;
+
+  $("#draft-log-list").innerHTML = draftLogRecords.length ? draftLogRecords.map((item) => (
     `<div class="data-item"><strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong><span class="status-chip ${statusChipClass(item.status || "")}">${escapeHtml(item.status || "")}</span><code>${escapeHtml(item.draft_id || "")}</code></div>`
-  )).join("");
+  )).join("") : `<div class="data-item empty-history-item">No Gmail draft records for the selected history filter.</div>`;
 
   $("#profile-change-list").innerHTML = (state.reference?.profile_change_log || [])
     .map((item, index) => ({ item, index }))
@@ -1784,6 +1837,14 @@ function bindActions() {
     const button = event.target.closest("[data-edit-court]");
     if (!button) return;
     fillCourtEmailReferenceForm(Number(button.dataset.editCourt));
+  });
+  $("#history-status-filters").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-history-status-filter]");
+    if (!button) return;
+    const filter = button.dataset.historyStatusFilter || "all";
+    if (!HISTORY_STATUS_FILTERS.includes(filter)) return;
+    state.historyStatusFilter = filter;
+    renderReference();
   });
   $("#notification-upload-form").addEventListener("submit", async (event) => {
     event.preventDefault();

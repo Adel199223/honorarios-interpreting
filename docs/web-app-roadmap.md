@@ -24,6 +24,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Exact `gmail_create_draft_args` display in the review drawer.
 - Draft lifecycle panel with active-check, correction mode, copyable draft handoff args, status recording, and replacement/superseded draft tracking.
 - Draft recording endpoints that update the draft log and duplicate index without adding any Gmail send/trash action.
+- Recent Work lifecycle filters for `active`, `drafted`, `sent`, `superseded`, `trashed`, and `not_found` records, so blocking drafts and historical corrections can be separated quickly.
 - Browser Batch Queue for repeated same-profile or same-case services, using the existing all-or-nothing multi-intake `/api/prepare` contract.
 - Packet mode in the Batch Queue for same-recipient batches that should produce one combined PDF attachment and one Gmail draft payload while still tracking every underlying case/date/period.
 - Packet-order controls in the Batch Queue, with drag/drop plus `Move up` / `Move down`, so the combined PDF order is explicit before packet generation.

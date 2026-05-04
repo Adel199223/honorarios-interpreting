@@ -500,6 +500,24 @@
               </div>
             </div>
           </div>
+          <div class="panel history-filter-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">History Filters</p>
+                <h3>Draft lifecycle status</h3>
+                <p class="panel-copy">Filter duplicate blockers and Gmail draft records by lifecycle state.</p>
+              </div>
+            </div>
+            <div class="history-filter-row" id="history-status-filters" aria-label="History status filters">
+              <button type="button" class="history-filter-chip status-chip ready is-active" data-history-status-filter="all">All</button>
+              <button type="button" class="history-filter-chip status-chip ready" data-history-status-filter="active">active</button>
+              <button type="button" class="history-filter-chip status-chip ready" data-history-status-filter="drafted">drafted</button>
+              <button type="button" class="history-filter-chip status-chip ready" data-history-status-filter="sent">sent</button>
+              <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="superseded">superseded</button>
+              <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="trashed">trashed</button>
+              <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="not_found">not_found</button>
+            </div>
+          </div>
           <div class="reference-columns two">
             <div class="panel">
               <h3>Duplicate Index</h3>

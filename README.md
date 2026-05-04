@@ -45,6 +45,7 @@ The app supports the main workflow:
 - autofill the Record Gmail Draft form from the prepared packet or individual payload while preserving pasted Gmail draft/message/thread IDs
 - record the parsed Gmail response and latest prepared payload in one local-only step after the draft is created externally
 - handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
+- filter Recent Work by lifecycle state (`active`, `drafted`, `sent`, `superseded`, `trashed`, `not_found`) to separate current duplicate blockers from audit history
 - maintain known destinations/kilometers and court email aliases from the References screen
 - maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
 - export and restore private local backups for reference data, duplicate records, and draft lifecycle logs
