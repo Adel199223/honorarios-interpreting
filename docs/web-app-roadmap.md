@@ -41,6 +41,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - LegalPDF Integration Preview panel plus `/api/integration/import-preview`, `/api/integration/import-report`, and `/api/integration/checklist`, which compare backup contents, optional profile mappings, and court-email differences with `write_allowed: false`, optionally export a private Markdown/JSON preview report under `output/integration-reports/`, and produce a read-only checklist of future adapter tasks.
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
+- Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist APIs, and the privacy gate.
 
 ## LegalPDF UI Alignment
 
@@ -69,7 +70,7 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Add deeper browser-flow tests for the Google Photos Picker, Batch Queue, Packet mode, packet-ordering, packet-inspector, packet-record-helper, and LegalPDF Integration Preview checklist/report happy paths using mocked local endpoints.
+1. Add an optional local Browser/IAB smoke runner for the private app that clicks through the same flows the public smoke tests cover with TestClient.
 2. Add an eventual adapter import prototype that consumes the checklist, still behind a privacy gate and explicit write confirmation.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
