@@ -64,6 +64,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 
 The smoke runner checks the LegalPDF-style workflow landmarks, draft-only Gmail contract, Google Photos/AI status endpoints, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
 
+For a real browser review-flow click-through, use the opt-in browser smoke:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
+```
+
+This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` option is for disposable/synthetic state only because it can create local PDF/payload artifacts.
+
 For a deeper opt-in workflow smoke against disposable/synthetic app state, add `--interaction-checks`:
 
 ```powershell

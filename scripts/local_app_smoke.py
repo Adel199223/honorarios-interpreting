@@ -13,6 +13,7 @@ from typing import Any
 TextFetcher = Callable[[str], str]
 JsonFetcher = Callable[[str], Any]
 PostJsonFetcher = Callable[[str, dict[str, Any]], Any]
+BrowserRunner = Callable[..., dict[str, Any]]
 
 LANDMARKS = [
     "LegalPDF Honorários",
@@ -267,6 +268,10 @@ def run_smoke(
     interaction_profile: str = "example_interpreting",
     interaction_case_number: str = "999/26.0SMOKE",
     interaction_service_date: str = "2026-05-04",
+    browser_click_through: bool = False,
+    browser_prepare_packet: bool = False,
+    browser_record_helper: bool = False,
+    browser_runner: BrowserRunner | None = None,
 ) -> dict[str, Any]:
     base = _normalize_base_url(base_url)
     text_fetcher = fetch_text or (lambda url: _http_text(url, timeout))
@@ -344,6 +349,42 @@ def run_smoke(
             service_date=interaction_service_date,
         ))
 
+    if browser_click_through:
+        if browser_runner is None:
+            try:
+                from scripts.browser_flow_smoke import run_browser_flow_smoke
+            except Exception as exc:
+                browser_report = {
+                    "status": "blocked",
+                    "checks": [_check("browser_driver_available", False, f"Could not load browser flow smoke runner: {exc}")],
+                    "failure_count": 1,
+                    "send_allowed": False,
+                }
+            else:
+                browser_report = run_browser_flow_smoke(
+                    base_url=base,
+                    profile=interaction_profile,
+                    case_number=interaction_case_number,
+                    service_date=interaction_service_date,
+                    prepare_packet=browser_prepare_packet,
+                    record_helper=browser_record_helper,
+                )
+        else:
+            browser_report = browser_runner(
+                base,
+                profile=interaction_profile,
+                case_number=interaction_case_number,
+                service_date=interaction_service_date,
+                prepare_packet=browser_prepare_packet,
+                record_helper=browser_record_helper,
+            )
+        checks.extend(browser_report.get("checks", []) if isinstance(browser_report, dict) else [])
+        checks.append(_send_allowed_check(
+            "browser_click_through_send_allowed",
+            browser_report,
+            "Browser click-through report keeps send_allowed false.",
+        ))
+
     failure_count = sum(1 for check in checks if check["status"] != "ready")
     return {
         "status": "ready" if failure_count == 0 else "blocked",
@@ -362,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interaction-profile", default="example_interpreting")
     parser.add_argument("--interaction-case-number", default="999/26.0SMOKE")
     parser.add_argument("--interaction-service-date", default="2026-05-04")
+    parser.add_argument("--browser-click-through", action="store_true", help="Opt-in real browser review-flow click-through. Does not click prepare or record drafts unless the explicit browser prepare flags are used.")
+    parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")
+    parser.add_argument("--browser-record-helper", action="store_true", help="With --browser-click-through and packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -372,6 +416,9 @@ def main(argv: list[str] | None = None) -> int:
         interaction_profile=args.interaction_profile,
         interaction_case_number=args.interaction_case_number,
         interaction_service_date=args.interaction_service_date,
+        browser_click_through=args.browser_click_through,
+        browser_prepare_packet=args.browser_prepare_packet,
+        browser_record_helper=args.browser_record_helper,
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))

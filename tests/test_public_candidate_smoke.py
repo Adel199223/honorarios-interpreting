@@ -210,6 +210,37 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertEqual(report["status"], "ready", report)
         self.assertIn("workflow_prepare_packet_payload", {check["name"] for check in report["checks"]})
 
+    def test_local_app_smoke_runner_browser_click_through_contract_is_injectable(self):
+        client = self.make_client()
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        def browser_runner(_base_url, **_kwargs):
+            return {
+                "status": "ready",
+                "checks": [{"name": "browser_review_drawer", "status": "ready", "message": "ok", "details": {}}],
+                "failure_count": 0,
+                "send_allowed": False,
+            }
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+            browser_click_through=True,
+            browser_runner=browser_runner,
+        )
+        self.assertEqual(report["status"], "ready", report)
+        self.assertIn("browser_review_drawer", {check["name"] for check in report["checks"]})
+
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)
         self.assertTrue(report["public_ready"], report)

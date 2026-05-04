@@ -117,6 +117,14 @@ Use the default smoke runner for a non-writing live-app check:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
+Use `--browser-click-through` when you want a real browser to verify the profile-to-review-drawer path and batch queue without preparing artifacts:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
+```
+
+This check deliberately stops before `Prepare batch package`, `Record draft`, and any Gmail action. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
+
 For disposable or synthetic state, add `--interaction-checks` to exercise profile intake, active-draft checking, and packet-mode prepare in one pass:
 
 ```powershell
