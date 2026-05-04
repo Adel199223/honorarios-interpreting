@@ -197,6 +197,16 @@
                 <span class="status-chip info" id="status-pill">idle</span>
               </div>
               <p class="panel-copy" id="review-status">Upload a notification or start a blank request to begin.</p>
+              <div class="result-card next-safe-action-card hidden" id="next-safe-action">
+                <div class="result-header">
+                  <div>
+                    <strong>Next Safe Action</strong>
+                    <p>After review, the app will show the safest next step here.</p>
+                  </div>
+                  <span class="status-chip info" id="next-safe-action-chip">Waiting</span>
+                </div>
+                <div id="next-safe-action-body"></div>
+              </div>
               <div class="result-card empty-state" id="interpretation-review-home-result">Upload a notification PDF or screenshot to recover the case details, or start a blank request.</div>
               <div class="result-card hidden" id="source-evidence">
                 <div class="result-header">
@@ -571,6 +581,17 @@
         </div>
 
         <p class="panel-copy" id="drawer-review-status">Review the Portuguese text, then create the PDF and Gmail draft payload.</p>
+
+        <div class="result-card next-safe-action-card hidden" id="drawer-next-safe-action">
+          <div class="result-header">
+            <div>
+              <strong>Next Safe Action</strong>
+              <p>The app points to the safest next move before any PDF, draft payload, or local record step.</p>
+            </div>
+            <span class="status-chip info" id="drawer-next-safe-action-chip">Waiting</span>
+          </div>
+          <div id="drawer-next-safe-action-body"></div>
+        </div>
 
         <div class="result-card hidden" id="ai-recovery-evidence">
           <div class="result-header">

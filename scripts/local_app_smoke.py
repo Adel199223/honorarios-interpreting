@@ -24,6 +24,7 @@ LANDMARKS = [
     "Start Interpretation Request",
     "Review Case Details",
     "Review Interpretation Request",
+    "Next Safe Action",
     "Google Photos selected-photo import",
     "Open Google Photos Picker",
     "Batch Queue",

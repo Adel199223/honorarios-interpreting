@@ -21,6 +21,8 @@ In the browser app, use Batch Queue for the same workflow: review each request, 
 
 When the Review drawer shows missing numbered questions, paste compact answers in the `Numbered answers` card, such as `1. 39` or `2. Beja`, then click `Apply numbered answers`. The app maps those answers back to the current intake fields, reruns the same review endpoint, and keeps generation blocked until duplicate checks, date-conflict rules, and recipient validation are clean. This avoids recreating JSON or re-uploading the source just to fill one missing city, date, or kilometer value.
 
+Use the `Next Safe Action` card as the daily workflow guide. It is computed from the same review/preflight responses as the backend, so it should say whether to answer numbered questions, set aside a translation source, stop for a duplicate, enter correction mode, prepare the PDF, or review Gmail `_create_draft` arguments before recording IDs.
+
 If the queued requests should be sent together, enable `Packet mode` before preparing. Packet mode is still draft-only: it requires one shared recipient, builds the individual PDFs, combines the PDFs and any already-declared supporting attachments into one packet PDF, and makes that packet the only `attachment_files` entry in the Gmail `_create_draft` args. The displayed Batch Queue order is the packet order; drag requests or use `Move up` / `Move down` before preparing when declarations or same-day periods need a specific sequence. Use `Inspect` on each queued row to review the Packet item inspector before generation; it shows the generated requerimento PDF position plus any supporting attachments that will follow that request. The packet payload carries `underlying_requests` so recording the Gmail draft still protects every case/date/period in the duplicate index. The prepared packet result includes a Packet draft recording helper with a copyable `record_gmail_draft.py` command and a JSON object, so the packet draft and all underlying duplicate blockers can be logged without retyping paths. The Record Gmail Draft card can parse a pasted Gmail connector response into draft/message/thread IDs, then autofill the latest prepared packet or individual payload path while preserving those IDs. The one-click `Record parsed response + prepared payload` action combines those local steps after `_create_draft` has already returned, so logging a reviewed draft no longer depends on manually clicking three separate buttons.
 
 It performs the local work in this order:
@@ -127,7 +129,7 @@ Use `--browser-click-through` when you want a real browser to verify the profile
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This check deliberately stops before `Prepare batch package`, `Record draft`, and any Gmail action. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
+This check deliberately stops before `Prepare batch package`, `Record draft`, and any Gmail action. It also verifies the `Next Safe Action` surface in the review drawer. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
 
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 

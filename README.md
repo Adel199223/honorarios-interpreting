@@ -35,6 +35,7 @@ The app supports the main workflow:
 - auto-detect the best service profile from local evidence when you upload a source, while still showing the profile decision for review
 - propose a guarded reusable service profile when a new upload looks like a recurring pattern that does not match existing profiles
 - create an intake from a known service profile
+- show a `Next Safe Action` card that points to the safest next step after each review or preparation result
 - review the Portuguese draft text before generating the PDF
 - queue multiple reviewed requests and prepare a batch package through the same all-or-nothing preflight
 - enable Packet mode for a batch when several requerimentos should become one combined PDF attachment
@@ -65,7 +66,7 @@ To smoke-check the running local app without creating PDFs or Gmail drafts:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
-The smoke runner checks the LegalPDF-style workflow landmarks, draft-only Gmail contract, Google Photos/AI status endpoints, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
+The smoke runner checks the LegalPDF-style workflow landmarks, the `Next Safe Action` guidance surface, draft-only Gmail contract, Google Photos/AI status endpoints, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
 
 For a real browser review-flow click-through, use the opt-in browser smoke:
 
@@ -73,7 +74,7 @@ For a real browser review-flow click-through, use the opt-in browser smoke:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` option is for disposable/synthetic state only because it can create local PDF/payload artifacts.
+This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, and adds it to the batch queue. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` option is for disposable/synthetic state only because it can create local PDF/payload artifacts.
 
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 

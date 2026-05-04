@@ -917,6 +917,29 @@ textarea {
   color: #caffdf;
 }
 
+.next-safe-action-card {
+  border-color: rgba(101, 224, 255, 0.34);
+  background: linear-gradient(135deg, rgba(12, 50, 72, 0.76), rgba(4, 18, 30, 0.78));
+}
+
+.next-safe-action-card.blocked {
+  border-color: rgba(255, 208, 138, 0.44);
+  background: linear-gradient(135deg, rgba(76, 49, 18, 0.48), rgba(4, 18, 30, 0.78));
+}
+
+.next-safe-action-body {
+  display: grid;
+  gap: 10px;
+}
+
+.next-safe-action-body p {
+  margin: 0;
+}
+
+.next-safe-action-body .button-row {
+  margin-top: 2px;
+}
+
 #questions div + div {
   margin-top: 10px;
 }

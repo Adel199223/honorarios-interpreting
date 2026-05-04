@@ -22,6 +22,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Review-drawer `Numbered answers` application, so compact replies like `1. Beja` update the active intake and rerun review without manual JSON edits.
 - Duplicate and active-draft warnings before generation.
 - CLI and browser correction preflight parity: preparing a replacement over an active draft requires an explicit correction reason, and the manifest keeps that reason for audit.
+- `Next Safe Action` guidance in the review surface, backed by API responses, for missing questions, translation set-aside, duplicates, active drafts, ready-to-prepare requests, and prepared Gmail draft args.
 - Portuguese draft-text preview before PDF creation.
 - PDF plus Gmail `_create_draft` payload preparation through the existing preflight path.
 - PNG PDF preview URLs when `pdftoppm` is available; otherwise a non-send preview warning.
@@ -46,7 +47,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
 - Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist/import-plan APIs, and the privacy gate.
-- Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts by default.
+- Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, `Next Safe Action` surface, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts by default.
 - Opt-in interaction smoke mode (`--interaction-checks`) that exercises profile intake, active-draft checking, packet-mode prepare, attachment-array validation, and underlying-request duplicate-tracking contract through injected test hooks or disposable local state while still requiring `send_allowed: false` throughout.
 - Opt-in browser click-through smoke (`--browser-click-through`) that opens the app in a real browser driver when available, verifies the profile-to-review-drawer path, and adds a reviewed request to the batch queue without clicking prepare or recording drafts by default.
 - Optional browser upload/correction smoke flags (`--browser-upload-photo`, `--browser-upload-pdf`, and `--browser-correction-mode`) that verify local Source Evidence and draft-lifecycle UI with disposable synthetic files while still blocking prepare, record, and draft-status endpoints by default.

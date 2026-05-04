@@ -2774,6 +2774,95 @@ def draft_lifecycle_for_intake(intake: dict[str, Any], paths: AppPaths) -> dict[
     }
 
 
+def next_safe_action(
+    *,
+    state: str,
+    title: str,
+    detail: str,
+    button_id: str = "",
+    blocked: bool = False,
+) -> dict[str, Any]:
+    return {
+        "state": state,
+        "title": title,
+        "detail": detail,
+        "button_id": button_id,
+        "blocked": bool(blocked),
+        "send_allowed": False,
+    }
+
+
+def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | None = None, duplicate: dict[str, Any] | None = None) -> dict[str, Any]:
+    if status == "set_aside":
+        return next_safe_action(
+            state="set_aside_translation",
+            title="Set this source aside",
+            detail="This looks like a translation or word-count request. Do not generate an interpreting honorários PDF from it.",
+            blocked=True,
+        )
+    if status == "needs_info":
+        count = len(questions or [])
+        return next_safe_action(
+            state="answer_questions",
+            title="Answer the numbered questions",
+            detail=f"Provide the missing value{'s' if count != 1 else ''} using short numbered replies, then apply the answers and review again.",
+            button_id="apply-numbered-answers",
+            blocked=True,
+        )
+    if status == "duplicate":
+        duplicate_status = duplicate_record_status(duplicate or {})
+        if duplicate_status == "drafted":
+            return next_safe_action(
+                state="choose_correction_mode",
+                title="Review the existing draft first",
+                detail="A drafted request already protects this case/date. Only prepare a replacement if this is an intentional correction and you add a correction reason.",
+                button_id="prepare-replacement-draft",
+                blocked=True,
+            )
+        return next_safe_action(
+            state="stop_duplicate_sent",
+            title="Stop before generating",
+            detail="A sent request already exists for this case/date. Treat this as a likely duplicate unless you confirm a separate service period.",
+            blocked=True,
+        )
+    if status == "active_draft":
+        return next_safe_action(
+            state="choose_correction_mode",
+            title="Use correction mode only if replacing",
+            detail="An active Gmail draft already exists. Add a correction reason before preparing any replacement PDF or payload.",
+            button_id="prepare-replacement-draft",
+            blocked=True,
+        )
+    if status == "error":
+        return next_safe_action(
+            state="fix_blocker",
+            title="Fix the intake blocker",
+            detail="Resolve the validation error shown above, then review the request again before generating anything.",
+            button_id="review-intake",
+            blocked=True,
+        )
+    return next_safe_action(
+        state="prepare_pdf",
+        title="Review the draft text, then prepare",
+        detail="Confirm the Portuguese text, recipient, service date, place, and kilometers. Then create the fee-request PDF and draft payload.",
+        button_id="drawer-prepare-intake",
+        blocked=False,
+    )
+
+
+def prepared_next_safe_action(packet_mode: bool = False) -> dict[str, Any]:
+    attachment_label = "packet PDF" if packet_mode else "generated PDF"
+    return next_safe_action(
+        state="review_gmail_draft_args",
+        title="Review Gmail draft args before handoff",
+        detail=(
+            f"Inspect the {attachment_label}, recipient, body, and attachment array. Then use Gmail _create_draft outside the app and record the returned IDs locally."
+        ),
+        button_id="record-parsed-prepared-draft",
+        blocked=False,
+    )
+
+
 def load_app_reference(paths: AppPaths) -> dict[str, Any]:
     duplicate_records = read_json_list(paths.duplicate_index)
     draft_records = read_json_list(paths.draft_log)
@@ -2835,6 +2924,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "status": "set_aside",
             "message": format_translation_rejection(translation_matches),
             "questions": [],
+            "next_safe_action": review_next_safe_action("set_aside"),
             "send_allowed": False,
         }
 
@@ -2845,6 +2935,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "message": "Missing information before PDF generation.",
             "questions": question_payload(questions),
             "question_text": format_numbered_questions(questions),
+            "next_safe_action": review_next_safe_action("needs_info", questions=question_payload(questions)),
             "send_allowed": False,
         }
 
@@ -2855,6 +2946,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "message": format_duplicate_message(duplicate),
             "duplicate": duplicate_payload(duplicate),
             "questions": [],
+            "next_safe_action": review_next_safe_action("duplicate", duplicate=duplicate),
             "send_allowed": False,
         }
 
@@ -2867,6 +2959,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "message": f"Active Gmail draft already recorded for this case/date. Draft ID(s): {draft_ids}.",
             "active_gmail_drafts": active_drafts,
             "questions": [],
+            "next_safe_action": review_next_safe_action("active_draft"),
             "send_allowed": False,
         }
 
@@ -2881,6 +2974,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "status": "error",
             "message": str(exc),
             "questions": [],
+            "next_safe_action": review_next_safe_action("error"),
             "send_allowed": False,
         }
 
@@ -2895,6 +2989,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         "recipient_source": recipient_source,
         "draft_text": rendered_request_text(rendered),
         "questions": [],
+        "next_safe_action": review_next_safe_action("ready"),
         "send_allowed": False,
     }
 
@@ -3149,6 +3244,7 @@ def prepare_intakes(
         "correction_mode": correction_mode,
         "correction_reason": normalized_correction_reason,
         "packet_mode": bool(packet_mode),
+        "next_safe_action": prepared_next_safe_action(packet_mode=bool(packet_mode)),
         "items": items,
         "manifest": str(manifest_path.resolve()),
     }

@@ -202,6 +202,44 @@ function showQuestions(data) {
   )).join("");
 }
 
+function renderNextSafeAction(action) {
+  const targets = [
+    {
+      card: $("#next-safe-action"),
+      chip: $("#next-safe-action-chip"),
+      body: $("#next-safe-action-body"),
+    },
+    {
+      card: $("#drawer-next-safe-action"),
+      chip: $("#drawer-next-safe-action-chip"),
+      body: $("#drawer-next-safe-action-body"),
+    },
+  ];
+  targets.forEach(({ card, chip, body }) => {
+    if (!card || !chip || !body) return;
+    if (!action) {
+      card.className = "result-card next-safe-action-card hidden";
+      chip.textContent = "Waiting";
+      chip.className = "status-chip info";
+      body.innerHTML = "";
+      return;
+    }
+    const blocked = Boolean(action.blocked);
+    card.className = `result-card next-safe-action-card ${blocked ? "blocked" : "ready"}`;
+    chip.textContent = String(action.state || "next").replaceAll("_", " ");
+    chip.className = `status-chip ${blocked ? "blocked" : "ready"}`;
+    const targetButton = action.button_id
+      ? `<div class="button-row compact-button-row"><button type="button" class="mini-button" data-next-action-target="${escapeHtml(action.button_id)}">Go to this step</button></div>`
+      : "";
+    body.className = "next-safe-action-body";
+    body.innerHTML = `
+      <strong>${escapeHtml(action.title || "Next safe action")}</strong>
+      <p>${escapeHtml(action.detail || "Review the current state before continuing.")}</p>
+      ${targetButton}
+    `;
+  });
+}
+
 function cloneIntake(intake) {
   return JSON.parse(JSON.stringify(intake || {}));
 }
@@ -1770,6 +1808,7 @@ async function prepareBatchIntakes() {
 function applyReview(data) {
   setStatus(data.status, data.message);
   showQuestions(data);
+  renderNextSafeAction(data.next_safe_action || null);
   const alertNeeded = ["duplicate", "active_draft", "set_aside", "error"].includes(data.status);
   showAlert(alertNeeded ? data.message : "", data.status === "error" ? "error" : "blocked");
   updateHomeReviewCard(data);
@@ -1822,6 +1861,7 @@ function renderPrepared(data) {
   const items = data.items || [];
   const packet = data.packet || null;
   const first = items[0];
+  renderNextSafeAction(data.next_safe_action || null);
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
   const packetPreviews = packet
@@ -1977,6 +2017,7 @@ function resetReview() {
   renderGooglePhotosPickerResult(null);
   renderBatchQueue();
   renderDraftLifecycle(null);
+  renderNextSafeAction(null);
   $("#correction_reason").value = "";
   $("#numbered-answers").value = "";
   $("#record_supersedes").value = "";
@@ -2014,6 +2055,14 @@ function bindNavigation() {
 }
 
 function bindActions() {
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-next-action-target]");
+    if (!button) return;
+    const target = document.getElementById(button.dataset.nextActionTarget || "");
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (typeof target.focus === "function") target.focus({ preventScroll: true });
+  });
   $("#refresh-reference").addEventListener("click", async () => {
     await loadReference();
     await loadAiStatus().catch(() => {});

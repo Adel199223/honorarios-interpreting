@@ -198,6 +198,7 @@ def run_browser_flow_smoke(
             driver.goto(base + "/"),
             driver.expect_text("Start Interpretation Request"),
             driver.expect_text("Review Case Details"),
+            driver.expect_text("Next Safe Action"),
             driver.expect_text("Draft-only Gmail"),
         )):
             return _report(base, checks)
@@ -207,6 +208,7 @@ def run_browser_flow_smoke(
             driver.fill("#case_number", case_number),
             driver.fill("#service_date", service_date),
             driver.click("#review-intake"),
+            driver.expect_selector_text("#drawer-next-safe-action", "Next Safe Action"),
             driver.expect_selector_text("#draft-text", "Número de processo"),
             driver.expect_selector_text("#recipient-summary", "To:"),
         )):
