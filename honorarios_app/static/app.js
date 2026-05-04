@@ -655,6 +655,10 @@ function renderSourceEvidence(data) {
   const source = data.source;
   const metadata = source.metadata || {};
   const warnings = evidence.warnings || metadata.warnings || [];
+  const profileDecision = evidence.auto_profile || data.candidate_intake?.auto_profile || {};
+  const profileSummary = profileDecision.profile_key
+    ? `${profileDecision.mode || "auto"}: ${profileDecision.profile_key}${profileDecision.suggested_profile_key && profileDecision.suggested_profile_key !== profileDecision.profile_key ? ` (suggested ${profileDecision.suggested_profile_key})` : ""}`
+    : "not decided";
   const renderedPageUrls = evidence.rendered_page_urls || [];
   const preview = source.source_kind === "photo"
     ? `<img class="source-preview-image" src="${escapeHtml(source.artifact_url)}" alt="Uploaded source preview">`
@@ -671,6 +675,8 @@ function renderSourceEvidence(data) {
         <div><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>
         <div><span>Case</span><code>${escapeHtml(evidence.case_number || "not recovered")}</code></div>
         <div><span>Raw case</span><code>${escapeHtml(evidence.raw_case_number || "")}</code></div>
+        <div><span>Profile Decision</span><code>${escapeHtml(profileSummary)}</code></div>
+        <div><span>Profile reason</span><code>${escapeHtml(profileDecision.reason || profileDecision.suggestion_reason || "")}</code></div>
         <div><span>Service date</span><code>${escapeHtml(evidence.service_date || "needs review")}</code></div>
         <div><span>Metadata date</span><code>${escapeHtml(evidence.photo_metadata_date || metadata.exif_date || metadata.visible_metadata_date || "")}</code></div>
         <div><span>Recipient</span><code>${escapeHtml(evidence.recipient_email || "profile/default")}</code></div>
@@ -1342,7 +1348,7 @@ function renderReference() {
   const profileSelect = $("#profile");
   const duplicateRecords = filterHistoryRecords(state.reference?.duplicates || [], "sent").slice().reverse();
   const draftLogRecords = filterHistoryRecords(state.reference?.draft_log || [], "").slice().reverse();
-  profileSelect.innerHTML = Object.entries(profiles)
+  profileSelect.innerHTML = `<option value="">Auto-detect profile - recommended for uploads</option>` + Object.entries(profiles)
     .map(([key, value]) => `<option value="${escapeHtml(key)}">${escapeHtml(key)} - ${escapeHtml(value.description || "")}</option>`)
     .join("");
 
@@ -1612,6 +1618,9 @@ function removeEmpty(value) {
 
 async function buildIntakeFromProfile() {
   const payload = removeEmpty(collectProfilePayload());
+  if (!payload.profile) {
+    payload.profile = "court_mp_generic";
+  }
   const data = await requestJson("/api/intake/from-profile", {
     method: "POST",
     body: JSON.stringify(payload),

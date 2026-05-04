@@ -11,9 +11,10 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Local notification PDF upload with `pypdf` text recovery and candidate field extraction.
 - Local photo/screenshot upload with safe stored previews and Pillow metadata extraction.
 - Optional OpenAI OCR/autofill for photos and weak/scanned PDFs, with `/api/ai/status` and review-only AI evidence.
+- Automatic service-profile selection for uploads: deterministic local rules score recovered source text and AI evidence, auto-apply only high-confidence profile matches, and keep explicit user-selected profiles as overrides.
 - Google Photos selected-photo bridge: choose/download one photo locally, paste visible Google Photos metadata, and recover it through the existing local photo pipeline.
 - Google Photos OAuth Picker import with secret-free status, OAuth start/callback, Picker session creation, selected-media import, and no exposure of client secrets, tokens, media IDs, base URLs, or photo URLs in app output.
-- Source evidence cards for recovered filename, metadata date, case number, recipient, crop/partial-image warnings, and missing questions.
+- Source evidence cards for recovered filename, profile decision, metadata date, case number, recipient, crop/partial-image warnings, and missing questions.
 - Synthetic rotated/cropped legal-photo fixture coverage for Google Photos metadata dates, leading-zero case normalization, and review-only AI warnings.
 - Weak/scanned notification PDF page rendering for OpenAI recovery, including multi-page source evidence thumbnails and a safe `pdftoppm`-missing warning.
 - Numbered missing-information questions.

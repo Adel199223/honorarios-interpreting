@@ -9,6 +9,7 @@ import re
 import shutil
 import secrets
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -97,6 +98,7 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNOREC
 ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
+AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
 
 
 @dataclass(slots=True)
@@ -582,6 +584,113 @@ def combine_text_parts(*parts: str) -> str:
     return "\n\n".join(output)
 
 
+def fold_match_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or "").casefold())
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _ai_recovery_text(ai_recovery: dict[str, Any]) -> str:
+    if not isinstance(ai_recovery, dict):
+        return ""
+    parts: list[str] = [str(ai_recovery.get("raw_visible_text") or "")]
+    fields = ai_recovery.get("fields")
+    if isinstance(fields, dict):
+        parts.extend(str(value) for value in fields.values() if value not in (None, ""))
+    indicators = ai_recovery.get("translation_indicators")
+    if isinstance(indicators, list):
+        parts.extend(str(item) for item in indicators if str(item).strip())
+    return combine_text_parts(*parts)
+
+
+def _profile_signal_decision(evidence_text: str) -> dict[str, Any]:
+    text = fold_match_text(evidence_text)
+    signals: list[str] = []
+
+    def has_any(*needles: str) -> bool:
+        matched = [needle for needle in needles if fold_match_text(needle) in text]
+        signals.extend(matched)
+        return bool(matched)
+
+    has_pj = has_any("policia judiciaria", "diretoria do sul", "inspetor", "inspector")
+    has_gnr = has_any("guarda nacional republicana", "gnr", "posto territorial", "posto da gnr", "destacamento")
+    has_trabalho = has_any("tribunal do trabalho", "juizo do trabalho", "juízo do trabalho", "litigios laborais", "litígios laborais")
+    has_medico = has_any("gabinete medico-legal", "gabinete médico-legal", "hospital jose joaquim fernandes", "medicina legal", "pericia medico", "perícia médico", "vitima", "vítima")
+    has_ferreira = has_any("ferreira do alentejo", "gafal")
+    has_beja = has_any("posto da gnr de beja", "gnr de beja", "ministerio publico de beja", "ministério público de beja", "jafar")
+    has_serpa = has_any("posto territorial de serpa", "serpa", "gdsrp")
+    has_beringel = has_any("beringel", "berinjel", "gcbja")
+    has_cuba = has_any("posto territorial da gnr de cuba", "gnr de cuba", "gacub")
+
+    if has_pj and has_medico:
+        return {"profile_key": "pj_medico_legal_beja", "confidence": "high", "reason": "Polícia Judiciária evidence mentions a medical-legal/hospital service.", "signals": signals}
+    if has_pj and has_gnr and has_ferreira:
+        return {"profile_key": "pj_gnr_ferreira", "confidence": "high", "reason": "Polícia Judiciária evidence mentions the GNR host building in Ferreira do Alentejo.", "signals": signals}
+    if has_pj and has_gnr and has_beja:
+        return {"profile_key": "pj_gnr_beja", "confidence": "high", "reason": "Polícia Judiciária evidence mentions the GNR host building in Beja.", "signals": signals}
+    if has_trabalho:
+        return {"profile_key": "beja_trabalho", "confidence": "high", "reason": "Evidence points to the Tribunal/Juízo do Trabalho de Beja.", "signals": signals}
+    if has_gnr and has_beringel:
+        return {"profile_key": "gnr_beringel_beja_mp", "confidence": "high", "reason": "GNR evidence mentions Beringel, which uses Beja Ministério Público payment.", "signals": signals}
+    if has_gnr and has_ferreira:
+        return {"profile_key": "gnr_ferreira_falentejo", "confidence": "high", "reason": "GNR evidence mentions Ferreira do Alentejo without Polícia Judiciária context.", "signals": signals}
+    if has_gnr and has_serpa:
+        return {"profile_key": "gnr_serpa_judicial", "confidence": "high", "reason": "GNR evidence mentions Serpa.", "signals": signals}
+    if has_gnr and has_cuba:
+        return {"profile_key": "gnr_cuba", "confidence": "high", "reason": "GNR evidence mentions Cuba.", "signals": signals}
+    return {"profile_key": "", "confidence": "low", "reason": "No confident service-profile match was found.", "signals": signals}
+
+
+def choose_service_profile(
+    *,
+    requested_profile: str,
+    extracted_text: str,
+    ai_recovery: dict[str, Any],
+    profiles: dict[str, Any],
+) -> dict[str, Any]:
+    requested = str(requested_profile or "").strip()
+    evidence_text = combine_text_parts(extracted_text, _ai_recovery_text(ai_recovery))
+    suggestion = _profile_signal_decision(evidence_text)
+    suggested_key = str(suggestion.get("profile_key") or "").strip()
+    suggested_is_available = suggested_key in profiles
+    requested_is_auto = requested.casefold() in AUTO_PROFILE_VALUES
+
+    if requested and not requested_is_auto:
+        return {
+            "mode": "explicit_profile",
+            "profile_key": requested,
+            "requested_profile": requested,
+            "suggested_profile_key": suggested_key if suggested_is_available else "",
+            "confidence": suggestion.get("confidence", "low"),
+            "reason": "User-selected profile kept; automatic profile selection did not override it.",
+            "suggestion_reason": suggestion.get("reason", ""),
+            "signals": suggestion.get("signals", []),
+            "auto_applied": False,
+        }
+
+    if suggested_is_available and suggestion.get("confidence") == "high":
+        return {
+            "mode": "auto_applied",
+            "profile_key": suggested_key,
+            "requested_profile": requested,
+            "suggested_profile_key": suggested_key,
+            "confidence": "high",
+            "reason": suggestion.get("reason", ""),
+            "signals": suggestion.get("signals", []),
+            "auto_applied": True,
+        }
+
+    return {
+        "mode": "auto_fallback",
+        "profile_key": "court_mp_generic",
+        "requested_profile": requested,
+        "suggested_profile_key": suggested_key if suggested_is_available else "",
+        "confidence": suggestion.get("confidence", "low"),
+        "reason": suggestion.get("reason", "No confident service-profile match was found."),
+        "signals": suggestion.get("signals", []),
+        "auto_applied": False,
+    }
+
+
 def _first_ai_field(ai_recovery: dict[str, Any], *names: str) -> str:
     fields = ai_recovery.get("fields") if isinstance(ai_recovery, dict) else {}
     if not isinstance(fields, dict):
@@ -929,8 +1038,15 @@ def recover_source_upload(
         source_metadata=metadata,
         rendered_page_images=[str(path.resolve()) for path in rendered_page_paths],
     )
+    profiles = load_profiles(paths.service_profiles)
+    profile_decision = choose_service_profile(
+        requested_profile=profile_name,
+        extracted_text=extracted_text,
+        ai_recovery=ai_recovery,
+        profiles=profiles,
+    )
     candidate = build_partial_intake_from_profile(
-        profile_name=profile_name,
+        profile_name=str(profile_decision.get("profile_key") or "court_mp_generic"),
         source_kind=source_kind,
         filename=filename,
         stored_path=stored_path,
@@ -940,6 +1056,7 @@ def recover_source_upload(
         paths=paths,
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
+    candidate["auto_profile"] = profile_decision
     review = review_intake(candidate, paths)
     combined_text = str(candidate.get("source_text") or extracted_text or "").strip()
 
@@ -976,6 +1093,7 @@ def recover_source_upload(
             "question_count": len(review.get("questions") or []),
             "ai_status": ai_recovery.get("status", ""),
             "ai_attempted": bool(ai_recovery.get("attempted")),
+            "auto_profile": profile_decision,
             "warnings": source_warnings,
             "rendered_page_urls": [item["artifact_url"] for item in metadata.get("rendered_pages", [])],
             "rendered_page_count": metadata.get("rendered_page_count", 0),
