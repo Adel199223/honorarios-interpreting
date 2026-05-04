@@ -55,6 +55,14 @@ Service profile edits are guarded because they affect legal wording, payment ent
 
 The browser app does not send email. It prepares connector-ready Gmail draft arguments only.
 
+To smoke-check the running local app without creating PDFs or Gmail drafts:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
+```
+
+The smoke runner checks the LegalPDF-style workflow landmarks, draft-only Gmail contract, Google Photos/AI status endpoints, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
+
 ## Local Backups
 
 Use References -> Local Backup before moving the app, making large reference edits, or preparing future LegalPDF integration work. `Export backup` writes a private JSON file under `output/backups/` and also shows the JSON in the app for copying. The backup includes service profiles, court emails, known destinations, duplicate index records, Gmail draft log records, and profile-change history.

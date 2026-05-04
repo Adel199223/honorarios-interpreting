@@ -42,6 +42,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
 - Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist APIs, and the privacy gate.
+- Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts.
 
 ## LegalPDF UI Alignment
 
@@ -70,8 +71,8 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Add an optional local Browser/IAB smoke runner for the private app that clicks through the same flows the public smoke tests cover with TestClient.
-2. Add an eventual adapter import prototype that consumes the checklist, still behind a privacy gate and explicit write confirmation.
+1. Add an eventual adapter import prototype that consumes the checklist, still behind a privacy gate and explicit write confirmation.
+2. Add deeper optional Browser/IAB interaction checks that click through local upload, review drawer, batch/packet preparation, and draft-recording helper flows using disposable test state.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

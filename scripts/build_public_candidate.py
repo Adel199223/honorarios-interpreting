@@ -213,6 +213,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from honorarios_app.web import create_app
+from scripts.local_app_smoke import run_smoke
 from scripts.public_release_gate import analyze_public_readiness
 
 
@@ -324,6 +325,27 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("legalpdf_synthetic -> example_interpreting", checklist.json()["checklist_markdown"])
         self.assertEqual(profiles_path.read_text(encoding="utf-8"), profiles_before)
         self.assertEqual(court_path.read_text(encoding="utf-8"), courts_before)
+
+    def test_local_app_smoke_runner_can_check_public_candidate_contract(self):
+        client = self.make_client()
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+        )
+        self.assertEqual(report["status"], "ready", report)
+        self.assertFalse(report["send_allowed"])
 
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)
