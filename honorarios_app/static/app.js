@@ -773,6 +773,50 @@ function updateHomeReviewCard(data) {
   `;
 }
 
+function renderFieldEvidence(fieldEvidence) {
+  const entries = Array.isArray(fieldEvidence)
+    ? fieldEvidence
+    : Object.entries(fieldEvidence || {}).map(([field, item]) => ({ field, ...(item || {}) }));
+  if (!entries.length) return "";
+  const rows = entries.map((item) => {
+    const confidence = String(item.confidence || "medium").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    const status = String(item.status || "applied").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    const rawValue = item.raw_value ? `<div><span>Raw</span><code>${escapeHtml(item.raw_value)}</code></div>` : "";
+    const conflict = item.conflicts_with
+      ? `<div><span>Conflict</span><code>${escapeHtml(item.conflicts_with.field || "field")} = ${escapeHtml(item.conflicts_with.value || "")}</code></div>`
+      : "";
+    const excerpt = item.excerpt ? `<p class="field-evidence-excerpt">${escapeHtml(item.excerpt)}</p>` : "";
+    return `
+      <div class="field-evidence-row">
+        <div class="field-evidence-title">
+          <strong>${escapeHtml(item.label || item.field || "Field")}</strong>
+          <code>${escapeHtml(item.value || "not recovered")}</code>
+        </div>
+        <div class="field-evidence-meta">
+          <span class="field-evidence-source">${escapeHtml(item.source || "unknown")}</span>
+          <span class="field-evidence-confidence ${escapeHtml(confidence)}">${escapeHtml(item.confidence || "medium")}</span>
+          <span class="field-evidence-status ${escapeHtml(status)}">${escapeHtml(item.status || "applied")}</span>
+        </div>
+        ${rawValue || conflict ? `<div class="field-evidence-extra">${rawValue}${conflict}</div>` : ""}
+        ${item.reason ? `<p>${escapeHtml(item.reason)}</p>` : ""}
+        ${excerpt}
+      </div>
+    `;
+  }).join("");
+  return `
+    <div class="field-evidence-card">
+      <div class="result-header compact-result-header">
+        <div>
+          <strong>Recovered Fields</strong>
+          <p>Source and confidence for each value are evidence only; review and duplicate checks still decide the next step.</p>
+        </div>
+        <span class="status-chip info">Field Evidence</span>
+      </div>
+      <div class="field-evidence-grid">${rows}</div>
+    </div>
+  `;
+}
+
 function renderSourceEvidence(data) {
   const box = $("#source-evidence");
   const body = $("#source-evidence-body");
@@ -790,6 +834,7 @@ function renderSourceEvidence(data) {
   const profileSummary = profileDecision.profile_key
     ? `${profileDecision.mode || "auto"}: ${profileDecision.profile_key}${profileDecision.suggested_profile_key && profileDecision.suggested_profile_key !== profileDecision.profile_key ? ` (suggested ${profileDecision.suggested_profile_key})` : ""}`
     : "not decided";
+  const fieldEvidence = renderFieldEvidence(evidence.field_evidence || []);
   const proposalPayload = profileProposal.payload || {};
   const proposal = profileProposal.status && profileProposal.status !== "not_needed"
     ? `<div class="profile-proposal-card">
@@ -831,6 +876,7 @@ function renderSourceEvidence(data) {
       </div>
       <div>${preview}</div>
     </div>
+    ${fieldEvidence}
   `;
   box.className = "result-card";
 }

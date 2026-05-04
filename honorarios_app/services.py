@@ -569,6 +569,324 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
     return fields
 
 
+FIELD_EVIDENCE_LABELS = {
+    "profile_key": "Profile",
+    "case_number": "Case number",
+    "service_date": "Service date",
+    "photo_metadata_date": "Metadata date",
+    "recipient_email": "Recipient email",
+    "payment_entity": "Payment entity",
+    "service_entity": "Service entity",
+    "service_entity_type": "Service entity type",
+    "service_place": "Service place",
+    "service_place_phrase": "Service place phrase",
+    "transport_destination": "Transport destination",
+    "km_one_way": "Kilometers one way",
+}
+
+
+def _date_text_variants(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    variants = [text] if text else []
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return variants
+    variants.extend([
+        parsed.strftime("%d/%m/%Y"),
+        parsed.strftime("%d-%m-%Y"),
+    ])
+    return variants
+
+
+def _text_contains_value(text: str, value: Any) -> bool:
+    folded_text = fold_match_text(text)
+    for variant in _date_text_variants(value):
+        if variant and fold_match_text(variant) in folded_text:
+            return True
+    normalized_case = normalize_case_number(str(value or "")) if "/" in str(value or "") else ""
+    if normalized_case and fold_match_text(normalized_case) in folded_text:
+        return True
+    return False
+
+
+def _line_excerpt(text: str, value: Any) -> str:
+    source = str(text or "")
+    if not source.strip() or value in (None, ""):
+        return ""
+    variants = [str(value)]
+    variants.extend(_date_text_variants(value))
+    if "/" in str(value):
+        variants.append(normalize_case_number(str(value)))
+    for line in source.splitlines():
+        folded_line = fold_match_text(line)
+        if any(variant and fold_match_text(variant) in folded_line for variant in variants):
+            return line.strip()[:220]
+    return ""
+
+
+def _field_evidence_entry(
+    field: str,
+    value: Any,
+    *,
+    source: str,
+    confidence: str,
+    status: str = "applied",
+    reason: str = "",
+    raw_value: Any = "",
+    excerpt: str = "",
+    conflicts_with: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "field": field,
+        "label": FIELD_EVIDENCE_LABELS.get(field, field.replace("_", " ").title()),
+        "value": value,
+        "source": source,
+        "confidence": confidence,
+        "status": status,
+        "reason": reason,
+    }
+    if raw_value not in (None, ""):
+        entry["raw_value"] = raw_value
+    if excerpt:
+        entry["excerpt"] = excerpt
+    if conflicts_with:
+        entry["conflicts_with"] = conflicts_with
+    return entry
+
+
+def _profile_default(profiles: dict[str, Any], profile_key: str, field: str) -> Any:
+    profile = profiles.get(profile_key) if isinstance(profiles, dict) else {}
+    defaults = profile.get("defaults") if isinstance(profile, dict) else {}
+    if not isinstance(defaults, dict):
+        return ""
+    if field == "km_one_way":
+        transport = defaults.get("transport") if isinstance(defaults.get("transport"), dict) else {}
+        return transport.get("km_one_way", "")
+    if field == "transport_destination":
+        transport = defaults.get("transport") if isinstance(defaults.get("transport"), dict) else {}
+        return transport.get("destination", "")
+    return defaults.get(field, "")
+
+
+def _field_from_candidate(candidate: dict[str, Any], field: str) -> Any:
+    if field == "km_one_way":
+        transport = candidate.get("transport") if isinstance(candidate.get("transport"), dict) else {}
+        return transport.get("km_one_way", "")
+    if field == "transport_destination":
+        transport = candidate.get("transport") if isinstance(candidate.get("transport"), dict) else {}
+        return transport.get("destination", "")
+    return candidate.get(field, "")
+
+
+def _ai_field_value(ai_recovery: dict[str, Any], field: str) -> str:
+    ai_fields = ai_recovery.get("fields") if isinstance(ai_recovery, dict) else {}
+    if not isinstance(ai_fields, dict):
+        return ""
+    aliases = {
+        "case_number": ("raw_case_number", "source_case_number", "case_number"),
+        "recipient_email": ("court_email", "recipient_email"),
+        "km_one_way": ("km_one_way", "transport_km_one_way", "one_way_km"),
+        "transport_destination": ("transport_destination", "destination", "locality", "city"),
+        "service_place": ("service_place", "locality"),
+        "source_document_timestamp": ("source_document_timestamp", "document_timestamp"),
+    }.get(field, (field,))
+    for alias in aliases:
+        value = str(ai_fields.get(alias) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _values_match(left: Any, right: Any) -> bool:
+    if left in (None, "") or right in (None, ""):
+        return False
+    left_text = str(left).strip()
+    right_text = str(right).strip()
+    if "/" in left_text and "/" in right_text:
+        return normalize_case_number(left_text).casefold() == normalize_case_number(right_text).casefold()
+    return fold_match_text(left_text) == fold_match_text(right_text)
+
+
+def _ai_source_for_field(field: str, value: Any, raw_visible_text: str, metadata_date: str) -> tuple[str, str, str]:
+    if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
+        return "openai_and_photo_metadata", "high", "AI recovered the service date and it matches the image metadata date."
+    confidence = "high" if _text_contains_value(raw_visible_text, value) else "medium"
+    return "openai_ocr", confidence, "OpenAI OCR recovered this value from the uploaded source."
+
+
+def build_field_evidence(
+    *,
+    candidate: dict[str, Any],
+    deterministic_fields: dict[str, Any],
+    metadata: dict[str, Any],
+    ai_recovery: dict[str, Any],
+    profile_decision: dict[str, Any],
+    profiles: dict[str, Any],
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    seen_fields: set[str] = set()
+    profile_key = str(profile_decision.get("profile_key") or "").strip()
+    profile_mode = str(profile_decision.get("mode") or "").strip()
+    profile_source = {
+        "auto_applied": "auto_profile",
+        "explicit_profile": "explicit_profile",
+        "auto_fallback": "fallback_profile",
+    }.get(profile_mode, "profile")
+    if profile_key:
+        evidence.append(_field_evidence_entry(
+            "profile_key",
+            profile_key,
+            source=profile_source,
+            confidence=str(profile_decision.get("confidence") or ("high" if profile_mode == "explicit_profile" else "medium")),
+            reason=str(profile_decision.get("reason") or profile_decision.get("suggestion_reason") or "Service profile selected for this intake."),
+        ))
+        seen_fields.add("profile_key")
+
+    raw_visible_text = str(ai_recovery.get("raw_visible_text") or "")
+    metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
+
+    def add(field: str, value: Any, *, source: str, confidence: str, reason: str, raw_value: Any = "", excerpt: str = "") -> None:
+        if field in seen_fields or value in (None, ""):
+            return
+        status = "applied"
+        conflicts_with = None
+        if field == "service_date" and metadata_date and str(value or "").strip() != metadata_date:
+            status = "conflicts_with_metadata"
+            conflicts_with = {
+                "field": "photo_metadata_date",
+                "value": metadata_date,
+            }
+        evidence.append(_field_evidence_entry(
+            field,
+            value,
+            source=source,
+            confidence=confidence,
+            status=status,
+            reason=reason,
+            raw_value=raw_value,
+            excerpt=excerpt,
+            conflicts_with=conflicts_with,
+        ))
+        seen_fields.add(field)
+
+    if metadata_date:
+        add(
+            "photo_metadata_date",
+            metadata_date,
+            source="image_metadata",
+            confidence="high",
+            reason="Image metadata supplied the capture date used for review.",
+        )
+
+    deterministic_sources = {
+        "case_number": "deterministic_text",
+        "service_date": "document_text",
+        "recipient_email": "visible_email",
+        "service_place": "known_destination",
+        "transport_destination": "known_destination",
+        "km_one_way": "known_destination",
+    }
+    deterministic_reasons = {
+        "case_number": "A local pattern matched the visible NUIPC/process number.",
+        "service_date": "A local date pattern matched the uploaded source text.",
+        "recipient_email": "A local email pattern matched the uploaded source text.",
+        "service_place": "A known destination matched the uploaded source text.",
+        "transport_destination": "A known destination matched the uploaded source text.",
+        "km_one_way": "A known destination supplied the stored one-way distance.",
+    }
+    for field in ("case_number", "service_date", "recipient_email", "service_place", "transport_destination", "km_one_way"):
+        value = _field_from_candidate(candidate, field)
+        deterministic_value = deterministic_fields.get(field)
+        if field in {"transport_destination", "km_one_way"}:
+            deterministic_value = deterministic_fields.get(field)
+        if deterministic_value not in (None, "") and _values_match(value, deterministic_value):
+            source = deterministic_sources[field]
+            if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
+                source = "document_text_and_photo_metadata"
+            add(
+                field,
+                value,
+                source=source,
+                confidence="high",
+                reason=deterministic_reasons[field],
+                raw_value=deterministic_fields.get("raw_case_number", "") if field == "case_number" else "",
+                excerpt=_line_excerpt(str(candidate.get("source_text") or ""), deterministic_value),
+            )
+
+    ai_status = str(ai_recovery.get("status") or "")
+    if ai_status == "ok":
+        for field in (
+            "case_number",
+            "service_date",
+            "recipient_email",
+            "payment_entity",
+            "service_entity",
+            "service_entity_type",
+            "service_place",
+            "service_place_phrase",
+            "transport_destination",
+            "km_one_way",
+        ):
+            value = _field_from_candidate(candidate, field)
+            ai_value = _ai_field_value(ai_recovery, field)
+            if ai_value and _values_match(value, normalize_case_number(ai_value) if field == "case_number" else ai_value):
+                source, confidence, reason = _ai_source_for_field(field, value, raw_visible_text, metadata_date)
+                add(
+                    field,
+                    value,
+                    source=source,
+                    confidence=confidence,
+                    reason=reason,
+                    raw_value=ai_value if field == "case_number" else "",
+                    excerpt=_line_excerpt(raw_visible_text, ai_value),
+                )
+
+    for field in (
+        "payment_entity",
+        "recipient_email",
+        "service_entity",
+        "service_entity_type",
+        "service_place",
+        "service_place_phrase",
+        "transport_destination",
+        "km_one_way",
+    ):
+        value = _field_from_candidate(candidate, field)
+        default_value = _profile_default(profiles, profile_key, field)
+        if default_value not in (None, "") and _values_match(value, default_value):
+            add(
+                field,
+                value,
+                source="service_profile",
+                confidence="medium" if profile_source != "auto_profile" else "high",
+                reason=f"Service profile {profile_key} supplied this default.",
+            )
+
+    return evidence
+
+
+def build_profile_evidence(profile_decision: dict[str, Any]) -> dict[str, Any]:
+    signals = [
+        {
+            "text": str(signal),
+            "source": "source_text_or_openai_ocr",
+        }
+        for signal in profile_decision.get("signals", [])
+        if str(signal).strip()
+    ]
+    return {
+        "mode": profile_decision.get("mode", ""),
+        "profile_key": profile_decision.get("profile_key", ""),
+        "suggested_profile_key": profile_decision.get("suggested_profile_key", ""),
+        "confidence": profile_decision.get("confidence", ""),
+        "reason": profile_decision.get("reason", ""),
+        "suggestion_reason": profile_decision.get("suggestion_reason", ""),
+        "auto_applied": bool(profile_decision.get("auto_applied")),
+        "signals": signals,
+    }
+
+
 def combine_text_parts(*parts: str) -> str:
     seen: set[str] = set()
     output: list[str] = []
@@ -1183,6 +1501,7 @@ def recover_source_upload(
         if render_warnings:
             metadata.setdefault("warnings", []).extend(render_warnings)
 
+    deterministic_fields = extract_candidate_fields(extracted_text, paths)
     ai_recovery = recover_source_with_openai(
         filename=filename,
         content_type=content_type,
@@ -1216,6 +1535,15 @@ def recover_source_upload(
     profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
     review = review_intake(candidate, paths)
     combined_text = str(candidate.get("source_text") or extracted_text or "").strip()
+    field_evidence = build_field_evidence(
+        candidate=candidate,
+        deterministic_fields=deterministic_fields,
+        metadata=metadata,
+        ai_recovery=ai_recovery,
+        profile_decision=profile_decision,
+        profiles=profiles,
+    )
+    profile_evidence = build_profile_evidence(profile_decision)
 
     source_warnings = [
         *[str(item) for item in metadata.get("warnings", []) if str(item).strip()],
@@ -1252,6 +1580,8 @@ def recover_source_upload(
             "ai_status": ai_recovery.get("status", ""),
             "ai_attempted": bool(ai_recovery.get("attempted")),
             "auto_profile": profile_decision,
+            "profile_evidence": profile_evidence,
+            "field_evidence": field_evidence,
             "profile_proposal": profile_proposal,
             "warnings": source_warnings,
             "rendered_page_urls": [item["artifact_url"] for item in metadata.get("rendered_pages", [])],
