@@ -34,6 +34,7 @@ from .services import (
     review_intake,
     resolve_artifact_path,
     preview_local_backup_import,
+    preview_legalpdf_import,
     preview_service_profile_upsert,
     preview_profile_rollback,
     rollback_service_profile,
@@ -196,6 +197,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
     async def api_backup_import(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return restore_local_backup(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/integration/import-preview")
+    async def api_integration_import_preview(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return preview_legalpdf_import(payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

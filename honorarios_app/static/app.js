@@ -9,6 +9,7 @@ const state = {
   googlePhotosPicker: null,
   draftLifecycle: null,
   localBackupPreview: null,
+  legalPdfImportPreview: null,
   backupStatus: null,
   historyStatusFilter: "all",
 };
@@ -1119,6 +1120,92 @@ async function restoreLocalBackupImport() {
   return data;
 }
 
+function legalPdfImportJsonText() {
+  const value = $("#legalpdf-import-json").value.trim();
+  if (!value) {
+    throw new Error("Paste a backup JSON before previewing a LegalPDF import.");
+  }
+  return value;
+}
+
+function renderImportDiffRows(rows, keyLabel) {
+  if (!rows?.length) {
+    return `<div class="data-item"><strong>${escapeHtml(keyLabel)}</strong><span>No records in this dataset.</span></div>`;
+  }
+  return rows.map((row) => {
+    const label = row.source_key || row.key || row.target_key || "record";
+    const target = row.target_key && row.target_key !== row.source_key
+      ? ` -> ${row.target_key}`
+      : "";
+    const email = row.incoming_email ? ` · ${row.incoming_email}` : "";
+    const changeCount = Number(row.change_count || 0);
+    return `
+      <div class="data-item import-diff-row">
+        <strong>${escapeHtml(label)}${escapeHtml(target)}</strong>
+        <span>
+          <span class="status-chip ${statusChipClass(row.action)}">${escapeHtml(row.action || "preview")}</span>
+          ${escapeHtml(row.incoming_description || row.name || "")}${escapeHtml(email)}
+          ${changeCount ? ` · ${escapeHtml(changeCount)} change${changeCount === 1 ? "" : "s"}` : ""}
+        </span>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderLegalPdfImportPreview(data, kind = "info") {
+  const chip = $("#legalpdf-import-chip");
+  const body = $("#legalpdf-import-preview-result");
+  if (!chip || !body) return;
+  const status = data?.status || kind || "idle";
+  const chipKind = statusChipClass(status === "previewed" ? "ready" : status);
+  chip.textContent = status.replaceAll("_", " ");
+  chip.className = `status-chip ${chipKind}`;
+  const counts = data?.counts || {};
+  const countRows = Object.entries(counts).map(([key, value]) => (
+    `<div class="data-item"><strong>${escapeHtml(key)}</strong><span>${escapeHtml(value)} record${Number(value) === 1 ? "" : "s"}</span></div>`
+  )).join("");
+  const datasets = data?.dataset_names?.length
+    ? `<div class="data-item"><strong>Datasets</strong><span>${escapeHtml(data.dataset_names.join(", "))}</span></div>`
+    : "";
+  const profileSummary = data?.profile_action_summary
+    ? `<div class="data-item"><strong>Profile summary</strong><span>${escapeHtml(JSON.stringify(data.profile_action_summary))}</span></div>`
+    : "";
+  const courtSummary = data?.court_email_action_summary
+    ? `<div class="data-item"><strong>Court email summary</strong><span>${escapeHtml(JSON.stringify(data.court_email_action_summary))}</span></div>`
+    : "";
+  body.className = `result-card ${chipKind}`;
+  body.innerHTML = `
+    <div class="result-header">
+      <div>
+        <strong>${escapeHtml(data?.message || "No LegalPDF integration preview has run yet.")}</strong>
+        <p>No local files were changed. This wizard is preview-only and cannot create or send Gmail messages.</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${datasets}
+    ${countRows}
+    ${profileSummary}
+    <h4>Profile mappings</h4>
+    <div class="data-list">${renderImportDiffRows(data?.profile_mappings || [], "Profiles")}</div>
+    ${courtSummary}
+    <h4>Court-email differences</h4>
+    <div class="data-list">${renderImportDiffRows(data?.court_email_differences || [], "Court emails")}</div>
+  `;
+}
+
+async function previewLegalPdfImport() {
+  const data = await requestJson("/api/integration/import-preview", {
+    method: "POST",
+    body: JSON.stringify({
+      backup_json: legalPdfImportJsonText(),
+      profile_mapping_text: $("#legalpdf-profile-mapping").value,
+    }),
+  });
+  state.legalPdfImportPreview = data;
+  renderLegalPdfImportPreview(data, "ready");
+  return data;
+}
+
 function renderReference() {
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
@@ -1769,6 +1856,16 @@ function bindActions() {
       showAlert(`Backup restored locally. Pre-restore backup: ${data.pre_restore_backup_file}.`, "recorded");
     } catch (error) {
       renderLocalBackupResult({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#preview-legalpdf-import").addEventListener("click", async () => {
+    try {
+      await previewLegalPdfImport();
+      showAlert("LegalPDF import preview is ready. No local files were changed.", "recorded");
+    } catch (error) {
+      state.legalPdfImportPreview = null;
+      renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
       showAlert(error.message, "blocked");
     }
   });

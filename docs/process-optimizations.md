@@ -84,6 +84,8 @@ Use the browser app's References -> Local Backup panel before large edits, machi
 
 The app also exposes `/api/backup/status` and renders a `Latest backup` reminder in References. If there is no local backup, or the newest backup is older than 24 hours, the UI warns before saving service profiles, court email records, known destinations, profile rollbacks, or backup restores. The warning is non-send-capable and does not call Gmail; it is only a local safety prompt to export a fresh private backup first.
 
+For LegalPDF reintegration planning, use the separate LegalPDF Integration Preview panel. It compares a backup-like JSON against current profiles and court-email aliases, applies optional profile mapping lines, and reports create/update/unchanged rows with `write_allowed: false`. It is deliberately not a restore button.
+
 ## Similar Photo Cases
 
 For photographed notices like the GNR Cuba pair:

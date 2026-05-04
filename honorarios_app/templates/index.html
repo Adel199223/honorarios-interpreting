@@ -329,6 +329,30 @@
             </label>
             <div class="result-card" id="local-backup-result">No backup action has run yet.</div>
           </div>
+          <div class="panel integration-preview-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Future Integration</p>
+                <h3>LegalPDF Integration Preview</h3>
+                <p class="panel-copy">Preview backup contents, profile mappings, and court-email differences before any future LegalPDF reintegration. This panel never writes local files.</p>
+              </div>
+              <span class="status-chip info" id="legalpdf-import-chip">preview only</span>
+            </div>
+            <div class="reference-columns two">
+              <div class="field">
+                <label for="legalpdf-import-json">LegalPDF/Honorários Backup JSON</label>
+                <textarea id="legalpdf-import-json" rows="8" placeholder="Paste a backup-like JSON here to preview profile and court-email differences."></textarea>
+              </div>
+              <div class="field">
+                <label for="legalpdf-profile-mapping">Profile mappings</label>
+                <textarea id="legalpdf-profile-mapping" rows="8" placeholder="Optional, one per line:&#10;legalpdf_pj_beja = pj_gnr_beja&#10;old_profile -> new_profile"></textarea>
+              </div>
+            </div>
+            <div class="button-row">
+              <button type="button" id="preview-legalpdf-import">Preview LegalPDF import</button>
+            </div>
+            <div class="result-card" id="legalpdf-import-preview-result">No LegalPDF integration preview has run yet.</div>
+          </div>
           <div class="reference-columns">
             <div class="panel profile-reference-panel">
               <h3>Profiles</h3>

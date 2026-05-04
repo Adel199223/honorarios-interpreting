@@ -1315,6 +1315,159 @@ def preview_local_backup_import(payload: dict[str, Any], paths: AppPaths) -> dic
     }
 
 
+def _parse_profile_mapping_text(value: Any) -> dict[str, str]:
+    if value in (None, ""):
+        return {}
+    if isinstance(value, dict):
+        return {
+            str(source or "").strip(): str(target or "").strip()
+            for source, target in value.items()
+            if str(source or "").strip() and str(target or "").strip()
+        }
+    mappings: dict[str, str] = {}
+    for raw_line in str(value).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "->" in line:
+            source, target = line.split("->", 1)
+        elif "=" in line:
+            source, target = line.split("=", 1)
+        elif ":" in line:
+            source, target = line.split(":", 1)
+        else:
+            raise IntakeError(f"Profile mapping must use source=target or source -> target: {line}")
+        source_key = source.strip()
+        target_key = target.strip()
+        if not source_key or not target_key:
+            raise IntakeError(f"Profile mapping is incomplete: {line}")
+        mappings[source_key] = target_key
+    return mappings
+
+
+def _action_for_record(current: Any, incoming: Any) -> str:
+    if current is None:
+        return "create"
+    if stable_json_hash(current) == stable_json_hash(incoming):
+        return "unchanged"
+    return "update"
+
+
+def _action_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {"create": 0, "update": 0, "unchanged": 0}
+    for row in rows:
+        action = str(row.get("action") or "")
+        if action in summary:
+            summary[action] += 1
+    return summary
+
+
+def _profile_import_preview_rows(
+    *,
+    current_profiles: dict[str, Any],
+    incoming_profiles: dict[str, Any],
+    mappings: dict[str, str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for source_key in sorted(incoming_profiles):
+        incoming_record = incoming_profiles[source_key]
+        if not isinstance(incoming_record, dict):
+            raise IntakeError(f"Incoming service profile must be an object: {source_key}")
+        target_key = mappings.get(source_key, source_key)
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", target_key):
+            raise IntakeError(f"Target profile key is invalid: {target_key}")
+        current_record = current_profiles.get(target_key)
+        action = _action_for_record(current_record, incoming_record)
+        changes = diff_json_values(current_record or {}, incoming_record) if action == "update" else []
+        rows.append({
+            "source_key": source_key,
+            "target_key": target_key,
+            "mapped": target_key != source_key,
+            "action": action,
+            "incoming_description": str(incoming_record.get("description") or ""),
+            "current_description": str((current_record or {}).get("description") or ""),
+            "change_count": len(changes),
+            "changes": changes[:20],
+            "incoming_hash": stable_json_hash(incoming_record),
+            "current_hash": stable_json_hash(current_record) if current_record is not None else "",
+        })
+    return rows
+
+
+def _court_email_import_preview_rows(
+    *,
+    current_court_emails: list[dict[str, Any]],
+    incoming_court_emails: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    current_by_key = {
+        str(record.get("key") or "").strip(): record
+        for record in current_court_emails
+        if str(record.get("key") or "").strip()
+    }
+    for incoming_raw in incoming_court_emails:
+        if not isinstance(incoming_raw, dict):
+            raise IntakeError("Incoming court email records must be objects.")
+        source_key = str(incoming_raw.get("key") or "").strip()
+        current_record = current_by_key.get(source_key)
+        incoming_record = normalize_court_email_record(incoming_raw, current_record)
+        action = _action_for_record(current_record, incoming_record)
+        changes = diff_json_values(current_record or {}, incoming_record) if action == "update" else []
+        rows.append({
+            "key": incoming_record["key"],
+            "action": action,
+            "name": incoming_record.get("name", ""),
+            "incoming_email": incoming_record.get("email", ""),
+            "current_email": str((current_record or {}).get("email") or ""),
+            "incoming_aliases": incoming_record.get("payment_entity_aliases", []),
+            "current_aliases": (current_record or {}).get("payment_entity_aliases", []),
+            "change_count": len(changes),
+            "changes": changes[:20],
+            "incoming_hash": stable_json_hash(incoming_record),
+            "current_hash": stable_json_hash(current_record) if current_record is not None else "",
+        })
+    return rows
+
+
+def preview_legalpdf_import(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    validation = validate_backup_payload(payload, paths)
+    datasets = validation["datasets"]
+    profile_mappings = _parse_profile_mapping_text(
+        payload.get("profile_mappings", payload.get("profile_mapping_text", payload.get("profile_mappings_text")))
+    )
+    current_profiles = load_profiles(paths.service_profiles)
+    current_court_emails = read_json_list(paths.court_emails)
+    incoming_profiles = datasets.get("service_profiles", {})
+    incoming_court_emails = datasets.get("court_emails", [])
+    if not isinstance(incoming_profiles, dict):
+        raise IntakeError("Incoming service_profiles dataset must be a JSON object.")
+    if not isinstance(incoming_court_emails, list):
+        raise IntakeError("Incoming court_emails dataset must be a JSON list.")
+
+    profile_rows = _profile_import_preview_rows(
+        current_profiles=current_profiles,
+        incoming_profiles=incoming_profiles,
+        mappings=profile_mappings,
+    )
+    court_rows = _court_email_import_preview_rows(
+        current_court_emails=current_court_emails,
+        incoming_court_emails=incoming_court_emails,
+    )
+    return {
+        "status": "previewed",
+        "message": "LegalPDF integration import preview is ready. No local files were changed.",
+        "counts": validation["counts"],
+        "dataset_names": validation["dataset_names"],
+        "profile_mappings": profile_rows,
+        "profile_action_summary": _action_summary(profile_rows),
+        "court_email_differences": court_rows,
+        "court_email_action_summary": _action_summary(court_rows),
+        "mapping_count": len(profile_mappings),
+        "write_allowed": False,
+        "send_allowed": False,
+    }
+
+
 def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not bool(payload.get("confirm_restore")):
         raise IntakeError("Backup restore requires confirm_restore=true.")
