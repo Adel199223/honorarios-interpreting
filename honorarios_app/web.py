@@ -32,6 +32,7 @@ from .services import (
     google_photos_list_session_media,
     google_photos_oauth_callback,
     google_photos_oauth_start,
+    legalpdf_apply_history,
     load_app_reference,
     prepare_intakes,
     record_draft,
@@ -257,6 +258,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 "legalpdf_write_allowed": False,
                 "send_allowed": False,
             })
+
+    @app.get("/api/integration/apply-history")
+    async def api_integration_apply_history(limit: int = 20) -> dict[str, Any]:
+        try:
+            return legalpdf_apply_history(paths, limit=limit)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/intake/from-profile")
     async def api_intake_from_profile(payload: dict[str, Any]) -> dict[str, Any]:

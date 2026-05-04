@@ -31,6 +31,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "LegalPDF Integration Preview",
             "Build integration checklist",
             "Build adapter import plan",
+            "LegalPDF Apply History",
+            "Refresh apply history",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
@@ -107,7 +109,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         report = client.post("/api/integration/import-report", json=payload)
         checklist = client.post("/api/integration/checklist", json=payload)
         plan = client.post("/api/integration/import-plan", json=payload)
-        for response in [preview, report, checklist, plan]:
+        history = client.get("/api/integration/apply-history")
+        for response in [preview, report, checklist, plan, history]:
             self.assertEqual(response.status_code, 200, response.text)
             data = response.json()
             self.assertFalse(data["send_allowed"])
@@ -118,6 +121,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(plan.json()["write_allowed"])
         self.assertFalse(plan.json()["managed_data_changed"])
         self.assertTrue(plan.json()["apply_endpoint_available"])
+        self.assertFalse(history.json()["write_allowed"])
+        self.assertFalse(history.json()["managed_data_changed"])
+        self.assertEqual(history.json()["report_count"], 0)
         blocked_apply = client.post("/api/integration/apply-import-plan", json=payload)
         self.assertEqual(blocked_apply.status_code, 400)
         self.assertFalse(blocked_apply.json()["send_allowed"])

@@ -345,7 +345,7 @@
               <div>
                 <p class="eyebrow">Future Integration</p>
                 <h3>LegalPDF Integration Preview</h3>
-                <p class="panel-copy">Preview backup contents, profile mappings, and court-email differences before any future LegalPDF reintegration. This panel never writes local files.</p>
+                <p class="panel-copy">Preview backup contents, profile mappings, court-email differences, and guarded local imports before future LegalPDF reintegration. Apply requires explicit confirmation and never touches LegalPDF.</p>
               </div>
               <span class="status-chip info" id="legalpdf-import-chip">preview only</span>
             </div>
@@ -383,6 +383,19 @@
               <button type="button" id="apply-legalpdf-import-plan">Apply reviewed safe import plan</button>
             </div>
             <div class="result-card" id="legalpdf-import-preview-result">No LegalPDF integration preview has run yet.</div>
+            <div class="result-card apply-history-card" id="legalpdf-apply-history-result">
+              <div class="result-header">
+                <div>
+                  <strong>LegalPDF Apply History</strong>
+                  <p>Reviewed import reports, applied keys, and pre-apply backup paths appear here.</p>
+                </div>
+                <span class="status-chip info">read only</span>
+              </div>
+              <div class="button-row">
+                <button type="button" id="refresh-legalpdf-apply-history">Refresh apply history</button>
+              </div>
+              <div id="legalpdf-apply-history-body">No guarded LegalPDF import has been applied yet.</div>
+            </div>
           </div>
           <div class="reference-columns">
             <div class="panel profile-reference-panel">

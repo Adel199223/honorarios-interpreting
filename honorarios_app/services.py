@@ -2759,6 +2759,83 @@ def apply_legalpdf_adapter_import_plan(payload: dict[str, Any], paths: AppPaths)
     }
 
 
+def _safe_apply_report_summary(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != "legalpdf_adapter_import_apply_report":
+        return None
+
+    applied_profiles = [
+        {
+            "source_key": str(item.get("source_key") or ""),
+            "target_key": str(item.get("target_key") or ""),
+            "action": str(item.get("action") or ""),
+            "preserved_required_default_paths": [
+                str(value)
+                for value in (item.get("preserved_required_default_paths") or [])
+                if str(value or "").strip()
+            ],
+        }
+        for item in (data.get("applied_profiles") or [])
+        if isinstance(item, dict)
+    ]
+    applied_court_emails = [
+        {
+            "key": str(item.get("key") or ""),
+            "action": str(item.get("action") or ""),
+        }
+        for item in (data.get("applied_court_emails") or [])
+        if isinstance(item, dict)
+    ]
+    markdown_path = path.with_suffix(".md")
+    return {
+        "status": str(data.get("status") or ""),
+        "created_at": str(data.get("created_at") or ""),
+        "message": str(data.get("message") or ""),
+        "apply_reason": str(data.get("apply_reason") or ""),
+        "report_json_file": str(path),
+        "report_markdown_file": str(markdown_path) if markdown_path.exists() else "",
+        "pre_apply_backup_file": str(data.get("pre_apply_backup_file") or ""),
+        "profile_change_ids": [
+            str(value)
+            for value in (data.get("profile_change_ids") or [])
+            if str(value or "").strip()
+        ],
+        "applied_profile_count": len(applied_profiles),
+        "applied_court_email_count": len(applied_court_emails),
+        "applied_profiles": applied_profiles,
+        "applied_court_emails": applied_court_emails,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def legalpdf_apply_history(paths: AppPaths, *, limit: int = 20) -> dict[str, Any]:
+    reports: list[dict[str, Any]] = []
+    if paths.integration_report_output_dir.exists():
+        for path in paths.integration_report_output_dir.glob("legalpdf-import-apply-*.json"):
+            if not path.is_file():
+                continue
+            summary = _safe_apply_report_summary(path)
+            if summary is not None:
+                reports.append(summary)
+    reports.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("report_json_file") or "")), reverse=True)
+    limited = reports[: max(1, int(limit))]
+    return {
+        "status": "ready",
+        "message": "LegalPDF apply history loaded. This endpoint is read-only and returns summaries only.",
+        "reports": limited,
+        "report_count": len(reports),
+        "returned_count": len(limited),
+        "write_allowed": False,
+        "managed_data_changed": False,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+
+
 def export_legalpdf_import_report(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     preview = preview_legalpdf_import(payload, paths)
     report_id = f"legalpdf-import-preview-{timestamp_slug()}-{secrets.token_hex(4)}"

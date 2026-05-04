@@ -1603,6 +1603,49 @@ async function applyLegalPdfAdapterImportPlan() {
     state.backupStatus = data.backup_status;
     renderBackupStatus(state.backupStatus);
   }
+  await loadLegalPdfApplyHistory();
+  return data;
+}
+
+function renderLegalPdfApplyHistory(data) {
+  const card = $("#legalpdf-apply-history-result");
+  const body = $("#legalpdf-apply-history-body");
+  if (!card || !body) return;
+  const reports = data?.reports || [];
+  const rows = reports.length
+    ? reports.map((report) => {
+      const profiles = report.applied_profiles?.length
+        ? report.applied_profiles.map((item) => `${item.target_key || item.source_key || "profile"} (${item.action || "applied"})`).join(", ")
+        : "No profile changes";
+      const courts = report.applied_court_emails?.length
+        ? report.applied_court_emails.map((item) => `${item.key || "court email"} (${item.action || "applied"})`).join(", ")
+        : "No court-email changes";
+      const preserved = report.applied_profiles?.flatMap((item) => item.preserved_required_default_paths || []).filter(Boolean) || [];
+      return `
+        <div class="data-item import-diff-row">
+          <strong>${escapeHtml(report.created_at || "LegalPDF import apply")}</strong>
+          <span><span class="status-chip ${statusChipClass(report.status || "ready")}">${escapeHtml(report.status || "ready")}</span> ${escapeHtml(report.apply_reason || "No apply reason recorded.")}</span>
+          <span><strong>Profiles:</strong> ${escapeHtml(profiles)}</span>
+          <span><strong>Court emails:</strong> ${escapeHtml(courts)}</span>
+          ${preserved.length ? `<span><strong>Preserved local defaults:</strong> ${escapeHtml([...new Set(preserved)].join(", "))}</span>` : ""}
+          ${report.profile_change_ids?.length ? `<span><strong>Profile change IDs:</strong> ${escapeHtml(report.profile_change_ids.join(", "))}</span>` : ""}
+          ${report.pre_apply_backup_file ? `<span><strong>Pre-apply backup:</strong> <code>${escapeHtml(report.pre_apply_backup_file)}</code></span>` : ""}
+          ${report.report_json_file ? `<span><strong>JSON report:</strong> <code>${escapeHtml(report.report_json_file)}</code></span>` : ""}
+          ${report.report_markdown_file ? `<span><strong>Markdown report:</strong> <code>${escapeHtml(report.report_markdown_file)}</code></span>` : ""}
+        </div>
+      `;
+    }).join("")
+    : `<div class="data-item"><strong>LegalPDF Apply History</strong><span>No guarded LegalPDF import has been applied yet.</span></div>`;
+  card.classList.remove("hidden");
+  body.innerHTML = `
+    <div class="data-list">${rows}</div>
+    <p class="field-hint">History is read-only. It shows summaries only, not the full import plan or source backup payload.</p>
+  `;
+}
+
+async function loadLegalPdfApplyHistory() {
+  const data = await requestJson("/api/integration/apply-history");
+  renderLegalPdfApplyHistory(data);
   return data;
 }
 
@@ -2398,6 +2441,15 @@ function bindActions() {
       showAlert(error.message, "blocked");
     }
   });
+  $("#refresh-legalpdf-apply-history").addEventListener("click", async () => {
+    try {
+      const data = await loadLegalPdfApplyHistory();
+      showAlert(`Loaded ${data.report_count || 0} LegalPDF apply report${Number(data.report_count || 0) === 1 ? "" : "s"}.`, "recorded");
+    } catch (error) {
+      renderLegalPdfApplyHistory({ reports: [], status: "blocked", message: error.message });
+      showAlert(error.message, "blocked");
+    }
+  });
   $("#service-profile-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -2801,3 +2853,4 @@ loadReference().catch((error) => {
 loadAiStatus().catch(() => {});
 loadGooglePhotosStatus().catch(() => {});
 loadBackupStatus().catch(() => {});
+loadLegalPdfApplyHistory().catch(() => {});
