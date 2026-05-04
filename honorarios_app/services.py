@@ -2877,6 +2877,172 @@ def _current_hash_status(current_record: Any, applied_hash: str) -> dict[str, An
     }
 
 
+def _restore_hash_status(
+    current_record: Any,
+    *,
+    backup_available: bool,
+    backup_record: Any,
+    applied_action: str,
+) -> dict[str, Any]:
+    current_hash = stable_json_hash(current_record) if current_record is not None else ""
+    current_record_status = "present" if current_record is not None else "missing"
+    if not backup_available:
+        return {
+            "restore_action": "blocked",
+            "backup_record_status": "unavailable",
+            "pre_apply_hash": "",
+            "current_hash": current_hash,
+            "current_record_status": current_record_status,
+            "current_matches_pre_apply": False,
+            "would_change_current": False,
+            "blockers": ["Pre-apply backup is unavailable."],
+        }
+
+    normalized_action = str(applied_action or "").strip().casefold()
+    if backup_record is None:
+        if normalized_action == "create":
+            current_matches_pre_apply = current_record is None
+            return {
+                "restore_action": "remove_created_record",
+                "backup_record_status": "missing_before_apply",
+                "pre_apply_hash": "",
+                "current_hash": current_hash,
+                "current_record_status": current_record_status,
+                "current_matches_pre_apply": current_matches_pre_apply,
+                "would_change_current": not current_matches_pre_apply,
+                "blockers": [],
+            }
+        return {
+            "restore_action": "blocked",
+            "backup_record_status": "missing",
+            "pre_apply_hash": "",
+            "current_hash": current_hash,
+            "current_record_status": current_record_status,
+            "current_matches_pre_apply": False,
+            "would_change_current": False,
+            "blockers": ["Pre-apply backup does not contain this record."],
+        }
+
+    pre_apply_hash = stable_json_hash(backup_record)
+    current_matches_pre_apply = bool(current_hash) and current_hash == pre_apply_hash
+    return {
+        "restore_action": "restore_pre_apply_record",
+        "backup_record_status": "present",
+        "pre_apply_hash": pre_apply_hash,
+        "current_hash": current_hash,
+        "current_record_status": current_record_status,
+        "current_matches_pre_apply": current_matches_pre_apply,
+        "would_change_current": not current_matches_pre_apply,
+        "blockers": [],
+    }
+
+
+def legalpdf_apply_restore_plan(paths: AppPaths, *, report_id: str) -> dict[str, Any]:
+    path = _resolve_legalpdf_apply_report_path(paths, report_id)
+    try:
+        report_data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IntakeError("LegalPDF apply report could not be read.") from exc
+    summary = _safe_apply_report_summary(path)
+    if summary is None:
+        raise IntakeError("LegalPDF apply report is not an apply report.")
+
+    backup_available, backup_datasets = _safe_pre_apply_backup_datasets(report_data, paths)
+    backup_profiles = backup_datasets.get("service_profiles") if isinstance(backup_datasets.get("service_profiles"), dict) else {}
+    backup_courts = backup_datasets.get("court_emails") if isinstance(backup_datasets.get("court_emails"), list) else []
+    backup_courts_by_key = {
+        str(record.get("key") or "").strip(): record
+        for record in backup_courts
+        if isinstance(record, dict) and str(record.get("key") or "").strip()
+    }
+    current_profiles = load_profiles(paths.service_profiles)
+    current_courts = read_json_list(paths.court_emails)
+    current_courts_by_key = {
+        str(record.get("key") or "").strip(): record
+        for record in current_courts
+        if str(record.get("key") or "").strip()
+    }
+
+    profile_rows: list[dict[str, Any]] = []
+    for item in report_data.get("applied_profiles") or []:
+        if not isinstance(item, dict):
+            continue
+        target_key = str(item.get("target_key") or "").strip()
+        if not target_key:
+            continue
+        backup_record = backup_profiles.get(target_key) if isinstance(backup_profiles, dict) else None
+        applied_action = str(item.get("action") or "").strip()
+        row = {
+            "source_key": str(item.get("source_key") or "").strip(),
+            "target_key": target_key,
+            "applied_action": applied_action,
+            "applied_hash": str(item.get("applied_hash") or "").strip(),
+            "preserved_required_default_paths": [
+                str(value)
+                for value in (item.get("preserved_required_default_paths") or [])
+                if str(value or "").strip()
+            ],
+        }
+        row.update(
+            _restore_hash_status(
+                current_profiles.get(target_key),
+                backup_available=backup_available,
+                backup_record=backup_record,
+                applied_action=applied_action,
+            )
+        )
+        profile_rows.append(row)
+
+    court_rows: list[dict[str, Any]] = []
+    for item in report_data.get("applied_court_emails") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        applied_action = str(item.get("action") or "").strip()
+        row = {
+            "key": key,
+            "applied_action": applied_action,
+            "applied_hash": str(item.get("applied_hash") or "").strip(),
+        }
+        row.update(
+            _restore_hash_status(
+                current_courts_by_key.get(key),
+                backup_available=backup_available,
+                backup_record=backup_courts_by_key.get(key),
+                applied_action=applied_action,
+            )
+        )
+        court_rows.append(row)
+
+    blocking_count = sum(1 for row in [*profile_rows, *court_rows] if row.get("blockers"))
+    status = "ready" if not blocking_count else "blocked"
+    message = (
+        "LegalPDF restore plan loaded. This is read-only; no restore was performed."
+        if status == "ready"
+        else "LegalPDF restore plan found blockers. This is read-only; no restore was performed."
+    )
+    return {
+        "status": status,
+        "message": message,
+        "report": summary,
+        "backup_available": backup_available,
+        "restore_allowed": False,
+        "blocking_count": blocking_count,
+        "restore_plan": {
+            "profile_count": len(profile_rows),
+            "court_email_count": len(court_rows),
+            "profiles": profile_rows,
+            "court_emails": court_rows,
+        },
+        "write_allowed": False,
+        "managed_data_changed": False,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+
+
 def legalpdf_apply_report_detail(paths: AppPaths, *, report_id: str) -> dict[str, Any]:
     path = _resolve_legalpdf_apply_report_path(paths, report_id)
     try:

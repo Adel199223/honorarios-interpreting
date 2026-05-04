@@ -1634,6 +1634,7 @@ function renderLegalPdfApplyHistory(data) {
           ${report.report_json_file ? `<span><strong>JSON report:</strong> <code>${escapeHtml(report.report_json_file)}</code></span>` : ""}
           ${report.report_markdown_file ? `<span><strong>Markdown report:</strong> <code>${escapeHtml(report.report_markdown_file)}</code></span>` : ""}
           ${reportId ? `<button type="button" class="mini-button" data-legalpdf-report-id="${escapeHtml(reportId)}">Details</button>` : ""}
+          ${reportId ? `<button type="button" class="mini-button" data-legalpdf-restore-report-id="${escapeHtml(reportId)}">Restore plan</button>` : ""}
         </div>
       `;
     }).join("")
@@ -1693,6 +1694,58 @@ function renderLegalPdfApplyDetail(data) {
   `;
 }
 
+function renderLegalPdfRestorePlan(data) {
+  const body = $("#legalpdf-apply-detail-body");
+  if (!body) return;
+  const plan = data?.restore_plan || {};
+  const profileRows = (plan.profiles || []).map((item) => `
+    <div class="data-item import-diff-row">
+      <strong>${escapeHtml(item.target_key || "profile")}</strong>
+      <span><span class="status-chip ${statusChipClass(item.restore_action === "blocked" ? "blocked" : "ready")}">${escapeHtml(item.restore_action || "restore")}</span> ${item.would_change_current ? "would change current record" : "current already matches pre-apply state"}</span>
+      <span><strong>Applied action:</strong> ${escapeHtml(item.applied_action || "")}</span>
+      <span><strong>Backup record:</strong> ${escapeHtml(item.backup_record_status || "unknown")}</span>
+      <span><strong>Current record:</strong> ${escapeHtml(item.current_record_status || "unknown")}</span>
+      <span><strong>Pre-apply hash:</strong> <code>${escapeHtml(item.pre_apply_hash || item.backup_record_status || "unavailable")}</code></span>
+      <span><strong>Current hash:</strong> <code>${escapeHtml(item.current_hash || "missing")}</code></span>
+      ${item.blockers?.length ? `<span><strong>Blockers:</strong> ${escapeHtml(item.blockers.join(", "))}</span>` : ""}
+    </div>
+  `).join("");
+  const courtRows = (plan.court_emails || []).map((item) => `
+    <div class="data-item import-diff-row">
+      <strong>${escapeHtml(item.key || "court email")}</strong>
+      <span><span class="status-chip ${statusChipClass(item.restore_action === "blocked" ? "blocked" : "ready")}">${escapeHtml(item.restore_action || "restore")}</span> ${item.would_change_current ? "would change current record" : "current already matches pre-apply state"}</span>
+      <span><strong>Applied action:</strong> ${escapeHtml(item.applied_action || "")}</span>
+      <span><strong>Backup record:</strong> ${escapeHtml(item.backup_record_status || "unknown")}</span>
+      <span><strong>Current record:</strong> ${escapeHtml(item.current_record_status || "unknown")}</span>
+      <span><strong>Pre-apply hash:</strong> <code>${escapeHtml(item.pre_apply_hash || item.backup_record_status || "unavailable")}</code></span>
+      <span><strong>Current hash:</strong> <code>${escapeHtml(item.current_hash || "missing")}</code></span>
+      ${item.blockers?.length ? `<span><strong>Blockers:</strong> ${escapeHtml(item.blockers.join(", "))}</span>` : ""}
+    </div>
+  `).join("");
+  body.innerHTML = `
+    <div class="result-card ${data?.status === "ready" ? "ready" : "blocked"}">
+      <div class="result-header">
+        <div>
+          <strong>LegalPDF Restore Plan</strong>
+          <p>${escapeHtml(data?.message || "Read-only restore preview.")}</p>
+        </div>
+        <span class="status-chip ${statusChipClass(data?.status || "ready")}">${escapeHtml(data?.status || "ready")}</span>
+      </div>
+      <div class="data-list">
+        <div class="data-item">
+          <strong>${escapeHtml(data?.report?.report_id || "Apply report")}</strong>
+          <span><strong>Restore allowed:</strong> ${data?.restore_allowed ? "yes" : "no - preview only"}</span>
+          <span><strong>Backup available:</strong> ${data?.backup_available ? "yes" : "no"}</span>
+          <span><strong>Blockers:</strong> ${escapeHtml(data?.blocking_count ?? 0)}</span>
+        </div>
+        ${profileRows || `<div class="data-item"><strong>Profiles</strong><span>No profile restore rows.</span></div>`}
+        ${courtRows || `<div class="data-item"><strong>Court emails</strong><span>No court-email restore rows.</span></div>`}
+      </div>
+      <p class="field-hint">This restore plan is read-only. It shows hashes and intended actions only; no local files were changed and no LegalPDF data was touched.</p>
+    </div>
+  `;
+}
+
 async function loadLegalPdfApplyHistory() {
   const data = await requestJson("/api/integration/apply-history");
   renderLegalPdfApplyHistory(data);
@@ -1703,6 +1756,13 @@ async function loadLegalPdfApplyDetail(reportId) {
   if (!reportId) throw new Error("Missing LegalPDF apply report id.");
   const data = await requestJson(`/api/integration/apply-detail?report_id=${encodeURIComponent(reportId)}`);
   renderLegalPdfApplyDetail(data);
+  return data;
+}
+
+async function loadLegalPdfRestorePlan(reportId) {
+  if (!reportId) throw new Error("Missing LegalPDF apply report id.");
+  const data = await requestJson(`/api/integration/apply-restore-plan?report_id=${encodeURIComponent(reportId)}`);
+  renderLegalPdfRestorePlan(data);
   return data;
 }
 
@@ -2508,13 +2568,23 @@ function bindActions() {
     }
   });
   $("#legalpdf-apply-history-result").addEventListener("click", async (event) => {
+    const restoreButton = event.target.closest("[data-legalpdf-restore-report-id]");
     const button = event.target.closest("[data-legalpdf-report-id]");
-    if (!button) return;
+    if (!button && !restoreButton) return;
     try {
+      if (restoreButton) {
+        const data = await loadLegalPdfRestorePlan(restoreButton.dataset.legalpdfRestoreReportId);
+        showAlert(`Loaded read-only restore plan for ${data.report?.report_id || "LegalPDF apply report"}.`, "recorded");
+        return;
+      }
       const data = await loadLegalPdfApplyDetail(button.dataset.legalpdfReportId);
       showAlert(`Loaded redacted compare detail for ${data.report?.report_id || "LegalPDF apply report"}.`, "recorded");
     } catch (error) {
-      renderLegalPdfApplyDetail({ status: "blocked", message: error.message, comparison: { profiles: [], court_emails: [] } });
+      if (restoreButton) {
+        renderLegalPdfRestorePlan({ status: "blocked", message: error.message, restore_plan: { profiles: [], court_emails: [] } });
+      } else {
+        renderLegalPdfApplyDetail({ status: "blocked", message: error.message, comparison: { profiles: [], court_emails: [] } });
+      }
       showAlert(error.message, "blocked");
     }
   });

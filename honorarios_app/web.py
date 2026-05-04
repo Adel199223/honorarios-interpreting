@@ -34,6 +34,7 @@ from .services import (
     google_photos_oauth_start,
     legalpdf_apply_report_detail,
     legalpdf_apply_history,
+    legalpdf_apply_restore_plan,
     load_app_reference,
     prepare_intakes,
     record_draft,
@@ -275,6 +276,21 @@ def create_app(**path_overrides: Any) -> FastAPI:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",
                 "message": str(exc),
+                "write_allowed": False,
+                "managed_data_changed": False,
+                "legalpdf_write_allowed": False,
+                "send_allowed": False,
+            })
+
+    @app.get("/api/integration/apply-restore-plan")
+    async def api_integration_apply_restore_plan(report_id: str) -> Any:
+        try:
+            return legalpdf_apply_restore_plan(paths, report_id=report_id)
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "restore_allowed": False,
                 "write_allowed": False,
                 "managed_data_changed": False,
                 "legalpdf_write_allowed": False,

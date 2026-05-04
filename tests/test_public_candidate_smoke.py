@@ -32,6 +32,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Build integration checklist",
             "Build adapter import plan",
             "LegalPDF Apply History",
+            "LegalPDF Restore Plan",
             "Refresh apply history",
             "Draft-only Gmail",
         ]:
@@ -129,6 +130,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(blocked_detail.json()["send_allowed"])
         self.assertFalse(blocked_detail.json()["write_allowed"])
         self.assertFalse(blocked_detail.json()["managed_data_changed"])
+        blocked_restore = client.get("/api/integration/apply-restore-plan", params={"report_id": "../private"})
+        self.assertEqual(blocked_restore.status_code, 400)
+        self.assertFalse(blocked_restore.json()["send_allowed"])
+        self.assertFalse(blocked_restore.json()["write_allowed"])
+        self.assertFalse(blocked_restore.json()["managed_data_changed"])
+        self.assertFalse(blocked_restore.json()["restore_allowed"])
         blocked_apply = client.post("/api/integration/apply-import-plan", json=payload)
         self.assertEqual(blocked_apply.status_code, 400)
         self.assertFalse(blocked_apply.json()["send_allowed"])
