@@ -38,10 +38,10 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Profile diff preview and local profile-change history so service profile edits are auditable without publishing private runtime logs.
 - Profile rollback from local profile-change history, with preview-first restore controls and stale-current-profile protection.
 - Local Backup panel and API for exporting/restoring service profiles, court emails, known destinations, duplicate records, Gmail draft lifecycle logs, and profile-change history, with preview-first import, automatic pre-restore backup, `/api/backup/status`, and latest-backup reminders before high-risk local edits.
-- LegalPDF Integration Preview panel plus `/api/integration/import-preview`, `/api/integration/import-report`, and `/api/integration/checklist`, which compare backup contents, optional profile mappings, and court-email differences with `write_allowed: false`, optionally export a private Markdown/JSON preview report under `output/integration-reports/`, and produce a read-only checklist of future adapter tasks.
+- LegalPDF Integration Preview panel plus `/api/integration/import-preview`, `/api/integration/import-report`, `/api/integration/checklist`, and `/api/integration/import-plan`, which compare backup contents, optional profile mappings, and court-email differences with `write_allowed: false`, optionally export a private Markdown/JSON preview report under `output/integration-reports/`, produce a read-only checklist of future adapter tasks, and build a read-only adapter import plan that blocks destructive profile or recipient changes before any future write-capable adapter exists.
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
-- Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist APIs, and the privacy gate.
+- Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist/import-plan APIs, and the privacy gate.
 - Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts.
 
 ## LegalPDF UI Alignment
@@ -71,7 +71,7 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Add an eventual adapter import prototype that consumes the checklist, still behind a privacy gate and explicit write confirmation.
+1. Add a write-confirmed adapter import prototype only after the read-only import plan proves its blockers and merge-policy labels are conservative enough.
 2. Add deeper optional Browser/IAB interaction checks that click through local upload, review drawer, batch/packet preparation, and draft-recording helper flows using disposable test state.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 

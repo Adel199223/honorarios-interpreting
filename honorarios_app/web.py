@@ -18,6 +18,7 @@ from .services import (
     AppPaths,
     ai_status_payload,
     backup_status_payload,
+    build_legalpdf_adapter_import_plan,
     build_profile_intake,
     build_legalpdf_integration_checklist,
     draft_lifecycle_for_intake,
@@ -220,6 +221,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
     async def api_integration_checklist(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return build_legalpdf_integration_checklist(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/integration/import-plan")
+    async def api_integration_import_plan(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return build_legalpdf_adapter_import_plan(payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

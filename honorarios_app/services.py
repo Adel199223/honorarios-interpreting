@@ -1615,6 +1615,112 @@ def _court_email_checklist_task(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+PROFILE_DEFAULT_REMOVAL_BLOCK_PREFIXES = (
+    "defaults.addressee",
+    "defaults.payment_entity",
+    "defaults.recipient_email",
+    "defaults.court_email_key",
+    "defaults.service_entity",
+    "defaults.service_entity_type",
+    "defaults.entities_differ",
+    "defaults.service_place",
+    "defaults.service_place_phrase",
+    "defaults.transport",
+    "defaults.closing_city",
+)
+
+
+def _change_path_is_required_profile_default(path: str) -> bool:
+    path = str(path or "").strip()
+    return any(path == prefix or path.startswith(f"{prefix}.") for prefix in PROFILE_DEFAULT_REMOVAL_BLOCK_PREFIXES)
+
+
+def _removed_required_profile_default_paths(row: dict[str, Any]) -> list[str]:
+    def removed_leaf_paths(path: str, value: Any) -> list[str]:
+        if isinstance(value, dict):
+            leaves: list[str] = []
+            for key, child in value.items():
+                leaves.extend(removed_leaf_paths(f"{path}.{key}", child))
+            return leaves or [path]
+        return [path]
+
+    paths: list[str] = []
+    for change in row.get("changes") or []:
+        if not isinstance(change, dict):
+            continue
+        path = str(change.get("path") or "")
+        if change.get("change") == "removed" and _change_path_is_required_profile_default(path):
+            paths.extend(removed_leaf_paths(path, change.get("before")))
+    return sorted(dict.fromkeys(paths))
+
+
+def _is_test_email(email: str) -> bool:
+    value = str(email or "").strip().casefold()
+    if not value or "@" not in value:
+        return False
+    domain = value.rsplit("@", 1)[-1]
+    return domain.endswith(".test") or domain in {"example.com", "example.org", "example.net"}
+
+
+def _profile_import_plan_task(row: dict[str, Any]) -> dict[str, Any]:
+    task = _profile_checklist_task(row)
+    action = str(row.get("action") or "").strip()
+    blocked_paths = _removed_required_profile_default_paths(row) if action == "update" else []
+    blockers: list[str] = []
+    if blocked_paths:
+        blockers.append("incoming update would remove local Honorários defaults")
+    if action == "update":
+        merge_policy = "preserve_local_required_fields"
+    elif action == "create":
+        merge_policy = "create_sanitized_profile_after_review"
+    else:
+        merge_policy = "no_data_change"
+    task.update({
+        "blocking": bool(blockers),
+        "blockers": blockers,
+        "blocked_paths": blocked_paths,
+        "merge_policy": merge_policy,
+        "apply_allowed": False,
+    })
+    return task
+
+
+def _court_email_import_plan_task(row: dict[str, Any]) -> dict[str, Any]:
+    task = _court_email_checklist_task(row)
+    action = str(row.get("action") or "").strip()
+    incoming_email = str(row.get("incoming_email") or "").strip()
+    current_email = str(row.get("current_email") or "").strip()
+    incoming_is_test_email = _is_test_email(incoming_email)
+    would_change_existing_real_email = (
+        action == "update"
+        and bool(current_email)
+        and bool(incoming_email)
+        and current_email.casefold() != incoming_email.casefold()
+        and not _is_test_email(current_email)
+    )
+    blockers: list[str] = []
+    if incoming_is_test_email:
+        blockers.append("incoming court email is a test/synthetic address")
+    if would_change_existing_real_email:
+        blockers.append("incoming court email would change an existing real recipient")
+    if action == "update":
+        merge_policy = "preserve_existing_recipient_unless_verified"
+    elif action == "create":
+        merge_policy = "add_alias_after_recipient_review"
+    else:
+        merge_policy = "no_data_change"
+    task.update({
+        "blocking": bool(blockers),
+        "blockers": blockers,
+        "requires_recipient_review": action in {"create", "update"} or bool(blockers),
+        "incoming_is_test_email": incoming_is_test_email,
+        "would_change_existing_real_email": would_change_existing_real_email,
+        "merge_policy": merge_policy,
+        "apply_allowed": False,
+    })
+    return task
+
+
 def legalpdf_integration_checklist_markdown(checklist: list[dict[str, Any]], preview: dict[str, Any]) -> str:
     rows = [
         [
@@ -1652,6 +1758,42 @@ def legalpdf_integration_checklist_markdown(checklist: list[dict[str, Any]], pre
     return "\n".join(lines)
 
 
+def legalpdf_adapter_import_plan_markdown(plan: dict[str, Any]) -> str:
+    tasks = plan.get("tasks") or []
+    rows = [
+        [
+            task.get("number", ""),
+            task.get("category", ""),
+            task.get("action", ""),
+            "yes" if task.get("blocking") else "no",
+            task.get("merge_policy", ""),
+            "; ".join(task.get("blockers") or []),
+        ]
+        for task in tasks
+    ]
+    lines = [
+        "# LegalPDF Adapter Import Plan",
+        "",
+        "Read-only future-adapter plan derived from the LegalPDF integration checklist.",
+        "",
+        "No local reference files were changed. No LegalPDF files were touched. Gmail draft behavior is not involved.",
+        "",
+        "## Safety",
+        "",
+        "- `write_allowed`: false",
+        "- `send_allowed`: false",
+        "- `managed_data_changed`: false",
+        "- `apply_endpoint_available`: false",
+        f"- Blocking tasks: {plan.get('blocking_count', 0)}",
+        "",
+        "## Tasks",
+        "",
+        _markdown_table(["#", "Category", "Action", "Blocking", "Merge policy", "Blockers"], rows),
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def build_legalpdf_integration_checklist(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     preview = preview_legalpdf_import(payload, paths)
     tasks: list[dict[str, Any]] = []
@@ -1673,6 +1815,33 @@ def build_legalpdf_integration_checklist(payload: dict[str, Any], paths: AppPath
         "send_allowed": False,
         "managed_data_changed": False,
     }
+
+
+def build_legalpdf_adapter_import_plan(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    preview = preview_legalpdf_import(payload, paths)
+    tasks: list[dict[str, Any]] = []
+    for row in preview.get("profile_mappings") or []:
+        if isinstance(row, dict):
+            tasks.append(_profile_import_plan_task(row))
+    for row in preview.get("court_email_differences") or []:
+        if isinstance(row, dict):
+            tasks.append(_court_email_import_plan_task(row))
+    for index, task in enumerate(tasks, start=1):
+        task["number"] = index
+    blocking_count = sum(1 for task in tasks if task.get("blocking"))
+    plan = {
+        "status": "plan_ready",
+        "message": "LegalPDF adapter import plan is ready. No local files were changed and no apply endpoint exists.",
+        "tasks": tasks,
+        "blocking_count": blocking_count,
+        "preview": preview,
+        "write_allowed": False,
+        "send_allowed": False,
+        "managed_data_changed": False,
+        "apply_endpoint_available": False,
+    }
+    plan["plan_markdown"] = legalpdf_adapter_import_plan_markdown(plan)
+    return plan
 
 
 def export_legalpdf_import_report(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:

@@ -1175,6 +1175,31 @@ function renderIntegrationChecklistRows(tasks) {
   }).join("");
 }
 
+function renderAdapterImportPlanRows(tasks) {
+  if (!tasks?.length) {
+    return `<div class="data-item"><strong>Adapter import plan</strong><span>No import-plan tasks were generated.</span></div>`;
+  }
+  return tasks.map((task) => {
+    const key = task.source_key && task.source_key !== task.target_key
+      ? `${task.source_key} -> ${task.target_key}`
+      : task.target_key || task.source_key || "record";
+    const blockers = task.blockers?.length
+      ? `<span>${escapeHtml(task.blockers.join("; "))}</span>`
+      : `<span>No blocking issue detected; still requires future review before any import.</span>`;
+    const chipClass = task.blocking ? "blocked" : statusChipClass(task.action || "review");
+    return `
+      <div class="data-item import-diff-row">
+        <strong>${escapeHtml(task.number || "")}. ${escapeHtml(task.title || "Review adapter import task")}</strong>
+        <span>
+          <span class="status-chip ${chipClass}">${task.blocking ? "blocked" : escapeHtml(task.action || "review")}</span>
+          ${escapeHtml(task.category || "integration")} · ${escapeHtml(key)} · ${escapeHtml(task.merge_policy || "review_first")}
+        </span>
+        ${blockers}
+      </div>
+    `;
+  }).join("");
+}
+
 function renderLegalPdfImportPreview(data, kind = "info") {
   const chip = $("#legalpdf-import-chip");
   const body = $("#legalpdf-import-preview-result");
@@ -1209,6 +1234,14 @@ function renderLegalPdfImportPreview(data, kind = "info") {
       ${data.checklist_markdown ? `<details class="inline-details"><summary>Checklist Markdown</summary><pre class="draft-args">${escapeHtml(data.checklist_markdown)}</pre></details>` : ""}
     `
     : "";
+  const adapterPlanRows = data?.adapter_plan_tasks
+    ? `
+      <h4>Adapter import plan</h4>
+      <div class="data-list">${renderAdapterImportPlanRows(data.adapter_plan_tasks)}</div>
+      ${data.blocking_count !== undefined ? `<div class="data-item"><strong>Blocking tasks</strong><span>${escapeHtml(data.blocking_count)}</span></div>` : ""}
+      ${data.plan_markdown ? `<details class="inline-details"><summary>Adapter Plan Markdown</summary><pre class="draft-args">${escapeHtml(data.plan_markdown)}</pre></details>` : ""}
+    `
+    : "";
   body.className = `result-card ${chipKind}`;
   body.innerHTML = `
     <div class="result-header">
@@ -1229,6 +1262,7 @@ function renderLegalPdfImportPreview(data, kind = "info") {
     <h4>Court-email differences</h4>
     <div class="data-list">${renderImportDiffRows(data?.court_email_differences || [], "Court emails")}</div>
     ${checklistRows}
+    ${adapterPlanRows}
   `;
 }
 
@@ -1279,6 +1313,26 @@ async function buildLegalPdfIntegrationChecklist() {
     message: data.message,
     checklist: data.checklist || [],
     checklist_markdown: data.checklist_markdown || "",
+  }, "ready");
+  return data;
+}
+
+async function buildLegalPdfAdapterImportPlan() {
+  const data = await requestJson("/api/integration/import-plan", {
+    method: "POST",
+    body: JSON.stringify({
+      backup_json: legalPdfImportJsonText(),
+      profile_mapping_text: $("#legalpdf-profile-mapping").value,
+    }),
+  });
+  state.legalPdfImportPreview = data.preview || null;
+  renderLegalPdfImportPreview({
+    ...(data.preview || {}),
+    status: data.status,
+    message: data.message,
+    adapter_plan_tasks: data.tasks || [],
+    blocking_count: data.blocking_count,
+    plan_markdown: data.plan_markdown || "",
   }, "ready");
   return data;
 }
@@ -1959,6 +2013,18 @@ function bindActions() {
     try {
       const data = await buildLegalPdfIntegrationChecklist();
       showAlert(`Integration checklist built with ${data.checklist.length} task${data.checklist.length === 1 ? "" : "s"}. No local files were changed.`, "recorded");
+    } catch (error) {
+      renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#build-legalpdf-adapter-import-plan").addEventListener("click", async () => {
+    try {
+      const data = await buildLegalPdfAdapterImportPlan();
+      const blockerText = data.blocking_count
+        ? ` ${data.blocking_count} blocker${data.blocking_count === 1 ? "" : "s"} require review.`
+        : " No blockers were detected.";
+      showAlert(`Adapter import plan built.${blockerText} No local files were changed.`, "recorded");
     } catch (error) {
       renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
       showAlert(error.message, "blocked");

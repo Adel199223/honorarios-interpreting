@@ -30,6 +30,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Packet draft recording helper",
             "LegalPDF Integration Preview",
             "Build integration checklist",
+            "Build adapter import plan",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
@@ -105,7 +106,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         preview = client.post("/api/integration/import-preview", json=payload)
         report = client.post("/api/integration/import-report", json=payload)
         checklist = client.post("/api/integration/checklist", json=payload)
-        for response in [preview, report, checklist]:
+        plan = client.post("/api/integration/import-plan", json=payload)
+        for response in [preview, report, checklist, plan]:
             self.assertEqual(response.status_code, 200, response.text)
             data = response.json()
             self.assertFalse(data["send_allowed"])
@@ -113,8 +115,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(report.json()["reference_write_allowed"])
         self.assertFalse(checklist.json()["write_allowed"])
         self.assertFalse(checklist.json()["managed_data_changed"])
+        self.assertFalse(plan.json()["write_allowed"])
+        self.assertFalse(plan.json()["managed_data_changed"])
+        self.assertFalse(plan.json()["apply_endpoint_available"])
         self.assertIn("Integration Checklist", checklist.json()["checklist_markdown"])
         self.assertIn("legalpdf_synthetic -> example_interpreting", checklist.json()["checklist_markdown"])
+        self.assertIn("Adapter Import Plan", plan.json()["plan_markdown"])
         self.assertEqual(profiles_path.read_text(encoding="utf-8"), profiles_before)
         self.assertEqual(court_path.read_text(encoding="utf-8"), courts_before)
 

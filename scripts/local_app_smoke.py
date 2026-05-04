@@ -21,6 +21,7 @@ LANDMARKS = [
     "Packet mode",
     "Packet draft recording helper",
     "LegalPDF Integration Preview",
+    "Build adapter import plan",
     "Draft-only Gmail",
 ]
 FORBIDDEN_HOMEPAGE_COPY = ["_send_email", "_send_draft", "Send email", "Send draft"]
