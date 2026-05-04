@@ -17,6 +17,7 @@ from scripts.public_release_gate import analyze_public_readiness
 from .services import (
     AppPaths,
     ai_status_payload,
+    apply_numbered_answers,
     backup_status_payload,
     build_legalpdf_adapter_import_plan,
     build_profile_intake,
@@ -245,6 +246,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
         if not isinstance(intake, dict):
             raise HTTPException(status_code=400, detail="Request must include an intake object.")
         return review_intake(intake, paths)
+
+    @app.post("/api/review/apply-answers")
+    async def api_review_apply_answers(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return apply_numbered_answers(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/drafts/active-check")
     async def api_drafts_active_check(payload: dict[str, Any]) -> dict[str, Any]:

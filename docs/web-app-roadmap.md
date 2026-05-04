@@ -19,6 +19,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Synthetic rotated/cropped legal-photo fixture coverage for Google Photos metadata dates, leading-zero case normalization, and review-only AI warnings.
 - Weak/scanned notification PDF page rendering for OpenAI recovery, including multi-page source evidence thumbnails and a safe `pdftoppm`-missing warning.
 - Numbered missing-information questions.
+- Review-drawer `Numbered answers` application, so compact replies like `1. Beja` update the active intake and rerun review without manual JSON edits.
 - Duplicate and active-draft warnings before generation.
 - Portuguese draft-text preview before PDF creation.
 - PDF plus Gmail `_create_draft` payload preparation through the existing preflight path.

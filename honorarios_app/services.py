@@ -48,7 +48,7 @@ from scripts.generate_pdf import (
     get_service_date_value,
     load_json,
 )
-from scripts.intake_questions import format_numbered_questions, missing_questions
+from scripts.intake_questions import format_numbered_questions, missing_questions, parse_numbered_answers
 from scripts.prepare_honorarios import (
     DEFAULT_DRAFT_LOG,
     DEFAULT_DRAFT_OUTPUT_DIR,
@@ -2531,6 +2531,148 @@ def question_payload(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for question in questions
     ]
+
+
+def set_nested_value(data: dict[str, Any], field_path: str, value: Any) -> None:
+    target = data
+    parts = field_path.split(".")
+    for part in parts[:-1]:
+        child = target.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            target[part] = child
+        target = child
+    target[parts[-1]] = value
+
+
+def coerce_answer_bool(value: str) -> bool:
+    text = fold_match_text(value)
+    if text in {"yes", "y", "sim", "true", "1", "on"}:
+        return True
+    if text in {"no", "n", "nao", "não", "false", "0", "off"}:
+        return False
+    raise IntakeError(f"Expected yes/no answer, got: {value}")
+
+
+def coerce_answer_int(value: str) -> int | str:
+    digits = re.sub(r"[^\d]", "", str(value or ""))
+    if digits:
+        return int(digits)
+    return str(value or "").strip()
+
+
+def answer_to_iso_date(value: str) -> str:
+    text = str(value or "").strip()
+    if _looks_like_iso_date(text):
+        return text
+    extracted = extract_first_date(text)
+    return extracted
+
+
+def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> None:
+    value = str(answer or "").strip()
+    if not value:
+        return
+
+    if field == "service_date_source":
+        folded = fold_match_text(value)
+        if folded in {"metadata", "photo", "foto", "image", "imagem"}:
+            metadata_date = str(intake.get("photo_metadata_date") or "").strip()
+            if not metadata_date:
+                raise IntakeError("Cannot use metadata date because photo_metadata_date is missing.")
+            intake["service_date"] = metadata_date
+            intake["service_date_source"] = "photo_metadata_user_confirmed"
+            return
+        if folded in {"document", "documento", "paper", "source", "texto"}:
+            intake["service_date_source"] = "document_text_user_confirmed"
+            return
+        explicit_date = answer_to_iso_date(value)
+        if explicit_date:
+            intake["service_date"] = explicit_date
+            intake["service_date_source"] = "user_confirmed_exception"
+            return
+        intake["service_date_source"] = value
+        return
+
+    if field == "service_date":
+        explicit_date = answer_to_iso_date(value)
+        if not explicit_date:
+            raise IntakeError("Service date answer must include a valid date.")
+        intake["service_date"] = explicit_date
+        intake["service_date_source"] = "user_confirmed"
+        return
+
+    if field == "claim_transport":
+        claim = coerce_answer_bool(value)
+        intake["claim_transport"] = claim
+        if not claim:
+            intake.pop("transport", None)
+        return
+
+    if field == "transport.km_one_way":
+        set_nested_value(intake, field, coerce_answer_int(value))
+        return
+
+    if field == "payment_entity":
+        intake["payment_entity"] = value
+        if not str(intake.get("addressee") or "").strip():
+            intake["addressee"] = _default_addressee(value)
+        return
+
+    if field == "service_place":
+        intake["service_place"] = value
+        if not str(intake.get("service_place_phrase") or "").strip():
+            source_context = combine_text_parts(str(intake.get("source_text") or ""), str(intake.get("service_entity") or ""))
+            if "policia judiciaria" in fold_match_text(source_context):
+                intake["service_place_phrase"] = f"em diligência da Polícia Judiciária realizada em {value}"
+            else:
+                intake["service_place_phrase"] = f"em diligência realizada em {value}"
+        return
+
+    if field == "service_entity":
+        intake["service_entity"] = value
+        if not str(intake.get("service_place") or "").strip():
+            intake["service_place"] = value
+        folded = fold_match_text(value)
+        if "gnr" in folded or "guarda nacional republicana" in folded:
+            intake["service_entity_type"] = "gnr"
+            intake["entities_differ"] = True
+        elif "psp" in folded or "policia de seguranca publica" in folded:
+            intake["service_entity_type"] = "psp"
+            intake["entities_differ"] = True
+        return
+
+    set_nested_value(intake, field, value)
+
+
+def apply_numbered_answers(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise IntakeError("Request must be a JSON object.")
+    intake = copy.deepcopy(payload.get("intake") or {})
+    if not isinstance(intake, dict):
+        raise IntakeError("Request must include an intake object.")
+    answer_text = str(payload.get("answers") or payload.get("answer_text") or "").strip()
+    if not answer_text:
+        raise IntakeError("Paste numbered answers before applying them.")
+
+    questions = missing_questions(intake)
+    mapped = parse_numbered_answers(answer_text, questions)
+    applied_fields: list[str] = []
+    for question in questions:
+        field = str(question.get("field") or "")
+        if field not in mapped:
+            continue
+        apply_answer_to_intake(intake, field, mapped[field])
+        applied_fields.append(field)
+
+    review = review_intake(intake, paths)
+    return {
+        **review,
+        "intake": intake,
+        "applied_fields": applied_fields,
+        "mapped_answers": mapped,
+        "send_allowed": False,
+    }
 
 
 def duplicate_payload(record: dict[str, Any] | None) -> dict[str, Any] | None:

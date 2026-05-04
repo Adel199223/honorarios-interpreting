@@ -1683,6 +1683,30 @@ async function reviewIntake() {
   applyReview(data);
 }
 
+async function applyNumberedAnswers() {
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+  }
+  mergeFormIntoCurrentIntake();
+  const answers = $("#numbered-answers").value.trim();
+  if (!answers) {
+    throw new Error("Paste numbered answers before applying them.");
+  }
+  const data = await requestJson("/api/review/apply-answers", {
+    method: "POST",
+    body: JSON.stringify({ intake: state.currentIntake, answers }),
+  });
+  state.currentIntake = data.intake || state.currentIntake;
+  fillFormFromIntake(state.currentIntake);
+  applyReview(data);
+  const applied = data.applied_fields?.length
+    ? data.applied_fields.join(", ")
+    : "no matching fields";
+  showAlert(`Applied numbered answers: ${applied}.`, data.status === "ready" ? "recorded" : "blocked");
+  openReviewDrawer();
+  return data;
+}
+
 async function activeCheck() {
   if (!state.currentIntake) {
     await buildIntakeFromProfile();
@@ -1954,6 +1978,7 @@ function resetReview() {
   renderBatchQueue();
   renderDraftLifecycle(null);
   $("#correction_reason").value = "";
+  $("#numbered-answers").value = "";
   $("#record_supersedes").value = "";
   $("#record_sent_date").value = "";
   $("#record_notes").value = "";
@@ -2257,6 +2282,14 @@ function bindActions() {
       setStatus("error", error.message);
       showAlert(error.message, "error");
       updateHomeReviewCard({ status: "error", message: error.message });
+    }
+  });
+  $("#apply-numbered-answers").addEventListener("click", async () => {
+    try {
+      await applyNumberedAnswers();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
     }
   });
   $("#prepare-intake").addEventListener("click", async () => {

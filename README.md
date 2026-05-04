@@ -39,6 +39,7 @@ The app supports the main workflow:
 - queue multiple reviewed requests and prepare a batch package through the same all-or-nothing preflight
 - enable Packet mode for a batch when several requerimentos should become one combined PDF attachment
 - show numbered missing-information questions
+- apply short numbered answers directly in the review drawer, then re-run the same review without rebuilding the intake manually
 - block translation/word-count requests
 - warn about duplicate `sent` or `drafted` case/date records
 - generate the PDF and Gmail `_create_draft` payload
@@ -214,6 +215,8 @@ You can reply with short numbered answers:
 1. 2026-05-02
 2. Beja
 ```
+
+In the browser app, paste the same compact format into the `Numbered answers` card in the review drawer, then click `Apply numbered answers`. The app updates the current intake, reruns duplicate/date/profile review, and still keeps PDF generation and Gmail draft preparation behind the normal review steps.
 
 ## Translation Requests Are Set Aside
 
