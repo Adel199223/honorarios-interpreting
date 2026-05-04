@@ -1621,6 +1621,7 @@ function renderLegalPdfApplyHistory(data) {
         ? report.applied_court_emails.map((item) => `${item.key || "court email"} (${item.action || "applied"})`).join(", ")
         : "No court-email changes";
       const preserved = report.applied_profiles?.flatMap((item) => item.preserved_required_default_paths || []).filter(Boolean) || [];
+      const reportId = report.report_id || pathBasename(report.report_json_file || "").replace(/\.json$/i, "");
       return `
         <div class="data-item import-diff-row">
           <strong>${escapeHtml(report.created_at || "LegalPDF import apply")}</strong>
@@ -1632,6 +1633,7 @@ function renderLegalPdfApplyHistory(data) {
           ${report.pre_apply_backup_file ? `<span><strong>Pre-apply backup:</strong> <code>${escapeHtml(report.pre_apply_backup_file)}</code></span>` : ""}
           ${report.report_json_file ? `<span><strong>JSON report:</strong> <code>${escapeHtml(report.report_json_file)}</code></span>` : ""}
           ${report.report_markdown_file ? `<span><strong>Markdown report:</strong> <code>${escapeHtml(report.report_markdown_file)}</code></span>` : ""}
+          ${reportId ? `<button type="button" class="mini-button" data-legalpdf-report-id="${escapeHtml(reportId)}">Details</button>` : ""}
         </div>
       `;
     }).join("")
@@ -1643,9 +1645,64 @@ function renderLegalPdfApplyHistory(data) {
   `;
 }
 
+function renderLegalPdfApplyDetail(data) {
+  const body = $("#legalpdf-apply-detail-body");
+  if (!body) return;
+  const comparison = data?.comparison || {};
+  const profileRows = (comparison.profiles || []).map((item) => `
+    <div class="data-item import-diff-row">
+      <strong>${escapeHtml(item.target_key || "profile")}</strong>
+      <span><span class="status-chip ${statusChipClass(item.current_status || "ready")}">${escapeHtml(item.current_status || "unknown")}</span> ${item.current_matches_applied ? "matches applied hash" : "does not match applied hash"}</span>
+      <span><strong>Action:</strong> ${escapeHtml(item.action || "")}</span>
+      ${item.preserved_required_default_paths?.length ? `<span><strong>Preserved local defaults:</strong> ${escapeHtml(item.preserved_required_default_paths.join(", "))}</span>` : ""}
+      <span><strong>Pre-apply hash:</strong> <code>${escapeHtml(item.pre_apply_hash || item.pre_apply_status || "unavailable")}</code></span>
+      <span><strong>Applied hash:</strong> <code>${escapeHtml(item.applied_hash || "missing")}</code></span>
+      <span><strong>Current hash:</strong> <code>${escapeHtml(item.current_hash || "missing")}</code></span>
+    </div>
+  `).join("");
+  const courtRows = (comparison.court_emails || []).map((item) => `
+    <div class="data-item import-diff-row">
+      <strong>${escapeHtml(item.key || "court email")}</strong>
+      <span><span class="status-chip ${statusChipClass(item.current_status || "ready")}">${escapeHtml(item.current_status || "unknown")}</span> ${item.current_matches_applied ? "matches applied hash" : "does not match applied hash"}</span>
+      <span><strong>Action:</strong> ${escapeHtml(item.action || "")}</span>
+      <span><strong>Pre-apply hash:</strong> <code>${escapeHtml(item.pre_apply_hash || item.pre_apply_status || "unavailable")}</code></span>
+      <span><strong>Applied hash:</strong> <code>${escapeHtml(item.applied_hash || "missing")}</code></span>
+      <span><strong>Current hash:</strong> <code>${escapeHtml(item.current_hash || "missing")}</code></span>
+    </div>
+  `).join("");
+  body.innerHTML = `
+    <div class="result-card ${data?.status === "ready" ? "ready" : "blocked"}">
+      <div class="result-header">
+        <div>
+          <strong>LegalPDF Apply Detail</strong>
+          <p>${escapeHtml(data?.message || "Read-only redacted comparison.")}</p>
+        </div>
+        <span class="status-chip ${statusChipClass(data?.status || "ready")}">${escapeHtml(data?.status || "ready")}</span>
+      </div>
+      <div class="data-list">
+        <div class="data-item">
+          <strong>${escapeHtml(data?.report?.report_id || "Apply report")}</strong>
+          <span><strong>Backup available:</strong> ${data?.backup_available ? "yes" : "no"}</span>
+          ${data?.report?.pre_apply_backup_file ? `<span><strong>Pre-apply backup:</strong> <code>${escapeHtml(data.report.pre_apply_backup_file)}</code></span>` : ""}
+        </div>
+        ${profileRows || `<div class="data-item"><strong>Profiles</strong><span>No profile comparison rows.</span></div>`}
+        ${courtRows || `<div class="data-item"><strong>Court emails</strong><span>No court-email comparison rows.</span></div>`}
+      </div>
+      <p class="field-hint">This detail view is read-only. It shows hashes and statuses only, not raw backup records or the full import plan.</p>
+    </div>
+  `;
+}
+
 async function loadLegalPdfApplyHistory() {
   const data = await requestJson("/api/integration/apply-history");
   renderLegalPdfApplyHistory(data);
+  return data;
+}
+
+async function loadLegalPdfApplyDetail(reportId) {
+  if (!reportId) throw new Error("Missing LegalPDF apply report id.");
+  const data = await requestJson(`/api/integration/apply-detail?report_id=${encodeURIComponent(reportId)}`);
+  renderLegalPdfApplyDetail(data);
   return data;
 }
 
@@ -2447,6 +2504,17 @@ function bindActions() {
       showAlert(`Loaded ${data.report_count || 0} LegalPDF apply report${Number(data.report_count || 0) === 1 ? "" : "s"}.`, "recorded");
     } catch (error) {
       renderLegalPdfApplyHistory({ reports: [], status: "blocked", message: error.message });
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#legalpdf-apply-history-result").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-legalpdf-report-id]");
+    if (!button) return;
+    try {
+      const data = await loadLegalPdfApplyDetail(button.dataset.legalpdfReportId);
+      showAlert(`Loaded redacted compare detail for ${data.report?.report_id || "LegalPDF apply report"}.`, "recorded");
+    } catch (error) {
+      renderLegalPdfApplyDetail({ status: "blocked", message: error.message, comparison: { profiles: [], court_emails: [] } });
       showAlert(error.message, "blocked");
     }
   });

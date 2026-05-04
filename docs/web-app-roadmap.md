@@ -46,7 +46,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Local Backup panel and API for exporting/restoring service profiles, court emails, known destinations, duplicate records, Gmail draft lifecycle logs, and profile-change history, with preview-first import, automatic pre-restore backup, `/api/backup/status`, and latest-backup reminders before high-risk local edits.
 - LegalPDF Integration Preview panel plus `/api/integration/import-preview`, `/api/integration/import-report`, `/api/integration/checklist`, and `/api/integration/import-plan`, which compare backup contents, optional profile mappings, and court-email differences with `write_allowed: false`, optionally export a private Markdown/JSON preview report under `output/integration-reports/`, produce a read-only checklist of future adapter tasks, and build a read-only adapter import plan that blocks destructive profile or recipient changes before applying anything.
 - Write-confirmed LegalPDF adapter apply prototype at `/api/integration/apply-import-plan`, limited to reviewed, non-blocked local Honorários reference changes, requiring `confirm_apply=true`, the exact phrase `APPLY LEGALPDF IMPORT PLAN`, an apply reason, a pre-apply backup, and a private apply report; it never writes to LegalPDF Translate and never invokes Gmail.
-- LegalPDF Apply History panel plus `/api/integration/apply-history`, which lists summary-only guarded apply reports, linked private backup/report paths, applied profile/email counts, and preserved local defaults without exposing the full import plan or source backup payload.
+- LegalPDF Apply History panel plus `/api/integration/apply-history` and `/api/integration/apply-detail`, which list summary-only guarded apply reports and load redacted hash/status comparisons for touched profile/email records without exposing the full import plan, source backup payload, or raw before/after reference values.
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
 - Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist/import-plan APIs, and the privacy gate.
@@ -86,7 +86,7 @@ It was published from `output/public-candidate` after the privacy and repository
 ## Next Stages
 
 1. Extend Browser/IAB smoke to file-upload evidence only if/when the Browser runtime exposes a safe local file-input API; until then, keep upload smoke on Python Playwright or API-level synthetic fixtures.
-2. Add guarded restore/compare tooling for a specific LegalPDF apply report if import rollback becomes frequent; keep the existing Apply History summary-only until that workflow is needed.
+2. Add guarded restore tooling for a specific LegalPDF apply report if import rollback becomes frequent; keep the existing Apply Detail comparison read-only until that workflow is needed.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

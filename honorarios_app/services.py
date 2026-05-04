@@ -98,6 +98,7 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNOREC
 ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
+LEGALPDF_APPLY_REPORT_ID_RE = re.compile(r"^legalpdf-import-apply-[A-Za-z0-9_.-]+$")
 AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
 
 
@@ -2791,6 +2792,7 @@ def _safe_apply_report_summary(path: Path) -> dict[str, Any] | None:
     ]
     markdown_path = path.with_suffix(".md")
     return {
+        "report_id": path.stem,
         "status": str(data.get("status") or ""),
         "created_at": str(data.get("created_at") or ""),
         "message": str(data.get("message") or ""),
@@ -2807,6 +2809,159 @@ def _safe_apply_report_summary(path: Path) -> dict[str, Any] | None:
         "applied_court_email_count": len(applied_court_emails),
         "applied_profiles": applied_profiles,
         "applied_court_emails": applied_court_emails,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def _resolve_legalpdf_apply_report_path(paths: AppPaths, report_id: str) -> Path:
+    value = str(report_id or "").strip()
+    if value.endswith(".json"):
+        value = value[:-5]
+    if not LEGALPDF_APPLY_REPORT_ID_RE.fullmatch(value):
+        raise IntakeError("LegalPDF apply report id is invalid.")
+    root = paths.integration_report_output_dir.resolve()
+    path = (root / f"{value}.json").resolve()
+    if path.parent != root:
+        raise IntakeError("LegalPDF apply report id is invalid.")
+    if not path.exists() or not path.is_file():
+        raise IntakeError("LegalPDF apply report was not found.")
+    return path
+
+
+def _safe_pre_apply_backup_datasets(report: dict[str, Any], paths: AppPaths) -> tuple[bool, dict[str, Any]]:
+    raw_path = str(report.get("pre_apply_backup_file") or "").strip()
+    if not raw_path:
+        return False, {}
+    backup_path = Path(raw_path)
+    try:
+        backup_root = paths.backup_output_dir.resolve()
+        resolved = backup_path.resolve()
+    except OSError:
+        return False, {}
+    if resolved.parent != backup_root or resolved.suffix.casefold() != ".json":
+        return False, {}
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False, {}
+    if not isinstance(data, dict) or data.get("kind") != BACKUP_KIND:
+        return False, {}
+    datasets = data.get("datasets")
+    if not isinstance(datasets, dict):
+        return False, {}
+    return True, datasets
+
+
+def _current_hash_status(current_record: Any, applied_hash: str) -> dict[str, Any]:
+    if current_record is None:
+        return {
+            "current_hash": "",
+            "current_matches_applied": False,
+            "changed_since_apply": bool(applied_hash),
+            "current_status": "missing",
+        }
+    current_hash = stable_json_hash(current_record)
+    matches = bool(applied_hash) and current_hash == applied_hash
+    if matches:
+        status = "matches_applied"
+    elif applied_hash:
+        status = "changed_after_apply"
+    else:
+        status = "present_without_applied_hash"
+    return {
+        "current_hash": current_hash,
+        "current_matches_applied": matches,
+        "changed_since_apply": bool(applied_hash) and not matches,
+        "current_status": status,
+    }
+
+
+def legalpdf_apply_report_detail(paths: AppPaths, *, report_id: str) -> dict[str, Any]:
+    path = _resolve_legalpdf_apply_report_path(paths, report_id)
+    try:
+        report_data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IntakeError("LegalPDF apply report could not be read.") from exc
+    summary = _safe_apply_report_summary(path)
+    if summary is None:
+        raise IntakeError("LegalPDF apply report is not an apply report.")
+
+    backup_available, backup_datasets = _safe_pre_apply_backup_datasets(report_data, paths)
+    backup_profiles = backup_datasets.get("service_profiles") if isinstance(backup_datasets.get("service_profiles"), dict) else {}
+    backup_courts = backup_datasets.get("court_emails") if isinstance(backup_datasets.get("court_emails"), list) else []
+    backup_courts_by_key = {
+        str(record.get("key") or "").strip(): record
+        for record in backup_courts
+        if isinstance(record, dict) and str(record.get("key") or "").strip()
+    }
+    current_profiles = load_profiles(paths.service_profiles)
+    current_courts = read_json_list(paths.court_emails)
+    current_courts_by_key = {
+        str(record.get("key") or "").strip(): record
+        for record in current_courts
+        if str(record.get("key") or "").strip()
+    }
+
+    profile_rows: list[dict[str, Any]] = []
+    for item in report_data.get("applied_profiles") or []:
+        if not isinstance(item, dict):
+            continue
+        target_key = str(item.get("target_key") or "").strip()
+        applied_hash = str(item.get("applied_hash") or "").strip()
+        row = {
+            "source_key": str(item.get("source_key") or "").strip(),
+            "target_key": target_key,
+            "action": str(item.get("action") or "").strip(),
+            "incoming_hash": str(item.get("incoming_hash") or "").strip(),
+            "applied_hash": applied_hash,
+            "preserved_required_default_paths": [
+                str(value)
+                for value in (item.get("preserved_required_default_paths") or [])
+                if str(value or "").strip()
+            ],
+            "pre_apply_hash": stable_json_hash(backup_profiles[target_key])
+            if backup_available and isinstance(backup_profiles, dict) and target_key in backup_profiles
+            else "",
+            "pre_apply_status": "present"
+            if backup_available and isinstance(backup_profiles, dict) and target_key in backup_profiles
+            else ("missing" if backup_available else "unavailable"),
+        }
+        row.update(_current_hash_status(current_profiles.get(target_key), applied_hash))
+        profile_rows.append(row)
+
+    court_rows: list[dict[str, Any]] = []
+    for item in report_data.get("applied_court_emails") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        applied_hash = str(item.get("applied_hash") or "").strip()
+        row = {
+            "key": key,
+            "action": str(item.get("action") or "").strip(),
+            "incoming_hash": str(item.get("incoming_hash") or "").strip(),
+            "applied_hash": applied_hash,
+            "pre_apply_hash": stable_json_hash(backup_courts_by_key[key])
+            if backup_available and key in backup_courts_by_key
+            else "",
+            "pre_apply_status": "present" if backup_available and key in backup_courts_by_key else ("missing" if backup_available else "unavailable"),
+        }
+        row.update(_current_hash_status(current_courts_by_key.get(key), applied_hash))
+        court_rows.append(row)
+
+    return {
+        "status": "ready",
+        "message": "LegalPDF apply report detail loaded. This is a read-only redacted comparison.",
+        "report": summary,
+        "backup_available": backup_available,
+        "comparison": {
+            "profile_count": len(profile_rows),
+            "court_email_count": len(court_rows),
+            "profiles": profile_rows,
+            "court_emails": court_rows,
+        },
+        "write_allowed": False,
+        "managed_data_changed": False,
         "legalpdf_write_allowed": False,
         "send_allowed": False,
     }
