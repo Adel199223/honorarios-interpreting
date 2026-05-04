@@ -71,6 +71,7 @@ DEFAULT_INTAKE_OUTPUT_DIR = ROOT / "output" / "intakes"
 DEFAULT_SOURCE_UPLOAD_DIR = ROOT / "output" / "source-uploads"
 DEFAULT_PACKET_OUTPUT_DIR = ROOT / "output" / "packets"
 DEFAULT_BACKUP_OUTPUT_DIR = ROOT / "output" / "backups"
+DEFAULT_INTEGRATION_REPORT_OUTPUT_DIR = ROOT / "output" / "integration-reports"
 DEFAULT_KNOWN_DESTINATIONS = ROOT / "data" / "known-destinations.json"
 DEFAULT_PROFILE_CHANGE_LOG = ROOT / "data" / "profile-change-log.json"
 GOOGLE_PHOTOS_PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
@@ -118,6 +119,7 @@ class AppPaths:
     source_upload_dir: Path = DEFAULT_SOURCE_UPLOAD_DIR
     packet_output_dir: Path = DEFAULT_PACKET_OUTPUT_DIR
     backup_output_dir: Path = DEFAULT_BACKUP_OUTPUT_DIR
+    integration_report_output_dir: Path = DEFAULT_INTEGRATION_REPORT_OUTPUT_DIR
     ai_config: Path = ROOT / "config" / "ai.local.json"
     google_photos_config: Path = ROOT / "config" / "google-photos.local.json"
 
@@ -1464,6 +1466,110 @@ def preview_legalpdf_import(payload: dict[str, Any], paths: AppPaths) -> dict[st
         "court_email_action_summary": _action_summary(court_rows),
         "mapping_count": len(profile_mappings),
         "write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
+    def cell(value: Any) -> str:
+        text = str(value if value is not None else "").replace("\n", " ").strip()
+        return text.replace("|", "\\|")
+
+    lines = [
+        "| " + " | ".join(cell(header) for header in headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(cell(value) for value in row) + " |")
+    return "\n".join(lines)
+
+
+def legalpdf_import_report_markdown(preview: dict[str, Any]) -> str:
+    profile_rows = preview.get("profile_mappings") or []
+    court_rows = preview.get("court_email_differences") or []
+    lines = [
+        "# LegalPDF Integration Preview Report",
+        "",
+        preview.get("message") or "Preview report.",
+        "",
+        "No local reference files were changed. This report is private runtime output.",
+        "",
+        "## Dataset Counts",
+        "",
+        _markdown_table(
+            ["Dataset", "Records"],
+            [[key, value] for key, value in sorted((preview.get("counts") or {}).items())],
+        ),
+        "",
+        "## Profile Mappings",
+        "",
+        _markdown_table(
+            ["Mapping", "Source", "Target", "Action", "Incoming description", "Changes"],
+            [
+                [
+                    f"{row.get('source_key', '')} -> {row.get('target_key', '')}",
+                    row.get("source_key", ""),
+                    row.get("target_key", ""),
+                    row.get("action", ""),
+                    row.get("incoming_description", ""),
+                    row.get("change_count", 0),
+                ]
+                for row in profile_rows
+            ],
+        ),
+        "",
+        "## Court Email Differences",
+        "",
+        _markdown_table(
+            ["Key", "Action", "Incoming email", "Current email", "Name", "Changes"],
+            [
+                [
+                    row.get("key", ""),
+                    row.get("action", ""),
+                    row.get("incoming_email", ""),
+                    row.get("current_email", ""),
+                    row.get("name", ""),
+                    row.get("change_count", 0),
+                ]
+                for row in court_rows
+            ],
+        ),
+        "",
+        "## Safety",
+        "",
+        "- `write_allowed`: false",
+        "- `send_allowed`: false",
+        "- Reference files, duplicate indexes, Gmail draft logs, and Gmail itself are untouched.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def export_legalpdf_import_report(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    preview = preview_legalpdf_import(payload, paths)
+    report_id = f"legalpdf-import-preview-{timestamp_slug()}-{secrets.token_hex(4)}"
+    paths.integration_report_output_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = paths.integration_report_output_dir / f"{report_id}.md"
+    json_path = paths.integration_report_output_dir / f"{report_id}.json"
+    report = {
+        "kind": "legalpdf_integration_preview_report",
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "preview": preview,
+        "managed_data_changed": False,
+        "reference_write_allowed": False,
+        "send_allowed": False,
+    }
+    markdown_path.write_text(legalpdf_import_report_markdown(preview), encoding="utf-8")
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {
+        "status": "report_exported",
+        "message": "LegalPDF integration preview report exported. No local reference files were changed.",
+        "preview": preview,
+        "preview_report_markdown_file": str(markdown_path),
+        "preview_report_json_file": str(json_path),
+        "managed_data_changed": False,
+        "reference_write_allowed": False,
         "send_allowed": False,
     }
 

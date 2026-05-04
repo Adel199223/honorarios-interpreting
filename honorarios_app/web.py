@@ -20,6 +20,7 @@ from .services import (
     backup_status_payload,
     build_profile_intake,
     draft_lifecycle_for_intake,
+    export_legalpdf_import_report,
     export_local_backup,
     google_photos_status_payload,
     google_photos_create_picker_session,
@@ -204,6 +205,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
     async def api_integration_import_preview(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return preview_legalpdf_import(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/integration/import-report")
+    async def api_integration_import_report(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return export_legalpdf_import_report(payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

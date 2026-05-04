@@ -38,7 +38,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Profile diff preview and local profile-change history so service profile edits are auditable without publishing private runtime logs.
 - Profile rollback from local profile-change history, with preview-first restore controls and stale-current-profile protection.
 - Local Backup panel and API for exporting/restoring service profiles, court emails, known destinations, duplicate records, Gmail draft lifecycle logs, and profile-change history, with preview-first import, automatic pre-restore backup, `/api/backup/status`, and latest-backup reminders before high-risk local edits.
-- LegalPDF Integration Preview panel and `/api/integration/import-preview`, which compare backup contents, optional profile mappings, and court-email differences with `write_allowed: false` before any future reintegration work.
+- LegalPDF Integration Preview panel plus `/api/integration/import-preview` and `/api/integration/import-report`, which compare backup contents, optional profile mappings, and court-email differences with `write_allowed: false`, then optionally export a private Markdown/JSON preview report under `output/integration-reports/`.
 - Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
 
@@ -69,8 +69,8 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Add deeper browser-flow tests for the Google Photos Picker, Batch Queue, Packet mode, packet-ordering, packet-inspector, packet-record-helper, and LegalPDF Integration Preview happy paths using mocked local endpoints.
-2. Add an optional export of the LegalPDF Integration Preview report to a local Markdown/JSON file for review before any future adapter work.
+1. Add deeper browser-flow tests for the Google Photos Picker, Batch Queue, Packet mode, packet-ordering, packet-inspector, packet-record-helper, and LegalPDF Integration Preview report export happy paths using mocked local endpoints.
+2. Add a read-only “integration checklist” view that turns a preview report into specific future adapter tasks without writing reference data.
 3. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

@@ -1167,6 +1167,12 @@ function renderLegalPdfImportPreview(data, kind = "info") {
   const datasets = data?.dataset_names?.length
     ? `<div class="data-item"><strong>Datasets</strong><span>${escapeHtml(data.dataset_names.join(", "))}</span></div>`
     : "";
+  const markdownFile = data?.preview_report_markdown_file
+    ? `<div class="data-item"><strong>Markdown report</strong><code>${escapeHtml(data.preview_report_markdown_file)}</code></div>`
+    : "";
+  const jsonFile = data?.preview_report_json_file
+    ? `<div class="data-item"><strong>JSON report</strong><code>${escapeHtml(data.preview_report_json_file)}</code></div>`
+    : "";
   const profileSummary = data?.profile_action_summary
     ? `<div class="data-item"><strong>Profile summary</strong><span>${escapeHtml(JSON.stringify(data.profile_action_summary))}</span></div>`
     : "";
@@ -1183,6 +1189,8 @@ function renderLegalPdfImportPreview(data, kind = "info") {
       <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>
     ${datasets}
+    ${markdownFile}
+    ${jsonFile}
     ${countRows}
     ${profileSummary}
     <h4>Profile mappings</h4>
@@ -1203,6 +1211,25 @@ async function previewLegalPdfImport() {
   });
   state.legalPdfImportPreview = data;
   renderLegalPdfImportPreview(data, "ready");
+  return data;
+}
+
+async function exportLegalPdfImportReport() {
+  const data = await requestJson("/api/integration/import-report", {
+    method: "POST",
+    body: JSON.stringify({
+      backup_json: legalPdfImportJsonText(),
+      profile_mapping_text: $("#legalpdf-profile-mapping").value,
+    }),
+  });
+  state.legalPdfImportPreview = data.preview || null;
+  renderLegalPdfImportPreview({
+    ...(data.preview || {}),
+    status: data.status,
+    message: data.message,
+    preview_report_markdown_file: data.preview_report_markdown_file,
+    preview_report_json_file: data.preview_report_json_file,
+  }, "ready");
   return data;
 }
 
@@ -1865,6 +1892,15 @@ function bindActions() {
       showAlert("LegalPDF import preview is ready. No local files were changed.", "recorded");
     } catch (error) {
       state.legalPdfImportPreview = null;
+      renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#export-legalpdf-import-report").addEventListener("click", async () => {
+    try {
+      const data = await exportLegalPdfImportReport();
+      showAlert(`LegalPDF preview report exported to ${data.preview_report_markdown_file}.`, "recorded");
+    } catch (error) {
       renderLegalPdfImportPreview({ status: "blocked", message: error.message }, "blocked");
       showAlert(error.message, "blocked");
     }
