@@ -132,6 +132,27 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This check deliberately stops before `Prepare batch package`, `Record draft`, and any Gmail action. It also verifies the `Next Safe Action` surface in the review drawer. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
 
+When working inside Codex with the Browser plugin, use the Browser/IAB runner instead of optional Python Playwright for the normal review/batch path. The Python smoke command can print the exact Node REPL handoff cell:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --json
+```
+
+Raw shell subprocesses cannot drive the Codex in-app Browser runtime, so that command reports a short blocker with `details.node_repl_cell`. Paste that cell into the Codex Node REPL Browser surface, or import the runner directly there:
+
+```javascript
+const { runBrowserIabSmoke } = await import('file:///<project-root>/scripts/browser_iab_smoke.mjs?run=' + Date.now());
+const result = await runBrowserIabSmoke({
+  baseUrl: 'http://127.0.0.1:8765',
+  profile: 'gnr_serpa_judicial',
+  caseNumber: '999/26.0IAB',
+  serviceDate: '2026-05-04'
+});
+nodeRepl.write(JSON.stringify(result, null, 2));
+```
+
+This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, confirms draft-only review evidence, and adds the reviewed request to the batch queue without preparing PDFs, recording drafts, or calling Gmail.
+
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 
 ```powershell
@@ -161,6 +182,28 @@ python scripts/isolated_app_smoke.py --browser-click-through --browser-correctio
 ```
 
 The isolated launcher never writes to the real `data/`, `output/`, or `tmp/` folders. Browser click-through still depends on optional Python Playwright; when it is unavailable, the smoke reports that as a tooling blocker rather than falling back to unsafe real-state checks.
+
+For Browser/IAB replacement checks, start an isolated synthetic app with a seeded active draft, then run the same importable IAB runner from the Codex Node REPL:
+
+```powershell
+python -m honorarios_app.web --host 127.0.0.1 --port 8769 --runtime-root <temp-runtime> --init-synthetic-runtime --seed-active-draft
+```
+
+```javascript
+const { runBrowserIabSmoke } = await import('file:///<project-root>/scripts/browser_iab_smoke.mjs?run=' + Date.now());
+const result = await runBrowserIabSmoke({
+  baseUrl: 'http://127.0.0.1:8769',
+  profile: 'example_interpreting',
+  caseNumber: '999/26.0REPL',
+  serviceDate: '2026-05-04',
+  correctionMode: true,
+  prepareReplacement: true,
+  correctionReason: 'synthetic replacement check'
+});
+nodeRepl.write(JSON.stringify(result, null, 2));
+```
+
+That version may create isolated PDF/payload artifacts under the temporary runtime, but it still never records drafts, changes draft statuses, or calls Gmail.
 
 For disposable or synthetic state, add `--interaction-checks` to exercise profile intake, active-draft checking, and packet-mode prepare in one pass:
 

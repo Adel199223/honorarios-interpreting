@@ -41,6 +41,7 @@ TEXT_SUFFIXES = {
     ".js",
     ".json",
     ".md",
+    ".mjs",
     ".py",
     ".toml",
     ".txt",
@@ -52,6 +53,7 @@ PRIVATE_PATTERNS = [
     ("personal_name", re.compile(r"\bAdel\s+Belghali\b", re.IGNORECASE)),
     ("personal_address", re.compile(r"Rua\s+Lu[íi]s\s+de\s+Cam[õo]es", re.IGNORECASE)),
     ("real_court_email", re.compile(r"\b[A-Z0-9._%+\-]+@tribunais\.org\.pt\b", re.IGNORECASE)),
+    ("private_user_path", re.compile(r"C:[\\/]+Users[\\/]+FA507[^\s\"'`<>]+", re.IGNORECASE)),
     ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b")),
     ("google_client_secret", re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{10,}\b")),
 ]

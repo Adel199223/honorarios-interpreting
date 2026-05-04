@@ -71,6 +71,7 @@ def run_isolated_app_smoke(
     browser_upload_photo: bool = False,
     browser_upload_pdf: bool = False,
     browser_correction_mode: bool = False,
+    browser_iab_click_through: bool = False,
     browser_prepare_replacement: bool = False,
     browser_prepare_packet: bool = False,
     browser_record_helper: bool = False,
@@ -98,7 +99,8 @@ def run_isolated_app_smoke(
             interaction_profile="example_interpreting",
             interaction_case_number=interaction_case_number,
             interaction_service_date=SYNTHETIC_SERVICE_DATE,
-            browser_click_through=browser_click_through,
+            browser_click_through=browser_click_through or browser_iab_click_through,
+            browser_iab_click_through=browser_iab_click_through,
             browser_upload_photo=browser_upload_photo,
             browser_upload_pdf=browser_upload_pdf,
             browser_correction_mode=browser_correction_mode,
@@ -133,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--interaction-checks", action="store_true", help="Run API interaction checks against the isolated app. May create isolated PDF/payload artifacts.")
     parser.add_argument("--browser-click-through", action="store_true", help="Run browser click-through against the isolated app when Python Playwright is available.")
+    parser.add_argument("--browser-iab-click-through", action="store_true", help="Run browser click-through through the Codex in-app Browser/IAB runner instead of optional Python Playwright.")
     parser.add_argument("--browser-upload-photo", action="store_true")
     parser.add_argument("--browser-upload-pdf", action="store_true")
     parser.add_argument("--browser-correction-mode", action="store_true")
@@ -149,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         interaction_checks=args.interaction_checks,
         browser_click_through=args.browser_click_through,
+        browser_iab_click_through=args.browser_iab_click_through,
         browser_upload_photo=args.browser_upload_photo,
         browser_upload_pdf=args.browser_upload_pdf,
         browser_correction_mode=args.browser_correction_mode,
