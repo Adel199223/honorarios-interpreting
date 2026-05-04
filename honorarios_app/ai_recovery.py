@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover - exercised when dependency is absent loca
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AI_CONFIG = ROOT / "config" / "ai.local.json"
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 CASE_NUMBER_RE = re.compile(r"\b0*\d+/\d{2}\.[A-Z0-9.]+\b", re.IGNORECASE)
 ISO_DATE_RE = re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")

@@ -103,7 +103,7 @@ OpenAI recovery is evidence-only. It may extract visible text, case/date/place c
 ```json
 {
   "openai_api_key": "sk-...",
-  "model": "gpt-4o-mini"
+  "model": "gpt-5.4-mini"
 }
 ```
 
