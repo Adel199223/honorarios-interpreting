@@ -23,6 +23,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Start Interpretation Request",
             "Reset workspace",
             "Drop or paste a notification PDF, photo, or screenshot here",
+            "Supporting proof / declarations",
+            "Add supporting attachments",
             "Review Interpretation Request",
             "Google Photos selected-photo import",
             "Open Google Photos Picker",

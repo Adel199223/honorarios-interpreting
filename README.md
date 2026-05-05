@@ -311,7 +311,7 @@ After a PDF is ready, the project prepares a Gmail draft payload. It does not se
 - Draft payloads also include `gmail_create_draft_args`, which can be passed directly to Gmail `_create_draft`. Its `attachment_files` value is always an array, even for a single PDF.
 - Subject is always `Requerimento de honorários`.
 - Body is stored in `config/email.json`.
-- If supporting proof such as a `declaração` should be attached, add it to `additional_attachment_files` in the intake. If the email must mention it, set `email_body` for that intake. Pass `attachment_files` to `_create_draft` as an array of absolute local file paths.
+- If supporting proof such as a `declaração` should be attached, add it to `additional_attachment_files` in the intake. In the browser app, use `Supporting proof / declarations` after source recovery; it stores only PDF/image proof files, adds them to the active intake, and sets an `email_body` that mentions the documento(s) comprovativo(s). Pass `attachment_files` to `_create_draft` as an array of absolute local file paths.
 - When the user wants several source files bundled together, create a combined packet PDF and attach that PDF.
 - Future assistant sessions must use Gmail `_create_draft` only and must not use send tools unless you explicitly ask after review.
 

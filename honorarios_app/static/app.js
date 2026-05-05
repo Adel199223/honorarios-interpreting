@@ -253,6 +253,7 @@ function fillFormFromIntake(intake) {
       input.value = value;
     }
   });
+  renderSupportingAttachmentList();
 }
 
 function mergeFormIntoCurrentIntake() {
@@ -371,10 +372,104 @@ function pathBasename(value) {
   return text.split(/[\\/]/).filter(Boolean).pop() || text;
 }
 
+const SUPPORTING_ATTACHMENT_EMAIL_BODY = `Bom dia,
+
+Venho por este meio, requerer o pagamento dos honorários devidos, em virtude de ter sido nomeado intérprete.
+
+Poderão encontrar o requerimento de honorários e o(s) documento(s) comprovativo(s) em anexo.
+
+Melhores cumprimentos,
+
+Example Interpreter`;
+
 function normalizeAttachmentList(value) {
   if (!value) return [];
   const values = Array.isArray(value) ? value : [value];
   return values.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function ensureSupportingAttachmentEmailBody(intake) {
+  if (!intake) return intake;
+  const attachments = normalizeAttachmentList(intake.additional_attachment_files);
+  if (attachments.length && !String(intake.email_body || "").trim()) {
+    intake.email_body = SUPPORTING_ATTACHMENT_EMAIL_BODY;
+  }
+  return intake;
+}
+
+function mergeSupportingAttachmentsIntoIntake(intake, attachments = [], emailBody = "") {
+  const target = { ...(intake || {}) };
+  const existing = normalizeAttachmentList(target.additional_attachment_files);
+  const incoming = normalizeAttachmentList(attachments);
+  const merged = Array.from(new Set([...existing, ...incoming]));
+  if (merged.length) {
+    target.additional_attachment_files = merged;
+  }
+  if (emailBody && !String(target.email_body || "").trim()) {
+    target.email_body = emailBody;
+  }
+  return ensureSupportingAttachmentEmailBody(target);
+}
+
+function renderSupportingAttachmentList() {
+  const list = $("#supporting-attachment-list");
+  if (!list) return;
+  const attachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
+  if (!attachments.length) {
+    list.className = "supporting-attachment-list is-empty";
+    list.textContent = "No supporting attachments yet.";
+    return;
+  }
+  list.className = "supporting-attachment-list";
+  list.innerHTML = attachments.map((file) => `
+    <div class="supporting-attachment-item">
+      <span>${escapeHtml(pathBasename(file))}</span>
+      <code>${escapeHtml(file)}</code>
+    </div>
+  `).join("");
+}
+
+function addSupportingAttachmentToIntake(attachment) {
+  const storedPath = String(attachment?.stored_path || "").trim();
+  if (!storedPath) {
+    throw new Error("Supporting attachment upload did not return a stored file path.");
+  }
+  if (!state.currentIntake) {
+    state.currentIntake = removeEmpty(collectProfilePayload()) || {};
+  }
+  state.currentIntake = mergeSupportingAttachmentsIntoIntake(state.currentIntake, [storedPath]);
+  renderSupportingAttachmentList();
+  syncActionGates();
+  return state.currentIntake;
+}
+
+async function uploadSupportingAttachments(files) {
+  const attachmentFiles = Array.from(files || []).filter(Boolean);
+  if (!attachmentFiles.length) {
+    throw new Error("Choose at least one supporting declaration or proof file first.");
+  }
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+  }
+  const uploaded = [];
+  for (const file of attachmentFiles) {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch("/api/attachments/upload", {
+      method: "POST",
+      body: form,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || data.message || `Supporting attachment upload failed: ${response.status}`);
+    }
+    addSupportingAttachmentToIntake(data.attachment);
+    uploaded.push(data);
+  }
+  const count = uploaded.length;
+  setDropStatus(`Added ${count} supporting attachment${count === 1 ? "" : "s"} for the draft payload.`, "ready");
+  showAlert(`Added ${count} supporting attachment${count === 1 ? "" : "s"}. The email body now mentions the supporting document(s).`, "recorded");
+  return uploaded;
 }
 
 function supportingAttachmentFiles(record) {
@@ -1170,6 +1265,8 @@ async function uploadSource(sourceKind, options = {}) {
     form.append("visible_metadata_text", googlePhotosMetadata);
   }
   form.append("ai_recovery", $("#ai_recovery_mode").value || "auto");
+  const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
+  const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
 
   const response = await fetch("/api/sources/upload", {
     method: "POST",
@@ -1179,7 +1276,10 @@ async function uploadSource(sourceKind, options = {}) {
   if (!response.ok) {
     throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
   }
-  state.currentIntake = data.candidate_intake;
+  state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.candidate_intake, existingAttachments, existingEmailBody);
+  if (data.review?.intake) {
+    data.review.intake = state.currentIntake;
+  }
   state.lastProfileProposal = data.profile_proposal || null;
   fillFormFromIntake(state.currentIntake);
   renderSourceEvidence(data);
@@ -1213,13 +1313,17 @@ function bindSourceDropZone() {
   dropZone.addEventListener("drop", async (event) => {
     stop(event);
     dropZone.classList.remove("is-dragover");
-    const file = event.dataTransfer.files?.[0];
+    const files = Array.from(event.dataTransfer.files || []);
+    const file = files[0];
     if (!file) {
       setDropStatus("No local file was dropped.", "blocked");
       return;
     }
     try {
       await recoverLocalSourceFile(file, "dropped source");
+      if (files.length > 1) {
+        await uploadSupportingAttachments(files.slice(1));
+      }
     } catch (error) {
       setDropStatus(error.message, "blocked");
       setStatus("blocked", error.message);
@@ -2484,11 +2588,14 @@ async function buildIntakeFromProfile() {
   if (!payload.profile) {
     payload.profile = "court_mp_generic";
   }
+  const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
+  const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
   const data = await requestJson("/api/intake/from-profile", {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  state.currentIntake = data.intake;
+  state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody);
+  fillFormFromIntake(state.currentIntake);
   applyReview(data.review);
 }
 
@@ -2838,9 +2945,11 @@ function resetReview({ closeDrawer = true } = {}) {
   $("#notification-upload-form").reset();
   $("#photo-upload-form").reset();
   $("#google-photos-upload-form").reset();
+  $("#supporting-attachment-form").reset();
   $("#prepare-results").innerHTML = "";
   renderSourceEvidence(null);
   renderAiRecovery(null);
+  renderSupportingAttachmentList();
   renderGooglePhotosPickerResult(null);
   renderBatchQueue();
   renderDraftLifecycle(null);
@@ -3224,6 +3333,16 @@ function bindActions() {
     event.preventDefault();
     try {
       await uploadSource("google_photos");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  $("#supporting-attachment-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await uploadSupportingAttachments($("#supporting-attachment-file").files);
     } catch (error) {
       setStatus("blocked", error.message);
       showAlert(error.message, "blocked");

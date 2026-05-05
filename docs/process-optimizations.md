@@ -23,6 +23,8 @@ When the Review drawer shows missing numbered questions, paste compact answers i
 
 Use the intake drop zone for local screenshots/photos/PDFs when you want the fastest path from a saved or copied source file to Source Evidence. Dropped or pasted files are only classified as notification PDF or photo/screenshot and sent through the existing `/api/sources/upload` review path; dropping or pasting a file never prepares a PDF, records a draft, or calls Gmail by itself.
 
+Use `Supporting proof / declarations` when a job has a declaration or proof image/PDF that should travel with the final Gmail draft. The app validates those files as PDF/image only, stores them under the local source artifact root, adds their absolute paths to `additional_attachment_files`, and inserts the custom email body that mentions the documento(s) comprovativo(s). Multi-file drag/drop treats the first file as the source and any extra files as supporting proof, still without preparing PDFs, recording drafts, or calling Gmail.
+
 Use the `Next Safe Action` card as the daily workflow guide. It is computed from the same review/preflight responses as the backend, so it should say whether to answer numbered questions, set aside a translation source, stop for a duplicate, enter correction mode, prepare the PDF, or review Gmail `_create_draft` arguments before recording IDs.
 
 Use the left-sidebar `Reset workspace` button when you want to clear the visible browser state and start fresh. It resets the current intake form, upload forms, prepared payload preview, correction fields, draft lifecycle card, and Batch Queue. It does not delete generated PDFs, draft payload files, duplicate-index records, draft-log records, reference data, or Gmail drafts.

@@ -507,6 +507,46 @@ textarea {
   gap: 10px;
 }
 
+.supporting-attachment-form {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid rgba(117, 218, 255, 0.14);
+  border-radius: var(--radius-sm);
+  background: rgba(3, 20, 34, 0.48);
+}
+
+.supporting-attachment-list {
+  display: grid;
+  gap: 8px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid rgba(117, 218, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(2, 10, 18, 0.38);
+  color: var(--muted);
+}
+
+.supporting-attachment-list.is-empty {
+  align-items: center;
+}
+
+.supporting-attachment-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.supporting-attachment-item span,
+.supporting-attachment-item code {
+  overflow-wrap: anywhere;
+}
+
+.supporting-attachment-item code {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .google-photos-form-header {
   display: flex;
   align-items: center;

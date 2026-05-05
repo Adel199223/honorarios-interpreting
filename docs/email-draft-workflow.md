@@ -92,7 +92,7 @@ Draft payloads include a connector-ready object:
 
 Pass that object to Gmail `_create_draft`. The `attachment_files` value is always an array, even for one PDF.
 
-When the user asks to include supporting proof, such as a `declaração`, add the file path to `additional_attachment_files` in the intake. The generated honorários PDF remains the primary attachment, and the draft payload must include all files in `attachment_file_list`. Use `email_body` in the intake only when that specific draft needs wording different from the default body, for example to mention that both the honorários request and declaration are attached. Pass `attachment_files` to Gmail `_create_draft` as an array of absolute local file paths.
+When the user asks to include supporting proof, such as a `declaração`, add the file path to `additional_attachment_files` in the intake. The generated honorários PDF remains the primary attachment, and the draft payload must include all files in `attachment_file_list`. Use `email_body` in the intake only when that specific draft needs wording different from the default body, for example to mention that both the honorários request and declaration are attached. The browser app's `Supporting proof / declarations` control does this for local PDF/image proof files automatically and uses wording that mentions the documento(s) comprovativo(s). Pass `attachment_files` to Gmail `_create_draft` as an array of absolute local file paths.
 
 If the user wants several source files packaged together, build a combined packet PDF with `scripts/build_packet_pdf.py`. Use the packet PDF as the only `attachment_files` item and mention every included requerimento/declaração in `email_body`.
 

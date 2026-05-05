@@ -1495,6 +1495,52 @@ def validate_upload(source_kind: str, filename: str, content_type: str, content:
     return suffix or mimetypes.guess_extension(content_type) or ".jpg"
 
 
+def infer_supporting_attachment_kind(filename: str, content_type: str, content: bytes) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    normalized_content_type = (content_type or "").lower()
+    if suffix in PDF_SUFFIXES or normalized_content_type == "application/pdf" or content.lstrip().startswith(b"%PDF"):
+        return "notification_pdf"
+    if suffix in IMAGE_SUFFIXES or normalized_content_type.startswith("image/"):
+        return "photo"
+    raise IntakeError("Supporting attachment must be a PDF or image file.")
+
+
+def store_supporting_attachment_upload(
+    *,
+    filename: str,
+    content_type: str,
+    content: bytes,
+    paths: AppPaths,
+) -> dict[str, Any]:
+    attachment_kind = infer_supporting_attachment_kind(filename, content_type or "", content)
+    suffix = validate_upload(attachment_kind, filename, content_type or "", content)
+    digest = sha256_hex(content)
+    safe_name = safe_upload_filename(filename or "supporting-attachment")
+    stored_filename = f"{timestamp_slug()}_{digest[:12]}_{safe_name}"
+    if not Path(stored_filename).suffix:
+        stored_filename = f"{stored_filename}{suffix}"
+    stored_path = paths.source_upload_dir / "attachments" / stored_filename
+    stored_path.parent.mkdir(parents=True, exist_ok=True)
+    stored_path.write_bytes(content)
+
+    attachment = {
+        "source_kind": "supporting_attachment",
+        "attachment_kind": attachment_kind,
+        "filename": filename or safe_name,
+        "stored_path": str(stored_path.resolve()),
+        "artifact_url": artifact_url_for_path(stored_path, paths),
+        "sha256": digest,
+        "size": len(content),
+        "content_type": content_type or "",
+    }
+    return {
+        "status": "uploaded",
+        "attachment": attachment,
+        "message": "Supporting attachment uploaded for review. No PDF, Gmail draft, or local draft record was created.",
+        "send_allowed": False,
+    }
+
+
 def artifact_root(root_key: str, paths: AppPaths) -> Path:
     roots = {
         "sources": paths.source_upload_dir,

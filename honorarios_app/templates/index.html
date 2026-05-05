@@ -199,6 +199,21 @@
                   <div class="result-card compact-result hidden" id="google-photos-picker-result"></div>
                 </form>
               </div>
+
+              <form class="upload-form supporting-attachment-form" id="supporting-attachment-form">
+                <div class="result-header">
+                  <div>
+                    <strong>Supporting proof / declarations</strong>
+                    <p>Add declarations or other proof files after the source is recovered. They stay as draft attachments and never create PDFs or Gmail actions by themselves.</p>
+                  </div>
+                  <span class="status-chip info">Optional</span>
+                </div>
+                <input id="supporting-attachment-file" name="file" type="file" multiple accept="application/pdf,image/*,.pdf">
+                <div class="button-row compact-button-row">
+                  <button type="submit">Add supporting attachments</button>
+                </div>
+                <div class="supporting-attachment-list" id="supporting-attachment-list">No supporting attachments yet.</div>
+              </form>
             </section>
 
             <section class="panel workspace-panel workspace-panel-interpretation" id="interpretation-seed-panel">

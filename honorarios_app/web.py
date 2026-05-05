@@ -50,6 +50,7 @@ from .services import (
     preview_profile_rollback,
     rollback_service_profile,
     restore_local_backup,
+    store_supporting_attachment_upload,
     upsert_court_email,
     upsert_known_destination,
     upsert_service_profile,
@@ -377,6 +378,21 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 profile_name=profile,
                 visible_text=visible_text or visible_metadata_text,
                 ai_recovery_mode=ai_recovery,
+                paths=paths,
+            )
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/attachments/upload")
+    async def api_attachment_upload(
+        file: UploadFile = File(...),
+    ) -> dict[str, Any]:
+        try:
+            content = await file.read()
+            return store_supporting_attachment_upload(
+                filename=file.filename or "supporting-attachment",
+                content_type=file.content_type or "",
+                content=content,
                 paths=paths,
             )
         except (IntakeError, OSError, ValueError) as exc:
