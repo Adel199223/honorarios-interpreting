@@ -78,6 +78,15 @@ AI_RECOVERY_RESPONSE_FORMAT = {
         },
     }
 }
+HONORARIOS_PATTERN_EXAMPLES = """
+Pattern examples for this honorários workflow:
+- Polícia Judiciária often uses a local host building. Extract Polícia Judiciária as service_entity, but also extract the host building and city as service_place, e.g. Posto da GNR de Ferreira do Alentejo or Posto da GNR de Beja. Inspector names are optional; the host building is the important physical-place clue when visible.
+- GNR sources can name a command or detachment in one city while the actual service happened in another locality. If visible metadata or body text indicates Beringel, use Beringel as service_place/locality and do not replace it with Beja only because the header says Comando Territorial de Beja.
+- Tribunal do Trabalho de Beja / Juízo do Trabalho de Beja sources are labor-court services. Extract that court as payment_entity and service_place when no separate police/GNR/PSP service place appears.
+- Polícia Judiciária victim-accompaniment can happen at a medical-legal office. Extract Gabinete Médico-Legal de Beja and Hospital José Joaquim Fernandes when visible as the physical service place.
+- Translation or word-count requests are not interpreting honorários. If phrases such as número de palavras, documento traduzido, contém ... palavras, tradução, or tradutor appear, put the exact visible phrase in translation_indicators.
+- Do not infer kilometers, IBAN, Gmail recipients, or payment defaults. Only extract visible source facts.
+""".strip()
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 CASE_NUMBER_RE = re.compile(r"\b0*\d+/\d{2}\.[A-Z0-9.]+\b", re.IGNORECASE)
 ISO_DATE_RE = re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")
@@ -245,6 +254,7 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         "}\n\n"
         "Honorários rules: physical service place matters. For Polícia Judiciária, extract the host building and city "
         "such as a GNR post, hospital, or medical-legal office if visible. Do not infer kilometers. "
+        f"{HONORARIOS_PATTERN_EXAMPLES}\n\n"
         f"Source kind: {source_kind}.{metadata_hint}{deterministic_hint}"
     )
 

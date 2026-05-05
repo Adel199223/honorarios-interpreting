@@ -105,6 +105,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             '"service_entity_type"',
             '"additionalProperties": False',
             "text=AI_RECOVERY_RESPONSE_FORMAT",
+            "Pattern examples",
+            "Posto da GNR de Ferreira do Alentejo",
+            "Posto da GNR de Beja",
+            "Beringel",
+            "Tribunal do Trabalho de Beja",
+            "Gabinete Médico-Legal de Beja",
+            "Hospital José Joaquim Fernandes",
+            "número de palavras",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, ai_recovery)
