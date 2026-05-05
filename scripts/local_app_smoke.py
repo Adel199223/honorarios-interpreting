@@ -587,6 +587,59 @@ def _run_source_upload_checks(
     return checks
 
 
+def _run_supporting_attachment_checks(
+    base: str,
+    *,
+    post_multipart: PostMultipartFetcher,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    pdf_bytes = _synthetic_notification_pdf("999/26.0SMOKE", "2026-05-04")
+    try:
+        response = post_multipart(
+            _url(base, "/api/attachments/upload"),
+            {},
+            "synthetic-declaracao.pdf",
+            pdf_bytes,
+            "application/pdf",
+        )
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        checks.append(_check("supporting_attachment_upload_evidence", False, f"Could not upload synthetic supporting attachment: {exc}"))
+        return checks
+
+    checks.append(_send_allowed_check(
+        "supporting_attachment_upload_send_allowed",
+        response,
+        "Synthetic supporting attachment upload keeps send_allowed false.",
+    ))
+    attachment = response.get("attachment") if isinstance(response, dict) else {}
+    forbidden_artifacts = [
+        key for key in ("candidate_intake", "review", "draft_payload", "gmail_create_draft_args", "pdf", "manifest")
+        if isinstance(response, dict) and key in response
+    ]
+    ready = (
+        isinstance(response, dict)
+        and response.get("status") == "uploaded"
+        and isinstance(attachment, dict)
+        and attachment.get("source_kind") == "supporting_attachment"
+        and attachment.get("attachment_kind") in {"notification_pdf", "photo"}
+        and str(attachment.get("artifact_url") or "").startswith("/api/artifacts/sources/")
+        and not forbidden_artifacts
+    )
+    checks.append(_check(
+        "supporting_attachment_upload_evidence",
+        ready,
+        "Synthetic supporting attachment upload returns safe attachment evidence only." if ready else "Synthetic supporting attachment upload returned unsafe or incomplete evidence.",
+        {
+            "status": response.get("status") if isinstance(response, dict) else None,
+            "source_kind": attachment.get("source_kind") if isinstance(attachment, dict) else None,
+            "attachment_kind": attachment.get("attachment_kind") if isinstance(attachment, dict) else None,
+            "artifact_url": attachment.get("artifact_url") if isinstance(attachment, dict) else None,
+            "forbidden_artifacts": forbidden_artifacts,
+        },
+    ))
+    return checks
+
+
 def run_smoke(
     base_url: str = "http://127.0.0.1:8766",
     *,
@@ -597,6 +650,7 @@ def run_smoke(
     post_multipart: PostMultipartFetcher | None = None,
     interaction_checks: bool = False,
     source_upload_checks: bool = False,
+    supporting_attachment_checks: bool = False,
     source_upload_profile: str = "",
     interaction_profile: str = "example_interpreting",
     interaction_case_number: str = "999/26.0SMOKE",
@@ -685,7 +739,7 @@ def run_smoke(
     if isinstance(diagnostics, dict) and "checks" in diagnostics:
         diagnostic_checks = diagnostics.get("checks") if isinstance(diagnostics.get("checks"), list) else []
         check_keys = {item.get("key") for item in diagnostic_checks if isinstance(item, dict)}
-        required_keys = {"default_live_smoke", "source_upload_smoke"}
+        required_keys = {"default_live_smoke", "source_upload_smoke", "supporting_attachment_smoke"}
         missing = sorted(required_keys.difference(check_keys))
         checks.append(_check(
             "diagnostics_safe_smoke_commands",
@@ -710,6 +764,12 @@ def run_smoke(
             case_number=interaction_case_number,
             service_date=interaction_service_date,
             profile=source_upload_profile,
+        ))
+
+    if supporting_attachment_checks:
+        checks.extend(_run_supporting_attachment_checks(
+            base,
+            post_multipart=multipart_poster,
         ))
 
     if browser_click_through:
@@ -792,6 +852,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--interaction-checks", action="store_true", help="Also exercise the opt-in profile/review/packet-prepare contract. This may create local draft payload/PDF artifacts on a real app.")
     parser.add_argument("--source-upload-checks", action="store_true", help="Upload disposable synthetic photo/PDF sources through the API and verify Source Evidence/Review Attention without preparing PDFs or drafts.")
+    parser.add_argument("--supporting-attachment-checks", action="store_true", help="Upload a disposable synthetic declaration/proof PDF through the attachment API and verify it cannot prepare PDFs, record drafts, or call Gmail.")
     parser.add_argument("--source-upload-profile", default="", help="Optional profile key to pass to source upload smoke. Defaults to Auto-detect.")
     parser.add_argument("--interaction-profile", default="example_interpreting")
     parser.add_argument("--interaction-case-number", default="999/26.0SMOKE")
@@ -814,6 +875,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         interaction_checks=args.interaction_checks,
         source_upload_checks=args.source_upload_checks,
+        supporting_attachment_checks=args.supporting_attachment_checks,
         source_upload_profile=args.source_upload_profile,
         interaction_profile=args.interaction_profile,
         interaction_case_number=args.interaction_case_number,

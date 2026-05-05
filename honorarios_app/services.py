@@ -2042,6 +2042,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "synthetic source-preview artifacts only",
         },
         {
+            "key": "supporting_attachment_smoke",
+            "label": "Supporting attachment smoke",
+            "description": "Uploads a disposable synthetic declaration/proof PDF through the attachment API and checks it remains evidence-only.",
+            "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --supporting-attachment-checks --json",
+            "effect": "synthetic_upload_only",
+            "writes": "synthetic supporting-attachment artifact only",
+        },
+        {
             "key": "isolated_source_upload_smoke",
             "label": "Isolated source upload smoke",
             "description": "Runs the same upload evidence checks in a temporary synthetic runtime so private local data and output folders are untouched.",

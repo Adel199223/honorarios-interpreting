@@ -40,6 +40,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Refresh apply history",
             "Local Diagnostics",
             "Source upload smoke",
+            "Supporting attachment smoke",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
@@ -58,6 +59,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         keys = {check["key"] for check in data["checks"]}
         self.assertIn("default_live_smoke", keys)
         self.assertIn("source_upload_smoke", keys)
+        self.assertIn("supporting_attachment_smoke", keys)
         dumped = json.dumps(data, sort_keys=True)
         self.assertNotIn("C:\\Users\\FA507", dumped)
         self.assertNotIn("_send_email", dumped)
@@ -397,6 +399,48 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("source_upload_photo_attention", {check["name"] for check in report["checks"]})
         self.assertIn("source_upload_pdf_evidence", {check["name"] for check in report["checks"]})
         self.assertEqual([item[1]["source_kind"] for item in seen_uploads], ["photo", "notification_pdf"])
+
+    def test_local_app_smoke_runner_supporting_attachment_contract_is_injectable(self):
+        client = self.make_client()
+        seen_uploads = []
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        def post_multipart(url, fields, filename, content, content_type):
+            seen_uploads.append((url, dict(fields), filename, content_type, len(content)))
+            if url.endswith("/api/attachments/upload"):
+                return {
+                    "status": "uploaded",
+                    "send_allowed": False,
+                    "attachment": {
+                        "source_kind": "supporting_attachment",
+                        "attachment_kind": "notification_pdf",
+                        "filename": filename,
+                        "stored_path": "/tmp/synthetic-declaracao.pdf",
+                        "artifact_url": "/api/artifacts/sources/attachments/synthetic-declaracao.pdf",
+                    },
+                }
+            raise AssertionError(url)
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+            post_multipart=post_multipart,
+            supporting_attachment_checks=True,
+        )
+        self.assertEqual(report["status"], "ready", report)
+        self.assertIn("supporting_attachment_upload_evidence", {check["name"] for check in report["checks"]})
+        self.assertEqual(len(seen_uploads), 1)
+        self.assertTrue(seen_uploads[0][0].endswith("/api/attachments/upload"))
 
     def test_local_app_smoke_runner_browser_click_through_contract_is_injectable(self):
         client = self.make_client()

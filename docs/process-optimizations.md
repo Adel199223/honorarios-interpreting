@@ -176,6 +176,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --source-uplo
 
 This posts disposable synthetic photo and notification-PDF sources directly to `/api/sources/upload`, checks Source Evidence, recovered PDF candidate fields, `Review Attention`, and `send_allowed: false`, and never calls prepare, draft recording/status, or Gmail. Use `python scripts/isolated_app_smoke.py --source-upload-checks --json` when you want the synthetic source-preview artifacts to live only in a temporary runtime.
 
+To cover declaration/proof upload safety after attachment-related changes, use the API-level supporting attachment smoke:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --supporting-attachment-checks --json
+```
+
+This posts a disposable synthetic declaration/proof PDF directly to `/api/attachments/upload`, checks the response is supporting-attachment evidence only, and verifies no recovered intake, PDF preparation, draft payload, or Gmail draft args are exposed.
+
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 
 ```powershell
