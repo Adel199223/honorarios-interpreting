@@ -351,7 +351,7 @@ export async function runBrowserIabSmoke(options = {}) {
   }
 
   if (args.applyHistory) {
-    if (!(await runStep(checks, "browser_apply_history", "Browser/IAB checked LegalPDF Apply History, detail, and restore-plan surfaces without writing.", async () => {
+    if (!(await runStep(checks, "browser_apply_history", "Browser/IAB checked LegalPDF Apply History, detail, restore-plan, and guarded restore controls without writing.", async () => {
       // The References surface is independent from the intake drawer/batch flow.
       // Reload before checking it so prior drawer state cannot mask sidebar controls.
       await tab.goto(`${baseUrl}/`);
@@ -372,6 +372,12 @@ export async function runBrowserIabSmoke(options = {}) {
         await tab.playwright.locator("[data-legalpdf-restore-report-id]").first().click({ timeoutMs: args.timeoutMs });
         await expectBodyText(tab, "LegalPDF Restore Plan", args.timeoutMs);
         await expectAnyBodyText(tab, ["preview only", "read-only", "Read-only"], args.timeoutMs);
+        await expectBodyText(tab, "Apply this restore locally", args.timeoutMs);
+        await expectBodyText(tab, "Restore local references from backup", args.timeoutMs);
+        await expectBodyText(tab, "RESTORE LEGALPDF APPLY BACKUP", args.timeoutMs);
+        await uniqueLocator(tab, "#legalpdf-restore-reason", args.timeoutMs);
+        await uniqueLocator(tab, "#legalpdf-restore-phrase", args.timeoutMs);
+        await uniqueLocator(tab, "#confirm-legalpdf-restore", args.timeoutMs);
       }
     }))) {
       return report(baseUrl, checks);

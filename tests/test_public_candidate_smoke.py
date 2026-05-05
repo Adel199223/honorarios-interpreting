@@ -70,6 +70,26 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("gho_", dumped)
         self.assertNotIn("sk-", dumped)
 
+    def test_browser_js_keeps_legalpdf_restore_controls_guarded(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+        smoke_js = (root / "scripts" / "browser_iab_smoke.mjs").read_text(encoding="utf-8")
+        for text in [
+            "Apply this restore locally",
+            "Restore local references from backup",
+            "RESTORE LEGALPDF APPLY BACKUP",
+            "legalpdf-restore-reason",
+            "legalpdf-restore-phrase",
+            "confirm-legalpdf-restore",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, app_js)
+                self.assertIn(text, smoke_js)
+        self.assertNotIn("_send_email", app_js)
+        self.assertNotIn("_send_draft", app_js)
+        self.assertNotIn("_send_email", smoke_js)
+        self.assertNotIn("_send_draft", smoke_js)
+
     def test_legalpdf_integration_preview_report_and_checklist_are_read_only(self):
         root = Path(__file__).resolve().parents[1]
         profiles_path = root / "data" / "service-profiles.json"

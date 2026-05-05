@@ -153,7 +153,7 @@ const result = await runBrowserIabSmoke({
 nodeRepl.write(JSON.stringify(result, null, 2));
 ```
 
-This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
+This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 
