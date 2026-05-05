@@ -155,14 +155,14 @@
                 </div>
               </form>
 
-              <div class="source-drop-zone" id="source-drop-zone">
+              <div class="source-drop-zone" id="source-drop-zone" tabindex="0" role="button" aria-describedby="source-drop-status">
                 <div>
-                  <strong>Drop a notification PDF, photo, or screenshot here</strong>
+                  <strong>Drop or paste a notification PDF, photo, or screenshot here</strong>
                   <p>The app will detect PDF vs image, recover Source Evidence, and stop for review before any PDF or Gmail draft step.</p>
                 </div>
                 <span class="status-chip info">Local only</span>
               </div>
-              <p class="field-hint" id="source-drop-status">Drop files here or use the upload controls below.</p>
+              <p class="field-hint" id="source-drop-status">Drop files here or use the upload controls below. Click this area, then press Ctrl+V to recover a copied screenshot.</p>
 
               <div class="upload-grid">
                 <form class="upload-form" id="notification-upload-form">

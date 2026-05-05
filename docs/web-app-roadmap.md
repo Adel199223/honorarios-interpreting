@@ -10,7 +10,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Review endpoint that classifies translation/word-count requests before asking questions.
 - Local notification PDF upload with `pypdf` text recovery and candidate field extraction.
 - Local photo/screenshot upload with safe stored previews and Pillow metadata extraction.
-- Drag-and-drop local source intake for notification PDFs, photos, and screenshots, reusing the same safe upload endpoint, Source Evidence, and review-before-generation path.
+- Drag-and-drop plus clipboard-paste local source intake for notification PDFs, photos, and screenshots, reusing the same safe upload endpoint, Source Evidence, and review-before-generation path.
 - Optional OpenAI OCR/autofill for photos and weak/scanned PDFs, with `/api/ai/status`, a strict Responses JSON Schema named `honorarios_source_recovery`, domain prompt examples for PJ/GNR host buildings, Beringel/Beja, labor-court, medical-legal, and translation word-count cases, and review-only AI evidence.
 - Automatic service-profile selection for uploads: deterministic local rules score recovered source text and AI evidence, auto-apply only high-confidence profile matches, and keep explicit user-selected profiles as overrides.
 - Guarded profile proposals for new recurring patterns: when auto-detect falls back to generic but the upload evidence contains a service place, payment entity, recipient, and kilometers, Source Evidence can prepare a reusable profile payload for review in the guarded profile editor.

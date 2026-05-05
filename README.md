@@ -29,7 +29,7 @@ Then open:
 The app supports the main workflow:
 
 - upload a local notification PDF or photo/screenshot
-- drag and drop a local notification PDF, photo, or screenshot onto the intake panel, using the same Source Evidence and review-first safety path as the upload buttons
+- drag and drop or paste a copied local notification PDF, photo, or screenshot onto the intake panel, using the same Source Evidence and review-first safety path as the upload buttons
 - import a selected/downloaded Google Photos image through the local photo path, with pasted visible filename/date metadata
 - connect Google Photos OAuth Picker when private local credentials are configured, choose one photo, and import it through the same review pipeline
 - use OpenAI OCR/autofill when `OPENAI_API_KEY` or ignored `config/ai.local.json` is configured

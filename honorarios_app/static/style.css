@@ -496,6 +496,12 @@ textarea {
   transform: translateY(-1px);
 }
 
+.source-drop-zone:focus-visible {
+  outline: 2px solid rgba(122, 243, 176, 0.86);
+  outline-offset: 3px;
+  border-color: rgba(122, 243, 176, 0.72);
+}
+
 .upload-form {
   display: grid;
   gap: 10px;

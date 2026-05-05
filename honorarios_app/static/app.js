@@ -1101,7 +1101,7 @@ function inferDroppedSourceKind(file) {
   const type = String(file?.type || "").toLowerCase();
   if (type === "application/pdf" || name.endsWith(".pdf")) return "notification_pdf";
   if (type.startsWith("image/") || /\.(png|jpe?g|webp|heic|heif|bmp|gif|tiff?)$/.test(name)) return "photo";
-  throw new Error("Unsupported source type. Drop a PDF, photo, or screenshot.");
+  throw new Error("Unsupported source type. Use a PDF, photo, or screenshot.");
 }
 
 function setDropStatus(message, kind = "info") {
@@ -1109,6 +1109,42 @@ function setDropStatus(message, kind = "info") {
   if (!status) return;
   status.textContent = message;
   status.className = `field-hint source-drop-status ${kind}`.trim();
+}
+
+function getClipboardSourceFile(event) {
+  const clipboard = event.clipboardData;
+  if (!clipboard) return null;
+  const files = Array.from(clipboard.files || []);
+  const directFile = files.find((file) => {
+    try {
+      inferDroppedSourceKind(file);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (directFile) return directFile;
+  for (const item of Array.from(clipboard.items || [])) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (!file) continue;
+    try {
+      inferDroppedSourceKind(file);
+      return file;
+    } catch {}
+  }
+  return null;
+}
+
+function isEditablePasteTarget(target) {
+  if (!target || !(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']"));
+}
+
+async function recoverLocalSourceFile(file, origin = "local source") {
+  const sourceKind = inferDroppedSourceKind(file);
+  setDropStatus(`Recovering ${file.name || origin}...`);
+  await uploadSource(sourceKind, { file });
 }
 
 async function uploadSource(sourceKind, options = {}) {
@@ -1183,9 +1219,37 @@ function bindSourceDropZone() {
       return;
     }
     try {
-      const sourceKind = inferDroppedSourceKind(file);
-      setDropStatus(`Recovering ${file.name || "dropped source"}...`);
-      await uploadSource(sourceKind, { file });
+      await recoverLocalSourceFile(file, "dropped source");
+    } catch (error) {
+      setDropStatus(error.message, "blocked");
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  dropZone.addEventListener("paste", async (event) => {
+    const file = getClipboardSourceFile(event);
+    if (!file) {
+      setDropStatus("Clipboard does not contain a PDF, photo, or screenshot.", "blocked");
+      return;
+    }
+    stop(event);
+    try {
+      await recoverLocalSourceFile(file, "pasted source");
+    } catch (error) {
+      setDropStatus(error.message, "blocked");
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
+  document.addEventListener("paste", async (event) => {
+    if (dropZone.contains(event.target) || isEditablePasteTarget(event.target)) return;
+    const file = getClipboardSourceFile(event);
+    if (!file) return;
+    stop(event);
+    try {
+      await recoverLocalSourceFile(file, "pasted source");
     } catch (error) {
       setDropStatus(error.message, "blocked");
       setStatus("blocked", error.message);

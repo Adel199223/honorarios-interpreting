@@ -22,7 +22,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "LegalPDF Honorários",
             "Start Interpretation Request",
             "Reset workspace",
-            "Drop a notification PDF, photo, or screenshot here",
+            "Drop or paste a notification PDF, photo, or screenshot here",
             "Review Interpretation Request",
             "Google Photos selected-photo import",
             "Open Google Photos Picker",

@@ -21,7 +21,7 @@ In the browser app, use Batch Queue for the same workflow: review each request, 
 
 When the Review drawer shows missing numbered questions, paste compact answers in the `Numbered answers` card, such as `1. 39` or `2. Beja`, then click `Apply numbered answers`. The app maps those answers back to the current intake fields, reruns the same review endpoint, and keeps generation blocked until duplicate checks, date-conflict rules, and recipient validation are clean. This avoids recreating JSON or re-uploading the source just to fill one missing city, date, or kilometer value.
 
-Use the intake drop zone for local screenshots/photos/PDFs when you want the fastest path from a saved source file to Source Evidence. Dropped files are only classified as notification PDF or photo/screenshot and sent through the existing `/api/sources/upload` review path; dropping a file never prepares a PDF, records a draft, or calls Gmail by itself.
+Use the intake drop zone for local screenshots/photos/PDFs when you want the fastest path from a saved or copied source file to Source Evidence. Dropped or pasted files are only classified as notification PDF or photo/screenshot and sent through the existing `/api/sources/upload` review path; dropping or pasting a file never prepares a PDF, records a draft, or calls Gmail by itself.
 
 Use the `Next Safe Action` card as the daily workflow guide. It is computed from the same review/preflight responses as the backend, so it should say whether to answer numbered questions, set aside a translation source, stop for a duplicate, enter correction mode, prepare the PDF, or review Gmail `_create_draft` arguments before recording IDs.
 

@@ -30,7 +30,7 @@ LANDMARKS = [
     "Review Case Details",
     "Review Interpretation Request",
     "Next Safe Action",
-    "Drop a notification PDF, photo, or screenshot here",
+    "Drop or paste a notification PDF, photo, or screenshot here",
     "Google Photos selected-photo import",
     "Open Google Photos Picker",
     "Batch Queue",
