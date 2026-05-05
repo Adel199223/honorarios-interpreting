@@ -48,6 +48,7 @@ JSON_ENDPOINTS = [
     "/api/google-photos/status",
     "/api/ai/status",
     "/api/public-readiness",
+    "/api/diagnostics/status",
 ]
 
 
@@ -677,6 +678,19 @@ def run_smoke(
             not exposed,
             "/api/google-photos/status does not expose token, URL, or media-id secrets.",
             {"exposed": exposed},
+        ))
+
+    diagnostics = endpoint_payloads.get("/api/diagnostics/status")
+    if isinstance(diagnostics, dict) and "checks" in diagnostics:
+        diagnostic_checks = diagnostics.get("checks") if isinstance(diagnostics.get("checks"), list) else []
+        check_keys = {item.get("key") for item in diagnostic_checks if isinstance(item, dict)}
+        required_keys = {"default_live_smoke", "source_upload_smoke"}
+        missing = sorted(required_keys.difference(check_keys))
+        checks.append(_check(
+            "diagnostics_safe_smoke_commands",
+            not missing and diagnostics.get("write_allowed") is False,
+            "/api/diagnostics/status lists safe local smoke commands without enabling writes." if not missing else "Diagnostics status is missing expected smoke commands.",
+            {"missing": missing, "write_allowed": diagnostics.get("write_allowed")},
         ))
 
     if interaction_checks:

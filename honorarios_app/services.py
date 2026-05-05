@@ -1977,6 +1977,54 @@ def backup_status_payload(paths: AppPaths) -> dict[str, Any]:
     }
 
 
+def diagnostics_status_payload() -> dict[str, Any]:
+    checks = [
+        {
+            "key": "default_live_smoke",
+            "label": "Default live smoke",
+            "description": "Checks the LegalPDF-style landmarks, draft-only API contract, AI/Google Photos status, public readiness, and diagnostics status.",
+            "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --json",
+            "effect": "read_only",
+            "writes": "none",
+        },
+        {
+            "key": "source_upload_smoke",
+            "label": "Source upload smoke",
+            "description": "Uploads disposable synthetic photo/PDF sources through the API and checks Source Evidence plus Review Attention without preparing artifacts.",
+            "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --source-upload-checks --json",
+            "effect": "synthetic_upload_only",
+            "writes": "synthetic source-preview artifacts only",
+        },
+        {
+            "key": "isolated_source_upload_smoke",
+            "label": "Isolated source upload smoke",
+            "description": "Runs the same upload evidence checks in a temporary synthetic runtime so private local data and output folders are untouched.",
+            "command_template": "python scripts/isolated_app_smoke.py --source-upload-checks --json",
+            "effect": "temporary_isolated_runtime",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
+            "key": "browser_iab_smoke",
+            "label": "Browser/IAB review smoke",
+            "description": "Uses the Codex in-app Browser runner for the review drawer and batch UI path; upload file inputs stay covered by the API smoke.",
+            "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --browser-click-through --browser-iab-click-through --json",
+            "effect": "browser_ui_only",
+            "writes": "none",
+        },
+    ]
+    return {
+        "status": "ready",
+        "message": "Local diagnostics are available. Start with the source upload smoke after changing upload, recovery, Source Evidence, or Review Attention behavior.",
+        "recommended_next_check": "source_upload_smoke",
+        "gmail_action": "_create_draft",
+        "draft_only": True,
+        "send_allowed": False,
+        "write_allowed": False,
+        "managed_data_changed": False,
+        "checks": checks,
+    }
+
+
 def backup_payload(paths: AppPaths) -> dict[str, Any]:
     datasets = {
         key: read_backup_dataset(path, expected_type)

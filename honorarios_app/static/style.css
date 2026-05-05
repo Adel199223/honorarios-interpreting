@@ -493,6 +493,43 @@ textarea {
   font-size: 0.9rem;
 }
 
+.diagnostics-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.diagnostic-item {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(117, 218, 255, 0.14);
+  background: rgba(2, 10, 18, 0.44);
+}
+
+.diagnostic-item.is-recommended {
+  border-color: rgba(122, 243, 176, 0.34);
+  background: rgba(18, 72, 55, 0.24);
+}
+
+.diagnostic-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted-2);
+  font-size: 0.82rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.diagnostic-command {
+  min-height: 0;
+  max-height: 160px;
+  margin: 0;
+  font-size: 12px;
+}
+
 .mock-file-input {
   min-height: 56px;
   display: flex;

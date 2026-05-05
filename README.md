@@ -67,7 +67,7 @@ To smoke-check the running local app without creating PDFs or Gmail drafts:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
-The smoke runner checks the LegalPDF-style workflow landmarks, the `Next Safe Action` guidance surface, draft-only Gmail contract, Google Photos/AI status endpoints, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
+The smoke runner checks the LegalPDF-style workflow landmarks, the `Next Safe Action` guidance surface, draft-only Gmail contract, Google Photos/AI status endpoints, local diagnostics status, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
 
 For a real browser review-flow click-through, use the opt-in browser smoke:
 
@@ -92,6 +92,8 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --source-uplo
 ```
 
 This uploads disposable synthetic photo/PDF sources directly to `/api/sources/upload`, checks Source Evidence, recovered PDF candidate fields, `Review Attention`, and `send_allowed: false`, and never calls `/api/prepare`, draft recording, draft status, or Gmail. It may store synthetic source-preview artifacts in the configured source upload folder; run it through `scripts/isolated_app_smoke.py --source-upload-checks --json` when you want that state fully disposable.
+
+The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, isolated source-upload smoke, and Browser/IAB review smoke commands for PowerShell. The browser only copies commands; it does not run shell commands or call Gmail.
 
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 

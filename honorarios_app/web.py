@@ -24,6 +24,7 @@ from .services import (
     build_legalpdf_adapter_import_plan,
     build_profile_intake,
     build_legalpdf_integration_checklist,
+    diagnostics_status_payload,
     draft_lifecycle_for_intake,
     export_legalpdf_import_report,
     export_local_backup,
@@ -139,6 +140,10 @@ def create_app(**path_overrides: Any) -> FastAPI:
     @app.get("/api/ai/status")
     async def api_ai_status() -> dict[str, Any]:
         return ai_status_payload(paths.ai_config)
+
+    @app.get("/api/diagnostics/status")
+    async def api_diagnostics_status() -> dict[str, Any]:
+        return diagnostics_status_payload()
 
     @app.get("/api/google-photos/status")
     async def api_google_photos_status() -> dict[str, Any]:

@@ -8,6 +8,7 @@ const state = {
   aiStatus: null,
   googlePhotosStatus: null,
   googlePhotosPicker: null,
+  diagnosticsStatus: null,
   draftLifecycle: null,
   lastProfileProposal: null,
   localBackupPreview: null,
@@ -1159,6 +1160,71 @@ async function loadBackupStatus() {
 async function loadGooglePhotosStatus() {
   state.googlePhotosStatus = await requestJson("/api/google-photos/status");
   renderGooglePhotosStatus(state.googlePhotosStatus);
+}
+
+function diagnosticCommand(check) {
+  return String(check?.command_template || "").replaceAll("{base_url}", window.location.origin);
+}
+
+function renderDiagnosticsStatus(data) {
+  const chip = $("#diagnostics-chip");
+  const body = $("#diagnostics-result");
+  if (!chip || !body) return;
+  const status = data?.status || "blocked";
+  const chipKind = statusChipClass(status);
+  chip.textContent = status.replaceAll("_", " ");
+  chip.className = `status-chip ${chipKind}`;
+  const checks = Array.isArray(data?.checks) ? data.checks : [];
+  const recommended = String(data?.recommended_next_check || "");
+  body.className = `result-card compact-result ${chipKind}`;
+  body.innerHTML = `
+    <div class="result-header compact-result-header">
+      <div>
+        <strong>${escapeHtml(data?.message || "Diagnostics status is not loaded yet.")}</strong>
+        <p>Commands are copied locally for PowerShell. The browser does not run shell commands or contact Gmail.</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    <div class="diagnostics-grid">
+      ${checks.map((check) => {
+        const key = String(check.key || "");
+        const isRecommended = key && key === recommended;
+        const command = diagnosticCommand(check);
+        return `
+          <div class="diagnostic-item ${isRecommended ? "is-recommended" : ""}">
+            <div class="result-header compact-result-header">
+              <div>
+                <strong>${escapeHtml(check.label || key || "Diagnostic check")}</strong>
+                <p>${escapeHtml(check.description || "")}</p>
+              </div>
+              ${isRecommended ? '<span class="status-chip ready">recommended</span>' : `<span class="status-chip info">${escapeHtml(check.effect || "safe")}</span>`}
+            </div>
+            <div class="diagnostic-meta">
+              <span>Writes: ${escapeHtml(check.writes || "none")}</span>
+            </div>
+            <pre class="diagnostic-command">${escapeHtml(command)}</pre>
+            <button type="button" class="mini-button" data-copy-diagnostic-command="${escapeHtml(key)}">Copy command</button>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+async function loadDiagnosticsStatus() {
+  state.diagnosticsStatus = await requestJson("/api/diagnostics/status");
+  renderDiagnosticsStatus(state.diagnosticsStatus);
+  return state.diagnosticsStatus;
+}
+
+async function copyDiagnosticCommand(key) {
+  if (!state.diagnosticsStatus) {
+    await loadDiagnosticsStatus();
+  }
+  const check = (state.diagnosticsStatus?.checks || []).find((item) => item.key === key);
+  if (!check) throw new Error("Diagnostic command is not available yet. Refresh diagnostics first.");
+  await copyText(diagnosticCommand(check));
+  showAlert(`Copied ${check.label || key} command.`, "recorded");
 }
 
 function renderGooglePhotosPickerResult(data, kind = "info") {
@@ -2703,6 +2769,15 @@ function bindActions() {
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     if (typeof target.focus === "function") target.focus({ preventScroll: true });
   });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-diagnostic-command]");
+    if (!button) return;
+    try {
+      await copyDiagnosticCommand(button.dataset.copyDiagnosticCommand || "");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
   [
     "correction_reason",
     "numbered-answers",
@@ -2722,6 +2797,7 @@ function bindActions() {
     await loadAiStatus().catch(() => {});
     await loadGooglePhotosStatus().catch(() => {});
     await loadBackupStatus().catch(() => {});
+    await loadDiagnosticsStatus().catch(() => {});
   });
   $("#run-public-readiness").addEventListener("click", async () => {
     try {
@@ -2734,6 +2810,15 @@ function bindActions() {
     try {
       await buildPublicCandidate();
     } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#refresh-diagnostics").addEventListener("click", async () => {
+    try {
+      await loadDiagnosticsStatus();
+      showAlert("Local diagnostics refreshed.", "recorded");
+    } catch (error) {
+      renderDiagnosticsStatus({ status: "blocked", message: error.message, checks: [] });
       showAlert(error.message, "blocked");
     }
   });
@@ -3282,4 +3367,5 @@ loadReference().catch((error) => {
 loadAiStatus().catch(() => {});
 loadGooglePhotosStatus().catch(() => {});
 loadBackupStatus().catch(() => {});
+loadDiagnosticsStatus().catch(() => {});
 loadLegalPdfApplyHistory().catch(() => {});

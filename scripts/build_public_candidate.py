@@ -242,12 +242,30 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "LegalPDF Apply History",
             "LegalPDF Restore Plan",
             "Refresh apply history",
+            "Local Diagnostics",
+            "Source upload smoke",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, page)
         self.assertNotIn("_send_email", page)
         self.assertNotIn("_send_draft", page)
+
+    def test_diagnostics_status_lists_safe_smoke_commands(self):
+        client = self.make_client()
+        response = client.get("/api/diagnostics/status")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "ready")
+        self.assertFalse(data["send_allowed"])
+        self.assertFalse(data["write_allowed"])
+        keys = {check["key"] for check in data["checks"]}
+        self.assertIn("default_live_smoke", keys)
+        self.assertIn("source_upload_smoke", keys)
+        dumped = json.dumps(data, sort_keys=True)
+        self.assertNotIn("C:\\\\Users\\\\FA507", dumped)
+        self.assertNotIn("_send_email", dumped)
+        self.assertNotIn("_send_draft", dumped)
 
     def test_reference_endpoint_keeps_draft_only_contract(self):
         client = self.make_client()

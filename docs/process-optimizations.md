@@ -127,6 +127,8 @@ Use the default smoke runner for a non-writing live-app check:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
+The same commands are visible in the app under References -> Local Diagnostics. That panel is read-only: it explains the safest smoke check for the current kind of change and copies commands for PowerShell, but it does not run shell commands, prepare PDFs, record drafts, or call Gmail.
+
 Use `--browser-click-through` when you want a real browser to verify the profile-to-review-drawer path and batch queue without preparing artifacts:
 
 ```powershell
