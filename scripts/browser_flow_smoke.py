@@ -322,6 +322,8 @@ def run_browser_flow_smoke(
         if prepare_packet:
             if not _safe_step(checks, "browser_packet_prepare", "Browser prepared packet mode and exposed packet draft helpers.", lambda: (
                 driver.check("#batch-packet-mode"),
+                driver.click("#preflight-batch-intakes"),
+                driver.expect_selector_text("#batch-preflight-result", "Batch preflight"),
                 driver.click("#prepare-batch-intakes"),
                 driver.expect_text("Packet draft recording helper"),
                 driver.expect_text("Underlying duplicate blockers"),

@@ -335,6 +335,8 @@ export async function runBrowserIabSmoke(options = {}) {
   if (args.preparePacket) {
     if (!(await runStep(checks, "browser_packet_prepare", "Browser/IAB prepared packet mode and exposed packet draft helpers.", async () => {
       await setChecked(tab, "#batch-packet-mode", true, args.timeoutMs);
+      await click(tab, "#preflight-batch-intakes", args.timeoutMs);
+      await expectSelectorText(tab, "#batch-preflight-result", "Batch preflight", args.timeoutMs);
       await click(tab, "#prepare-batch-intakes", args.timeoutMs);
       await expectBodyText(tab, "Packet draft recording helper", args.timeoutMs);
       await expectBodyText(tab, "Underlying duplicate blockers", args.timeoutMs);

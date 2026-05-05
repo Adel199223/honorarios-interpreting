@@ -62,7 +62,7 @@ function setCard(element, message, kind = "") {
 
 function statusChipClass(status) {
   if (["ready", "prepared", "recorded", "clear", "active", "drafted", "sent"].includes(status)) return "ready";
-  if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "superseded", "trashed", "not_found"].includes(status)) return "blocked";
+  if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "stale", "superseded", "trashed", "not_found"].includes(status)) return "blocked";
   if (status === "error") return "error";
   return "info";
 }
@@ -136,8 +136,11 @@ function syncActionGates(action = state.currentNextSafeAction) {
   const actionDetail = String(action?.detail || "");
   Object.entries(SAFE_ACTION_GATES).forEach(([id, gate]) => {
     let enabled = (gate.states || []).includes(actionState);
-    if (id === "prepare-batch-intakes" || id === "preflight-batch-intakes") {
+    if (id === "preflight-batch-intakes") {
       enabled = state.batchIntakes.length > 0;
+    }
+    if (id === "prepare-batch-intakes") {
+      enabled = hasCurrentReadyBatchPreflight();
     }
     if (id === "prepare-replacement-draft") {
       enabled = enabled && Boolean($("#correction_reason")?.value.trim());
@@ -343,6 +346,22 @@ function batchIntakeKey(intake) {
     String(intake?.service_date || "").trim(),
     period,
   ].join("|");
+}
+
+function currentBatchPacketMode() {
+  return Boolean($("#batch-packet-mode")?.checked);
+}
+
+function batchPreflightSignature(packetMode = currentBatchPacketMode(), intakes = state.batchIntakes) {
+  return JSON.stringify({
+    packet_mode: Boolean(packetMode),
+    intakes: (Array.isArray(intakes) ? intakes : []).map(cloneIntake),
+  });
+}
+
+function hasCurrentReadyBatchPreflight() {
+  return state.batchPreflight?.status === "ready"
+    && state.batchPreflight?.request_signature === batchPreflightSignature();
 }
 
 function pathBasename(value) {
@@ -727,6 +746,19 @@ function renderBatchPreflight() {
     card.textContent = state.batchIntakes.length
       ? "Run a non-writing batch preflight before preparing artifacts."
       : "Add reviewed requests, then run a non-writing batch preflight.";
+    return;
+  }
+  if (data.request_signature !== batchPreflightSignature()) {
+    card.className = "result-card blocked-card";
+    card.innerHTML = `
+      <div class="result-header">
+        <div>
+          <strong>Batch preflight is stale</strong>
+          <p>The batch queue or packet mode changed after the last non-writing check. Run batch preflight again before preparing artifacts.</p>
+        </div>
+        <span class="status-chip blocked">stale</span>
+      </div>
+    `;
     return;
   }
   const status = data.status || "blocked";
@@ -2235,10 +2267,15 @@ async function prepareBatchIntakes() {
   if (!state.batchIntakes.length) {
     throw new Error("Add at least one ready request to the batch queue first.");
   }
-  const packetMode = Boolean($("#batch-packet-mode")?.checked);
+  if (!hasCurrentReadyBatchPreflight()) {
+    renderBatchPreflight();
+    throw new Error("Run a current ready batch preflight before preparing artifacts.");
+  }
+  const packetMode = currentBatchPacketMode();
+  const intakes = state.batchIntakes.map(cloneIntake);
   const data = await requestJson("/api/prepare", {
     method: "POST",
-    body: JSON.stringify({ intakes: state.batchIntakes, render_previews: true, packet_mode: packetMode }),
+    body: JSON.stringify({ intakes, render_previews: true, packet_mode: packetMode }),
   });
   state.lastPrepared = data;
   const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
@@ -2255,12 +2292,14 @@ async function preflightBatchIntakes(options = {}) {
   }
   const openDrawerAfter = options.openDrawer !== false;
   const showResultAlert = options.showResultAlert !== false;
-  const packetMode = Boolean($("#batch-packet-mode")?.checked);
+  const packetMode = currentBatchPacketMode();
+  const intakes = state.batchIntakes.map(cloneIntake);
+  const requestSignature = batchPreflightSignature(packetMode, intakes);
   const data = await requestJson("/api/prepare/preflight", {
     method: "POST",
-    body: JSON.stringify({ intakes: state.batchIntakes, packet_mode: packetMode }),
+    body: JSON.stringify({ intakes, packet_mode: packetMode }),
   });
-  state.batchPreflight = data;
+  state.batchPreflight = { ...data, request_signature: requestSignature };
   renderBatchPreflight();
   renderNextSafeAction(data.next_safe_action || null);
   const modeText = packetMode ? "packet mode" : "separate-payload mode";
@@ -2928,6 +2967,7 @@ function bindActions() {
   $("#batch-packet-mode").addEventListener("change", () => {
     state.batchPreflight = null;
     renderBatchPreflight();
+    syncActionGates();
   });
   $("#batch-queue-list").addEventListener("click", (event) => {
     const inspectButton = event.target.closest("[data-inspect-batch-index]");

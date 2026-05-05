@@ -33,6 +33,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Recent Work lifecycle filters for `active`, `drafted`, `sent`, `superseded`, `trashed`, and `not_found` records, so blocking drafts and historical corrections can be separated quickly.
 - Browser Batch Queue for repeated same-profile or same-case services, using the existing all-or-nothing multi-intake `/api/prepare` contract.
 - Non-writing browser batch preflight through `/api/prepare/preflight`, so queued requests can be checked for missing information, duplicates, active drafts, attachment-body rules, and packet recipient mismatches before any PDF, draft payload, intake JSON, or manifest is written.
+- Stale-aware batch gating: `Prepare batch package` is enabled only when the latest ready preflight matches the current queue order and packet-mode setting, so queue edits require a fresh non-writing check before artifact creation.
 - Packet mode in the Batch Queue for same-recipient batches that should produce one combined PDF attachment and one Gmail draft payload while still tracking every underlying case/date/period.
 - Packet-order controls in the Batch Queue, with drag/drop plus `Move up` / `Move down`, so the combined PDF order is explicit before packet generation.
 - Packet item inspector in the Batch Queue, so each queued request can be checked beside its generated requerimento PDF slot and any supporting attachments before packet generation.
