@@ -2455,6 +2455,7 @@ def build_legalpdf_adapter_import_plan(payload: dict[str, Any], paths: AppPaths)
 
 
 LEGALPDF_IMPORT_CONFIRMATION_PHRASE = "APPLY LEGALPDF IMPORT PLAN"
+LEGALPDF_RESTORE_CONFIRMATION_PHRASE = "RESTORE LEGALPDF APPLY BACKUP"
 PROFILE_REQUIRED_PRESERVE_PATHS = tuple(PROFILE_DEFAULT_REMOVAL_BLOCK_PREFIXES)
 
 
@@ -2636,6 +2637,41 @@ def _legalpdf_apply_report_markdown(report: dict[str, Any]) -> str:
         "- `send_allowed`: false",
         "- `legalpdf_write_allowed`: false",
         f"- Pre-apply backup: `{report.get('pre_apply_backup_file', '')}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _legalpdf_restore_report_markdown(report: dict[str, Any]) -> str:
+    profile_rows = [
+        [item.get("target_key", ""), item.get("restore_action", ""), item.get("result", "")]
+        for item in report.get("restored_profiles") or []
+    ]
+    court_rows = [
+        [item.get("key", ""), item.get("restore_action", ""), item.get("result", "")]
+        for item in report.get("restored_court_emails") or []
+    ]
+    lines = [
+        "# LegalPDF Adapter Import Restore Report",
+        "",
+        report.get("message") or "Guarded restore applied.",
+        "",
+        "This report is private runtime output. LegalPDF Translate was not modified. Gmail was not involved.",
+        "",
+        "## Restored Service Profiles",
+        "",
+        _markdown_table(["Profile", "Restore action", "Result"], profile_rows),
+        "",
+        "## Restored Court Emails",
+        "",
+        _markdown_table(["Court email key", "Restore action", "Result"], court_rows),
+        "",
+        "## Safety",
+        "",
+        "- `send_allowed`: false",
+        "- `legalpdf_write_allowed`: false",
+        f"- Source apply report: `{report.get('source_apply_report_id', '')}`",
+        f"- Pre-restore backup: `{report.get('pre_restore_backup_file', '')}`",
         "",
     ]
     return "\n".join(lines)
@@ -3043,6 +3079,220 @@ def legalpdf_apply_restore_plan(paths: AppPaths, *, report_id: str) -> dict[str,
     }
 
 
+def _legalpdf_restore_blocked(message: str, *, plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "blocked",
+        "message": message,
+        "restore_allowed": False,
+        "write_allowed": False,
+        "managed_data_changed": False,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+    if plan is not None:
+        result["restore_plan"] = plan.get("restore_plan", {})
+        result["blocking_count"] = plan.get("blocking_count", 0)
+        result["report"] = plan.get("report", {})
+    return result
+
+
+def _backup_court_emails_by_key(datasets: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    records = datasets.get("court_emails") if isinstance(datasets.get("court_emails"), list) else []
+    by_key: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        key = str(record.get("key") or "").strip()
+        if not key:
+            continue
+        by_key[key] = copy.deepcopy(record)
+        if key not in order:
+            order.append(key)
+    return by_key, order
+
+
+def _restore_report_row(row: dict[str, Any], *, key_field: str) -> dict[str, Any]:
+    key = str(row.get(key_field) or "").strip()
+    return {
+        key_field: key,
+        "applied_action": str(row.get("applied_action") or ""),
+        "restore_action": str(row.get("restore_action") or ""),
+        "result": "changed" if row.get("would_change_current") else "unchanged",
+        "pre_apply_hash": str(row.get("pre_apply_hash") or ""),
+        "previous_current_hash": str(row.get("current_hash") or ""),
+    }
+
+
+def apply_legalpdf_restore(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    if not bool(payload.get("confirm_restore")):
+        raise IntakeError("LegalPDF apply restore requires confirm_restore=true and the exact confirmation phrase.")
+    phrase = str(payload.get("confirmation_phrase") or "").strip()
+    if phrase != LEGALPDF_RESTORE_CONFIRMATION_PHRASE:
+        raise IntakeError(f'LegalPDF apply restore requires confirmation phrase "{LEGALPDF_RESTORE_CONFIRMATION_PHRASE}".')
+    reason = str(payload.get("restore_reason") or payload.get("reason") or "").strip()
+    if len(reason) < 8:
+        raise IntakeError("LegalPDF apply restore requires a short restore_reason explaining why this rollback is safe.")
+    report_id = str(payload.get("report_id") or "").strip()
+    if not report_id:
+        raise IntakeError("LegalPDF apply restore requires report_id.")
+
+    plan = legalpdf_apply_restore_plan(paths, report_id=report_id)
+    if plan.get("status") != "ready" or int(plan.get("blocking_count") or 0) > 0:
+        return _legalpdf_restore_blocked(
+            "LegalPDF apply restore is blocked because the restore plan contains blockers.",
+            plan=plan,
+        )
+
+    path = _resolve_legalpdf_apply_report_path(paths, report_id)
+    try:
+        report_data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IntakeError("LegalPDF apply report could not be read.") from exc
+    backup_available, backup_datasets = _safe_pre_apply_backup_datasets(report_data, paths)
+    if not backup_available:
+        return _legalpdf_restore_blocked(
+            "LegalPDF apply restore is blocked because the pre-apply backup is unavailable.",
+            plan=plan,
+        )
+
+    backup_profiles = backup_datasets.get("service_profiles") if isinstance(backup_datasets.get("service_profiles"), dict) else {}
+    backup_courts_by_key, backup_court_order = _backup_court_emails_by_key(backup_datasets)
+
+    current_profiles = load_profiles(paths.service_profiles)
+    updated_profiles = copy.deepcopy(current_profiles)
+    profile_changes: list[dict[str, Any]] = []
+    restored_profiles: list[dict[str, Any]] = []
+    for row in plan.get("restore_plan", {}).get("profiles", []):
+        if not isinstance(row, dict):
+            continue
+        target_key = str(row.get("target_key") or "").strip()
+        restore_action = str(row.get("restore_action") or "").strip()
+        if not target_key or restore_action not in {"restore_pre_apply_record", "remove_created_record"}:
+            continue
+        before = copy.deepcopy(current_profiles.get(target_key)) if target_key in current_profiles else None
+        if restore_action == "restore_pre_apply_record":
+            backup_record = backup_profiles.get(target_key) if isinstance(backup_profiles, dict) else None
+            if not isinstance(backup_record, dict):
+                return _legalpdf_restore_blocked(
+                    f"LegalPDF apply restore is blocked because the pre-apply profile is missing: {target_key}",
+                    plan=plan,
+                )
+            after = copy.deepcopy(backup_record)
+            updated_profiles[target_key] = after
+        else:
+            after = None
+            updated_profiles.pop(target_key, None)
+
+        summary = _restore_report_row(row, key_field="target_key")
+        if stable_json_hash(before) != stable_json_hash(after):
+            change = profile_change_payload(
+                profile_key=target_key,
+                before=before,
+                after=after,
+                reason=f"LegalPDF apply restore: {reason}",
+            )
+            change["restore_source"] = "legalpdf_apply_restore"
+            change["restore_of_report"] = path.stem
+            change["restore_action"] = restore_action
+            profile_changes.append(change)
+            summary["profile_change_id"] = change.get("change_id", "")
+        restored_profiles.append(summary)
+
+    current_courts = read_json_list(paths.court_emails)
+    current_court_by_key = {
+        str(record.get("key") or "").strip(): copy.deepcopy(record)
+        for record in current_courts
+        if isinstance(record, dict) and str(record.get("key") or "").strip()
+    }
+    updated_court_by_key = copy.deepcopy(current_court_by_key)
+    restored_court_emails: list[dict[str, Any]] = []
+    changed_court_keys: set[str] = set()
+    for row in plan.get("restore_plan", {}).get("court_emails", []):
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").strip()
+        restore_action = str(row.get("restore_action") or "").strip()
+        if not key or restore_action not in {"restore_pre_apply_record", "remove_created_record"}:
+            continue
+        before = copy.deepcopy(current_court_by_key.get(key))
+        if restore_action == "restore_pre_apply_record":
+            backup_record = backup_courts_by_key.get(key)
+            if not isinstance(backup_record, dict):
+                return _legalpdf_restore_blocked(
+                    f"LegalPDF apply restore is blocked because the pre-apply court email is missing: {key}",
+                    plan=plan,
+                )
+            after = copy.deepcopy(backup_record)
+            updated_court_by_key[key] = after
+        else:
+            after = None
+            updated_court_by_key.pop(key, None)
+        summary = _restore_report_row(row, key_field="key")
+        if stable_json_hash(before) != stable_json_hash(after):
+            changed_court_keys.add(key)
+        restored_court_emails.append(summary)
+
+    if not profile_changes and not changed_court_keys:
+        return {
+            "status": "no_changes",
+            "message": "LegalPDF apply restore found no local reference changes to write.",
+            "report": plan.get("report", {}),
+            "restored_profiles": restored_profiles,
+            "restored_court_emails": restored_court_emails,
+            "restore_allowed": True,
+            "write_allowed": False,
+            "managed_data_changed": False,
+            "legalpdf_write_allowed": False,
+            "send_allowed": False,
+        }
+
+    pre_restore_backup = backup_payload(paths)
+    pre_restore_backup["reason"] = f"Automatic backup before LegalPDF apply restore: {reason}"
+    pre_restore_backup_file = write_backup_file(pre_restore_backup, paths, prefix="pre-legalpdf-restore-backup")
+
+    write_json_object(paths.service_profiles, updated_profiles)
+    for change in profile_changes:
+        append_profile_change_log(change, paths)
+
+    current_order = [str(record.get("key") or "").strip() for record in current_courts if isinstance(record, dict) and str(record.get("key") or "").strip()]
+    ordered_keys: list[str] = []
+    for key in [*current_order, *backup_court_order, *sorted(updated_court_by_key)]:
+        if key in updated_court_by_key and key not in ordered_keys:
+            ordered_keys.append(key)
+    write_json_list(paths.court_emails, [updated_court_by_key[key] for key in ordered_keys])
+
+    report = {
+        "kind": "legalpdf_adapter_import_restore_report",
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "restored",
+        "message": "LegalPDF apply restore was applied to local Honorários reference data. LegalPDF Translate was not modified.",
+        "restore_reason": reason,
+        "source_apply_report_id": path.stem,
+        "restored_profiles": restored_profiles,
+        "restored_court_emails": restored_court_emails,
+        "pre_restore_backup_file": str(pre_restore_backup_file),
+        "restore_allowed": True,
+        "write_allowed": True,
+        "managed_data_changed": True,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+    paths.integration_report_output_dir.mkdir(parents=True, exist_ok=True)
+    restore_report_id = f"legalpdf-import-restore-{timestamp_slug()}-{secrets.token_hex(4)}"
+    restore_report_json_file = paths.integration_report_output_dir / f"{restore_report_id}.json"
+    restore_report_md_file = paths.integration_report_output_dir / f"{restore_report_id}.md"
+    restore_report_json_file.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    restore_report_md_file.write_text(_legalpdf_restore_report_markdown(report), encoding="utf-8")
+    return {
+        **report,
+        "restore_report_json_file": str(restore_report_json_file),
+        "restore_report_markdown_file": str(restore_report_md_file),
+        "backup_status": backup_status_payload(paths),
+    }
+
+
 def legalpdf_apply_report_detail(paths: AppPaths, *, report_id: str) -> dict[str, Any]:
     path = _resolve_legalpdf_apply_report_path(paths, report_id)
     try:
@@ -3239,15 +3489,20 @@ def profile_change_payload(
     *,
     profile_key: str,
     before: dict[str, Any] | None,
-    after: dict[str, Any],
+    after: dict[str, Any] | None,
     reason: str = "",
 ) -> dict[str, Any]:
     changed_at = datetime.now(timezone.utc).isoformat()
-    changes = diff_json_values(before or {}, after)
-    action = "created" if before is None else "updated" if changes else "unchanged"
-    after_hash = stable_json_hash(after)
+    changes = diff_json_values(before or {}, after or {})
+    if before is None and after is not None:
+        action = "created"
+    elif before is not None and after is None:
+        action = "deleted"
+    else:
+        action = "updated" if changes else "unchanged"
+    after_hash = stable_json_hash(after) if after is not None else ""
     return {
-        "change_id": f"{timestamp_slug()}_{after_hash[:12]}",
+        "change_id": f"{timestamp_slug()}_{(after_hash or stable_json_hash(before or {}))[:12]}",
         "changed_at": changed_at,
         "profile_key": profile_key,
         "action": action,
@@ -3255,7 +3510,7 @@ def profile_change_payload(
         "before_hash": stable_json_hash(before) if before is not None else "",
         "after_hash": after_hash,
         "before_profile": copy.deepcopy(before) if before is not None else None,
-        "after_profile": copy.deepcopy(after),
+        "after_profile": copy.deepcopy(after) if after is not None else None,
         "changes": changes,
         "send_allowed": False,
     }

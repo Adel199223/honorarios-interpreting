@@ -17,6 +17,7 @@ from scripts.public_release_gate import analyze_public_readiness
 from .services import (
     AppPaths,
     ai_status_payload,
+    apply_legalpdf_restore,
     apply_legalpdf_adapter_import_plan,
     apply_numbered_answers,
     backup_status_payload,
@@ -287,6 +288,24 @@ def create_app(**path_overrides: Any) -> FastAPI:
     async def api_integration_apply_restore_plan(report_id: str) -> Any:
         try:
             return legalpdf_apply_restore_plan(paths, report_id=report_id)
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "restore_allowed": False,
+                "write_allowed": False,
+                "managed_data_changed": False,
+                "legalpdf_write_allowed": False,
+                "send_allowed": False,
+            })
+
+    @app.post("/api/integration/apply-restore")
+    async def api_integration_apply_restore(payload: dict[str, Any]) -> Any:
+        try:
+            result = apply_legalpdf_restore(payload, paths)
+            if result.get("status") == "blocked":
+                return JSONResponse(status_code=400, content=result)
+            return result
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",

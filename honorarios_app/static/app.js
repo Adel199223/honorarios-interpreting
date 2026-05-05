@@ -1798,6 +1798,7 @@ function renderLegalPdfRestorePlan(data) {
   const body = $("#legalpdf-apply-detail-body");
   if (!body) return;
   const plan = data?.restore_plan || {};
+  const reportId = data?.report?.report_id || data?.source_apply_report_id || "";
   const profileRows = (plan.profiles || []).map((item) => `
     <div class="data-item import-diff-row">
       <strong>${escapeHtml(item.target_key || "profile")}</strong>
@@ -1822,6 +1823,53 @@ function renderLegalPdfRestorePlan(data) {
       ${item.blockers?.length ? `<span><strong>Blockers:</strong> ${escapeHtml(item.blockers.join(", "))}</span>` : ""}
     </div>
   `).join("");
+  const restoreControls = data?.status === "ready" && Number(data?.blocking_count || 0) === 0 && reportId
+    ? `
+      <div class="result-card blocked legalpdf-restore-confirmation">
+        <div class="result-header">
+          <div>
+            <strong>Apply this restore locally</strong>
+            <p>This writes only this app's reference files from the pre-apply backup. LegalPDF Translate was not modified, Gmail is not involved, and a pre-restore backup will be created first.</p>
+          </div>
+          <span class="status-chip blocked">Guarded write</span>
+        </div>
+        <div class="form-grid">
+          <label for="legalpdf-restore-reason">
+            Restore reason
+            <input id="legalpdf-restore-reason" autocomplete="off" placeholder="Example: imported the wrong LegalPDF profile mapping">
+          </label>
+          <label for="legalpdf-restore-phrase">
+            Confirmation phrase
+            <input id="legalpdf-restore-phrase" autocomplete="off" placeholder="RESTORE LEGALPDF APPLY BACKUP">
+          </label>
+        </div>
+        <label class="checkbox-row">
+          <input id="confirm-legalpdf-restore" type="checkbox">
+          <span>I reviewed the restore plan and want to restore this app's local reference data from the pre-apply backup.</span>
+        </label>
+        <div class="button-row compact-button-row">
+          <button type="button" class="mini-button" data-legalpdf-apply-restore-report-id="${escapeHtml(reportId)}">Restore local references from backup</button>
+        </div>
+      </div>
+    `
+    : "";
+  const restoreReport = data?.restore_report_json_file
+    ? `
+      <div class="result-card ready">
+        <div class="result-header">
+          <div>
+            <strong>Restore report</strong>
+            <p>Local restore finished with an audit report and a pre-restore backup.</p>
+          </div>
+          <span class="status-chip ready">${escapeHtml(data.status || "restored")}</span>
+        </div>
+        <div class="data-list">
+          <div class="data-item"><strong>Restore report JSON</strong><code>${escapeHtml(data.restore_report_json_file)}</code></div>
+          <div class="data-item"><strong>Pre-restore backup</strong><code>${escapeHtml(data.pre_restore_backup_file || "")}</code></div>
+        </div>
+      </div>
+    `
+    : "";
   body.innerHTML = `
     <div class="result-card ${data?.status === "ready" ? "ready" : "blocked"}">
       <div class="result-header">
@@ -1843,6 +1891,8 @@ function renderLegalPdfRestorePlan(data) {
       </div>
       <p class="field-hint">This restore plan is read-only. It shows hashes and intended actions only; no local files were changed and no LegalPDF data was touched.</p>
     </div>
+    ${restoreControls}
+    ${restoreReport}
   `;
 }
 
@@ -1863,6 +1913,25 @@ async function loadLegalPdfRestorePlan(reportId) {
   if (!reportId) throw new Error("Missing LegalPDF apply report id.");
   const data = await requestJson(`/api/integration/apply-restore-plan?report_id=${encodeURIComponent(reportId)}`);
   renderLegalPdfRestorePlan(data);
+  return data;
+}
+
+async function applyLegalPdfRestore(reportId) {
+  if (!reportId) throw new Error("Missing LegalPDF apply report id.");
+  const payload = {
+    report_id: reportId,
+    confirm_restore: Boolean($("#confirm-legalpdf-restore")?.checked),
+    confirmation_phrase: $("#legalpdf-restore-phrase")?.value.trim() || "",
+    restore_reason: $("#legalpdf-restore-reason")?.value.trim() || "",
+  };
+  const data = await requestJson("/api/integration/apply-restore", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  renderLegalPdfRestorePlan(data);
+  await loadReference();
+  await loadBackupStatus();
+  await loadLegalPdfApplyHistory();
   return data;
 }
 
@@ -2710,10 +2779,17 @@ function bindActions() {
     }
   });
   $("#legalpdf-apply-history-result").addEventListener("click", async (event) => {
+    const applyRestoreButton = event.target.closest("[data-legalpdf-apply-restore-report-id]");
     const restoreButton = event.target.closest("[data-legalpdf-restore-report-id]");
     const button = event.target.closest("[data-legalpdf-report-id]");
-    if (!button && !restoreButton) return;
+    if (!button && !restoreButton && !applyRestoreButton) return;
     try {
+      if (applyRestoreButton) {
+        maybeShowBackupReminder("restoring a LegalPDF apply backup");
+        const data = await applyLegalPdfRestore(applyRestoreButton.dataset.legalpdfApplyRestoreReportId);
+        showAlert(`Restored local LegalPDF import changes for ${data.source_apply_report_id || "the selected apply report"}. LegalPDF Translate was not modified.`, "recorded");
+        return;
+      }
       if (restoreButton) {
         const data = await loadLegalPdfRestorePlan(restoreButton.dataset.legalpdfRestoreReportId);
         showAlert(`Loaded read-only restore plan for ${data.report?.report_id || "LegalPDF apply report"}.`, "recorded");
@@ -2722,7 +2798,7 @@ function bindActions() {
       const data = await loadLegalPdfApplyDetail(button.dataset.legalpdfReportId);
       showAlert(`Loaded redacted compare detail for ${data.report?.report_id || "LegalPDF apply report"}.`, "recorded");
     } catch (error) {
-      if (restoreButton) {
+      if (restoreButton || applyRestoreButton) {
         renderLegalPdfRestorePlan({ status: "blocked", message: error.message, restore_plan: { profiles: [], court_emails: [] } });
       } else {
         renderLegalPdfApplyDetail({ status: "blocked", message: error.message, comparison: { profiles: [], court_emails: [] } });
