@@ -466,6 +466,36 @@ textarea {
   margin-top: 22px;
 }
 
+.source-drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 22px;
+  padding: 18px 20px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed rgba(130, 233, 255, 0.5);
+  background: rgba(3, 20, 34, 0.64);
+  box-shadow: inset 0 0 0 1px rgba(130, 233, 255, 0.05);
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.source-drop-zone strong,
+.source-drop-zone p {
+  margin: 0;
+}
+
+.source-drop-zone p {
+  margin-top: 5px;
+  color: var(--muted);
+}
+
+.source-drop-zone.is-dragover {
+  border-color: rgba(122, 243, 176, 0.78);
+  background: rgba(21, 74, 58, 0.32);
+  transform: translateY(-1px);
+}
+
 .upload-form {
   display: grid;
   gap: 10px;

@@ -1096,20 +1096,35 @@ async function requestJson(url, options = {}) {
   return data;
 }
 
-async function uploadSource(sourceKind) {
+function inferDroppedSourceKind(file) {
+  const name = String(file?.name || "").toLowerCase();
+  const type = String(file?.type || "").toLowerCase();
+  if (type === "application/pdf" || name.endsWith(".pdf")) return "notification_pdf";
+  if (type.startsWith("image/") || /\.(png|jpe?g|webp|heic|heif|bmp|gif|tiff?)$/.test(name)) return "photo";
+  throw new Error("Unsupported source type. Drop a PDF, photo, or screenshot.");
+}
+
+function setDropStatus(message, kind = "info") {
+  const status = $("#source-drop-status");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `field-hint source-drop-status ${kind}`.trim();
+}
+
+async function uploadSource(sourceKind, options = {}) {
   const fileInput = sourceKind === "notification_pdf"
     ? $("#notification-file")
     : sourceKind === "google_photos"
       ? $("#google-photos-file")
       : $("#photo-file");
-  const file = fileInput.files?.[0];
+  const file = options.file || fileInput.files?.[0];
   if (!file) {
     if (sourceKind === "notification_pdf") throw new Error("Choose a PDF first.");
     if (sourceKind === "google_photos") throw new Error("Choose a Google Photos image first.");
     throw new Error("Choose a photo or screenshot first.");
   }
   const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
-  const visibleText = [$("#source_text").value.trim(), googlePhotosMetadata].filter(Boolean).join("\n\n");
+  const visibleText = [$("#source_text").value.trim(), googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
   const form = new FormData();
   form.append("file", file);
   form.append("source_kind", sourceKind === "google_photos" ? "photo" : sourceKind);
@@ -1134,7 +1149,50 @@ async function uploadSource(sourceKind) {
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
   applyReview(data.review);
+  setDropStatus(`Recovered ${file.name || "dropped source"} as ${sourceKind === "notification_pdf" ? "notification PDF" : "photo/screenshot"}.`, "ready");
   return data;
+}
+
+function bindSourceDropZone() {
+  const dropZone = $("#source-drop-zone");
+  if (!dropZone) return;
+  const stop = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  ["dragenter", "dragover"].forEach((name) => {
+    dropZone.addEventListener(name, (event) => {
+      stop(event);
+      dropZone.classList.add("is-dragover");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      setDropStatus("Release to recover the local source. No PDF or Gmail draft will be created yet.");
+    });
+  });
+  ["dragleave", "dragend"].forEach((name) => {
+    dropZone.addEventListener(name, (event) => {
+      stop(event);
+      dropZone.classList.remove("is-dragover");
+    });
+  });
+  dropZone.addEventListener("drop", async (event) => {
+    stop(event);
+    dropZone.classList.remove("is-dragover");
+    const file = event.dataTransfer.files?.[0];
+    if (!file) {
+      setDropStatus("No local file was dropped.", "blocked");
+      return;
+    }
+    try {
+      const sourceKind = inferDroppedSourceKind(file);
+      setDropStatus(`Recovering ${file.name || "dropped source"}...`);
+      await uploadSource(sourceKind, { file });
+    } catch (error) {
+      setDropStatus(error.message, "blocked");
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
 }
 
 async function loadReference() {
@@ -2790,6 +2848,7 @@ function bindNavigation() {
 }
 
 function bindActions() {
+  bindSourceDropZone();
   const resetControl = $("#reset-workspace");
   if (resetControl) {
     resetControl.addEventListener("click", (event) => {
