@@ -16,7 +16,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Google Photos selected-photo bridge: choose/download one photo locally, paste visible Google Photos metadata, and recover it through the existing local photo pipeline.
 - Google Photos OAuth Picker import with secret-free status, OAuth start/callback, Picker session creation, selected-media import, and no exposure of client secrets, tokens, media IDs, base URLs, or photo URLs in app output.
 - Source evidence cards for recovered filename, profile decision, metadata date, case number, recipient, crop/partial-image warnings, and missing questions.
-- Field-level evidence ledger for upload recovery, showing whether each recovered/applied value came from deterministic text, OpenAI OCR, image metadata, known destinations, or profile defaults, with review-only confidence/status chips.
+- Field-level evidence ledger for upload recovery, showing whether each recovered/applied value came from deterministic text, OpenAI OCR, image metadata, known destinations, or profile defaults, with review-only confidence/status chips plus AI schema/prompt version and missing-field evidence.
 - Synthetic rotated/cropped legal-photo fixture coverage for Google Photos metadata dates, leading-zero case normalization, and review-only AI warnings.
 - Weak/scanned notification PDF page rendering for OpenAI recovery, including multi-page source evidence thumbnails and a safe `pdftoppm`-missing warning.
 - Numbered missing-information questions.

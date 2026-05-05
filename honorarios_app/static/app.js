@@ -968,6 +968,8 @@ function renderSourceEvidence(data) {
         <div><span>Metadata date</span><code>${escapeHtml(evidence.photo_metadata_date || metadata.exif_date || metadata.visible_metadata_date || "")}</code></div>
         <div><span>Recipient</span><code>${escapeHtml(evidence.recipient_email || "profile/default")}</code></div>
         <div><span>AI Recovery</span><code>${escapeHtml(evidence.ai_status || "not attempted")}</code></div>
+        <div><span>AI Schema</span><code>${escapeHtml(evidence.ai_schema_name || "")}</code></div>
+        <div><span>AI Prompt</span><code>${escapeHtml(evidence.ai_prompt_version || "")}</code></div>
         <div><span>Warnings</span><code>${escapeHtml(warnings.join("; ") || "none")}</code></div>
         <div><span>Rendered pages</span><strong>${escapeHtml(evidence.rendered_page_count || renderedPageUrls.length || 0)}</strong></div>
         <div><span>Questions</span><strong>${escapeHtml(evidence.question_count || 0)}</strong></div>
@@ -994,6 +996,7 @@ function renderAiRecovery(aiRecovery) {
   }
   const status = aiRecovery.status || "unknown";
   const fields = aiRecovery.fields || {};
+  const missingFields = aiRecovery.missing_fields || [];
   const warnings = aiRecovery.warnings || [];
   const indicators = aiRecovery.translation_indicators || [];
   const rawText = aiRecovery.raw_visible_text || "";
@@ -1003,9 +1006,12 @@ function renderAiRecovery(aiRecovery) {
     <div class="source-evidence-list ai-recovery-list">
       <div><span>Provider</span><code>${escapeHtml(aiRecovery.provider || "openai")}</code></div>
       <div><span>Model</span><code>${escapeHtml(aiRecovery.model || "")}</code></div>
+      <div><span>Schema</span><code>${escapeHtml(aiRecovery.schema_name || "")}</code></div>
+      <div><span>Prompt version</span><code>${escapeHtml(aiRecovery.prompt_version || "")}</code></div>
       <div><span>Attempted</span><strong>${aiRecovery.attempted ? "yes" : "no"}</strong></div>
       <div><span>Reason</span><code>${escapeHtml(aiRecovery.reason || "")}</code></div>
       <div><span>Fields found</span><code>${escapeHtml(Object.keys(fields).join(", ") || "none")}</code></div>
+      <div><span>Fields not found</span><code>${escapeHtml(missingFields.join(", ") || "none")}</code></div>
       <div><span>Warnings</span><code>${escapeHtml(warnings.join("; "))}</code></div>
       <div><span>Translation indicators</span><code>${escapeHtml(indicators.join("; "))}</code></div>
     </div>

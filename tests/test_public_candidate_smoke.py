@@ -95,8 +95,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         ai_recovery = (root / "honorarios_app" / "ai_recovery.py").read_text(encoding="utf-8")
         for text in [
             "AI_RECOVERY_RESPONSE_FORMAT",
+            "AI_RECOVERY_SCHEMA_NAME",
+            "AI_RECOVERY_PROMPT_VERSION",
+            "AI_RECOVERY_FIELD_NAMES",
+            '"prompt_version"',
+            '"missing_fields"',
             '"type": "json_schema"',
-            '"name": "honorarios_source_recovery"',
+            'AI_RECOVERY_SCHEMA_NAME = "honorarios_source_recovery"',
+            '"name": AI_RECOVERY_SCHEMA_NAME',
             '"strict": True',
             '"raw_visible_text"',
             '"fields"',

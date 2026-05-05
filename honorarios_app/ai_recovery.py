@@ -17,10 +17,26 @@ except Exception:  # pragma: no cover - exercised when dependency is absent loca
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AI_CONFIG = ROOT / "config" / "ai.local.json"
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+AI_RECOVERY_SCHEMA_NAME = "honorarios_source_recovery"
+AI_RECOVERY_PROMPT_VERSION = "honorarios-patterns-v1"
+AI_RECOVERY_FIELD_NAMES = [
+    "raw_case_number",
+    "case_number",
+    "service_date",
+    "source_document_timestamp",
+    "court_email",
+    "payment_entity",
+    "service_entity",
+    "service_entity_type",
+    "service_place",
+    "service_place_phrase",
+    "locality",
+    "inspector_or_person",
+]
 AI_RECOVERY_RESPONSE_FORMAT = {
     "format": {
         "type": "json_schema",
-        "name": "honorarios_source_recovery",
+        "name": AI_RECOVERY_SCHEMA_NAME,
         "strict": True,
         "schema": {
             "type": "object",
@@ -48,20 +64,7 @@ AI_RECOVERY_RESPONSE_FORMAT = {
                         "locality": {"type": "string"},
                         "inspector_or_person": {"type": "string"},
                     },
-                    "required": [
-                        "raw_case_number",
-                        "case_number",
-                        "service_date",
-                        "source_document_timestamp",
-                        "court_email",
-                        "payment_entity",
-                        "service_entity",
-                        "service_entity_type",
-                        "service_place",
-                        "service_place_phrase",
-                        "locality",
-                        "inspector_or_person",
-                    ],
+                    "required": AI_RECOVERY_FIELD_NAMES,
                     "additionalProperties": False,
                 },
                 "translation_indicators": {
@@ -141,6 +144,8 @@ def ai_status_payload(config_path: Path = DEFAULT_AI_CONFIG) -> dict[str, Any]:
         "package_available": bool(config.package_available),
         "key_source": config.key_source,
         "model": config.model,
+        "schema_name": AI_RECOVERY_SCHEMA_NAME,
+        "prompt_version": AI_RECOVERY_PROMPT_VERSION,
         "send_allowed": False,
         "secret_exposed": False,
     }
@@ -210,9 +215,15 @@ def _normalize_ai_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in fields.items()
         if value not in (None, "", [])
     }
+    missing_fields = [
+        key
+        for key in AI_RECOVERY_FIELD_NAMES
+        if not str(fields.get(key) or "").strip()
+    ]
     return {
         "raw_visible_text": raw_text,
         "fields": normalized_fields,
+        "missing_fields": missing_fields,
         "translation_indicators": [str(item) for item in indicators if str(item).strip()],
         "warnings": [str(item) for item in warnings if str(item).strip()],
     }
@@ -317,7 +328,10 @@ def recover_source_with_openai(
             "reason": "AI recovery not needed for this source.",
             "provider": "openai",
             "model": config.model,
+            "schema_name": AI_RECOVERY_SCHEMA_NAME,
+            "prompt_version": AI_RECOVERY_PROMPT_VERSION,
             "fields": {},
+            "missing_fields": [],
             "translation_indicators": [],
             "warnings": [],
         }
@@ -329,7 +343,10 @@ def recover_source_with_openai(
             "reason": "OPENAI_API_KEY or config/ai.local.json is not configured.",
             "provider": "openai",
             "model": config.model,
+            "schema_name": AI_RECOVERY_SCHEMA_NAME,
+            "prompt_version": AI_RECOVERY_PROMPT_VERSION,
             "fields": {},
+            "missing_fields": [],
             "translation_indicators": [],
             "warnings": [],
         }
@@ -341,7 +358,10 @@ def recover_source_with_openai(
             "reason": "The openai Python package is not installed.",
             "provider": "openai",
             "model": config.model,
+            "schema_name": AI_RECOVERY_SCHEMA_NAME,
+            "prompt_version": AI_RECOVERY_PROMPT_VERSION,
             "fields": {},
+            "missing_fields": [],
             "translation_indicators": [],
             "warnings": [],
         }
@@ -355,7 +375,10 @@ def recover_source_with_openai(
             "reason": "OpenAI API key could not be resolved.",
             "provider": "openai",
             "model": config.model,
+            "schema_name": AI_RECOVERY_SCHEMA_NAME,
+            "prompt_version": AI_RECOVERY_PROMPT_VERSION,
             "fields": {},
+            "missing_fields": [],
             "translation_indicators": [],
             "warnings": [],
         }
@@ -388,7 +411,10 @@ def recover_source_with_openai(
             "reason": f"OpenAI recovery failed: {exc}",
             "provider": "openai",
             "model": config.model,
+            "schema_name": AI_RECOVERY_SCHEMA_NAME,
+            "prompt_version": AI_RECOVERY_PROMPT_VERSION,
             "fields": {},
+            "missing_fields": [],
             "translation_indicators": [],
             "warnings": [],
         }
@@ -402,6 +428,9 @@ def recover_source_with_openai(
             "provider": "openai",
             "model": config.model,
             "fields": {},
+            "schema_name": AI_RECOVERY_SCHEMA_NAME,
+            "prompt_version": AI_RECOVERY_PROMPT_VERSION,
+            "missing_fields": normalized["missing_fields"],
             "translation_indicators": normalized["translation_indicators"],
             "warnings": [*normalized["warnings"], "No raw visible text returned."],
         }
@@ -413,5 +442,7 @@ def recover_source_with_openai(
         "reason": "",
         "provider": "openai",
         "model": config.model,
+        "schema_name": AI_RECOVERY_SCHEMA_NAME,
+        "prompt_version": AI_RECOVERY_PROMPT_VERSION,
         **normalized,
     }
