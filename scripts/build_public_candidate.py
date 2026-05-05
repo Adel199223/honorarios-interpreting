@@ -229,6 +229,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         for text in [
             "LegalPDF Honorários",
             "Start Interpretation Request",
+            "Reset workspace",
             "Review Interpretation Request",
             "Google Photos selected-photo import",
             "Open Google Photos Picker",

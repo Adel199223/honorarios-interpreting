@@ -2707,7 +2707,7 @@ async function recordDraft() {
   return data;
 }
 
-function resetReview() {
+function resetReview({ closeDrawer = true } = {}) {
   state.currentIntake = null;
   state.lastPrepared = null;
   state.draftLifecycle = null;
@@ -2739,8 +2739,37 @@ function resetReview() {
   showAlert("", "");
   showQuestions({});
   setStatus("idle", "Upload a notification or start a blank request to begin.");
+  if (closeDrawer) closeReviewDrawer();
+}
+
+function resetWorkspace() {
+  state.batchIntakes = [];
+  state.batchSelectedIndex = null;
+  state.batchPreflight = null;
+  const packetMode = $("#batch-packet-mode");
+  if (packetMode) packetMode.checked = false;
+  try {
+    resetReview({ closeDrawer: false });
+  } catch (error) {
+    console.error("Workspace review reset failed", error);
+  }
+  state.batchIntakes = [];
+  state.batchSelectedIndex = null;
+  state.batchPreflight = null;
+  if (packetMode) packetMode.checked = false;
+  renderBatchQueue();
+  renderBatchPreflight();
+  showPanel("new-job");
+  setStatus("idle", "Workspace reset. Upload a notification or start a blank request to begin.");
+  showAlert("Workspace reset. Batch queue cleared.", "recorded");
   closeReviewDrawer();
 }
+
+window.honorariosResetWorkspace = (event) => {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  resetWorkspace();
+};
 
 function showPanel(panelName) {
   document.querySelectorAll(".nav-button[data-panel]").forEach((item) => {
@@ -2761,6 +2790,21 @@ function bindNavigation() {
 }
 
 function bindActions() {
+  const resetControl = $("#reset-workspace");
+  if (resetControl) {
+    resetControl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      resetWorkspace();
+    });
+  }
+  document.addEventListener("click", (event) => {
+    const clickTarget = event.target?.closest ? event.target : event.target?.parentElement;
+    const resetButton = clickTarget?.closest("#reset-workspace");
+    if (!resetButton) return;
+    event.preventDefault();
+    resetWorkspace();
+  });
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-next-action-target]");
     if (!button) return;

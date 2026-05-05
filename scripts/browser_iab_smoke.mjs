@@ -384,6 +384,16 @@ export async function runBrowserIabSmoke(options = {}) {
     }
   }
 
+  if (!(await runStep(checks, "browser_workspace_reset", "Browser/IAB reset the synthetic workspace after smoke checks.", async () => {
+    await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
+    await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
+    await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+    await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
+    await expectBodyText(tab, "Reset workspace", args.timeoutMs);
+  }))) {
+    return report(baseUrl, checks);
+  }
+
   return report(baseUrl, checks);
 }
 

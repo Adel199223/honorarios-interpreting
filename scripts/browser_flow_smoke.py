@@ -345,6 +345,13 @@ def run_browser_flow_smoke(
                 _expect_record_id(),
             )):
                 return _report(base, checks)
+
+        if not _safe_step(checks, "browser_workspace_reset", "Browser reset the synthetic workspace after smoke checks.", lambda: (
+            driver.click("#reset-workspace"),
+            driver.expect_selector_text("#batch-count-chip", "0 queued"),
+            driver.expect_text("Workspace reset"),
+        )):
+            return _report(base, checks)
     finally:
         if temp_dir is not None:
             temp_dir.cleanup()

@@ -23,6 +23,8 @@ When the Review drawer shows missing numbered questions, paste compact answers i
 
 Use the `Next Safe Action` card as the daily workflow guide. It is computed from the same review/preflight responses as the backend, so it should say whether to answer numbered questions, set aside a translation source, stop for a duplicate, enter correction mode, prepare the PDF, or review Gmail `_create_draft` arguments before recording IDs.
 
+Use the left-sidebar `Reset workspace` button when you want to clear the visible browser state and start fresh. It resets the current intake form, upload forms, prepared payload preview, correction fields, draft lifecycle card, and Batch Queue. It does not delete generated PDFs, draft payload files, duplicate-index records, draft-log records, reference data, or Gmail drafts.
+
 If the queued requests should be sent together, enable `Packet mode` before preparing. Packet mode is still draft-only: it requires one shared recipient, builds the individual PDFs, combines the PDFs and any already-declared supporting attachments into one packet PDF, and makes that packet the only `attachment_files` entry in the Gmail `_create_draft` args. The displayed Batch Queue order is the packet order; drag requests or use `Move up` / `Move down` before preparing when declarations or same-day periods need a specific sequence. Use `Inspect` on each queued row to review the Packet item inspector before generation; it shows the generated requerimento PDF position plus any supporting attachments that will follow that request. The packet payload carries `underlying_requests` so recording the Gmail draft still protects every case/date/period in the duplicate index. The prepared packet result includes a Packet draft recording helper with a copyable `record_gmail_draft.py` command and a JSON object, so the packet draft and all underlying duplicate blockers can be logged without retyping paths. The Record Gmail Draft card can parse a pasted Gmail connector response into draft/message/thread IDs, then autofill the latest prepared packet or individual payload path while preserving those IDs. The one-click `Record parsed response + prepared payload` action combines those local steps after `_create_draft` has already returned, so logging a reviewed draft no longer depends on manually clicking three separate buttons.
 
 It performs the local work in this order:
@@ -137,6 +139,8 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This check deliberately stops before artifact-writing preparation, `Record draft`, and any Gmail action. It also verifies the `Next Safe Action` surface in the review drawer and the browser `Check batch preflight` card. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
 
+Successful browser smoke checks finish by resetting the workspace, so synthetic smoke cases and queued test requests are cleared from the open browser tab. The Python browser smoke clicks `Reset workspace`; the Browser/IAB runner verifies that control is present and then reloads the local app because the IAB adapter can be inconsistent with sidebar link activation.
+
 When working inside Codex with the Browser plugin, use the Browser/IAB runner instead of optional Python Playwright for the normal review/batch path. The Python smoke command can print the exact Node REPL handoff cell:
 
 ```powershell
@@ -158,7 +162,7 @@ const result = await runBrowserIabSmoke({
 nodeRepl.write(JSON.stringify(result, null, 2));
 ```
 
-This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
+This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, resets the temporary workspace by reloading the local app, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
 To cover upload recovery and `Review Attention` even when Python Playwright is not installed, use the API-level source upload smoke:
 

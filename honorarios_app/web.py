@@ -68,8 +68,8 @@ def build_paths(**overrides: Any) -> AppPaths:
 def static_asset_version() -> str:
     static_dir = PACKAGE_DIR / "static"
     asset_paths = [static_dir / "app.js", static_dir / "style.css"]
-    mtimes = [path.stat().st_mtime for path in asset_paths if path.exists()]
-    return str(int(max(mtimes))) if mtimes else "dev"
+    mtimes = [path.stat().st_mtime_ns for path in asset_paths if path.exists()]
+    return str(max(mtimes)) if mtimes else "dev"
 
 
 def create_app(**path_overrides: Any) -> FastAPI:

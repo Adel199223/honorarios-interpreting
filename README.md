@@ -50,6 +50,7 @@ The app supports the main workflow:
 - record the parsed Gmail response and latest prepared payload in one local-only step after the draft is created externally
 - handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
 - filter Recent Work by lifecycle state (`active`, `drafted`, `sent`, `superseded`, `trashed`, `not_found`) to separate current duplicate blockers from audit history
+- reset the current browser workspace when a test or old review leaves synthetic fields, prepared payloads, or queued requests on screen
 - maintain known destinations/kilometers and court email aliases from the References screen
 - maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
 - export and restore private local backups for reference data, duplicate records, and draft lifecycle logs
@@ -76,6 +77,8 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 ```
 
 This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, adds it to the batch queue, and runs the non-writing `Check batch preflight` action. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
+
+Browser smoke checks now reset the workspace at the end of a successful run, so synthetic values such as `999/26.0SMOKE` and queued test requests do not linger in the open app tab. Python browser smoke clicks `Reset workspace`; the Browser/IAB smoke verifies that control and then reloads the local app as a safer adapter-compatible reset. You can also click `Reset workspace` yourself in the left sidebar when you want a clean New Job surface without changing any real duplicate records, draft logs, generated PDFs, or Gmail state.
 
 Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can also verify the numbered missing-info answer loop and the References -> LegalPDF Apply History, redacted Details, read-only Restore Plan surface, and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail:
 
