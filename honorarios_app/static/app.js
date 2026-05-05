@@ -917,6 +917,55 @@ function renderFieldEvidence(fieldEvidence) {
   `;
 }
 
+function attentionChipClass(status) {
+  if (status === "ready") return "ready";
+  if (status === "blocked") return "blocked";
+  if (status === "error") return "error";
+  return "info";
+}
+
+function renderSourceAttention(attention) {
+  const flags = Array.isArray(attention?.flags) ? attention.flags : [];
+  const status = String(attention?.status || (flags.length ? "review" : "ready")).toLowerCase();
+  const safeStatus = status.replace(/[^a-z0-9_-]/g, "");
+  if (!flags.length) {
+    return `
+      <div class="source-attention-card attention-ready">
+        <div class="result-header compact-result-header">
+          <div>
+            <strong>Review Attention</strong>
+            <p>No upload attention flags. Continue with the normal review, duplicate, PDF, and draft-only checks.</p>
+          </div>
+          <span class="status-chip ready attention-severity">ready</span>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="source-attention-card attention-${escapeHtml(safeStatus)}">
+      <div class="result-header compact-result-header">
+        <div>
+          <strong>Review Attention</strong>
+          <p>These flags summarize what needs human review before PDF or Gmail draft work.</p>
+        </div>
+        <span class="status-chip ${attentionChipClass(safeStatus)} attention-severity">${escapeHtml(status)}</span>
+      </div>
+      <div class="attention-flags">
+        ${flags.map((flag) => {
+          const severity = String(flag.severity || "review").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+          return `
+            <div class="attention-flag ${escapeHtml(severity)}">
+              <span class="attention-code">${escapeHtml(flag.code || "review")}</span>
+              <strong>${escapeHtml(flag.title || "Review")}</strong>
+              <p>${escapeHtml(flag.detail || "")}</p>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderSourceEvidence(data) {
   const box = $("#source-evidence");
   const body = $("#source-evidence-body");
@@ -935,6 +984,7 @@ function renderSourceEvidence(data) {
     ? `${profileDecision.mode || "auto"}: ${profileDecision.profile_key}${profileDecision.suggested_profile_key && profileDecision.suggested_profile_key !== profileDecision.profile_key ? ` (suggested ${profileDecision.suggested_profile_key})` : ""}`
     : "not decided";
   const fieldEvidence = renderFieldEvidence(evidence.field_evidence || []);
+  const sourceAttention = renderSourceAttention(evidence.attention || {});
   const proposalPayload = profileProposal.payload || {};
   const proposal = profileProposal.status && profileProposal.status !== "not_needed"
     ? `<div class="profile-proposal-card">
@@ -957,6 +1007,7 @@ function renderSourceEvidence(data) {
         </div>`
       : `<a class="source-preview-link" href="${escapeHtml(source.artifact_url)}" target="_blank" rel="noreferrer">Open uploaded PDF source</a>`;
   body.innerHTML = `
+    ${sourceAttention}
     <div class="source-evidence-layout">
       <div class="source-evidence-list">
         <div><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>

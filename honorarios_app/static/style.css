@@ -1205,6 +1205,60 @@ pre {
   color: var(--muted-2);
 }
 
+.source-attention-card {
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(4, 14, 24, 0.72);
+  border: 1px solid rgba(117, 218, 255, 0.18);
+}
+
+.source-attention-card.attention-blocked {
+  border-color: rgba(255, 208, 138, 0.36);
+  background: rgba(71, 48, 19, 0.32);
+}
+
+.source-attention-card.attention-ready {
+  border-color: rgba(122, 243, 176, 0.24);
+  background: rgba(13, 55, 43, 0.24);
+}
+
+.attention-flags {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.attention-flag {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(6, 16, 28, 0.8);
+  border: 1px solid rgba(117, 218, 255, 0.14);
+}
+
+.attention-flag.blocked {
+  border-color: rgba(255, 208, 138, 0.42);
+  background: rgba(91, 56, 18, 0.28);
+}
+
+.attention-flag.review {
+  border-color: rgba(130, 233, 255, 0.22);
+}
+
+.attention-code {
+  color: var(--muted-2);
+  font-size: 0.74rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.attention-flag p {
+  margin: 0;
+  color: var(--muted);
+}
+
 .field-evidence-card {
   margin-top: 16px;
   padding-top: 14px;

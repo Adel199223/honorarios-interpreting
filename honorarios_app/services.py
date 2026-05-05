@@ -888,6 +888,140 @@ def build_profile_evidence(profile_decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _attention_flag(code: str, severity: str, title: str, detail: str) -> dict[str, Any]:
+    return {
+        "code": code,
+        "severity": severity,
+        "title": title,
+        "detail": detail,
+    }
+
+
+def build_source_attention(
+    *,
+    candidate: dict[str, Any],
+    review: dict[str, Any],
+    ai_recovery: dict[str, Any],
+    profile_decision: dict[str, Any],
+    profile_proposal: dict[str, Any],
+    field_evidence: list[dict[str, Any]],
+    warnings: list[str],
+) -> dict[str, Any]:
+    flags: list[dict[str, Any]] = []
+    review_status = str(review.get("status") or "").strip()
+
+    if review_status == "set_aside":
+        flags.append(_attention_flag(
+            "translation_set_aside",
+            "blocked",
+            "Translation or word-count source",
+            "This source was set aside before questions or PDF generation.",
+        ))
+    elif review_status == "needs_info":
+        question_count = len(review.get("questions") or [])
+        flags.append(_attention_flag(
+            "missing_required_info",
+            "blocked",
+            "Missing required information",
+            f"{question_count} numbered question{'s' if question_count != 1 else ''} must be answered before generation.",
+        ))
+    elif review_status == "duplicate":
+        flags.append(_attention_flag(
+            "duplicate_request",
+            "blocked",
+            "Possible duplicate",
+            "A drafted or sent request already matches this case/date/period.",
+        ))
+    elif review_status == "active_draft":
+        flags.append(_attention_flag(
+            "active_draft",
+            "blocked",
+            "Active draft exists",
+            "Use correction mode only if this is an intentional replacement.",
+        ))
+    elif review_status == "error":
+        flags.append(_attention_flag(
+            "review_error",
+            "blocked",
+            "Review error",
+            str(review.get("message") or "The intake could not be reviewed safely."),
+        ))
+
+    if any(str(item.get("status") or "") == "conflicts_with_metadata" for item in field_evidence):
+        flags.append(_attention_flag(
+            "date_conflict",
+            "blocked",
+            "Date conflict",
+            "The recovered service date conflicts with image metadata and needs confirmation.",
+        ))
+
+    cleaned_warnings = [str(item).strip() for item in warnings if str(item).strip()]
+    if cleaned_warnings:
+        flags.append(_attention_flag(
+            "source_warnings",
+            "review",
+            "Inspect source quality",
+            "; ".join(cleaned_warnings[:3]),
+        ))
+
+    ai_status = str(ai_recovery.get("status") or "").strip()
+    if ai_status in {"failed", "unavailable"}:
+        flags.append(_attention_flag(
+            "ai_recovery_issue",
+            "review",
+            "AI recovery issue",
+            str(ai_recovery.get("reason") or "AI recovery did not produce usable evidence."),
+        ))
+    elif ai_status == "ok":
+        missing_ai_fields = {str(field) for field in ai_recovery.get("missing_fields", [])}
+        critical_missing: list[str] = []
+        critical_map = {
+            "case_number": "case_number",
+            "service_date": "service_date",
+            "payment_entity": "payment_entity",
+            "court_email": "recipient_email",
+            "service_place": "service_place",
+        }
+        for ai_field, intake_field in critical_map.items():
+            if ai_field in missing_ai_fields and not str(candidate.get(intake_field) or "").strip():
+                critical_missing.append(intake_field)
+        if critical_missing:
+            flags.append(_attention_flag(
+                "ai_missing_critical_fields",
+                "review",
+                "AI missed critical fields",
+                "Still missing from the candidate: " + ", ".join(critical_missing),
+            ))
+
+    if str(profile_decision.get("mode") or "") == "auto_fallback":
+        flags.append(_attention_flag(
+            "profile_fallback",
+            "review",
+            "Generic profile fallback",
+            "Auto-detect did not find a high-confidence service profile.",
+        ))
+
+    if str(profile_proposal.get("status") or "") not in {"", "not_needed"}:
+        flags.append(_attention_flag(
+            "profile_proposal",
+            "review",
+            "Reusable profile proposal",
+            "A new recurring pattern can be previewed in the guarded profile editor.",
+        ))
+
+    status = "ready"
+    if any(flag["severity"] == "blocked" for flag in flags):
+        status = "blocked"
+    elif flags:
+        status = "review"
+
+    return {
+        "status": status,
+        "flag_count": len(flags),
+        "flags": flags,
+    }
+
+
 def combine_text_parts(*parts: str) -> str:
     seen: set[str] = set()
     output: list[str] = []
@@ -1553,6 +1687,15 @@ def recover_source_upload(
         *[str(item) for item in metadata.get("warnings", []) if str(item).strip()],
         *[str(item) for item in ai_recovery.get("warnings", []) if str(item).strip()],
     ]
+    source_attention = build_source_attention(
+        candidate=candidate,
+        review=review,
+        ai_recovery=ai_recovery,
+        profile_decision=profile_decision,
+        profile_proposal=profile_proposal,
+        field_evidence=field_evidence,
+        warnings=source_warnings,
+    )
 
     return {
         "status": "uploaded",
@@ -1588,6 +1731,7 @@ def recover_source_upload(
             "auto_profile": profile_decision,
             "profile_evidence": profile_evidence,
             "field_evidence": field_evidence,
+            "attention": source_attention,
             "profile_proposal": profile_proposal,
             "warnings": source_warnings,
             "rendered_page_urls": [item["artifact_url"] for item in metadata.get("rendered_pages", [])],

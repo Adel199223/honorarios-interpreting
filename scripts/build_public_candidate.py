@@ -293,6 +293,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, app_js)
                 self.assertIn(text, smoke_js)
+        for text in [
+            "function renderSourceAttention",
+            "Review Attention",
+            "attention-flags",
+            "attention-severity",
+        ]:
+            with self.subTest(source_attention=text):
+                self.assertIn(text, app_js)
         self.assertNotIn("_send_email", app_js)
         self.assertNotIn("_send_draft", app_js)
         self.assertNotIn("_send_email", smoke_js)
