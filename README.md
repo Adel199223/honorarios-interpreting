@@ -85,6 +85,14 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 The shell command returns a Node REPL handoff cell because raw subprocesses should not drive the in-app Browser directly.
 
+To verify upload recovery and `Review Attention` without any browser driver or file-picker support, use the API-level source upload smoke:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --source-upload-checks --json
+```
+
+This uploads disposable synthetic photo/PDF sources directly to `/api/sources/upload`, checks Source Evidence, recovered PDF candidate fields, `Review Attention`, and `send_allowed: false`, and never calls `/api/prepare`, draft recording, draft status, or Gmail. It may store synthetic source-preview artifacts in the configured source upload folder; run it through `scripts/isolated_app_smoke.py --source-upload-checks --json` when you want that state fully disposable.
+
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 
 ```powershell

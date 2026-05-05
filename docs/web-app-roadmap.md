@@ -54,6 +54,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
 - Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist/import-plan APIs, and the privacy gate.
 - Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, `Next Safe Action` surface, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts by default.
+- API-level source upload smoke (`--source-upload-checks`) that posts disposable synthetic photo/PDF sources to `/api/sources/upload` and verifies Source Evidence, recovered PDF candidate fields, Review Attention, and `send_allowed: false` without requiring Python Playwright, preparing PDFs, recording drafts, or calling Gmail.
 - Opt-in interaction smoke mode (`--interaction-checks`) that exercises profile intake, active-draft checking, packet-mode prepare, attachment-array validation, and underlying-request duplicate-tracking contract through injected test hooks or disposable local state while still requiring `send_allowed: false` throughout.
 - Opt-in browser click-through smoke (`--browser-click-through`) that opens the app in a real browser driver when available, verifies the profile-to-review-drawer path, adds a reviewed request to the batch queue, and runs the non-writing batch preflight without clicking artifact-writing prepare or recording drafts by default.
 - Optional browser upload/correction smoke flags (`--browser-upload-photo`, `--browser-upload-pdf`, and `--browser-correction-mode`) that verify local Source Evidence and draft-lifecycle UI with disposable synthetic files while still blocking prepare, record, and draft-status endpoints by default.
@@ -88,7 +89,7 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Extend Browser/IAB smoke to file-upload evidence only if/when the Browser runtime exposes a safe local file-input API; until then, keep upload smoke on Python Playwright or API-level synthetic fixtures.
+1. Extend Browser/IAB smoke to file-upload evidence only if/when the Browser runtime exposes a safe local file-input API; until then, keep UI upload smoke on Python Playwright and use API-level synthetic fixtures for dependency-free upload evidence checks.
 2. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

@@ -158,6 +158,14 @@ nodeRepl.write(JSON.stringify(result, null, 2));
 
 This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
+To cover upload recovery and `Review Attention` even when Python Playwright is not installed, use the API-level source upload smoke:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --source-upload-checks --json
+```
+
+This posts disposable synthetic photo and notification-PDF sources directly to `/api/sources/upload`, checks Source Evidence, recovered PDF candidate fields, `Review Attention`, and `send_allowed: false`, and never calls prepare, draft recording/status, or Gmail. Use `python scripts/isolated_app_smoke.py --source-upload-checks --json` when you want the synthetic source-preview artifacts to live only in a temporary runtime.
+
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 
 ```powershell

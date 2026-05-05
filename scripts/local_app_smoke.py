@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from io import BytesIO
 import json
 import os
 import subprocess
 import sys
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +21,7 @@ if __package__ in (None, ""):
 TextFetcher = Callable[[str], str]
 JsonFetcher = Callable[[str], Any]
 PostJsonFetcher = Callable[[str, dict[str, Any]], Any]
+PostMultipartFetcher = Callable[[str, dict[str, str], str, bytes, str], Any]
 BrowserRunner = Callable[..., dict[str, Any]]
 
 LANDMARKS = [
@@ -88,6 +91,47 @@ def _http_post_json(url: str, payload: dict[str, Any], timeout: float) -> Any:
         return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
+def _http_post_multipart(
+    url: str,
+    fields: dict[str, str],
+    filename: str,
+    content: bytes,
+    content_type: str,
+    timeout: float,
+) -> Any:
+    boundary = f"----honorarios-smoke-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend([
+            f"--{boundary}\r\n".encode("ascii"),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ])
+    safe_filename = Path(filename).name.replace('"', "")
+    chunks.extend([
+        f"--{boundary}\r\n".encode("ascii"),
+        f'Content-Disposition: form-data; name="file"; filename="{safe_filename}"\r\n'.encode("ascii"),
+        f"Content-Type: {content_type}\r\n\r\n".encode("ascii"),
+        content,
+        b"\r\n",
+        f"--{boundary}--\r\n".encode("ascii"),
+    ])
+    body = b"".join(chunks)
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
 def _check(name: str, passed: bool, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "name": name,
@@ -120,6 +164,31 @@ def _send_allowed_check(name: str, payload: Any, success_message: str) -> dict[s
         success_message if not non_false else "Response exposes a non-false send_allowed value.",
         {"non_false_send_allowed": non_false, "send_allowed_paths": send_values},
     )
+
+
+_TINY_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?"
+    b"\x00\x05\xfe\x02\xfeA\xde\xfc\x97\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _synthetic_notification_pdf(case_number: str, service_date: str) -> bytes:
+    try:
+        from reportlab.pdfgen import canvas
+    except Exception as exc:  # pragma: no cover - dependency is part of the app, but keep the smoke readable.
+        raise RuntimeError(f"Cannot create synthetic PDF fixture because reportlab is unavailable: {exc}") from exc
+
+    raw_case = f"000{case_number}" if not str(case_number).startswith("000") else str(case_number)
+    day, month, year = service_date.split("-")[2], service_date.split("-")[1], service_date.split("-")[0]
+    output = BytesIO()
+    document = canvas.Canvas(output)
+    document.drawString(72, 720, f"NUIPC {raw_case}")
+    document.drawString(72, 700, f"Data/Hora da diligência: {day}/{month}/{year} 10:00")
+    document.drawString(72, 680, "Local: Posto Territorial de Serpa")
+    document.drawString(72, 660, "Email: court@example.test")
+    document.save()
+    return output.getvalue()
 
 
 def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str, Any]:
@@ -409,6 +478,113 @@ def _run_interaction_checks(
     return checks
 
 
+def _attention_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    evidence = payload.get("source_evidence") if isinstance(payload.get("source_evidence"), dict) else {}
+    attention = evidence.get("attention") if isinstance(evidence.get("attention"), dict) else {}
+    flags = attention.get("flags") if isinstance(attention.get("flags"), list) else []
+    return {
+        "status": attention.get("status"),
+        "flag_count": attention.get("flag_count"),
+        "codes": [flag.get("code") for flag in flags if isinstance(flag, dict)],
+    }
+
+
+def _upload_response_has_attention(payload: Any) -> bool:
+    summary = _attention_summary(payload)
+    return summary.get("status") in {"ready", "review", "blocked"} and isinstance(summary.get("flag_count"), int)
+
+
+def _run_source_upload_checks(
+    base: str,
+    *,
+    post_multipart: PostMultipartFetcher,
+    case_number: str,
+    service_date: str,
+    profile: str = "",
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+
+    photo_payload = {
+        "source_kind": "photo",
+        "profile": profile,
+        "visible_metadata_text": f"Filename: {service_date.replace('-', '')}_100000.jpg\nDate: {service_date}",
+    }
+    try:
+        photo_response = post_multipart(
+            _url(base, "/api/sources/upload"),
+            photo_payload,
+            f"{service_date.replace('-', '')}_100000.jpg",
+            _TINY_PNG,
+            "image/png",
+        )
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        checks.append(_check("source_upload_photo_attention", False, f"Could not upload synthetic photo source: {exc}"))
+    else:
+        checks.append(_send_allowed_check(
+            "source_upload_photo_send_allowed",
+            photo_response,
+            "Synthetic photo upload keeps send_allowed false.",
+        ))
+        attention_ready = (
+            isinstance(photo_response, dict)
+            and photo_response.get("status") == "uploaded"
+            and _upload_response_has_attention(photo_response)
+        )
+        checks.append(_check(
+            "source_upload_photo_attention",
+            attention_ready,
+            "Synthetic photo upload returns Source Evidence with Review Attention." if attention_ready else "Synthetic photo upload did not return Source Evidence attention.",
+            _attention_summary(photo_response),
+        ))
+
+    pdf_bytes = _synthetic_notification_pdf(case_number, service_date)
+    pdf_payload = {
+        "source_kind": "notification_pdf",
+        "profile": profile,
+        "visible_metadata_text": "",
+    }
+    try:
+        pdf_response = post_multipart(
+            _url(base, "/api/sources/upload"),
+            pdf_payload,
+            "synthetic-notification.pdf",
+            pdf_bytes,
+            "application/pdf",
+        )
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        checks.append(_check("source_upload_pdf_evidence", False, f"Could not upload synthetic PDF source: {exc}"))
+    else:
+        checks.append(_send_allowed_check(
+            "source_upload_pdf_send_allowed",
+            pdf_response,
+            "Synthetic PDF upload keeps send_allowed false.",
+        ))
+        candidate = pdf_response.get("candidate_intake") if isinstance(pdf_response, dict) else {}
+        pdf_ready = (
+            isinstance(pdf_response, dict)
+            and pdf_response.get("status") == "uploaded"
+            and isinstance(candidate, dict)
+            and candidate.get("case_number") == case_number
+            and candidate.get("service_date") == service_date
+            and _upload_response_has_attention(pdf_response)
+        )
+        details = {
+            "case_number": candidate.get("case_number") if isinstance(candidate, dict) else None,
+            "service_date": candidate.get("service_date") if isinstance(candidate, dict) else None,
+            "attention": _attention_summary(pdf_response),
+        }
+        checks.append(_check(
+            "source_upload_pdf_evidence",
+            pdf_ready,
+            "Synthetic PDF upload recovers candidate fields and Review Attention without preparing artifacts." if pdf_ready else "Synthetic PDF upload did not recover the expected candidate evidence.",
+            details,
+        ))
+
+    return checks
+
+
 def run_smoke(
     base_url: str = "http://127.0.0.1:8766",
     *,
@@ -416,7 +592,10 @@ def run_smoke(
     fetch_text: TextFetcher | None = None,
     fetch_json: JsonFetcher | None = None,
     post_json: PostJsonFetcher | None = None,
+    post_multipart: PostMultipartFetcher | None = None,
     interaction_checks: bool = False,
+    source_upload_checks: bool = False,
+    source_upload_profile: str = "",
     interaction_profile: str = "example_interpreting",
     interaction_case_number: str = "999/26.0SMOKE",
     interaction_service_date: str = "2026-05-04",
@@ -436,6 +615,7 @@ def run_smoke(
     text_fetcher = fetch_text or (lambda url: _http_text(url, timeout))
     json_fetcher = fetch_json or (lambda url: _http_json(url, timeout))
     json_poster = post_json or (lambda url, payload: _http_post_json(url, payload, timeout))
+    multipart_poster = post_multipart or (lambda url, fields, filename, content, content_type: _http_post_multipart(url, fields, filename, content, content_type, timeout))
     checks: list[dict[str, Any]] = []
     endpoint_payloads: dict[str, Any] = {}
 
@@ -506,6 +686,15 @@ def run_smoke(
             profile=interaction_profile,
             case_number=interaction_case_number,
             service_date=interaction_service_date,
+        ))
+
+    if source_upload_checks:
+        checks.extend(_run_source_upload_checks(
+            base,
+            post_multipart=multipart_poster,
+            case_number=interaction_case_number,
+            service_date=interaction_service_date,
+            profile=source_upload_profile,
         ))
 
     if browser_click_through:
@@ -587,6 +776,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--interaction-checks", action="store_true", help="Also exercise the opt-in profile/review/packet-prepare contract. This may create local draft payload/PDF artifacts on a real app.")
+    parser.add_argument("--source-upload-checks", action="store_true", help="Upload disposable synthetic photo/PDF sources through the API and verify Source Evidence/Review Attention without preparing PDFs or drafts.")
+    parser.add_argument("--source-upload-profile", default="", help="Optional profile key to pass to source upload smoke. Defaults to Auto-detect.")
     parser.add_argument("--interaction-profile", default="example_interpreting")
     parser.add_argument("--interaction-case-number", default="999/26.0SMOKE")
     parser.add_argument("--interaction-service-date", default="2026-05-04")
@@ -607,6 +798,8 @@ def main(argv: list[str] | None = None) -> int:
         args.base_url,
         timeout=args.timeout,
         interaction_checks=args.interaction_checks,
+        source_upload_checks=args.source_upload_checks,
+        source_upload_profile=args.source_upload_profile,
         interaction_profile=args.interaction_profile,
         interaction_case_number=args.interaction_case_number,
         interaction_service_date=args.interaction_service_date,

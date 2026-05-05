@@ -318,6 +318,64 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("workflow_batch_preflight", {check["name"] for check in report["checks"]})
         self.assertIn("workflow_prepare_packet_payload", {check["name"] for check in report["checks"]})
 
+    def test_local_app_smoke_runner_source_upload_contract_is_injectable(self):
+        client = self.make_client()
+        seen_uploads = []
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        def post_multipart(url, fields, filename, content, content_type):
+            seen_uploads.append((url, dict(fields), filename, content_type, len(content)))
+            if fields["source_kind"] == "photo":
+                return {
+                    "status": "uploaded",
+                    "send_allowed": False,
+                    "source": {"filename": filename, "send_allowed": False},
+                    "candidate_intake": {},
+                    "source_evidence": {
+                        "filename": filename,
+                        "attention": {
+                            "status": "blocked",
+                            "flag_count": 1,
+                            "flags": [{"code": "missing_required_info", "severity": "blocked"}],
+                        },
+                    },
+                }
+            if fields["source_kind"] == "notification_pdf":
+                return {
+                    "status": "uploaded",
+                    "send_allowed": False,
+                    "source": {"filename": filename, "send_allowed": False},
+                    "candidate_intake": {"case_number": "999/26.0SMOKE", "service_date": "2026-05-04"},
+                    "source_evidence": {
+                        "filename": filename,
+                        "case_number": "999/26.0SMOKE",
+                        "service_date": "2026-05-04",
+                        "attention": {"status": "ready", "flag_count": 0, "flags": []},
+                    },
+                }
+            raise AssertionError(fields)
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+            post_multipart=post_multipart,
+            source_upload_checks=True,
+        )
+        self.assertEqual(report["status"], "ready", report)
+        self.assertIn("source_upload_photo_attention", {check["name"] for check in report["checks"]})
+        self.assertIn("source_upload_pdf_evidence", {check["name"] for check in report["checks"]})
+        self.assertEqual([item[1]["source_kind"] for item in seen_uploads], ["photo", "notification_pdf"])
+
     def test_local_app_smoke_runner_browser_click_through_contract_is_injectable(self):
         client = self.make_client()
         seen_kwargs = {}
