@@ -17,6 +17,67 @@ except Exception:  # pragma: no cover - exercised when dependency is absent loca
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AI_CONFIG = ROOT / "config" / "ai.local.json"
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+AI_RECOVERY_RESPONSE_FORMAT = {
+    "format": {
+        "type": "json_schema",
+        "name": "honorarios_source_recovery",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "raw_visible_text": {
+                    "type": "string",
+                    "description": "All visible OCR text, preserving useful line breaks. Use an empty string only when no text is visible.",
+                },
+                "fields": {
+                    "type": "object",
+                    "properties": {
+                        "raw_case_number": {"type": "string"},
+                        "case_number": {"type": "string"},
+                        "service_date": {"type": "string"},
+                        "source_document_timestamp": {"type": "string"},
+                        "court_email": {"type": "string"},
+                        "payment_entity": {"type": "string"},
+                        "service_entity": {"type": "string"},
+                        "service_entity_type": {
+                            "type": "string",
+                            "enum": ["", "court", "ministerio_publico", "gnr", "psp", "police", "other"],
+                        },
+                        "service_place": {"type": "string"},
+                        "service_place_phrase": {"type": "string"},
+                        "locality": {"type": "string"},
+                        "inspector_or_person": {"type": "string"},
+                    },
+                    "required": [
+                        "raw_case_number",
+                        "case_number",
+                        "service_date",
+                        "source_document_timestamp",
+                        "court_email",
+                        "payment_entity",
+                        "service_entity",
+                        "service_entity_type",
+                        "service_place",
+                        "service_place_phrase",
+                        "locality",
+                        "inspector_or_person",
+                    ],
+                    "additionalProperties": False,
+                },
+                "translation_indicators": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["raw_visible_text", "fields", "translation_indicators", "warnings"],
+            "additionalProperties": False,
+        },
+    }
+}
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 CASE_NUMBER_RE = re.compile(r"\b0*\d+/\d{2}\.[A-Z0-9.]+\b", re.IGNORECASE)
 ISO_DATE_RE = re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")
@@ -167,6 +228,7 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         '  "raw_visible_text": "all visible OCR text, preserving useful line breaks",\n'
         '  "fields": {\n'
         '    "raw_case_number": "",\n'
+        '    "case_number": "",\n'
         '    "service_date": "YYYY-MM-DD if explicitly visible as service/diligence/metadata date",\n'
         '    "source_document_timestamp": "",\n'
         '    "court_email": "",\n'
@@ -303,6 +365,7 @@ def recover_source_with_openai(
                     ],
                 }
             ],
+            text=AI_RECOVERY_RESPONSE_FORMAT,
             store=False,
         )
         text = _extract_output_text(response)
