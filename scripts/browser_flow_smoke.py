@@ -166,6 +166,37 @@ def _make_synthetic_pdf(temp_dir: Path, *, case_number: str, service_date: str) 
     return path
 
 
+def _make_synthetic_supporting_pdf(temp_dir: Path, *, case_number: str, service_date: str) -> Path:
+    path = temp_dir / "synthetic-declaracao.pdf"
+    year, month, day = service_date.split("-")
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+    except Exception:
+        path.write_bytes(
+            b"%PDF-1.4\n"
+            b"1 0 obj<<>>endobj\n"
+            b"2 0 obj<< /Length 120 >>stream\n"
+            b"BT /F1 12 Tf 72 760 Td (DECLARACAO) Tj 0 -18 Td "
+            b"(Documento comprovativo sintetico) Tj ET\n"
+            b"endstream endobj\n"
+            b"3 0 obj<< /Type /Page /Parent 4 0 R /Contents 2 0 R /Resources << /Font << /F1 5 0 R >> >> >>endobj\n"
+            b"4 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n"
+            b"5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n"
+            b"6 0 obj<< /Type /Catalog /Pages 4 0 R >>endobj\n"
+            b"xref\n0 7\n0000000000 65535 f \ntrailer<< /Root 6 0 R /Size 7 >>\nstartxref\n0\n%%EOF\n"
+        )
+        return path
+
+    pdf = canvas.Canvas(str(path), pagesize=A4)
+    pdf.drawString(72, 780, "DECLARAÇÃO")
+    pdf.drawString(72, 760, f"NUIPC: {case_number}")
+    pdf.drawString(72, 740, f"Presença em {day}/{month}/{year}")
+    pdf.drawString(72, 720, "Documento comprovativo sintético para browser smoke.")
+    pdf.save()
+    return path
+
+
 def run_browser_flow_smoke(
     driver: Any | None = None,
     base_url: str = "http://127.0.0.1:8766",
@@ -175,9 +206,11 @@ def run_browser_flow_smoke(
     service_date: str = DEFAULT_SERVICE_DATE,
     upload_photo: bool = False,
     upload_pdf: bool = False,
+    upload_supporting_attachment: bool = False,
     answer_questions: bool = False,
     photo_upload_path: str | Path | None = None,
     pdf_upload_path: str | Path | None = None,
+    supporting_upload_path: str | Path | None = None,
     correction_mode: bool = False,
     correction_reason: str = "synthetic correction smoke check",
     prepare_replacement: bool = False,
@@ -204,13 +237,19 @@ def run_browser_flow_smoke(
             }
 
     try:
-        if (upload_photo and not photo_upload_path) or (upload_pdf and not pdf_upload_path):
+        if (
+            (upload_photo and not photo_upload_path)
+            or (upload_pdf and not pdf_upload_path)
+            or (upload_supporting_attachment and not supporting_upload_path)
+        ):
             temp_dir = tempfile.TemporaryDirectory(prefix="honorarios-browser-smoke-")
             temp_path = Path(temp_dir.name)
             if upload_photo and not photo_upload_path:
                 photo_upload_path = _make_synthetic_photo(temp_path)
             if upload_pdf and not pdf_upload_path:
                 pdf_upload_path = _make_synthetic_pdf(temp_path, case_number=case_number, service_date=service_date)
+            if upload_supporting_attachment and not supporting_upload_path:
+                supporting_upload_path = _make_synthetic_supporting_pdf(temp_path, case_number=case_number, service_date=service_date)
 
         forbidden = FORBIDDEN_PREPARE_POSTS if (prepare_packet or prepare_replacement) else FORBIDDEN_DEFAULT_POSTS
         if hasattr(driver, "forbid_requests"):
@@ -275,6 +314,18 @@ def run_browser_flow_smoke(
                 driver.expect_selector_text("#source-evidence-body", "Filename"),
                 driver.expect_selector_value("#case_number", case_number),
                 driver.expect_selector_value("#service_date", service_date),
+            )):
+                return _report(base, checks)
+
+        if upload_supporting_attachment:
+            if not supporting_upload_path:
+                checks.append(_check("browser_supporting_attachment_upload_evidence", False, "Supporting attachment smoke requires an upload path."))
+                return _report(base, checks)
+            if not _safe_step(checks, "browser_supporting_attachment_upload_evidence", "Browser uploaded a synthetic declaration through the Supporting proof UI without preparing artifacts.", lambda: (
+                driver.set_input_file("#supporting-attachment-file", supporting_upload_path),
+                driver.click("#supporting-attachment-form button[type=submit]"),
+                driver.expect_selector_text("#supporting-attachment-list", "synthetic-declaracao.pdf"),
+                driver.expect_text("email body now mentions"),
             )):
                 return _report(base, checks)
 
@@ -379,9 +430,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--service-date", default=DEFAULT_SERVICE_DATE)
     parser.add_argument("--upload-photo", action="store_true", help="Upload a disposable synthetic photo and verify source evidence. Does not click prepare or record.")
     parser.add_argument("--upload-pdf", action="store_true", help="Upload a disposable synthetic notification PDF and verify recovered review fields. Does not click prepare or record.")
+    parser.add_argument("--upload-supporting-attachment", action="store_true", help="Upload a disposable synthetic declaration through the Supporting proof UI. Does not click prepare or record.")
     parser.add_argument("--answer-questions", action="store_true", help="Intentionally leave a required field blank, apply compact numbered answers, and rerun review without preparing artifacts.")
     parser.add_argument("--photo-upload-path", type=Path, default=None, help="Optional explicit local photo path for --upload-photo.")
     parser.add_argument("--pdf-upload-path", type=Path, default=None, help="Optional explicit local PDF path for --upload-pdf.")
+    parser.add_argument("--supporting-upload-path", type=Path, default=None, help="Optional explicit local PDF/image path for --upload-supporting-attachment.")
     parser.add_argument("--correction-mode", action="store_true", help="Check the draft lifecycle/correction UI without preparing a replacement draft.")
     parser.add_argument("--correction-reason", default="synthetic correction smoke check")
     parser.add_argument("--prepare-replacement", action="store_true", help="With --correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still blocks record/status writes.")
@@ -398,9 +451,11 @@ def main(argv: list[str] | None = None) -> int:
         service_date=args.service_date,
         upload_photo=args.upload_photo,
         upload_pdf=args.upload_pdf,
+        upload_supporting_attachment=args.upload_supporting_attachment,
         answer_questions=args.answer_questions,
         photo_upload_path=args.photo_upload_path,
         pdf_upload_path=args.pdf_upload_path,
+        supporting_upload_path=args.supporting_upload_path,
         correction_mode=args.correction_mode,
         correction_reason=args.correction_reason,
         prepare_replacement=args.prepare_replacement,

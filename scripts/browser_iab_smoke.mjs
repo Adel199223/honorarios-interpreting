@@ -30,6 +30,7 @@ function parseArgs(argv) {
     json: false,
     uploadPhoto: false,
     uploadPdf: false,
+    uploadSupportingAttachment: false,
     answerQuestions: false,
     correctionMode: false,
     prepareReplacement: false,
@@ -55,6 +56,7 @@ function parseArgs(argv) {
     else if (item === "--json") args.json = true;
     else if (item === "--upload-photo") args.uploadPhoto = true;
     else if (item === "--upload-pdf") args.uploadPdf = true;
+    else if (item === "--upload-supporting-attachment") args.uploadSupportingAttachment = true;
     else if (item === "--answer-questions") args.answerQuestions = true;
     else if (item === "--correction-mode") args.correctionMode = true;
     else if (item === "--prepare-replacement") args.prepareReplacement = true;
@@ -249,6 +251,7 @@ function createSyntheticUploadFixtures(args) {
   const directory = mkdtempSync(join(tmpdir(), "honorarios-iab-upload-"));
   const photoPath = join(directory, "synthetic-photo.png");
   const pdfPath = join(directory, "synthetic-notification.pdf");
+  const supportingPath = join(directory, "synthetic-declaracao.pdf");
   const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
   writeFileSync(photoPath, Buffer.from(pngBase64, "base64"));
   const [year, month, day] = String(args.serviceDate || DEFAULT_SERVICE_DATE).split("-");
@@ -258,7 +261,13 @@ function createSyntheticUploadFixtures(args) {
     "Local: Posto Territorial de Serpa",
     "Email: court@example.test",
   ]));
-  return { directory, photoPath, pdfPath };
+  writeFileSync(supportingPath, simplePdfBytes([
+    "DECLARAÇÃO",
+    `NUIPC ${args.caseNumber || DEFAULT_CASE_NUMBER}`,
+    `Presença em ${day}/${month}/${year}`,
+    "Documento comprovativo sintético para Browser/IAB smoke.",
+  ]));
+  return { directory, photoPath, pdfPath, supportingPath };
 }
 
 function cleanupSyntheticUploadFixtures(fixtures) {
@@ -316,7 +325,7 @@ export async function runBrowserIabSmoke(options = {}) {
   await setupAtlasRuntime({ globals: globalThis, backend });
   await agent.browser.nameSession("🧪 honorários iab smoke");
   const tab = await agent.browser.tabs.new();
-  uploadFixtures = args.uploadPhoto || args.uploadPdf ? createSyntheticUploadFixtures(args) : null;
+  uploadFixtures = args.uploadPhoto || args.uploadPdf || args.uploadSupportingAttachment ? createSyntheticUploadFixtures(args) : null;
 
   checks.push(check("browser_iab_runtime", true, "Browser/IAB runtime initialized.", { backend: "iab" }));
 
@@ -381,6 +390,17 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#source-evidence-body", "Filename", args.timeoutMs);
       await expectValueContains(tab, "#case_number", args.caseNumber, args.timeoutMs);
       await expectValueContains(tab, "#service_date", args.serviceDate, args.timeoutMs);
+    }))) {
+      return finish();
+    }
+  }
+
+  if (args.uploadSupportingAttachment) {
+    if (!(await runStep(checks, "browser_supporting_attachment_upload_evidence", "Browser/IAB uploaded a synthetic declaration through the Supporting proof UI without preparing artifacts.", async () => {
+      await setSyntheticInputFile(tab, "#supporting-attachment-file", uploadFixtures.supportingPath, args.timeoutMs);
+      await click(tab, "#supporting-attachment-form button[type=submit]", args.timeoutMs);
+      await expectSelectorText(tab, "#supporting-attachment-list", "synthetic-declaracao.pdf", args.timeoutMs);
+      await expectBodyText(tab, "email body now mentions", args.timeoutMs);
     }))) {
       return finish();
     }
@@ -499,7 +519,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--apply-history]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--apply-history]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);

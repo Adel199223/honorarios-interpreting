@@ -205,6 +205,7 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         f"  serviceDate: {json.dumps(str(kwargs.get('service_date') or '2026-05-04'))},\n"
         f"  uploadPhoto: {str(bool(kwargs.get('upload_photo'))).lower()},\n"
         f"  uploadPdf: {str(bool(kwargs.get('upload_pdf'))).lower()},\n"
+        f"  uploadSupportingAttachment: {str(bool(kwargs.get('upload_supporting_attachment'))).lower()},\n"
         f"  answerQuestions: {str(bool(kwargs.get('answer_questions'))).lower()},\n"
         f"  correctionMode: {str(bool(kwargs.get('correction_mode'))).lower()},\n"
         f"  prepareReplacement: {str(bool(kwargs.get('prepare_replacement'))).lower()},\n"
@@ -244,6 +245,8 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         cmd.append("--upload-photo")
     if kwargs.get("upload_pdf"):
         cmd.append("--upload-pdf")
+    if kwargs.get("upload_supporting_attachment"):
+        cmd.append("--upload-supporting-attachment")
     if kwargs.get("answer_questions"):
         cmd.append("--answer-questions")
     if kwargs.get("correction_mode"):
@@ -661,6 +664,7 @@ def run_smoke(
     browser_record_helper: bool = False,
     browser_upload_photo: bool = False,
     browser_upload_pdf: bool = False,
+    browser_upload_supporting_attachment: bool = False,
     browser_answer_questions: bool = False,
     browser_correction_mode: bool = False,
     browser_apply_history: bool = False,
@@ -745,6 +749,7 @@ def run_smoke(
             "supporting_attachment_smoke",
             "isolated_supporting_attachment_smoke",
             "browser_iab_upload_smoke",
+            "browser_iab_supporting_attachment_smoke",
         }
         missing = sorted(required_keys.difference(check_keys))
         checks.append(_check(
@@ -788,6 +793,7 @@ def run_smoke(
                     service_date=interaction_service_date,
                     upload_photo=browser_upload_photo,
                     upload_pdf=browser_upload_pdf,
+                    upload_supporting_attachment=browser_upload_supporting_attachment,
                     answer_questions=browser_answer_questions,
                     correction_mode=browser_correction_mode,
                     prepare_replacement=browser_prepare_replacement,
@@ -813,6 +819,7 @@ def run_smoke(
                         service_date=interaction_service_date,
                         upload_photo=browser_upload_photo,
                         upload_pdf=browser_upload_pdf,
+                        upload_supporting_attachment=browser_upload_supporting_attachment,
                         answer_questions=browser_answer_questions,
                         correction_mode=browser_correction_mode,
                         prepare_replacement=browser_prepare_replacement,
@@ -827,6 +834,7 @@ def run_smoke(
                 service_date=interaction_service_date,
                 upload_photo=browser_upload_photo,
                 upload_pdf=browser_upload_pdf,
+                upload_supporting_attachment=browser_upload_supporting_attachment,
                 answer_questions=browser_answer_questions,
                 correction_mode=browser_correction_mode,
                 prepare_replacement=browser_prepare_replacement,
@@ -867,6 +875,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-iab-click-through", action="store_true", help="Use the Codex in-app Browser/IAB runner for browser click-through instead of optional Python Playwright.")
     parser.add_argument("--browser-upload-photo", action="store_true", help="With --browser-click-through, upload a disposable synthetic photo and verify source evidence without preparing artifacts.")
     parser.add_argument("--browser-upload-pdf", action="store_true", help="With --browser-click-through, upload a disposable synthetic notification PDF and verify recovered review fields without preparing artifacts.")
+    parser.add_argument("--browser-upload-supporting-attachment", action="store_true", help="With --browser-click-through, upload a disposable synthetic declaration through the Supporting proof UI without preparing artifacts.")
     parser.add_argument("--browser-answer-questions", action="store_true", help="With --browser-click-through, intentionally leave one required field blank, apply compact numbered answers, and rerun review without preparing artifacts.")
     parser.add_argument("--browser-correction-mode", action="store_true", help="With --browser-click-through, check draft lifecycle/correction UI without preparing a replacement draft.")
     parser.add_argument("--browser-apply-history", action="store_true", help="With --browser-iab-click-through, check the LegalPDF Apply History, Detail, and read-only Restore Plan UI without writing artifacts.")
@@ -890,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_iab_click_through=args.browser_iab_click_through,
         browser_upload_photo=args.browser_upload_photo,
         browser_upload_pdf=args.browser_upload_pdf,
+        browser_upload_supporting_attachment=args.browser_upload_supporting_attachment,
         browser_answer_questions=args.browser_answer_questions,
         browser_correction_mode=args.browser_correction_mode,
         browser_apply_history=args.browser_apply_history,

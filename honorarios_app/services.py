@@ -2081,6 +2081,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "effect": "browser_ui_only",
             "writes": "none",
         },
+        {
+            "key": "browser_iab_supporting_attachment_smoke",
+            "label": "Browser/IAB attachment smoke",
+            "description": "Uses the Codex in-app Browser runner to upload a disposable declaration through the Supporting proof UI and verify it remains evidence-only.",
+            "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --browser-click-through --browser-iab-click-through --browser-upload-supporting-attachment --json",
+            "effect": "browser_synthetic_upload_only",
+            "writes": "synthetic supporting-attachment artifact only",
+        },
     ]
     return {
         "status": "ready",

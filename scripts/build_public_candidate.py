@@ -266,6 +266,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Supporting attachment smoke",
             "Copy isolated attachment smoke command",
             "Copy Browser/IAB upload smoke command",
+            "Copy Browser/IAB attachment smoke command",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
@@ -287,6 +288,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("supporting_attachment_smoke", keys)
         self.assertIn("isolated_supporting_attachment_smoke", keys)
         self.assertIn("browser_iab_upload_smoke", keys)
+        self.assertIn("browser_iab_supporting_attachment_smoke", keys)
         isolated_attachment = next(check for check in data["checks"] if check["key"] == "isolated_supporting_attachment_smoke")
         self.assertIn("scripts/isolated_app_smoke.py", isolated_attachment["command_template"])
         self.assertIn("--supporting-attachment-checks", isolated_attachment["command_template"])
@@ -295,6 +297,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("--browser-upload-photo", browser_upload["command_template"])
         self.assertIn("--browser-upload-pdf", browser_upload["command_template"])
         self.assertEqual(browser_upload["writes"], "none")
+        browser_supporting = next(check for check in data["checks"] if check["key"] == "browser_iab_supporting_attachment_smoke")
+        self.assertIn("--browser-upload-supporting-attachment", browser_supporting["command_template"])
+        self.assertEqual(browser_supporting["writes"], "synthetic supporting-attachment artifact only")
         dumped = json.dumps(data, sort_keys=True)
         self.assertNotIn("C:\\\\Users\\\\FA507", dumped)
         self.assertNotIn("_send_email", dumped)
@@ -366,12 +371,16 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "setInputFiles",
             "#photo-file",
             "#notification-file",
+            "#supporting-attachment-file",
             "#photo-upload-form button[type=submit]",
             "#notification-upload-form button[type=submit]",
+            "#supporting-attachment-form button[type=submit]",
             "browser_photo_upload_evidence",
             "browser_pdf_upload_evidence",
+            "browser_supporting_attachment_upload_evidence",
             "Source Evidence",
             "Filename",
+            "synthetic-declaracao.pdf",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, smoke_js)
@@ -722,6 +731,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     {"name": "browser_answer_questions", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_photo_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_pdf_upload_evidence", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_supporting_attachment_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_correction_mode", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_replacement_prepare", "status": "ready", "message": "ok", "details": {}},
                 ],
@@ -737,6 +747,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             browser_answer_questions=True,
             browser_upload_photo=True,
             browser_upload_pdf=True,
+            browser_upload_supporting_attachment=True,
             browser_correction_mode=True,
             browser_prepare_replacement=True,
             browser_apply_history=True,
@@ -747,11 +758,13 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("browser_answer_questions", {check["name"] for check in report["checks"]})
         self.assertIn("browser_photo_upload_evidence", {check["name"] for check in report["checks"]})
         self.assertIn("browser_pdf_upload_evidence", {check["name"] for check in report["checks"]})
+        self.assertIn("browser_supporting_attachment_upload_evidence", {check["name"] for check in report["checks"]})
         self.assertIn("browser_correction_mode", {check["name"] for check in report["checks"]})
         self.assertIn("browser_replacement_prepare", {check["name"] for check in report["checks"]})
         self.assertTrue(seen_kwargs["answer_questions"])
         self.assertTrue(seen_kwargs["upload_photo"])
         self.assertTrue(seen_kwargs["upload_pdf"])
+        self.assertTrue(seen_kwargs["upload_supporting_attachment"])
         self.assertTrue(seen_kwargs["correction_mode"])
         self.assertTrue(seen_kwargs["prepare_replacement"])
         self.assertTrue(seen_kwargs["apply_history"])

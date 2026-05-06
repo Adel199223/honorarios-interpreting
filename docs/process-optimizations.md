@@ -133,7 +133,7 @@ Use the default smoke runner for a non-writing live-app check:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
-The same commands are visible in the app under References -> Local Diagnostics. That panel is read-only: it explains the safest smoke check for the current kind of change and copies commands for PowerShell, including the isolated supporting-attachment smoke command and the dedicated Browser/IAB upload smoke command with disposable photo/PDF flags, but it does not run shell commands, prepare PDFs, record drafts, or call Gmail.
+The same commands are visible in the app under References -> Local Diagnostics. That panel is read-only: it explains the safest smoke check for the current kind of change and copies commands for PowerShell, including the isolated supporting-attachment smoke command, the Browser/IAB upload smoke command with disposable photo/PDF flags, and the Browser/IAB attachment smoke command for the Supporting proof UI, but it does not run shell commands, prepare PDFs, record drafts, or call Gmail.
 
 Use `--browser-click-through` when you want a real browser to verify the profile-to-review-drawer path and batch queue without preparing artifacts:
 
@@ -168,7 +168,7 @@ nodeRepl.write(JSON.stringify(result, null, 2));
 
 This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, resets the temporary workspace by reloading the local app, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
-When `uploadPhoto: true` or `uploadPdf: true` is passed to `runBrowserIabSmoke`, the runner creates disposable synthetic files, uses the Browser runtime's guarded `setInputFiles` path, verifies Source Evidence and recovered PDF candidate fields, and still stops before prepare, draft recording, draft status changes, or Gmail. If the Browser adapter cannot set local file inputs, that step should return a tooling blocker instead of using real private files.
+When `uploadPhoto: true`, `uploadPdf: true`, or `uploadSupportingAttachment: true` is passed to `runBrowserIabSmoke`, the runner creates disposable synthetic files, uses the Browser runtime's guarded `setInputFiles` path, verifies Source Evidence, recovered PDF candidate fields, and/or the Supporting proof/declarations list, and still stops before prepare, draft recording, draft status changes, or Gmail. If the Browser adapter cannot set local file inputs, that step should return a tooling blocker instead of using real private files.
 
 To cover upload recovery and `Review Attention` even when Python Playwright is not installed, use the API-level source upload smoke:
 
@@ -188,13 +188,21 @@ This posts a disposable synthetic declaration/proof PDF directly to `/api/attach
 
 Use `python scripts/isolated_app_smoke.py --supporting-attachment-checks --json` when you want the same declaration/proof check to run inside a temporary synthetic runtime, keeping private source-upload folders untouched.
 
+To cover the real browser Supporting proof / declarations UI path, use the Browser/IAB attachment smoke:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-upload-supporting-attachment --json
+```
+
+The shell command returns the Node REPL handoff cell. When run through the Codex Browser runtime, it uploads `synthetic-declaracao.pdf`, checks the supporting attachment list and email-body reminder, and still blocks prepare, draft recording, draft-status writes, and Gmail.
+
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 
 ```powershell
-python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-upload-photo --browser-upload-pdf --browser-correction-mode --json
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-upload-photo --browser-upload-pdf --browser-upload-supporting-attachment --browser-correction-mode --json
 ```
 
-This creates disposable synthetic upload files, verifies the Source Evidence card and recovered PDF candidate fields, checks the draft lifecycle/correction reason surface, and still blocks prepare, record, and draft-status POSTs. Python Playwright drives this path when installed; Browser/IAB can now attempt the same upload evidence via safe `setInputFiles` and report a clean tooling blocker if the in-app adapter lacks that capability. The app may store synthetic source-preview artifacts from the upload, but it must not create PDF/draft payloads or Gmail draft-log records in this mode.
+This creates disposable synthetic upload files, verifies the Source Evidence card, recovered PDF candidate fields, and optional supporting-attachment list, checks the draft lifecycle/correction reason surface, and still blocks prepare, record, and draft-status POSTs. Python Playwright drives this path when installed; Browser/IAB can now attempt the same upload evidence via safe `setInputFiles` and report a clean tooling blocker if the in-app adapter lacks that capability. The app may store synthetic source-preview or supporting-attachment artifacts from the upload, but it must not create PDF/draft payloads or Gmail draft-log records in this mode.
 
 To cover replacement-draft preparation itself, use the opt-in artifact-writing flag only against disposable/synthetic state with an existing active draft blocker:
 
