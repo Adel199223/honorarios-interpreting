@@ -310,9 +310,15 @@ export async function runBrowserIabSmoke(options = {}) {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const checks = [];
   let uploadFixtures = null;
+  let reviewDrawerOpen = false;
   const finish = () => {
     cleanupSyntheticUploadFixtures(uploadFixtures);
     return report(baseUrl, checks);
+  };
+  const closeReviewDrawerIfOpen = async () => {
+    if (!reviewDrawerOpen) return;
+    await click(tab, "#interpretation-close-review", args.timeoutMs);
+    reviewDrawerOpen = false;
   };
 
   if (!existsSync(args.browserClient)) {
@@ -355,6 +361,7 @@ export async function runBrowserIabSmoke(options = {}) {
     if (!args.correctionMode && !args.answerQuestions) {
       await expectBodyText(tab, "To:", args.timeoutMs);
     }
+    reviewDrawerOpen = true;
   }))) {
     return finish();
   }
@@ -366,6 +373,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectBodyText(tab, "Número de processo", args.timeoutMs);
       await expectBodyText(tab, portugueseDate(args.serviceDate), args.timeoutMs);
       await expectBodyText(tab, "To:", args.timeoutMs);
+      reviewDrawerOpen = true;
     }))) {
       return finish();
     }
@@ -373,6 +381,7 @@ export async function runBrowserIabSmoke(options = {}) {
 
   if (args.uploadPhoto) {
     if (!(await runStep(checks, "browser_photo_upload_evidence", "Browser/IAB uploaded a synthetic photo and showed Source Evidence without preparing artifacts.", async () => {
+      await closeReviewDrawerIfOpen();
       await setSyntheticInputFile(tab, "#photo-file", uploadFixtures.photoPath, args.timeoutMs);
       await click(tab, "#photo-upload-form button[type=submit]", args.timeoutMs);
       await expectBodyText(tab, "Source Evidence", args.timeoutMs);
@@ -384,6 +393,7 @@ export async function runBrowserIabSmoke(options = {}) {
 
   if (args.uploadPdf) {
     if (!(await runStep(checks, "browser_pdf_upload_evidence", "Browser/IAB uploaded a synthetic notification PDF and surfaced candidate review fields without preparing artifacts.", async () => {
+      await closeReviewDrawerIfOpen();
       await setSyntheticInputFile(tab, "#notification-file", uploadFixtures.pdfPath, args.timeoutMs);
       await click(tab, "#notification-upload-form button[type=submit]", args.timeoutMs);
       await expectBodyText(tab, "Source Evidence", args.timeoutMs);
@@ -397,6 +407,7 @@ export async function runBrowserIabSmoke(options = {}) {
 
   if (args.uploadSupportingAttachment) {
     if (!(await runStep(checks, "browser_supporting_attachment_upload_evidence", "Browser/IAB uploaded a synthetic declaration through the Supporting proof UI without preparing artifacts.", async () => {
+      await closeReviewDrawerIfOpen();
       await setSyntheticInputFile(tab, "#supporting-attachment-file", uploadFixtures.supportingPath, args.timeoutMs);
       await click(tab, "#supporting-attachment-form button[type=submit]", args.timeoutMs);
       await expectSelectorText(tab, "#supporting-attachment-list", "synthetic-declaracao.pdf", args.timeoutMs);
@@ -408,7 +419,7 @@ export async function runBrowserIabSmoke(options = {}) {
 
   if (!args.prepareReplacement || args.preparePacket) {
     if (!(await runStep(checks, "browser_batch_queue", "Browser/IAB added the reviewed request to the batch queue without preparing artifacts.", async () => {
-      await click(tab, "#interpretation-close-review", args.timeoutMs);
+      await closeReviewDrawerIfOpen();
       await click(tab, "#add-current-to-batch", args.timeoutMs);
       await expectSelectorText(tab, "#batch-count-chip", "1 queued", args.timeoutMs);
       await expectBodyText(tab, "Packet item inspector", args.timeoutMs);

@@ -223,6 +223,7 @@ def run_browser_flow_smoke(
     checks: list[dict[str, Any]] = []
     owns_driver = driver is None
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    review_drawer_open = False
     if driver is None:
         try:
             driver = PlaywrightBrowserDriver(headless=headless, timeout_ms=timeout_ms)
@@ -265,6 +266,7 @@ def run_browser_flow_smoke(
             return _report(base, checks)
 
         def _review_drawer() -> None:
+            nonlocal review_drawer_open
             driver.select("#profile", profile)
             driver.fill("#case_number", case_number)
             driver.fill("#service_date", "" if answer_questions else service_date)
@@ -277,6 +279,13 @@ def run_browser_flow_smoke(
             else:
                 driver.expect_selector_text("#draft-text", "Número de processo")
                 driver.expect_selector_text("#recipient-summary", "To:")
+            review_drawer_open = True
+
+        def _close_review_drawer_if_open() -> None:
+            nonlocal review_drawer_open
+            if review_drawer_open:
+                driver.click("#interpretation-close-review")
+                review_drawer_open = False
 
         if not _safe_step(checks, "browser_review_drawer", "Browser opened review drawer with Portuguese draft text.", _review_drawer):
             return _report(base, checks)
@@ -290,12 +299,14 @@ def run_browser_flow_smoke(
                 driver.expect_selector_text("#recipient-summary", "To:"),
             )):
                 return _report(base, checks)
+            review_drawer_open = True
 
         if upload_photo:
             if not photo_upload_path:
                 checks.append(_check("browser_photo_upload_evidence", False, "Photo upload smoke requires an upload path."))
                 return _report(base, checks)
             if not _safe_step(checks, "browser_photo_upload_evidence", "Browser uploaded a synthetic photo and showed source evidence without preparing artifacts.", lambda: (
+                _close_review_drawer_if_open(),
                 driver.set_input_file("#photo-file", photo_upload_path),
                 driver.click("#photo-upload-form button[type=submit]"),
                 driver.expect_selector_visible("#source-evidence"),
@@ -308,6 +319,7 @@ def run_browser_flow_smoke(
                 checks.append(_check("browser_pdf_upload_evidence", False, "PDF upload smoke requires an upload path."))
                 return _report(base, checks)
             if not _safe_step(checks, "browser_pdf_upload_evidence", "Browser uploaded a synthetic notification PDF and surfaced candidate review fields without preparing artifacts.", lambda: (
+                _close_review_drawer_if_open(),
                 driver.set_input_file("#notification-file", pdf_upload_path),
                 driver.click("#notification-upload-form button[type=submit]"),
                 driver.expect_selector_visible("#source-evidence"),
@@ -322,6 +334,7 @@ def run_browser_flow_smoke(
                 checks.append(_check("browser_supporting_attachment_upload_evidence", False, "Supporting attachment smoke requires an upload path."))
                 return _report(base, checks)
             if not _safe_step(checks, "browser_supporting_attachment_upload_evidence", "Browser uploaded a synthetic declaration through the Supporting proof UI without preparing artifacts.", lambda: (
+                _close_review_drawer_if_open(),
                 driver.set_input_file("#supporting-attachment-file", supporting_upload_path),
                 driver.click("#supporting-attachment-form button[type=submit]"),
                 driver.expect_selector_text("#supporting-attachment-list", "synthetic-declaracao.pdf"),
@@ -330,6 +343,7 @@ def run_browser_flow_smoke(
                 return _report(base, checks)
 
         if not _safe_step(checks, "browser_batch_queue", "Browser added the reviewed request to the batch queue without preparing artifacts.", lambda: (
+            _close_review_drawer_if_open(),
             driver.click("#add-current-to-batch"),
             driver.expect_selector_text("#batch-count-chip", "1 queued"),
             driver.expect_text("Packet item inspector"),
