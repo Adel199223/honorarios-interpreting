@@ -184,6 +184,33 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
 
+    def test_browser_js_invalidates_stale_prepared_payloads(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+        for text in [
+            "function clearPreparedArtifacts",
+            "state.lastPrepared = null",
+            "state.draftLifecycle = null",
+            "record_payload",
+            "record_draft_id",
+            "record_message_id",
+            "record_thread_id",
+            "record_supersedes",
+            "gmail-response-raw",
+            "renderDraftLifecycle(null)",
+            "syncActionGates(null)",
+            "source changed",
+            "review changed",
+            "review reset",
+            "intake form changed",
+            "data-stale-reason",
+            'removeAttribute("data-stale-reason")',
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, app_js)
+        self.assertNotIn("_send_email", app_js)
+        self.assertNotIn("_send_draft", app_js)
+
     def test_openai_recovery_uses_strict_json_schema_contract(self):
         root = Path(__file__).resolve().parents[1]
         ai_recovery = (root / "honorarios_app" / "ai_recovery.py").read_text(encoding="utf-8")

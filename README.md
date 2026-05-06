@@ -45,6 +45,7 @@ The app supports the main workflow:
 - block translation/word-count requests
 - warn about duplicate `sent` or `drafted` case/date records
 - generate the PDF and Gmail `_create_draft` payload
+- clear stale PDF previews, draft payload paths, Gmail record-helper IDs, and active-draft state whenever the source, review, reset action, or intake form changes after preparation
 - record returned Gmail draft IDs so duplicates are protected immediately
 - parse a pasted Gmail `_create_draft` response to fill the draft/message/thread ID fields locally
 - autofill the Record Gmail Draft form from the prepared packet or individual payload while preserving pasted Gmail draft/message/thread IDs

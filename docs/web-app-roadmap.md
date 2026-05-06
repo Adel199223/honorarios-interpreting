@@ -32,6 +32,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - PNG PDF preview URLs when `pdftoppm` is available; otherwise a non-send preview warning.
 - Exact `gmail_create_draft_args` display in the review drawer.
 - Draft lifecycle panel with active-check, correction mode, copyable draft handoff args, status recording, and replacement/superseded draft tracking.
+- Stale prepared-artifact invalidation: changing the source, review state, or intake form clears prepared PDF previews, draft payload paths, Gmail record-helper IDs, and active draft lifecycle state, forcing a fresh review/preflight before reuse.
 - Draft recording endpoints that update the draft log and duplicate index without adding any Gmail send/trash action.
 - Recent Work lifecycle filters for `active`, `drafted`, `sent`, `superseded`, `trashed`, and `not_found` records, so blocking drafts and historical corrections can be separated quickly.
 - Global `Reset workspace` action for clearing the current browser review, prepared payload state, correction fields, and Batch Queue without touching real local records or Gmail.

@@ -162,6 +162,26 @@ function syncActionGates(action = state.currentNextSafeAction) {
   });
 }
 
+function clearPreparedArtifacts(reason = "stale prepared result") {
+  state.lastPrepared = null;
+  state.draftLifecycle = null;
+  $("#prepare-results").innerHTML = "";
+  $("#pdf-preview-panel").classList.add("hidden");
+  $("#pdf-preview").innerHTML = "";
+  $("#record_payload").value = "";
+  $("#record_draft_id").value = "";
+  $("#record_message_id").value = "";
+  $("#record_thread_id").value = "";
+  $("#record_supersedes").value = "";
+  $("#gmail-response-raw").value = "";
+  renderDraftLifecycle(null);
+  syncActionGates(null);
+  const message = String(reason || "").trim();
+  if (message) {
+    $("#prepare-results").setAttribute("data-stale-reason", message);
+  }
+}
+
 function historyRecordStatus(record, defaultStatus = "") {
   return String(record?.status || defaultStatus || "").trim() || defaultStatus;
 }
@@ -1254,6 +1274,7 @@ async function uploadSource(sourceKind, options = {}) {
     if (sourceKind === "google_photos") throw new Error("Choose a Google Photos image first.");
     throw new Error("Choose a photo or screenshot first.");
   }
+  clearPreparedArtifacts("source changed");
   const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
   const visibleText = [$("#source_text").value.trim(), googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
   const form = new FormData();
@@ -2739,6 +2760,7 @@ async function preflightBatchIntakes(options = {}) {
 }
 
 function applyReview(data) {
+  clearPreparedArtifacts("review changed");
   setStatus(data.status, data.message);
   showQuestions(data);
   renderNextSafeAction(data.next_safe_action || null);
@@ -2794,6 +2816,7 @@ function renderPrepared(data) {
   const items = data.items || [];
   const packet = data.packet || null;
   const first = items[0];
+  $("#prepare-results").removeAttribute("data-stale-reason");
   renderNextSafeAction(data.next_safe_action || null);
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
@@ -2938,7 +2961,7 @@ async function recordDraft() {
 
 function resetReview({ closeDrawer = true } = {}) {
   state.currentIntake = null;
-  state.lastPrepared = null;
+  clearPreparedArtifacts("review reset");
   state.draftLifecycle = null;
   state.googlePhotosPicker = null;
   $("#intake-form").reset();
@@ -2946,7 +2969,6 @@ function resetReview({ closeDrawer = true } = {}) {
   $("#photo-upload-form").reset();
   $("#google-photos-upload-form").reset();
   $("#supporting-attachment-form").reset();
-  $("#prepare-results").innerHTML = "";
   renderSourceEvidence(null);
   renderAiRecovery(null);
   renderSupportingAttachmentList();
@@ -2954,14 +2976,11 @@ function resetReview({ closeDrawer = true } = {}) {
   renderBatchQueue();
   renderDraftLifecycle(null);
   renderNextSafeAction(null);
-  syncActionGates(null);
   $("#correction_reason").value = "";
   $("#numbered-answers").value = "";
   $("#record_supersedes").value = "";
   $("#record_sent_date").value = "";
   $("#record_notes").value = "";
-  $("#pdf-preview-panel").classList.add("hidden");
-  $("#pdf-preview").innerHTML = "";
   $("#record-form").reset();
   $("#draft-text").textContent = "The Portuguese draft will appear here before the PDF is created.";
   $("#recipient-summary").textContent = "Recipient appears here after review.";
@@ -3022,6 +3041,8 @@ function bindNavigation() {
 
 function bindActions() {
   bindSourceDropZone();
+  $("#intake-form").addEventListener("input", () => clearPreparedArtifacts("intake form changed"));
+  $("#intake-form").addEventListener("change", () => clearPreparedArtifacts("intake form changed"));
   const resetControl = $("#reset-workspace");
   if (resetControl) {
     resetControl.addEventListener("click", (event) => {
