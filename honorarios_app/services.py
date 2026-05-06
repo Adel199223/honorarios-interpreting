@@ -2060,8 +2060,16 @@ def diagnostics_status_payload() -> dict[str, Any]:
         {
             "key": "browser_iab_smoke",
             "label": "Browser/IAB review smoke",
-            "description": "Uses the Codex in-app Browser runner for the review drawer and batch UI path; upload file inputs stay covered by the API smoke.",
+            "description": "Uses the Codex in-app Browser runner for the review drawer and batch UI path without local file uploads.",
             "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --browser-click-through --browser-iab-click-through --json",
+            "effect": "browser_ui_only",
+            "writes": "none",
+        },
+        {
+            "key": "browser_iab_upload_smoke",
+            "label": "Browser/IAB upload smoke",
+            "description": "Uses the Codex in-app Browser runner to try disposable local photo/PDF upload evidence; reports a clean tooling blocker when safe file-input support is unavailable.",
+            "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --browser-click-through --browser-iab-click-through --browser-upload-photo --browser-upload-pdf --json",
             "effect": "browser_ui_only",
             "writes": "none",
         },

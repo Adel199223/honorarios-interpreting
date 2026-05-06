@@ -105,7 +105,7 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --supporting-
 
 This uploads one disposable synthetic declaration/proof PDF to `/api/attachments/upload` and verifies the response is attachment evidence only: `send_allowed: false`, no recovered intake, no PDF preparation, no draft payload, and no Gmail args.
 
-The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, and Browser/IAB review smoke commands for PowerShell. The browser only copies commands; it does not run shell commands or call Gmail.
+The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, Browser/IAB review smoke, and Browser/IAB upload smoke commands for PowerShell. The browser only copies commands; it does not run shell commands or call Gmail.
 
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 

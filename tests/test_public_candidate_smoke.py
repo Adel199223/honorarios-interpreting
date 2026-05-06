@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,7 +12,21 @@ from scripts.public_release_gate import analyze_public_readiness
 
 class PublicCandidateSmokeTests(unittest.TestCase):
     def make_client(self):
-        return TestClient(create_app())
+        runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime.cleanup)
+        root = Path(runtime.name)
+        return TestClient(create_app(
+            output_dir=root / "pdf",
+            html_dir=root / "html",
+            draft_output_dir=root / "email-drafts",
+            manifest_dir=root / "manifests",
+            render_dir=root / "previews",
+            intake_output_dir=root / "intakes",
+            source_upload_dir=root / "source-uploads",
+            packet_output_dir=root / "packets",
+            backup_output_dir=root / "backups",
+            integration_report_output_dir=root / "integration-reports",
+        ))
 
     def test_homepage_exposes_browser_flow_landmarks(self):
         client = self.make_client()
@@ -41,6 +56,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Local Diagnostics",
             "Source upload smoke",
             "Supporting attachment smoke",
+            "Copy Browser/IAB upload smoke command",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
@@ -60,6 +76,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("default_live_smoke", keys)
         self.assertIn("source_upload_smoke", keys)
         self.assertIn("supporting_attachment_smoke", keys)
+        self.assertIn("browser_iab_upload_smoke", keys)
+        browser_upload = next(check for check in data["checks"] if check["key"] == "browser_iab_upload_smoke")
+        self.assertIn("--browser-upload-photo", browser_upload["command_template"])
+        self.assertIn("--browser-upload-pdf", browser_upload["command_template"])
+        self.assertEqual(browser_upload["writes"], "none")
         dumped = json.dumps(data, sort_keys=True)
         self.assertNotIn("C:\\Users\\FA507", dumped)
         self.assertNotIn("_send_email", dumped)

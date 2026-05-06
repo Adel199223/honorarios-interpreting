@@ -739,7 +739,12 @@ def run_smoke(
     if isinstance(diagnostics, dict) and "checks" in diagnostics:
         diagnostic_checks = diagnostics.get("checks") if isinstance(diagnostics.get("checks"), list) else []
         check_keys = {item.get("key") for item in diagnostic_checks if isinstance(item, dict)}
-        required_keys = {"default_live_smoke", "source_upload_smoke", "supporting_attachment_smoke"}
+        required_keys = {
+            "default_live_smoke",
+            "source_upload_smoke",
+            "supporting_attachment_smoke",
+            "browser_iab_upload_smoke",
+        }
         missing = sorted(required_keys.difference(check_keys))
         checks.append(_check(
             "diagnostics_safe_smoke_commands",
