@@ -476,8 +476,22 @@ export async function runBrowserIabSmoke(options = {}) {
   }
 
   if (args.recordHelper) {
-    checks.push(check("browser_record_helper", false, "Browser/IAB smoke intentionally does not autofill or record draft lifecycle forms."));
-    return finish();
+    if (!args.prepareReplacement && !args.preparePacket) {
+      checks.push(check("browser_record_helper", false, "Record-helper smoke requires a prepared replacement or packet payload."));
+      return finish();
+    }
+    if (!(await runStep(checks, "browser_record_helper", "Browser/IAB parsed Gmail IDs and autofilled the local record form without recording a draft.", async () => {
+      const fakeResponse = '{"id":"draft-smoke","message":{"id":"message-smoke","threadId":"thread-smoke"}}';
+      await fill(tab, "#gmail-response-raw", fakeResponse, args.timeoutMs);
+      await click(tab, "#parse-gmail-response", args.timeoutMs);
+      await click(tab, "#autofill-record-from-prepared", args.timeoutMs);
+      await expectValueContains(tab, "#record_draft_id", "draft-smoke", args.timeoutMs);
+      await expectValueContains(tab, "#record_message_id", "message-smoke", args.timeoutMs);
+      await expectValueContains(tab, "#record_thread_id", "thread-smoke", args.timeoutMs);
+      await expectValueContains(tab, "#record_payload", ".draft.json", args.timeoutMs);
+    }))) {
+      return finish();
+    }
   }
 
   if (args.applyHistory) {
@@ -530,7 +544,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--apply-history]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--apply-history]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);

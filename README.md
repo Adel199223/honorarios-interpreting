@@ -91,6 +91,8 @@ The shell command returns a Node REPL handoff cell because raw subprocesses shou
 
 Add `--browser-upload-photo --browser-upload-pdf` to the same command when you want Browser/IAB to try the source upload-evidence path with disposable synthetic files. Add `--browser-upload-supporting-attachment` when you want it to verify the `Supporting proof / declarations` UI path as well. If the in-app Browser adapter cannot set local file inputs, the smoke reports a clean tooling blocker instead of touching real private files.
 
+When a prepared payload already exists in the smoke flow, add `--browser-record-helper` to verify the safe post-Gmail handoff: the browser parses fake `_create_draft` IDs and autofills the local record form, but it does not click `Record parsed response + prepared payload`, `Record draft`, or any Gmail action.
+
 To verify upload recovery and `Review Attention` without any browser driver or file-picker support, use the API-level source upload smoke:
 
 ```powershell
@@ -142,6 +144,12 @@ python scripts/isolated_app_smoke.py --browser-click-through --browser-correctio
 ```
 
 That command still never records drafts or calls Gmail. If Python Playwright is not installed, the browser part reports a clean tooling blocker; the isolated API smoke remains usable.
+
+The isolated launcher also forwards Browser/IAB upload and record-helper flags, so the safest version of those checks can be run against disposable runtime data, for example:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-click-through --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-upload-supporting-attachment --browser-record-helper --json
+```
 
 For a deeper opt-in workflow smoke against disposable/synthetic app state, add `--interaction-checks`:
 

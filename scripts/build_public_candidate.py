@@ -378,6 +378,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_photo_upload_evidence",
             "browser_pdf_upload_evidence",
             "browser_supporting_attachment_upload_evidence",
+            "browser_record_helper",
+            "#gmail-response-raw",
+            "#autofill-record-from-prepared",
+            "#record_draft_id",
             "Source Evidence",
             "Filename",
             "synthetic-declaracao.pdf",
@@ -734,6 +738,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     {"name": "browser_supporting_attachment_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_correction_mode", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_replacement_prepare", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_record_helper", "status": "ready", "message": "ok", "details": {}},
                 ],
                 "failure_count": 0,
                 "send_allowed": False,
@@ -750,6 +755,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             browser_upload_supporting_attachment=True,
             browser_correction_mode=True,
             browser_prepare_replacement=True,
+            browser_record_helper=True,
             browser_apply_history=True,
             browser_runner=browser_runner,
         )
@@ -761,12 +767,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("browser_supporting_attachment_upload_evidence", {check["name"] for check in report["checks"]})
         self.assertIn("browser_correction_mode", {check["name"] for check in report["checks"]})
         self.assertIn("browser_replacement_prepare", {check["name"] for check in report["checks"]})
+        self.assertIn("browser_record_helper", {check["name"] for check in report["checks"]})
         self.assertTrue(seen_kwargs["answer_questions"])
         self.assertTrue(seen_kwargs["upload_photo"])
         self.assertTrue(seen_kwargs["upload_pdf"])
         self.assertTrue(seen_kwargs["upload_supporting_attachment"])
         self.assertTrue(seen_kwargs["correction_mode"])
         self.assertTrue(seen_kwargs["prepare_replacement"])
+        self.assertTrue(seen_kwargs["record_helper"])
         self.assertTrue(seen_kwargs["apply_history"])
 
     def test_candidate_privacy_gate_passes(self):

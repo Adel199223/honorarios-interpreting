@@ -196,6 +196,8 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 The shell command returns the Node REPL handoff cell. When run through the Codex Browser runtime, it uploads `synthetic-declaracao.pdf`, checks the supporting attachment list and email-body reminder, and still blocks prepare, draft recording, draft-status writes, and Gmail.
 
+If the Browser/IAB smoke has prepared a disposable replacement or packet payload, add `--browser-record-helper` to check the final local handoff surface. This parses fake `_create_draft` IDs and clicks `Autofill from prepared payload`, then verifies the record form values; it must not click `Record parsed response + prepared payload`, `Record draft`, `/api/drafts/record`, `/api/drafts/status`, or Gmail.
+
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 
 ```powershell
@@ -211,6 +213,12 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 ```
 
 This exercises the `Prepare replacement draft` button and allows `/api/prepare`, so it may create local PDF and draft-payload artifacts. It still blocks `/api/drafts/record` and `/api/drafts/status`, does not call Gmail, and does not record draft IDs.
+
+For the same replacement-plus-record-helper path in a disposable runtime, use:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-click-through --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json
+```
 
 The safer version is the isolated smoke launcher, which creates a temporary runtime with synthetic config, reference data, duplicate index, draft log, and output folders:
 

@@ -72,6 +72,7 @@ def run_isolated_app_smoke(
     browser_click_through: bool = False,
     browser_upload_photo: bool = False,
     browser_upload_pdf: bool = False,
+    browser_upload_supporting_attachment: bool = False,
     browser_correction_mode: bool = False,
     browser_iab_click_through: bool = False,
     browser_prepare_replacement: bool = False,
@@ -108,6 +109,7 @@ def run_isolated_app_smoke(
             browser_iab_click_through=browser_iab_click_through,
             browser_upload_photo=browser_upload_photo,
             browser_upload_pdf=browser_upload_pdf,
+            browser_upload_supporting_attachment=browser_upload_supporting_attachment,
             browser_correction_mode=browser_correction_mode,
             browser_prepare_replacement=browser_prepare_replacement,
             browser_prepare_packet=browser_prepare_packet,
@@ -145,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-iab-click-through", action="store_true", help="Run browser click-through through the Codex in-app Browser/IAB runner instead of optional Python Playwright.")
     parser.add_argument("--browser-upload-photo", action="store_true")
     parser.add_argument("--browser-upload-pdf", action="store_true")
+    parser.add_argument("--browser-upload-supporting-attachment", action="store_true", help="With browser click-through, upload a disposable synthetic declaration through the Supporting proof UI.")
     parser.add_argument("--browser-correction-mode", action="store_true")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With browser correction mode, prepare a replacement against a seeded synthetic active draft.")
     parser.add_argument("--browser-prepare-packet", action="store_true")
@@ -164,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_iab_click_through=args.browser_iab_click_through,
         browser_upload_photo=args.browser_upload_photo,
         browser_upload_pdf=args.browser_upload_pdf,
+        browser_upload_supporting_attachment=args.browser_upload_supporting_attachment,
         browser_correction_mode=args.browser_correction_mode,
         browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,
