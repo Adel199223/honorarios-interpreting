@@ -56,6 +56,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Local Diagnostics",
             "Source upload smoke",
             "Supporting attachment smoke",
+            "Copy isolated attachment smoke command",
             "Copy Browser/IAB upload smoke command",
             "Draft-only Gmail",
         ]:
@@ -76,7 +77,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("default_live_smoke", keys)
         self.assertIn("source_upload_smoke", keys)
         self.assertIn("supporting_attachment_smoke", keys)
+        self.assertIn("isolated_supporting_attachment_smoke", keys)
         self.assertIn("browser_iab_upload_smoke", keys)
+        isolated_attachment = next(check for check in data["checks"] if check["key"] == "isolated_supporting_attachment_smoke")
+        self.assertIn("scripts/isolated_app_smoke.py", isolated_attachment["command_template"])
+        self.assertIn("--supporting-attachment-checks", isolated_attachment["command_template"])
+        self.assertEqual(isolated_attachment["writes"], "temporary synthetic runtime only")
         browser_upload = next(check for check in data["checks"] if check["key"] == "browser_iab_upload_smoke")
         self.assertIn("--browser-upload-photo", browser_upload["command_template"])
         self.assertIn("--browser-upload-pdf", browser_upload["command_template"])

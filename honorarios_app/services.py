@@ -2058,6 +2058,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "temporary synthetic runtime only",
         },
         {
+            "key": "isolated_supporting_attachment_smoke",
+            "label": "Isolated supporting attachment smoke",
+            "description": "Runs declaration/proof attachment evidence checks in a temporary synthetic runtime so private source-upload folders stay untouched.",
+            "command_template": "python scripts/isolated_app_smoke.py --supporting-attachment-checks --json",
+            "effect": "temporary_isolated_runtime",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
             "key": "browser_iab_smoke",
             "label": "Browser/IAB review smoke",
             "description": "Uses the Codex in-app Browser runner for the review drawer and batch UI path without local file uploads.",

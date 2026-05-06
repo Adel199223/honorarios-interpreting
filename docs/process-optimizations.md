@@ -133,7 +133,7 @@ Use the default smoke runner for a non-writing live-app check:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
-The same commands are visible in the app under References -> Local Diagnostics. That panel is read-only: it explains the safest smoke check for the current kind of change and copies commands for PowerShell, including the dedicated Browser/IAB upload smoke command with disposable photo/PDF flags, but it does not run shell commands, prepare PDFs, record drafts, or call Gmail.
+The same commands are visible in the app under References -> Local Diagnostics. That panel is read-only: it explains the safest smoke check for the current kind of change and copies commands for PowerShell, including the isolated supporting-attachment smoke command and the dedicated Browser/IAB upload smoke command with disposable photo/PDF flags, but it does not run shell commands, prepare PDFs, record drafts, or call Gmail.
 
 Use `--browser-click-through` when you want a real browser to verify the profile-to-review-drawer path and batch queue without preparing artifacts:
 
@@ -185,6 +185,8 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --supporting-
 ```
 
 This posts a disposable synthetic declaration/proof PDF directly to `/api/attachments/upload`, checks the response is supporting-attachment evidence only, and verifies no recovered intake, PDF preparation, draft payload, or Gmail draft args are exposed.
+
+Use `python scripts/isolated_app_smoke.py --supporting-attachment-checks --json` when you want the same declaration/proof check to run inside a temporary synthetic runtime, keeping private source-upload folders untouched.
 
 To cover the local upload and correction surfaces without creating PDFs or recording drafts, add the browser UI-only flags:
 

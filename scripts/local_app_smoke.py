@@ -743,6 +743,7 @@ def run_smoke(
             "default_live_smoke",
             "source_upload_smoke",
             "supporting_attachment_smoke",
+            "isolated_supporting_attachment_smoke",
             "browser_iab_upload_smoke",
         }
         missing = sorted(required_keys.difference(check_keys))

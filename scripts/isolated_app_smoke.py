@@ -68,6 +68,7 @@ def run_isolated_app_smoke(
     smoke_runner: SmokeRunner = run_smoke,
     interaction_checks: bool = False,
     source_upload_checks: bool = False,
+    supporting_attachment_checks: bool = False,
     browser_click_through: bool = False,
     browser_upload_photo: bool = False,
     browser_upload_pdf: bool = False,
@@ -98,6 +99,7 @@ def run_isolated_app_smoke(
             base_url,
             interaction_checks=interaction_checks,
             source_upload_checks=source_upload_checks,
+            supporting_attachment_checks=supporting_attachment_checks,
             source_upload_profile="example_interpreting" if source_upload_checks else "",
             interaction_profile="example_interpreting",
             interaction_case_number=interaction_case_number,
@@ -138,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--interaction-checks", action="store_true", help="Run API interaction checks against the isolated app. May create isolated PDF/payload artifacts.")
     parser.add_argument("--source-upload-checks", action="store_true", help="Run synthetic source upload evidence checks against the isolated app. Creates isolated source-preview artifacts only.")
+    parser.add_argument("--supporting-attachment-checks", action="store_true", help="Run synthetic declaration/proof attachment evidence checks against the isolated app. Creates isolated attachment artifacts only.")
     parser.add_argument("--browser-click-through", action="store_true", help="Run browser click-through against the isolated app when Python Playwright is available.")
     parser.add_argument("--browser-iab-click-through", action="store_true", help="Run browser click-through through the Codex in-app Browser/IAB runner instead of optional Python Playwright.")
     parser.add_argument("--browser-upload-photo", action="store_true")
@@ -156,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         interaction_checks=args.interaction_checks,
         source_upload_checks=args.source_upload_checks,
+        supporting_attachment_checks=args.supporting_attachment_checks,
         browser_click_through=args.browser_click_through,
         browser_iab_click_through=args.browser_iab_click_through,
         browser_upload_photo=args.browser_upload_photo,
