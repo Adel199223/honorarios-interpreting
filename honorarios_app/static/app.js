@@ -137,6 +137,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
   const actionDetail = String(action?.detail || "");
   Object.entries(SAFE_ACTION_GATES).forEach(([id, gate]) => {
     let enabled = (gate.states || []).includes(actionState);
+    let blockedReason = gate.reason;
     if (id === "preflight-batch-intakes") {
       enabled = state.batchIntakes.length > 0;
     }
@@ -150,7 +151,13 @@ function syncActionGates(action = state.currentNextSafeAction) {
       enabled = enabled && Boolean($("#numbered-answers")?.value.trim());
     }
     if (id === "record-parsed-prepared-draft") {
-      enabled = enabled && Boolean($("#gmail-response-raw")?.value.trim());
+      const handoffReviewed = Boolean($("#gmail_handoff_reviewed")?.checked);
+      if (!handoffReviewed) {
+        blockedReason = "Review the PDF preview and exact Gmail args before local recording.";
+      }
+      enabled = enabled
+        && Boolean($("#gmail-response-raw")?.value.trim())
+        && handoffReviewed;
     }
     if (id === "record-draft") {
       enabled = enabled
@@ -158,7 +165,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
         && Boolean($("#record_draft_id")?.value.trim())
         && Boolean($("#record_message_id")?.value.trim());
     }
-    setActionGate(id, enabled, enabled ? actionDetail : gate.reason, actionState);
+    setActionGate(id, enabled, enabled ? actionDetail : blockedReason, actionState);
   });
 }
 
@@ -173,6 +180,7 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
   $("#record_message_id").value = "";
   $("#record_thread_id").value = "";
   $("#record_supersedes").value = "";
+  $("#gmail_handoff_reviewed").checked = false;
   $("#gmail-response-raw").value = "";
   renderDraftLifecycle(null);
   syncActionGates(null);
@@ -714,6 +722,9 @@ function autofillRecordFormFromPrepared() {
 }
 
 async function recordFromParsedResponseAndPreparedPayload() {
+  if (!$("#gmail_handoff_reviewed")?.checked) {
+    throw new Error("Review the PDF preview and exact Gmail args before local recording.");
+  }
   const ids = applyParsedGmailDraftIds(parseGmailDraftIds($("#gmail-response-raw").value));
   const target = autofillRecordFormFromPrepared();
   if (!ids.draft_id || !ids.message_id) {
@@ -2817,6 +2828,7 @@ function renderPrepared(data) {
   const packet = data.packet || null;
   const first = items[0];
   $("#prepare-results").removeAttribute("data-stale-reason");
+  $("#gmail_handoff_reviewed").checked = false;
   renderNextSafeAction(data.next_safe_action || null);
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
@@ -3083,6 +3095,7 @@ function bindActions() {
     "record_draft_id",
     "record_message_id",
     "record_thread_id",
+    "gmail_handoff_reviewed",
   ].forEach((id) => {
     const input = document.getElementById(id);
     if (!input) return;

@@ -46,6 +46,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Record Gmail Draft autofill from the latest prepared packet or individual payload, preserving pasted Gmail draft/message/thread IDs so the local draft log can be updated with fewer manual path mistakes.
 - Gmail connector response parser in Record Gmail Draft, so pasted `_create_draft` JSON/text can fill draft/message/thread IDs before the prepared-payload autofill.
 - One-click local `Record parsed response + prepared payload` action that parses a pasted `_create_draft` response, autofills the latest packet or individual payload, and records the draft locally without adding any Gmail send-capable behavior.
+- Gmail handoff checklist gate for the one-click record helper, requiring explicit review of the PDF preview and exact `_create_draft` args before local draft-log writes.
 - Editable reference screens for known destinations/kilometers and court email directory entries, with validation and no send-capable behavior.
 - Guarded service-profile editor with recipient validation, service/date/entity checks, and a sample Portuguese draft preview before saving.
 - Profile diff preview and local profile-change history so service profile edits are auditable without publishing private runtime logs.

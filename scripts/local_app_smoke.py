@@ -36,6 +36,7 @@ LANDMARKS = [
     "Batch Queue",
     "Packet mode",
     "Packet draft recording helper",
+    "Gmail handoff checklist",
     "LegalPDF Integration Preview",
     "Build adapter import plan",
     "LegalPDF Apply History",

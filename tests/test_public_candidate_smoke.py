@@ -47,6 +47,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Packet mode",
             "Packet item inspector",
             "Packet draft recording helper",
+            "Gmail handoff checklist",
             "LegalPDF Integration Preview",
             "Build integration checklist",
             "Build adapter import plan",
@@ -208,6 +209,22 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, app_js)
+        self.assertNotIn("_send_email", app_js)
+        self.assertNotIn("_send_draft", app_js)
+
+    def test_browser_js_requires_handoff_review_before_one_click_record(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+        page = (root / "honorarios_app" / "templates" / "index.html").read_text(encoding="utf-8")
+        for text in [
+            "Gmail handoff checklist",
+            "I reviewed the PDF preview",
+            "I used the exact `_create_draft` args shown above",
+            "gmail_handoff_reviewed",
+            "Review the PDF preview and exact Gmail args before local recording.",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, app_js + page)
         self.assertNotIn("_send_email", app_js)
         self.assertNotIn("_send_draft", app_js)
 

@@ -49,6 +49,7 @@ The app supports the main workflow:
 - record returned Gmail draft IDs so duplicates are protected immediately
 - parse a pasted Gmail `_create_draft` response to fill the draft/message/thread ID fields locally
 - autofill the Record Gmail Draft form from the prepared packet or individual payload while preserving pasted Gmail draft/message/thread IDs
+- require a visible Gmail handoff checklist before the one-click `Record parsed response + prepared payload` helper can write to the local draft log
 - record the parsed Gmail response and latest prepared payload in one local-only step after the draft is created externally
 - handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
 - filter Recent Work by lifecycle state (`active`, `drafted`, `sent`, `superseded`, `trashed`, `not_found`) to separate current duplicate blockers from audit history
@@ -350,7 +351,7 @@ Use the short payload-based form whenever possible:
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
 
-In the browser app, the Record Gmail Draft card can parse a pasted Gmail `_create_draft` response and fill the draft/message/thread ID fields locally. It can also fill the payload path and active status from the latest prepared packet or individual payload while preserving already pasted IDs. The lowest-friction path is: create the draft with `_create_draft`, paste the returned connector response, then click `Record parsed response + prepared payload`. That parses the IDs, fills the latest packet or individual payload path, and records the draft locally without creating, sending, or modifying any Gmail message.
+In the browser app, the Record Gmail Draft card can parse a pasted Gmail `_create_draft` response and fill the draft/message/thread ID fields locally. It can also fill the payload path and active status from the latest prepared packet or individual payload while preserving already pasted IDs. The lowest-friction path is: review the PDF preview and exact `_create_draft` args, tick the Gmail handoff checklist, create the draft with `_create_draft`, paste the returned connector response, then click `Record parsed response + prepared payload`. That parses the IDs, fills the latest packet or individual payload path, and records the draft locally without creating, sending, or modifying any Gmail message.
 
 The older explicit form still works:
 

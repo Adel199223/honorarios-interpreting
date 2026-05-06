@@ -76,7 +76,7 @@ Use `scripts/record_gmail_draft.py` after `_create_draft` returns. Prefer the pa
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
 
-In the browser app, paste the returned Gmail connector response and click `Record parsed response + prepared payload`. This removes the easiest-to-fumble parts of recording: copying three Gmail IDs correctly, picking the right packet or individual payload path, and remembering the final local record click, especially after a correction or same-day packet.
+In the browser app, paste the returned Gmail connector response and click `Record parsed response + prepared payload`. This removes the easiest-to-fumble parts of recording: copying three Gmail IDs correctly, picking the right packet or individual payload path, and remembering the final local record click, especially after a correction or same-day packet. The one-click helper stays disabled until you tick the Gmail handoff checklist confirming that you reviewed the PDF preview and used the exact displayed `_create_draft` args.
 
 The log lives in:
 
