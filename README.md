@@ -81,13 +81,15 @@ This opens the app, creates a synthetic reviewed request from a profile, verifie
 
 Browser smoke checks now reset the workspace at the end of a successful run, so synthetic values such as `999/26.0SMOKE` and queued test requests do not linger in the open app tab. Python browser smoke clicks `Reset workspace`; the Browser/IAB smoke verifies that control and then reloads the local app as a safer adapter-compatible reset. You can also click `Reset workspace` yourself in the left sidebar when you want a clean New Job surface without changing any real duplicate records, draft logs, generated PDFs, or Gmail state.
 
-Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can also verify the numbered missing-info answer loop and the References -> LegalPDF Apply History, redacted Details, read-only Restore Plan surface, and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail:
+Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can also verify disposable local photo/PDF upload evidence when the Browser runtime exposes safe file-input support, the numbered missing-info answer loop, and the References -> LegalPDF Apply History, redacted Details, read-only Restore Plan surface, and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail:
 
 ```powershell
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-answer-questions --browser-apply-history --json
 ```
 
 The shell command returns a Node REPL handoff cell because raw subprocesses should not drive the in-app Browser directly.
+
+Add `--browser-upload-photo --browser-upload-pdf` to the same command when you want Browser/IAB to try the local upload-evidence path with disposable synthetic files. If the in-app Browser adapter cannot set local file inputs, the smoke reports a clean tooling blocker instead of touching real private files.
 
 To verify upload recovery and `Review Attention` without any browser driver or file-picker support, use the API-level source upload smoke:
 

@@ -65,7 +65,7 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Optional browser upload/correction smoke flags (`--browser-upload-photo`, `--browser-upload-pdf`, and `--browser-correction-mode`) that verify local Source Evidence and draft-lifecycle UI with disposable synthetic files while still blocking prepare, record, and draft-status endpoints by default.
 - Opt-in artifact-writing browser replacement smoke (`--browser-prepare-replacement` with `--browser-correction-mode`) that exercises the replacement-draft prepare button against disposable/synthetic active-draft state while still blocking draft recording/status endpoints and all Gmail actions.
 - Isolated synthetic runtime support for artifact-writing smoke: `honorarios_app.web --runtime-root ... --init-synthetic-runtime` and `scripts/isolated_app_smoke.py` keep synthetic config, reference data, duplicate/draft logs, PDFs, payloads, manifests, and previews out of the real private workspace state.
-- Browser/IAB-native smoke runner (`scripts/browser_iab_smoke.mjs`) for Codex's in-app Browser runtime, importable from the Node REPL, covering the LegalPDF shell, review drawer, numbered missing-info answers, batch queue, non-writing batch preflight, correction mode, isolated replacement prepare, workspace reset cleanup, and read-only LegalPDF Apply History/Detail/Restore Plan plus guarded restore-control checks without relying on optional Python Playwright.
+- Browser/IAB-native smoke runner (`scripts/browser_iab_smoke.mjs`) for Codex's in-app Browser runtime, importable from the Node REPL, covering the LegalPDF shell, disposable photo/PDF upload evidence when safe file-input support is available, review drawer, numbered missing-info answers, batch queue, non-writing batch preflight, correction mode, isolated replacement prepare, workspace reset cleanup, and read-only LegalPDF Apply History/Detail/Restore Plan plus guarded restore-control checks without relying on optional Python Playwright.
 
 ## LegalPDF UI Alignment
 
@@ -94,7 +94,7 @@ It was published from `output/public-candidate` after the privacy and repository
 
 ## Next Stages
 
-1. Extend Browser/IAB smoke to file-upload evidence only if/when the Browser runtime exposes a safe local file-input API; until then, keep UI upload smoke on Python Playwright and use API-level synthetic fixtures for dependency-free upload evidence checks.
+1. Keep hardening the Browser/IAB and isolated smoke runners around any new UI surface, with capability blockers for optional browser features rather than unsafe fallbacks.
 2. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
 
 ## Public GitHub Readiness

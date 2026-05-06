@@ -168,6 +168,8 @@ nodeRepl.write(JSON.stringify(result, null, 2));
 
 This Browser/IAB path opens a fresh in-app tab, checks the LegalPDF-style shell, opens the review drawer, can intentionally leave one required field blank and apply a compact numbered answer, confirms draft-only review evidence, adds the reviewed request to the batch queue, runs the non-writing batch preflight, resets the temporary workspace by reloading the local app, and, when `applyHistory: true` is set, verifies References -> LegalPDF Apply History plus the read-only Detail/Restore Plan surfaces and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail.
 
+When `uploadPhoto: true` or `uploadPdf: true` is passed to `runBrowserIabSmoke`, the runner creates disposable synthetic files, uses the Browser runtime's guarded `setInputFiles` path, verifies Source Evidence and recovered PDF candidate fields, and still stops before prepare, draft recording, draft status changes, or Gmail. If the Browser adapter cannot set local file inputs, that step should return a tooling blocker instead of using real private files.
+
 To cover upload recovery and `Review Attention` even when Python Playwright is not installed, use the API-level source upload smoke:
 
 ```powershell
@@ -190,7 +192,7 @@ To cover the local upload and correction surfaces without creating PDFs or recor
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-upload-photo --browser-upload-pdf --browser-correction-mode --json
 ```
 
-This creates disposable synthetic upload files, verifies the Source Evidence card and recovered PDF candidate fields, checks the draft lifecycle/correction reason surface, and still blocks prepare, record, and draft-status POSTs. The app may store synthetic source-preview artifacts from the upload, but it must not create PDF/draft payloads or Gmail draft-log records in this mode.
+This creates disposable synthetic upload files, verifies the Source Evidence card and recovered PDF candidate fields, checks the draft lifecycle/correction reason surface, and still blocks prepare, record, and draft-status POSTs. Python Playwright drives this path when installed; Browser/IAB can now attempt the same upload evidence via safe `setInputFiles` and report a clean tooling blocker if the in-app adapter lacks that capability. The app may store synthetic source-preview artifacts from the upload, but it must not create PDF/draft payloads or Gmail draft-log records in this mode.
 
 To cover replacement-draft preparation itself, use the opt-in artifact-writing flag only against disposable/synthetic state with an existing active draft blocker:
 

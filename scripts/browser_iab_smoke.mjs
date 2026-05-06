@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const DEFAULT_BROWSER_CLIENT = "%USERPROFILE%/example-path";
 const DEFAULT_CASE_NUMBER = "999/26.0SMOKE";
@@ -143,6 +145,14 @@ async function uniqueLocator(tab, selector, timeoutMs) {
   return locator;
 }
 
+async function inputLocator(tab, selector, timeoutMs) {
+  const locator = tab.playwright.locator(selector);
+  await locator.waitFor({ state: "attached", timeoutMs });
+  const count = await locator.count();
+  if (count !== 1) throw new Error(`Expected ${selector} to match exactly one input element; got ${count}.`);
+  return locator;
+}
+
 async function fill(tab, selector, value, timeoutMs) {
   const locator = await uniqueLocator(tab, selector, timeoutMs);
   await locator.fill(value, { timeoutMs });
@@ -156,6 +166,19 @@ async function click(tab, selector, timeoutMs) {
     // Browser/IAB locator adapters may not expose this Playwright helper.
   }
   await locator.click({ timeoutMs });
+}
+
+async function setSyntheticInputFile(tab, selector, filePath, timeoutMs) {
+  const locator = await inputLocator(tab, selector, timeoutMs);
+  if (typeof locator.setInputFiles !== "function") {
+    throw new Error("Browser/IAB file-input capability is unavailable: locator.setInputFiles is not exposed.");
+  }
+  try {
+    await locator.setInputFiles(filePath, { timeout: timeoutMs });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Browser/IAB file-input capability failed for ${selector}: ${message}`);
+  }
 }
 
 async function select(tab, selector, value, timeoutMs) {
@@ -191,6 +214,62 @@ function portugueseDate(value) {
   return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
+function pdfEscape(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function simplePdfBytes(lines) {
+  const textOps = lines
+    .map((line, index) => `BT /F1 12 Tf 72 ${720 - index * 20} Td (${pdfEscape(line)}) Tj ET`)
+    .join("\n");
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+    "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    `5 0 obj\n<< /Length ${textOps.length} >>\nstream\n${textOps}\nendstream\nendobj\n`,
+  ];
+  let output = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const object of objects) {
+    offsets.push(output.length);
+    output += object;
+  }
+  const xrefOffset = output.length;
+  output += `xref\n0 ${objects.length + 1}\n`;
+  output += "0000000000 65535 f \n";
+  for (const offset of offsets.slice(1)) {
+    output += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  output += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(output, "utf8");
+}
+
+function createSyntheticUploadFixtures(args) {
+  const directory = mkdtempSync(join(tmpdir(), "honorarios-iab-upload-"));
+  const photoPath = join(directory, "synthetic-photo.png");
+  const pdfPath = join(directory, "synthetic-notification.pdf");
+  const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  writeFileSync(photoPath, Buffer.from(pngBase64, "base64"));
+  const [year, month, day] = String(args.serviceDate || DEFAULT_SERVICE_DATE).split("-");
+  writeFileSync(pdfPath, simplePdfBytes([
+    `NUIPC ${args.caseNumber || DEFAULT_CASE_NUMBER}`,
+    `Data/Hora da diligência: ${day}/${month}/${year} 10:00`,
+    "Local: Posto Territorial de Serpa",
+    "Email: court@example.test",
+  ]));
+  return { directory, photoPath, pdfPath };
+}
+
+function cleanupSyntheticUploadFixtures(fixtures) {
+  if (!fixtures?.directory) return;
+  try {
+    rmSync(fixtures.directory, { recursive: true, force: true });
+  } catch (_error) {
+    // Temporary fixture cleanup is best-effort only.
+  }
+}
+
 async function countLocator(tab, selector) {
   return tab.playwright.locator(selector).count();
 }
@@ -221,20 +300,15 @@ export async function runBrowserIabSmoke(options = {}) {
   const args = { ...parseArgs([]), ...options };
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const checks = [];
+  let uploadFixtures = null;
+  const finish = () => {
+    cleanupSyntheticUploadFixtures(uploadFixtures);
+    return report(baseUrl, checks);
+  };
 
   if (!existsSync(args.browserClient)) {
     checks.push(check("browser_iab_runtime", false, `Browser client not found at ${args.browserClient}`));
-    return report(baseUrl, checks);
-  }
-
-  if (args.uploadPhoto) {
-    checks.push(check("browser_photo_upload_evidence", false, "Browser/IAB smoke does not drive local file-picker uploads yet; use the Python Playwright upload smoke for this surface."));
-  }
-  if (args.uploadPdf) {
-    checks.push(check("browser_pdf_upload_evidence", false, "Browser/IAB smoke does not drive local file-picker uploads yet; use the Python Playwright upload smoke for this surface."));
-  }
-  if (args.uploadPhoto || args.uploadPdf) {
-    return report(baseUrl, checks);
+    return finish();
   }
 
   const { setupAtlasRuntime } = await import(pathToFileURL(args.browserClient).href);
@@ -242,6 +316,7 @@ export async function runBrowserIabSmoke(options = {}) {
   await setupAtlasRuntime({ globals: globalThis, backend });
   await agent.browser.nameSession("🧪 honorários iab smoke");
   const tab = await agent.browser.tabs.new();
+  uploadFixtures = args.uploadPhoto || args.uploadPdf ? createSyntheticUploadFixtures(args) : null;
 
   checks.push(check("browser_iab_runtime", true, "Browser/IAB runtime initialized.", { backend: "iab" }));
 
@@ -252,7 +327,7 @@ export async function runBrowserIabSmoke(options = {}) {
     await expectBodyText(tab, "Review Case Details", args.timeoutMs);
     await expectBodyText(tab, "Draft-only Gmail", args.timeoutMs);
   }))) {
-    return report(baseUrl, checks);
+    return finish();
   }
 
   if (!(await runStep(checks, "browser_review_drawer", "Browser/IAB opened review drawer with Portuguese draft text.", async () => {
@@ -272,7 +347,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectBodyText(tab, "To:", args.timeoutMs);
     }
   }))) {
-    return report(baseUrl, checks);
+    return finish();
   }
 
   if (args.answerQuestions) {
@@ -283,7 +358,31 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectBodyText(tab, portugueseDate(args.serviceDate), args.timeoutMs);
       await expectBodyText(tab, "To:", args.timeoutMs);
     }))) {
-      return report(baseUrl, checks);
+      return finish();
+    }
+  }
+
+  if (args.uploadPhoto) {
+    if (!(await runStep(checks, "browser_photo_upload_evidence", "Browser/IAB uploaded a synthetic photo and showed Source Evidence without preparing artifacts.", async () => {
+      await setSyntheticInputFile(tab, "#photo-file", uploadFixtures.photoPath, args.timeoutMs);
+      await click(tab, "#photo-upload-form button[type=submit]", args.timeoutMs);
+      await expectBodyText(tab, "Source Evidence", args.timeoutMs);
+      await expectSelectorText(tab, "#source-evidence-body", "Filename", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+  }
+
+  if (args.uploadPdf) {
+    if (!(await runStep(checks, "browser_pdf_upload_evidence", "Browser/IAB uploaded a synthetic notification PDF and surfaced candidate review fields without preparing artifacts.", async () => {
+      await setSyntheticInputFile(tab, "#notification-file", uploadFixtures.pdfPath, args.timeoutMs);
+      await click(tab, "#notification-upload-form button[type=submit]", args.timeoutMs);
+      await expectBodyText(tab, "Source Evidence", args.timeoutMs);
+      await expectSelectorText(tab, "#source-evidence-body", "Filename", args.timeoutMs);
+      await expectValueContains(tab, "#case_number", args.caseNumber, args.timeoutMs);
+      await expectValueContains(tab, "#service_date", args.serviceDate, args.timeoutMs);
+    }))) {
+      return finish();
     }
   }
 
@@ -294,13 +393,13 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#batch-count-chip", "1 queued", args.timeoutMs);
       await expectBodyText(tab, "Packet item inspector", args.timeoutMs);
     }))) {
-      return report(baseUrl, checks);
+      return finish();
     }
     if (!(await runStep(checks, "browser_batch_preflight", "Browser/IAB ran non-writing batch preflight before artifact preparation.", async () => {
       await expectSelectorText(tab, "#batch-preflight-result", "Batch preflight", args.timeoutMs);
       await expectSelectorText(tab, "#batch-preflight-result", "Artifact effect", args.timeoutMs);
     }))) {
-      return report(baseUrl, checks);
+      return finish();
     }
   }
 
@@ -314,21 +413,21 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectBodyText(tab, "Draft lifecycle", args.timeoutMs);
       await fill(tab, "#correction_reason", args.correctionReason, args.timeoutMs);
     }))) {
-      return report(baseUrl, checks);
+      return finish();
     }
   }
 
   if (args.prepareReplacement) {
     if (!args.correctionMode) {
       checks.push(check("browser_replacement_prepare", false, "Replacement preparation smoke requires --correction-mode."));
-      return report(baseUrl, checks);
+      return finish();
     }
     if (!(await runStep(checks, "browser_replacement_prepare", "Browser/IAB prepared a replacement payload without recording a draft or calling Gmail.", async () => {
       await click(tab, "#prepare-replacement-draft", args.timeoutMs);
       await expectBodyText(tab, "Replacement payload prepared", args.timeoutMs);
       await expectBodyText(tab, "Draft-only Gmail", args.timeoutMs);
     }))) {
-      return report(baseUrl, checks);
+      return finish();
     }
   }
 
@@ -341,13 +440,13 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectBodyText(tab, "Packet draft recording helper", args.timeoutMs);
       await expectBodyText(tab, "Underlying duplicate blockers", args.timeoutMs);
     }))) {
-      return report(baseUrl, checks);
+      return finish();
     }
   }
 
   if (args.recordHelper) {
     checks.push(check("browser_record_helper", false, "Browser/IAB smoke intentionally does not autofill or record draft lifecycle forms."));
-    return report(baseUrl, checks);
+    return finish();
   }
 
   if (args.applyHistory) {
@@ -380,7 +479,7 @@ export async function runBrowserIabSmoke(options = {}) {
         await uniqueLocator(tab, "#confirm-legalpdf-restore", args.timeoutMs);
       }
     }))) {
-      return report(baseUrl, checks);
+      return finish();
     }
   }
 
@@ -391,10 +490,10 @@ export async function runBrowserIabSmoke(options = {}) {
     await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
     await expectBodyText(tab, "Reset workspace", args.timeoutMs);
   }))) {
-    return report(baseUrl, checks);
+    return finish();
   }
 
-  return report(baseUrl, checks);
+  return finish();
 }
 
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {

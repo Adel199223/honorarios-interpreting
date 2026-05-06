@@ -330,6 +330,28 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
 
+    def test_browser_iab_smoke_attempts_guarded_upload_evidence(self):
+        root = Path(__file__).resolve().parents[1]
+        smoke_js = (root / "scripts" / "browser_iab_smoke.mjs").read_text(encoding="utf-8")
+        for text in [
+            "createSyntheticUploadFixtures",
+            "setSyntheticInputFile",
+            "setInputFiles",
+            "#photo-file",
+            "#notification-file",
+            "#photo-upload-form button[type=submit]",
+            "#notification-upload-form button[type=submit]",
+            "browser_photo_upload_evidence",
+            "browser_pdf_upload_evidence",
+            "Source Evidence",
+            "Filename",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, smoke_js)
+        self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
+        self.assertNotIn("_send_email", smoke_js)
+        self.assertNotIn("_send_draft", smoke_js)
+
     def test_openai_recovery_uses_strict_json_schema_contract(self):
         root = Path(__file__).resolve().parents[1]
         ai_recovery = (root / "honorarios_app" / "ai_recovery.py").read_text(encoding="utf-8")
