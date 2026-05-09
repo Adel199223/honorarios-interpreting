@@ -108,6 +108,15 @@ function report(baseUrl, checks) {
   };
 }
 
+function forbiddenSendActionTerms() {
+  return [
+    ["_send", "email"].join("_"),
+    ["_send", "draft"].join("_"),
+    ["messages", "send"].join("."),
+    ["drafts", "send"].join("."),
+  ];
+}
+
 async function bodyIncludes(tab, text, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let last = "";
@@ -146,6 +155,20 @@ async function expectSelectorTextExcludes(tab, selector, texts, timeoutMs) {
       throw new Error(`Expected ${selector} to redact ${JSON.stringify(text)}.`);
     }
   }
+}
+
+async function expectClipboardText(tab, text, timeoutMs) {
+  if (!tab.clipboard?.readText) {
+    throw new Error("Browser/IAB clipboard read capability is unavailable.");
+  }
+  const deadline = Date.now() + timeoutMs;
+  let actual = "";
+  while (Date.now() < deadline) {
+    actual = await tab.clipboard.readText();
+    if (String(actual || "").includes(text)) return actual;
+    await tab.playwright.waitForTimeout(100);
+  }
+  throw new Error(`Expected clipboard to include ${JSON.stringify(text)}; got ${JSON.stringify(actual)}.`);
 }
 
 async function expectAnyBodyText(tab, texts, timeoutMs) {
@@ -779,6 +802,28 @@ export async function runBrowserIabSmoke(options = {}) {
         ["C:", "Users"].join("\\"),
         ["C:", "Users"].join("/"),
       ], args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    if (!(await runStep(checks, "browser_local_diagnostics", "Browser/IAB refreshed Local Diagnostics and copied an isolated smoke command without running it.", async () => {
+      await expectBodyText(tab, "Local Diagnostics", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-isolated-source-upload-smoke-command", "data-copy-diagnostic-command", "isolated_source_upload_smoke", args.timeoutMs);
+      await click(tab, "#refresh-diagnostics", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "--source-upload-checks", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "The browser does not run shell commands or contact Gmail.", args.timeoutMs);
+      const forbiddenSendActions = forbiddenSendActionTerms();
+      await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
+      await click(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
+      const clipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --source-upload-checks --json", args.timeoutMs);
+      for (const forbidden of forbiddenSendActions) {
+        if (clipboardText.includes(forbidden)) {
+          throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
+        }
+      }
     }))) {
       return finish();
     }
