@@ -239,7 +239,7 @@ import inspect
 import tempfile
 import unittest
 import urllib.error
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1458,6 +1458,68 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("http://public-candidate.test/api/gmail/manual-handoff", seen_posts)
         self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
         self.assertNotIn("http://public-candidate.test/api/gmail/drafts/create", seen_posts)
+
+    def test_legalpdf_adapter_caller_cli_outputs_guarded_safe_summary(self):
+        import scripts.legalpdf_adapter_caller as adapter
+
+        self.assertTrue(hasattr(adapter, "main"), "Adapter caller should expose a CLI main()")
+        self.assertTrue(
+            hasattr(adapter, "run_synthetic_adapter_sequence_http"),
+            "Adapter caller CLI should reuse the HTTP synthetic sequence helper.",
+        )
+
+        class FakeResult:
+            status = "ready"
+
+            def safe_summary(self):
+                return {
+                    "status": "ready",
+                    "failure_count": 0,
+                    "prepared_review_bound": True,
+                    "manual_handoff_ready": True,
+                    "send_allowed": False,
+                    "write_allowed": False,
+                    "legalpdf_write_allowed": False,
+                }
+
+        output = StringIO()
+        with patch.object(adapter, "run_synthetic_adapter_sequence_http", return_value=FakeResult()) as run_sequence:
+            with patch("sys.stdout", output):
+                exit_code = adapter.main([
+                    "--base-url",
+                    "public-candidate.test/",
+                    "--timeout",
+                    "7.5",
+                    "--profile",
+                    "example_interpreting",
+                    "--case-number",
+                    "999/26.0SMOKE",
+                    "--service-date",
+                    "2026-05-04",
+                    "--allow-synthetic-recording",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        run_sequence.assert_called_once_with(
+            "public-candidate.test/",
+            timeout=7.5,
+            profile="example_interpreting",
+            case_number="999/26.0SMOKE",
+            service_date="2026-05-04",
+        )
+        summary = json.loads(output.getvalue())
+        self.assertEqual(summary["status"], "ready")
+        self.assertTrue(summary["prepared_review_bound"])
+        summary_text = json.dumps(summary, sort_keys=True)
+        self.assertNotIn("copyable_prompt", summary_text)
+        self.assertNotIn("/tmp/adapter-packet.draft.json", summary_text)
+
+        with patch.object(adapter, "run_synthetic_adapter_sequence_http") as blocked_run:
+            with patch("sys.stderr", StringIO()):
+                with self.assertRaises(SystemExit) as blocked:
+                    adapter.main(["--base-url", "public-candidate.test/"])
+        self.assertEqual(blocked.exception.code, 2)
+        blocked_run.assert_not_called()
 
     def test_local_app_smoke_adapter_contract_wrapper_is_thin(self):
         import scripts.local_app_smoke as smoke

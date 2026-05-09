@@ -109,4 +109,12 @@ It drives the future caller sequence through source upload, numbered-answer revi
 
 The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, reusable HTTP JSON/multipart transport, prepared-review request-field helpers, stale-token helpers, contract validation for the exact prepared-review binding fields, the injected synthetic adapter sequence used by the smoke runner, and a secret-free `AdapterSequenceResult.safe_summary()` for future callers that need readiness signals without copyable Gmail prompts or local payload paths.
 
+For focused caller debugging against an already-running isolated app, the shim also has a guarded CLI:
+
+```powershell
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --allow-synthetic-recording --json
+```
+
+The flag is intentionally explicit because the full sequence prepares synthetic artifacts and records synthetic draft IDs. Use the isolated smoke launcher for normal verification.
+
 Use that endpoint as the machine-readable source for future LegalPDF integration planning.
