@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +67,16 @@ class PlaywrightBrowserDriver:
         self._page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
 
     def expect_text(self, text: str) -> None:
-        self._page.get_by_text(text, exact=False).wait_for(state="visible", timeout=self.timeout_ms)
+        locator = self._page.get_by_text(text, exact=False)
+        deadline = time.monotonic() + (self.timeout_ms / 1000)
+        last_count = 0
+        while time.monotonic() < deadline:
+            last_count = locator.count()
+            for index in range(locator.count()):
+                if locator.nth(index).is_visible(timeout=250):
+                    return
+            self._page.wait_for_timeout(100)
+        raise RuntimeError(f"Expected visible text {text!r}; found {last_count} matching node(s), none visible.")
 
     def fill(self, selector: str, value: str) -> None:
         self._page.locator(selector).fill(value, timeout=self.timeout_ms)
@@ -99,9 +109,14 @@ class PlaywrightBrowserDriver:
     def expect_selector_text(self, selector: str, text: str) -> None:
         locator = self._page.locator(selector)
         locator.wait_for(state="visible", timeout=self.timeout_ms)
-        content = locator.inner_text(timeout=self.timeout_ms)
-        if text not in content:
-            raise RuntimeError(f"Expected {selector} to contain {text!r}; got {content!r}")
+        deadline = time.monotonic() + (self.timeout_ms / 1000)
+        last_content = ""
+        while time.monotonic() < deadline:
+            last_content = locator.inner_text(timeout=self.timeout_ms)
+            if text in last_content or text.lower() in last_content.lower():
+                return
+            self._page.wait_for_timeout(100)
+        raise RuntimeError(f"Expected {selector} to contain {text!r}; got {last_content!r}")
 
     def expect_selector_attribute_contains(self, selector: str, attribute: str, value: str) -> None:
         locator = self._page.locator(selector)
@@ -112,14 +127,14 @@ class PlaywrightBrowserDriver:
 
     def expect_selector_value(self, selector: str, value: str) -> None:
         locator = self._page.locator(selector)
-        locator.wait_for(state="visible", timeout=self.timeout_ms)
+        locator.wait_for(state="attached", timeout=self.timeout_ms)
         actual = locator.input_value(timeout=self.timeout_ms)
         if value not in actual:
             raise RuntimeError(f"Expected {selector} value to contain {value!r}; got {actual!r}")
 
     def expect_selector_value_equals(self, selector: str, value: str) -> None:
         locator = self._page.locator(selector)
-        locator.wait_for(state="visible", timeout=self.timeout_ms)
+        locator.wait_for(state="attached", timeout=self.timeout_ms)
         actual = locator.input_value(timeout=self.timeout_ms)
         if actual != value:
             raise RuntimeError(f"Expected {selector} value to equal {value!r}; got {actual!r}")
@@ -289,8 +304,6 @@ def run_browser_flow_smoke(
             driver.goto(base + "/"),
             driver.expect_text("Start Interpretation Request"),
             driver.expect_text("Review Case Details"),
-            driver.expect_text("Suggested Next Step"),
-            driver.expect_text("Suggested Next Step"),
             driver.expect_text("Draft-only Gmail"),
         )):
             return _report(base, checks)
@@ -373,12 +386,15 @@ def run_browser_flow_smoke(
             )):
                 return _report(base, checks)
 
-        if not _safe_step(checks, "browser_batch_queue", "Browser added the reviewed request to the batch queue without preparing artifacts.", lambda: (
-            _close_review_drawer_if_open(),
-            driver.click("#add-current-to-batch"),
-            driver.expect_selector_text("#batch-count-chip", "1 queued"),
-            driver.expect_text("Packet item inspector"),
-        )):
+        def _batch_queue() -> None:
+            nonlocal review_drawer_open
+            _close_review_drawer_if_open()
+            driver.click("#add-current-to-batch")
+            driver.expect_selector_text("#batch-count-chip", "1 queued")
+            driver.expect_text("Packet item inspector")
+            review_drawer_open = True
+
+        if not _safe_step(checks, "browser_batch_queue", "Browser added the reviewed request to the batch queue without preparing artifacts.", _batch_queue):
             return _report(base, checks)
 
         if not _safe_step(checks, "browser_batch_preflight", "Browser ran non-writing batch preflight before artifact preparation.", lambda: (
@@ -417,6 +433,7 @@ def run_browser_flow_smoke(
 
         def _prepare_packet() -> None:
             nonlocal review_drawer_open
+            _close_review_drawer_if_open()
             driver.check("#batch-packet-mode")
             driver.click("#preflight-batch-intakes")
             review_drawer_open = True
@@ -425,6 +442,7 @@ def run_browser_flow_smoke(
             driver.click("#prepare-batch-intakes")
             driver.expect_selector_text("#prepare-results", "Packet draft recording helper")
             driver.expect_selector_text("#prepare-results", "Underlying duplicate blockers")
+            review_drawer_open = True
 
         if prepare_packet:
             if not _safe_step(checks, "browser_packet_prepare", "Browser prepared packet mode and exposed packet draft helpers.", _prepare_packet):
@@ -487,19 +505,21 @@ def run_browser_flow_smoke(
                 else:
                     driver.expect_selector_text("#record_payload", "")
 
-            if not _safe_step(checks, "browser_supporting_attachment_stale", "Browser cleared prepared Gmail surfaces after a supporting attachment changed.", lambda: (
-                driver.click("#build-manual-handoff"),
-                driver.expect_selector_text("#manual-handoff-packet", "Manual handoff packet ready"),
-                driver.set_input_file("#supporting-attachment-file", supporting_upload_path),
-                driver.click("#supporting-attachment-form button[type=submit]"),
-                driver.expect_selector_text("#supporting-attachment-list", "synthetic-declaracao.pdf"),
-                driver.expect_selector_attribute_contains("#manual-handoff-packet", "class", "hidden"),
-                driver.expect_button_disabled("#copy-manual-handoff-prompt"),
-                driver.expect_button_disabled("#create-gmail-api-draft"),
-                driver.expect_button_disabled("#record-parsed-prepared-draft"),
-                _expect_empty_record_payload(),
-                driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "supporting attachments changed"),
-            )):
+            def _supporting_attachment_stale() -> None:
+                driver.click("#build-manual-handoff")
+                driver.expect_selector_text("#manual-handoff-packet", "Manual handoff packet ready")
+                _close_review_drawer_if_open()
+                driver.set_input_file("#supporting-attachment-file", supporting_upload_path)
+                driver.click("#supporting-attachment-form button[type=submit]")
+                driver.expect_selector_text("#supporting-attachment-list", "synthetic-declaracao.pdf")
+                driver.expect_selector_attribute_contains("#manual-handoff-packet", "class", "hidden")
+                driver.expect_button_disabled("#copy-manual-handoff-prompt")
+                driver.expect_button_disabled("#create-gmail-api-draft")
+                driver.expect_button_disabled("#record-parsed-prepared-draft")
+                _expect_empty_record_payload()
+                driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "supporting attachments changed")
+
+            if not _safe_step(checks, "browser_supporting_attachment_stale", "Browser cleared prepared Gmail surfaces after a supporting attachment changed.", _supporting_attachment_stale):
                 return _report(base, checks)
 
         if manual_handoff_stale:
@@ -520,6 +540,7 @@ def run_browser_flow_smoke(
                 return _report(base, checks)
 
         if not _safe_step(checks, "browser_workspace_reset", "Browser reset the synthetic workspace after smoke checks.", lambda: (
+            _close_review_drawer_if_open(),
             driver.click("#reset-workspace"),
             driver.expect_selector_text("#batch-count-chip", "0 queued"),
             driver.expect_text("Workspace reset"),

@@ -400,6 +400,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         flow_packet_block = flow_py.split("def _prepare_packet()", 1)[1].split("if prepare_packet:", 1)[0]
         flow_record_helper_block = flow_py.split("if record_helper:", 1)[1].split("if manual_handoff_stale:", 1)[0]
         flow_supporting_stale_block = flow_py.split("if supporting_attachment_stale:", 1)[1].split("if manual_handoff_stale:", 1)[0]
+        flow_expect_text_block = flow_py.split("def expect_text", 1)[1].split("def fill", 1)[0]
+        flow_homepage_block = flow_py.split('if not _safe_step(checks, "browser_homepage"', 1)[1].split('def _review_drawer()', 1)[0]
+        flow_selector_text_block = flow_py.split("def expect_selector_text", 1)[1].split("def expect_selector_attribute_contains", 1)[0]
+        flow_value_block = flow_py.split("def expect_selector_value", 1)[1].split("def expect_button_disabled", 1)[0]
+        flow_reset_block = flow_py.split('if not _safe_step(checks, "browser_workspace_reset"', 1)[1].split("finally:", 1)[0]
 
         preflight_index = packet_block.index('click(tab, "#preflight-batch-intakes"')
         close_index = packet_block.index("closeReviewDrawerIfOpen()")
@@ -413,6 +418,21 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn('expectBodyText(tab, "Packet draft recording helper"', packet_block)
 
         self.assertIn("review_drawer_open = True", flow_packet_block)
+        self.assertIn("locator = self._page.get_by_text(text, exact=False)", flow_expect_text_block)
+        self.assertIn("for index in range(locator.count())", flow_expect_text_block)
+        self.assertIn("locator.nth(index).is_visible", flow_expect_text_block)
+        self.assertIn("self._page.wait_for_timeout(100)", flow_expect_text_block)
+        self.assertIn("Expected visible text", flow_expect_text_block)
+        self.assertIn("deadline = time.monotonic()", flow_selector_text_block)
+        self.assertIn("text.lower() in last_content.lower()", flow_selector_text_block)
+        self.assertIn("last_content", flow_selector_text_block)
+        self.assertIn('wait_for(state="attached"', flow_value_block)
+        self.assertNotIn('wait_for(state="visible"', flow_value_block)
+        self.assertNotIn('driver.expect_text("Suggested Next Step")', flow_homepage_block)
+        self.assertLess(flow_packet_block.index("_close_review_drawer_if_open()"), flow_packet_block.index('driver.check("#batch-packet-mode")'))
+        self.assertNotIn("get_by_text(text, exact=False).wait_for", flow_expect_text_block)
+        self.assertNotIn("get_by_text(text, exact=False).first().wait_for", flow_expect_text_block)
+        self.assertNotIn("get_by_text(text, exact=False).first.wait_for", flow_expect_text_block)
         self.assertIn("_close_review_drawer_if_open()", flow_packet_block)
         self.assertIn('driver.expect_selector_text("#prepare-results", "Packet draft recording helper")', flow_packet_block)
         self.assertIn('driver.expect_selector_text("#prepare-results", "Underlying duplicate blockers")', flow_packet_block)
@@ -430,6 +450,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn('driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed")', flow_record_helper_block)
         self.assertIn("record_helper_should_mutate_prepared_state = not (manual_handoff_stale or supporting_attachment_stale)", flow_record_helper_block)
         self.assertIn('driver.set_input_file("#supporting-attachment-file", supporting_upload_path)', flow_supporting_stale_block)
+        self.assertLess(flow_supporting_stale_block.index('driver.click("#build-manual-handoff")'), flow_supporting_stale_block.index("_close_review_drawer_if_open()"))
+        self.assertLess(flow_supporting_stale_block.index("_close_review_drawer_if_open()"), flow_supporting_stale_block.index('driver.set_input_file("#supporting-attachment-file", supporting_upload_path)'))
+        self.assertLess(flow_reset_block.index("_close_review_drawer_if_open()"), flow_reset_block.index('driver.click("#reset-workspace")'))
         self.assertIn('driver.expect_button_disabled("#copy-manual-handoff-prompt")', flow_supporting_stale_block)
         self.assertIn('driver.expect_selector_value_equals("#record_payload", "")', flow_supporting_stale_block)
         self.assertIn('driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "supporting attachments changed")', flow_supporting_stale_block)

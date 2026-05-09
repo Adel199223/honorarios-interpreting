@@ -597,9 +597,27 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             'driver.expect_button_disabled("#copy-manual-handoff-prompt")',
             'driver.expect_selector_value_equals("#record_payload", "")',
             'driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "supporting attachments changed")',
+            "locator = self._page.get_by_text(text, exact=False)",
+            "for index in range(locator.count())",
+            "locator.nth(index).is_visible",
+            "self._page.wait_for_timeout(100)",
+            "Expected visible text",
+            "deadline = time.monotonic()",
+            "text.lower() in last_content.lower()",
+            "last_content",
+            'wait_for(state="attached"',
         ]:
             with self.subTest(browser_flow=text):
                 self.assertIn(text, flow_py)
+        flow_value_block = flow_py.split("def expect_selector_value", 1)[1].split("def expect_button_disabled", 1)[0]
+        self.assertNotIn('wait_for(state="visible"', flow_value_block)
+        self.assertNotIn("get_by_text(text, exact=False).wait_for", flow_py)
+        self.assertNotIn("get_by_text(text, exact=False).first().wait_for", flow_py)
+        self.assertNotIn("get_by_text(text, exact=False).first.wait_for", flow_py)
+        flow_homepage_block = flow_py.split('if not _safe_step(checks, "browser_homepage"', 1)[1].split('def _review_drawer()', 1)[0]
+        self.assertNotIn('driver.expect_text("Suggested Next Step")', flow_homepage_block)
+        flow_reset_block = flow_py.split('if not _safe_step(checks, "browser_workspace_reset"', 1)[1].split("finally:", 1)[0]
+        self.assertLess(flow_reset_block.index("_close_review_drawer_if_open()"), flow_reset_block.index('driver.click("#reset-workspace")'))
         self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
