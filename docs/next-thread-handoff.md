@@ -35,7 +35,7 @@ Current date: 2026-05-09
 - LegalPDF-style browser app shell and review drawer.
 - Local PDF/photo upload, source evidence, OpenAI OCR evidence, automatic service-profile detection, numbered questions, duplicate/active-draft blocking, PDF preview, draft payload display, Manual Draft Handoff, optional guarded Gmail draft creation, Recent Work lifecycle controls, personal profiles, service profiles, reference editing, LegalPDF import preview/apply guards, public Git safety tooling, and Browser/IAB smoke coverage.
 - Public repo safety boundary: `.gitignore` keeps real runtime overlays local, `.githooks/pre-commit` runs `python scripts/public_repo_gate.py --staged`, and the browser Public GitHub Readiness panel reports tracked Git safety separately from the stricter full-workspace privacy gate.
-- LegalPDF adapter caller shim: `scripts/legalpdf_adapter_caller.py` now centralizes the safe endpoint list, prepared-review request fields, stale-token helper, and read-only/draft-only contract validation used by the isolated adapter smoke.
+- LegalPDF adapter caller shim: `scripts/legalpdf_adapter_caller.py` now centralizes the safe endpoint list, prepared-review request fields, stale-token helper, read-only/draft-only contract validation, and injected synthetic sequence used by the isolated adapter smoke.
 
 ## Validation Commands
 
@@ -74,7 +74,7 @@ python scripts\public_release_gate.py --root output\public-candidate --json
 ## Next Recommended Work
 
 1. Keep hardening Browser/IAB smoke around real daily UI paths.
-2. Grow the new LegalPDF adapter caller shim from contract validation into a reusable full-sequence client, keeping source upload, numbered answers, prepared-review token binding, and stale-token rejection executable only against isolated/synthetic state.
+2. Keep growing the LegalPDF adapter caller shim toward the future real LegalPDF caller, keeping source upload, numbered answers, prepared-review token binding, and stale-token rejection executable only against isolated/synthetic state.
 3. Continue testing real Gmail draft creation cautiously, keeping verification read-only and send actions forbidden.
 4. Improve UX explanations for `Suggested Next Step` and duplicate/correction states if they confuse daily use.
 

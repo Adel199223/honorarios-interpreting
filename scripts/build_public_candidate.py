@@ -1154,6 +1154,178 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         smoke_source = (Path(__file__).resolve().parents[1] / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
         self.assertIn("from scripts.legalpdf_adapter_caller import", smoke_source)
+        self.assertIn("run_synthetic_adapter_sequence(", smoke_source)
+
+    def test_legalpdf_adapter_caller_runs_full_synthetic_sequence(self):
+        from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS, run_synthetic_adapter_sequence
+
+        seen_posts = []
+        seen_uploads = []
+
+        def fetch_json(url):
+            if url.endswith("/api/integration/adapter-contract"):
+                return {
+                    "status": "ready",
+                    "recommended_gmail_mode": "manual_handoff",
+                    "draft_only": True,
+                    "send_allowed": False,
+                    "write_allowed": False,
+                    "legalpdf_write_allowed": False,
+                    "managed_data_changed": False,
+                    "gmail_boundary": {"required_tool": "_create_draft", "send_allowed": False},
+                    "prepared_review_binding": {"send_allowed": False},
+                    "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
+                }
+            if url.endswith("/api/history"):
+                return {"draft_log": [], "duplicates": []}
+            raise AssertionError(url)
+
+        def post_json(url, payload):
+            seen_posts.append(url)
+            if url.endswith("/api/review"):
+                intake = dict(payload["intake"])
+                self.assertNotIn("closing_date", intake)
+                return {
+                    "status": "needs_info",
+                    "intake": intake,
+                    "effective_intake": intake,
+                    "questions": [{"number": 1, "field": "closing_date", "question": "Closing date?"}],
+                    "question_text": "1. Closing date?",
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/review/apply-answers"):
+                intake = dict(payload["intake"])
+                self.assertIn("1. 2026-05-04", payload["answers"])
+                intake["closing_date"] = "2026-05-04"
+                return {
+                    "status": "ready",
+                    "intake": intake,
+                    "effective_intake": intake,
+                    "draft_text": "Número de processo: 999/26.0SMOKE\\n\\nPede deferimento,",
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/prepare/preflight"):
+                return {
+                    "status": "ready",
+                    "artifact_effect": "none",
+                    "write_allowed": False,
+                    "send_allowed": False,
+                    "preflight_review": {
+                        "review_fingerprint": "preflight-fingerprint",
+                        "preflight_review_token": "preflight-token",
+                        "send_allowed": False,
+                    },
+                }
+            if url.endswith("/api/prepare"):
+                self.assertEqual(payload["preflight_review"]["preflight_review_token"], "preflight-token")
+                return {
+                    "status": "prepared",
+                    "send_allowed": False,
+                    "prepared_review": {
+                        "manifest": "/tmp/adapter-manifest.json",
+                        "prepared_review_token": "prepared-token",
+                        "review_fingerprint": "prepared-fingerprint",
+                        "payload_paths": ["/tmp/adapter-packet.draft.json"],
+                        "send_allowed": False,
+                    },
+                    "items": [],
+                    "packet": {
+                        "draft_payload": "/tmp/adapter-packet.draft.json",
+                        "gmail_create_draft_ready": True,
+                        "gmail_create_draft_args": {"attachment_files": ["/tmp/adapter-packet.pdf"]},
+                        "underlying_requests": [{"case_number": "999/26.0SMOKE", "service_date": "2026-05-04"}],
+                        "send_allowed": False,
+                    },
+                }
+            if url.endswith("/api/gmail/manual-handoff"):
+                if payload["prepared_review_token"] == "stale-prepared-token":
+                    return {
+                        "status": "blocked",
+                        "message": "Prepared review token is stale. Prepare the PDF again from the reviewed request.",
+                        "send_allowed": False,
+                    }
+                return {
+                    "status": "ready",
+                    "mode": "manual_handoff",
+                    "gmail_tool": "_create_draft",
+                    "copyable_prompt": "Create a Gmail draft only using `_create_draft`.",
+                    "attachment_files": ["/tmp/adapter-packet.pdf"],
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/drafts/record"):
+                if payload["prepared_review_token"] == "stale-prepared-token":
+                    return {
+                        "status": "blocked",
+                        "message": "Prepared review token is stale. Prepare the PDF again from the reviewed request.",
+                        "send_allowed": False,
+                    }
+                return {
+                    "status": "recorded",
+                    "draft_id": "draft-adapter-smoke",
+                    "message_id": "message-adapter-smoke",
+                    "thread_id": "thread-adapter-smoke",
+                    "recorded_duplicate_count": 1,
+                    "send_allowed": False,
+                }
+            raise AssertionError(url)
+
+        def post_multipart(url, fields, filename, content, content_type):
+            seen_uploads.append(url)
+            self.assertEqual(fields["source_kind"], "notification_pdf")
+            self.assertEqual(filename, "synthetic-notification.pdf")
+            self.assertEqual(content_type, "application/pdf")
+            self.assertTrue(content.startswith(b"%PDF"))
+            return {
+                "status": "uploaded",
+                "send_allowed": False,
+                "candidate_intake": {
+                    "profile": "example_interpreting",
+                    "case_number": "999/26.0SMOKE",
+                    "service_date": "2026-05-04",
+                    "service_date_source": "document_text",
+                    "addressee": "Exmo. Senhor Procurador da República\\nExample Court",
+                    "payment_entity": "Example Court",
+                    "service_entity": "Example Police / Example Police Station",
+                    "service_entity_type": "police",
+                    "entities_differ": True,
+                    "service_place": "Example Police Station",
+                    "claim_transport": True,
+                    "transport": {"origin": "Example City", "destination": "Example City", "km_one_way": 12},
+                    "closing_city": "Example City",
+                    "closing_date": "2026-05-09",
+                    "recipient_email": "court@example.test",
+                    "source_filename": "synthetic-notification.pdf",
+                },
+                "source_evidence": {
+                    "attention": {
+                        "status": "ready",
+                        "flag_count": 0,
+                        "flags": [],
+                    },
+                },
+            }
+
+        checks = run_synthetic_adapter_sequence(
+            "http://public-candidate.test/",
+            fetch_json=fetch_json,
+            post_json=post_json,
+            post_multipart=post_multipart,
+            profile="example_interpreting",
+            case_number="999/26.0SMOKE",
+            service_date="2026-05-04",
+        )
+
+        self.assertTrue(checks, checks)
+        self.assertTrue(all(check["status"] == "ready" for check in checks), checks)
+        names = {check["name"] for check in checks}
+        self.assertIn("adapter_prepare_ready", names)
+        self.assertIn("adapter_manual_handoff_rejects_stale_review", names)
+        self.assertIn("adapter_record_stale_no_local_write", names)
+        self.assertIn("adapter_record_draft", names)
+        self.assertIn("http://public-candidate.test/api/sources/upload", seen_uploads)
+        self.assertIn("http://public-candidate.test/api/gmail/manual-handoff", seen_posts)
+        self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
+        self.assertNotIn("http://public-candidate.test/api/gmail/drafts/create", seen_posts)
 
     def test_local_app_smoke_expected_blocked_helper_parses_http_400_json(self):
         def post_json(url, payload):
