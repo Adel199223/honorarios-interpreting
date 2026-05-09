@@ -550,7 +550,12 @@ def _run_interaction_checks(
     prepare_response, error_check = _post_workflow_json(
         post_json,
         _url(base, "/api/prepare"),
-        {"intakes": [intake], "render_previews": False, "packet_mode": True},
+        {
+            "intakes": [intake],
+            "render_previews": False,
+            "packet_mode": True,
+            "preflight_review": preflight_response.get("preflight_review") if isinstance(preflight_response, dict) else None,
+        },
         "workflow_prepare_packet_payload",
     )
     if error_check:
@@ -669,6 +674,7 @@ def _run_gmail_api_checks(
             "payload": payload_path,
             "gmail_handoff_reviewed": True,
             "notes": "Advanced/future synthetic Gmail API smoke.",
+            "prepared_review": prepare_response.get("prepared_review") if isinstance(prepare_response, dict) else None,
         },
         "gmail_api_create_draft",
     )

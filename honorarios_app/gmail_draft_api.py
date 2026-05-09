@@ -316,7 +316,7 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
             "send_allowed": False,
             "setup": {
                 "status": "ready",
-                "next_step": "Synthetic smoke mode is ready. No Google network call will be made.",
+                "next_step": "Synthetic smoke mode is ready. No Google network call will be made. Manual Draft Handoff remains available as a safe fallback.",
                 "config_path": SAFE_GMAIL_CONFIG_LABEL,
                 "example_config_path": SAFE_GMAIL_EXAMPLE_LABEL,
                 "redirect_uri": DEFAULT_GMAIL_REDIRECT_URI,
@@ -326,7 +326,7 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
                 "draft_only": True,
                 "send_allowed": False,
             },
-            "message": "Synthetic Gmail Draft API smoke mode is enabled. No Google network call will be made.",
+            "message": "Synthetic Gmail Draft API smoke mode is enabled. No Google network call will be made. Manual Draft Handoff remains available as a safe fallback.",
         }
     config = gmail_config(config_path)
     token_store_present = False

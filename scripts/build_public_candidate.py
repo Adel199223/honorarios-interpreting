@@ -421,42 +421,25 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         runtime = tempfile.TemporaryDirectory()
         self.addCleanup(runtime.cleanup)
         root = Path(runtime.name)
+        project_root = Path(__file__).resolve().parents[1]
         duplicate_index = root / "duplicate-index.json"
         draft_log = root / "gmail-draft-log.json"
         profile_change_log = root / "profile-change-log.json"
         duplicate_index.write_text("[]", encoding="utf-8")
         draft_log.write_text("[]", encoding="utf-8")
         profile_change_log.write_text("[]", encoding="utf-8")
-        pdf = root / "synthetic.pdf"
-        pdf.write_bytes(b"%PDF-1.4\\nsynthetic")
-        payload = {
-            "payload_schema_version": 1,
-            "gmail_tool": "_create_draft",
-            "case_number": "999/26.0SMOKE",
-            "service_date": "2026-05-04",
-            "to": "court@example.test",
-            "subject": "Requerimento de honorários",
-            "body": "Bom dia,",
-            "attachment_files": [str(pdf)],
-            "attachment_basenames": ["synthetic.pdf"],
-            "attachment_sha256": {},
-            "gmail_create_draft_args": {
-                "to": "court@example.test",
-                "subject": "Requerimento de honorários",
-                "body": "Bom dia,",
-                "attachment_files": [str(pdf)],
-            },
-            "draft_only": True,
-            "send_allowed": False,
-            "gmail_create_draft_ready": True,
-            "gmail_create_draft_blocker": "",
-        }
-        payload_path = root / "synthetic.draft.json"
-        payload_path.write_text(json.dumps(payload, indent=2) + "\\n", encoding="utf-8")
+        intake = json.loads((project_root / "examples" / "intake.synthetic.example.json").read_text(encoding="utf-8"))
+        intake.pop("recipient_email", None)
         previous = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
         os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
         try:
             client = TestClient(create_app(
+                profile=project_root / "config" / "profile.example.json",
+                personal_profiles=project_root / "config" / "profiles.example.json",
+                email_config=project_root / "config" / "email.example.json",
+                service_profiles=project_root / "data" / "service-profiles.json",
+                court_emails=project_root / "data" / "court-emails.json",
+                known_destinations=project_root / "data" / "known-destinations.json",
                 duplicate_index=duplicate_index,
                 draft_log=draft_log,
                 profile_change_log=profile_change_log,
@@ -472,9 +455,20 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 integration_report_output_dir=root / "integration-reports",
                 gmail_config=root / "gmail.local.json",
             ))
+            prepared = client.post("/api/prepare", json={
+                "intakes": [intake],
+                "render_previews": False,
+            })
+            self.assertEqual(prepared.status_code, 200, prepared.text)
+            prepared_data = prepared.json()
+            item = prepared_data["items"][0]
+            review = prepared_data["prepared_review"]
             response = client.post("/api/gmail/drafts/create", json={
-                "payload": str(payload_path),
+                "payload": item["draft_payload"],
                 "gmail_handoff_reviewed": True,
+                "prepared_manifest": review["manifest"],
+                "prepared_review_token": review["prepared_review_token"],
+                "review_fingerprint": review["review_fingerprint"],
             })
         finally:
             if previous is None:
@@ -778,6 +772,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     "write_allowed": False,
                     "send_allowed": False,
                     "packet_mode": True,
+                    "preflight_review": {
+                        "review_fingerprint": "preflight-fingerprint",
+                        "preflight_review_token": "preflight-token",
+                    },
                     "items": [{
                         "status": "ready",
                         "case_number": "999/26.0SMOKE",
@@ -788,6 +786,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     }],
                 }
             if url.endswith("/api/prepare"):
+                self.assertEqual(payload["preflight_review"]["preflight_review_token"], "preflight-token")
                 return {
                     "status": "prepared",
                     "packet_mode": True,

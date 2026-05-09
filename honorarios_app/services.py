@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -26,6 +27,7 @@ from scripts.build_email_draft import (
     DEFAULT_COURT_EMAILS,
     DEFAULT_EMAIL_CONFIG,
     build_email_payload,
+    file_sha256,
     resolve_recipient,
     validate_draft_payload,
 )
@@ -4164,6 +4166,285 @@ def stable_json_hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+PREPARED_REVIEW_VERSION = "2026-05-09.prepared-review.v1"
+_PREPARED_REVIEW_SECRET = secrets.token_bytes(32)
+
+
+def _signed_review_token(kind: str, fingerprint: str, manifest: str = "") -> str:
+    message = f"{PREPARED_REVIEW_VERSION}|{kind}|{fingerprint}|{manifest}".encode("utf-8")
+    return hmac.new(_PREPARED_REVIEW_SECRET, message, hashlib.sha256).hexdigest()
+
+
+def _resolve_optional_path(raw_path: Any) -> Path:
+    path = Path(str(raw_path or "").strip())
+    if not str(path):
+        raise IntakeError("Current prepared review is required before using this prepared payload.")
+    resolved = path if path.is_absolute() else ROOT / path
+    return resolved.resolve()
+
+
+def _intake_identity_payload(intake: dict[str, Any]) -> dict[str, str]:
+    case_number, service_date, period = request_identity_key({
+        "case_number": str(intake.get("case_number") or ""),
+        "service_date": get_service_date_value(intake),
+        "service_period_label": str(intake.get("service_period_label") or "").strip(),
+    })
+    return {
+        "case_number": case_number,
+        "service_date": service_date,
+        "service_period_label": period,
+        "service_start_time": str(intake.get("service_start_time") or "").strip(),
+        "service_end_time": str(intake.get("service_end_time") or "").strip(),
+    }
+
+
+def _prepared_file_sha256(path: Path, label: str) -> str:
+    if not path.exists() or not path.is_file():
+        raise IntakeError(f"Prepared review {label} file is missing: {path}")
+    return file_sha256(path)
+
+
+def _target_payload_summary(target: dict[str, Any]) -> dict[str, Any]:
+    args = target.get("gmail_create_draft_args") if isinstance(target.get("gmail_create_draft_args"), dict) else {}
+    attachment_files = args.get("attachment_files") if isinstance(args.get("attachment_files"), list) else target.get("attachment_files", [])
+    draft_payload = _resolve_optional_path(target.get("draft_payload"))
+    pdf_path = _resolve_optional_path(target.get("pdf"))
+    resolved_attachments = [_resolve_optional_path(item) for item in attachment_files]
+    return {
+        "draft_payload": str(draft_payload),
+        "draft_payload_sha256": _prepared_file_sha256(draft_payload, "draft payload"),
+        "pdf": str(pdf_path),
+        "pdf_sha256": _prepared_file_sha256(pdf_path, "PDF"),
+        "attachment_files": [str(item) for item in resolved_attachments],
+        "attachment_sha256": {str(item): _prepared_file_sha256(item, "attachment") for item in resolved_attachments},
+        "recipient": str(target.get("recipient") or target.get("to") or args.get("to") or "").strip(),
+        "subject": str(target.get("subject") or args.get("subject") or "").strip(),
+        "request_identity": {
+            "case_number": str(target.get("case_number") or "").strip(),
+            "service_date": str(target.get("service_date") or "").strip(),
+            "service_period_label": str(target.get("service_period_label") or "").strip(),
+        },
+        "packet_mode": bool(target.get("packet_mode")),
+        "underlying_requests": list(target.get("underlying_requests") or []),
+    }
+
+
+def _preflight_review_material(
+    *,
+    effective_intakes: list[dict[str, Any]],
+    recipients: list[dict[str, str]],
+    packet_mode: bool,
+    correction_mode: bool,
+    correction_reason: str,
+) -> dict[str, Any]:
+    return {
+        "version": PREPARED_REVIEW_VERSION,
+        "kind": "preflight",
+        "effective_intakes": effective_intakes,
+        "request_identities": [_intake_identity_payload(intake) for intake in effective_intakes],
+        "recipients": recipients,
+        "packet_mode": bool(packet_mode),
+        "correction_mode": bool(correction_mode),
+        "correction_reason": str(correction_reason or "").strip(),
+    }
+
+
+def _preflight_review_from_material(material: dict[str, Any]) -> dict[str, Any]:
+    fingerprint = stable_json_hash(material)
+    return {
+        "version": PREPARED_REVIEW_VERSION,
+        "kind": "preflight",
+        "review_fingerprint": fingerprint,
+        "preflight_review_token": _signed_review_token("preflight", fingerprint),
+        "request_count": len(material.get("effective_intakes") or []),
+        "packet_mode": bool(material.get("packet_mode")),
+        "correction_mode": bool(material.get("correction_mode")),
+        "send_allowed": False,
+        "write_allowed": False,
+    }
+
+
+def _build_preflight_review(
+    *,
+    effective_intakes: list[dict[str, Any]],
+    recipients: list[dict[str, str]],
+    packet_mode: bool,
+    correction_mode: bool,
+    correction_reason: str,
+) -> dict[str, Any]:
+    material = _preflight_review_material(
+        effective_intakes=effective_intakes,
+        recipients=recipients,
+        packet_mode=packet_mode,
+        correction_mode=correction_mode,
+        correction_reason=correction_reason,
+    )
+    return _preflight_review_from_material(material)
+
+
+def _extract_preflight_review_request(payload: dict[str, Any]) -> dict[str, str]:
+    nested = payload.get("preflight_review") if isinstance(payload.get("preflight_review"), dict) else {}
+    return {
+        "review_fingerprint": str(
+            payload.get("preflight_fingerprint")
+            or payload.get("review_fingerprint")
+            or nested.get("review_fingerprint")
+            or ""
+        ).strip(),
+        "preflight_review_token": str(
+            payload.get("preflight_review_token")
+            or nested.get("preflight_review_token")
+            or ""
+        ).strip(),
+    }
+
+
+def require_current_preflight_review(
+    request_payload: dict[str, Any],
+    intakes: list[dict[str, Any]],
+    paths: AppPaths,
+    *,
+    packet_mode: bool,
+    correction_reason: str = "",
+) -> dict[str, Any]:
+    requested = _extract_preflight_review_request(request_payload)
+    if not requested["review_fingerprint"] or not requested["preflight_review_token"]:
+        raise IntakeError("Run a current ready batch preflight before preparing artifacts.")
+
+    effective_records = [effective_intake_for_profile(intake, paths) for intake in intakes]
+    effective_intakes = [record[0] for record in effective_records]
+    email_config = load_json(paths.email_config)
+    court_directory = read_json_list(paths.court_emails)
+    recipients = []
+    for intake in effective_intakes:
+        recipient, recipient_source = resolve_recipient(intake, email_config, court_directory)
+        recipients.append({"recipient": recipient, "recipient_source": recipient_source})
+    current = _build_preflight_review(
+        effective_intakes=effective_intakes,
+        recipients=recipients,
+        packet_mode=packet_mode,
+        correction_mode=bool(str(correction_reason or "").strip()),
+        correction_reason=correction_reason,
+    )
+    if not hmac.compare_digest(requested["review_fingerprint"], current["review_fingerprint"]):
+        raise IntakeError("Batch preflight is stale for the current queue snapshot. Run preflight again before preparing artifacts.")
+    if not hmac.compare_digest(requested["preflight_review_token"], current["preflight_review_token"]):
+        raise IntakeError("Batch preflight token is stale. Run preflight again before preparing artifacts.")
+    return current
+
+
+def _prepared_review_material(
+    *,
+    effective_intakes: list[dict[str, Any]],
+    items: list[dict[str, Any]],
+    packet: dict[str, Any] | None,
+    manifest_path: Path,
+    packet_mode: bool,
+    correction_mode: bool,
+    correction_reason: str,
+) -> dict[str, Any]:
+    targets = [packet] if packet else items
+    target_summaries = [_target_payload_summary(target) for target in targets if isinstance(target, dict)]
+    return {
+        "version": PREPARED_REVIEW_VERSION,
+        "kind": "prepared",
+        "manifest": str(manifest_path.resolve()),
+        "effective_intakes": effective_intakes,
+        "request_identities": [_intake_identity_payload(intake) for intake in effective_intakes],
+        "packet_mode": bool(packet_mode),
+        "correction_mode": bool(correction_mode),
+        "correction_reason": str(correction_reason or "").strip(),
+        "targets": target_summaries,
+        "item_payloads": [_target_payload_summary(item) for item in items],
+    }
+
+
+def _prepared_review_from_material(material: dict[str, Any]) -> dict[str, Any]:
+    manifest = str(material.get("manifest") or "")
+    targets = material.get("targets") if isinstance(material.get("targets"), list) else []
+    fingerprint = stable_json_hash(material)
+    return {
+        "version": PREPARED_REVIEW_VERSION,
+        "kind": "prepared",
+        "manifest": manifest,
+        "review_fingerprint": fingerprint,
+        "prepared_review_token": _signed_review_token("prepared", fingerprint, manifest),
+        "payload_paths": [str(target.get("draft_payload") or "") for target in targets],
+        "pdf_paths": [str(target.get("pdf") or "") for target in targets],
+        "request_count": len(material.get("effective_intakes") or []),
+        "packet_mode": bool(material.get("packet_mode")),
+        "correction_mode": bool(material.get("correction_mode")),
+        "correction_reason": str(material.get("correction_reason") or "").strip(),
+        "send_allowed": False,
+    }
+
+
+def _extract_prepared_review_request(payload: dict[str, Any]) -> dict[str, str]:
+    nested = payload.get("prepared_review") if isinstance(payload.get("prepared_review"), dict) else {}
+    return {
+        "manifest": str(payload.get("prepared_manifest") or nested.get("manifest") or "").strip(),
+        "review_fingerprint": str(payload.get("review_fingerprint") or nested.get("review_fingerprint") or "").strip(),
+        "prepared_review_token": str(payload.get("prepared_review_token") or nested.get("prepared_review_token") or "").strip(),
+    }
+
+
+def require_current_prepared_review(payload: dict[str, Any], payload_path: str | Path, paths: AppPaths) -> dict[str, Any]:
+    requested = _extract_prepared_review_request(payload)
+    if not requested["manifest"] or not requested["review_fingerprint"] or not requested["prepared_review_token"]:
+        raise IntakeError("Current prepared review is required before using this prepared payload. Prepare the PDF again from the reviewed request.")
+
+    manifest_path = _resolve_optional_path(requested["manifest"])
+    if not manifest_path.exists() or not manifest_path.is_file():
+        raise IntakeError("Prepared review manifest is stale or missing. Prepare the PDF again from the reviewed request.")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise IntakeError("Prepared review manifest is invalid. Prepare the PDF again from the reviewed request.") from exc
+    if not isinstance(manifest, dict):
+        raise IntakeError("Prepared review manifest is invalid. Prepare the PDF again from the reviewed request.")
+
+    review = manifest.get("prepared_review") if isinstance(manifest.get("prepared_review"), dict) else {}
+    material = manifest.get("prepared_review_material") if isinstance(manifest.get("prepared_review_material"), dict) else {}
+    if not review or not material:
+        raise IntakeError("Prepared review manifest does not include prepared review data. Prepare the PDF again from the reviewed request.")
+
+    current_fingerprint = stable_json_hash(material)
+    current_token = _signed_review_token("prepared", current_fingerprint, str(manifest_path.resolve()))
+    if not hmac.compare_digest(str(review.get("review_fingerprint") or ""), current_fingerprint):
+        raise IntakeError("Prepared review manifest is stale. Prepare the PDF again from the reviewed request.")
+    if not hmac.compare_digest(requested["review_fingerprint"], current_fingerprint):
+        raise IntakeError("Prepared review is stale for this payload. Prepare the PDF again from the reviewed request.")
+    if not hmac.compare_digest(str(review.get("prepared_review_token") or ""), current_token):
+        raise IntakeError("Prepared review token is stale. Prepare the PDF again from the reviewed request.")
+    if not hmac.compare_digest(requested["prepared_review_token"], current_token):
+        raise IntakeError("Prepared review token is stale. Prepare the PDF again from the reviewed request.")
+
+    payload_absolute = str(_resolve_optional_path(payload_path))
+    payload_paths = [str(item) for item in review.get("payload_paths") or []]
+    if payload_absolute not in payload_paths:
+        raise IntakeError("Prepared review does not match this draft payload. Prepare the PDF again from the reviewed request.")
+
+    expected_targets = [target for target in material.get("targets") or [] if isinstance(target, dict)]
+    target_summary = next((target for target in expected_targets if str(target.get("draft_payload") or "") == payload_absolute), None)
+    if not target_summary:
+        raise IntakeError("Prepared review does not include this draft payload. Prepare the PDF again from the reviewed request.")
+    expected_payload_hash = str(target_summary.get("draft_payload_sha256") or "")
+    if not expected_payload_hash:
+        raise IntakeError("Prepared review is missing draft payload content evidence. Prepare the PDF again from the reviewed request.")
+    if not hmac.compare_digest(_prepared_file_sha256(Path(payload_absolute), "draft payload"), expected_payload_hash):
+        raise IntakeError("Prepared draft payload changed after review. Prepare the PDF again from the reviewed request.")
+
+    expected_attachment_hashes = target_summary.get("attachment_sha256") if isinstance(target_summary.get("attachment_sha256"), dict) else {}
+    for raw_attachment in target_summary.get("attachment_files") or []:
+        attachment_path = _resolve_optional_path(raw_attachment)
+        expected_hash = str(expected_attachment_hashes.get(str(attachment_path)) or "")
+        if not expected_hash:
+            raise IntakeError("Prepared review is missing attachment content evidence. Prepare the PDF again from the reviewed request.")
+        if not hmac.compare_digest(_prepared_file_sha256(attachment_path, "attachment"), expected_hash):
+            raise IntakeError("Prepared attachment changed after review. Prepare the PDF again from the reviewed request.")
+    return dict(review)
+
+
 def diff_json_values(before: Any, after: Any, prefix: str = "") -> list[dict[str, Any]]:
     if isinstance(before, dict) and isinstance(after, dict):
         changes: list[dict[str, Any]] = []
@@ -5307,7 +5588,16 @@ def _gmail_create_lock_for_payload(draft_payload: dict[str, Any]):
 def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not bool(payload.get("gmail_handoff_reviewed")):
         raise IntakeError("Review the PDF preview and exact Gmail draft args before creating a Gmail draft.")
-    payload_path, draft_payload = _load_prepared_draft_payload(payload.get("payload") or payload.get("draft_payload"))
+    raw_payload_path = payload.get("payload") or payload.get("draft_payload")
+    prepared_review = require_current_prepared_review(payload, raw_payload_path, paths)
+    supersedes = _coerce_supersedes(payload.get("supersedes"))
+    explicit_correction_reason = str(payload.get("correction_reason") or payload.get("reason") or "").strip()
+    if (supersedes or explicit_correction_reason) and not bool(prepared_review.get("correction_mode")):
+        raise IntakeError("Gmail draft correction mode requires a prepared review created in correction mode.")
+    prepared_correction_reason = str(prepared_review.get("correction_reason") or "").strip()
+    if explicit_correction_reason and prepared_correction_reason and explicit_correction_reason != prepared_correction_reason:
+        raise IntakeError("Gmail draft correction reason does not match the prepared review. Prepare the replacement again.")
+    payload_path, draft_payload = _load_prepared_draft_payload(raw_payload_path)
     with _gmail_create_lock_for_payload(draft_payload):
         duplicate_check = _assert_gmail_create_duplicate_clear(
             request_payload=payload,
@@ -5331,6 +5621,9 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
             "status": "active",
             "notes": str(payload.get("notes") or payload.get("correction_reason") or "Created through the local Gmail Draft API.").strip(),
             "supersedes": _coerce_supersedes(payload.get("supersedes")),
+            "prepared_manifest": prepared_review["manifest"],
+            "prepared_review_token": prepared_review["prepared_review_token"],
+            "review_fingerprint": prepared_review["review_fingerprint"],
         }
         record_result = record_draft(record_payload, paths)
         confirmation = _gmail_create_confirmation(
@@ -5356,6 +5649,7 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
             "record": record_result,
             "confirmation": confirmation,
             "duplicate_check": duplicate_check,
+            "prepared_review": prepared_review,
             "duplicate_keys": record_result.get("duplicate_keys", []),
             "recorded_duplicate_count": record_result.get("recorded_duplicate_count", 0),
             "fake_mode": bool(result.get("fake_mode")),
@@ -5365,7 +5659,9 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
 
 
 def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
-    payload_path, draft_payload = _load_prepared_draft_payload(payload.get("payload") or payload.get("draft_payload"))
+    raw_payload_path = payload.get("payload") or payload.get("draft_payload")
+    prepared_review = require_current_prepared_review(payload, raw_payload_path, paths)
+    payload_path, draft_payload = _load_prepared_draft_payload(raw_payload_path)
     args = draft_payload.get("gmail_create_draft_args")
     if not isinstance(args, dict):
         raise IntakeError("Prepared draft payload is missing gmail_create_draft_args.")
@@ -5405,6 +5701,7 @@ def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str,
         "gmail_create_draft_args": args,
         "copyable_args_json": args_json,
         "copyable_prompt": prompt,
+        "prepared_review": prepared_review,
         "record_next_step": "After `_create_draft` returns IDs, paste the response into Manual Draft Handoff and record locally.",
         "draft_only": True,
         "send_allowed": False,
@@ -5876,7 +6173,7 @@ def preflight_intakes(
         mode = "packet PDF" if packet_mode else "separate PDF/draft payloads"
         message = f"Batch preflight clear for {len(intakes)} request(s). No files were created. Next step: prepare {mode}."
 
-    return {
+    result = {
         "status": status,
         "message": message,
         "artifact_effect": "none",
@@ -5890,6 +6187,22 @@ def preflight_intakes(
         "packet": packet,
         "next_safe_action": preflight_next_safe_action(status, packet_mode=bool(packet_mode)),
     }
+    if status == "ready":
+        recipients = [
+            {
+                "recipient": str(item.get("recipient") or ""),
+                "recipient_source": str(item.get("recipient_source") or ""),
+            }
+            for item in items
+        ]
+        result["preflight_review"] = _build_preflight_review(
+            effective_intakes=effective_intakes,
+            recipients=recipients,
+            packet_mode=bool(packet_mode),
+            correction_mode=correction_mode,
+            correction_reason=normalized_correction_reason,
+        )
+    return result
 
 
 def prepare_intakes(
@@ -6006,6 +6319,16 @@ def prepare_intakes(
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"
     gmail_status = gmail_api_status(paths)
+    prepared_review_material = _prepared_review_material(
+        effective_intakes=effective_intakes,
+        items=items,
+        packet=packet,
+        manifest_path=manifest_path,
+        packet_mode=bool(packet_mode),
+        correction_mode=correction_mode,
+        correction_reason=normalized_correction_reason,
+    )
+    prepared_review = _prepared_review_from_material(prepared_review_material)
     manifest = {
         "status": "prepared",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -6015,6 +6338,8 @@ def prepare_intakes(
         "correction_reason": normalized_correction_reason,
         "packet_mode": bool(packet_mode),
         "next_safe_action": prepared_next_safe_action(packet_mode=bool(packet_mode), gmail_status=gmail_status),
+        "prepared_review": prepared_review,
+        "prepared_review_material": prepared_review_material,
         "items": items,
         "manifest": str(manifest_path.resolve()),
     }
@@ -6151,6 +6476,11 @@ def recorded_duplicate_keys(payload: dict[str, Any], loaded_payload: dict[str, A
 
 
 def record_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    payload_path = str(payload.get("payload") or "").strip()
+    status = str(payload.get("status") or "active").strip()
+    if payload_path and status in {"active", "drafted"}:
+        require_current_prepared_review(payload, payload_path, paths)
+
     supersedes = _coerce_supersedes(payload.get("supersedes"))
     supersede_records: list[tuple[str, dict[str, Any]]] = []
     if supersedes:
