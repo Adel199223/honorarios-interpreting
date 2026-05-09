@@ -310,6 +310,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Copy Browser/IAB answers/apply smoke command",
             "Copy Browser/IAB attachment stale smoke command",
             "Copy Browser/IAB Recent Work smoke command",
+            "Public GitHub Readiness",
+            "Run tracked Git gate",
             "Preview destination diff",
             "Preview guarded destination",
             "Preview court-email diff",
@@ -422,6 +424,35 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("C:\\\\Users\\\\FA507", dumped)
         self.assertNotIn("_send_email", dumped)
         self.assertNotIn("_send_draft", dumped)
+
+    def test_public_readiness_endpoint_reports_tracked_gate(self):
+        client = self.make_client()
+        response = client.get("/api/public-readiness")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn(data["status"], {"ready", "blocked"})
+        self.assertEqual(data["public_ready"], data["public_repo_ready"])
+        self.assertEqual(data["mode"], "tracked_git_public_repo")
+        self.assertIn("tracked_gate", data)
+        self.assertIn("workspace_gate", data)
+        self.assertFalse(data["send_allowed"])
+        dumped = json.dumps(data, sort_keys=True)
+        self.assertNotIn("C:\\\\Users", dumped)
+        self.assertNotIn("GOCSPX", dumped)
+        self.assertNotIn("ya29.", dumped)
+        self.assertNotIn("sk-", dumped)
+        for gate in [data["tracked_gate"], data["workspace_gate"]]:
+            self.assertEqual(gate["root"], "project-root")
+            for finding in gate.get("content_findings", []):
+                self.assertEqual(finding.get("match_preview"), "[redacted]")
+        if data["tracked_gate"].get("errors"):
+            self.assertFalse(data["tracked_gate"]["public_repo_ready"])
+        else:
+            self.assertTrue(data["tracked_gate"]["public_repo_ready"], data)
+        if data["workspace_gate"].get("git_blockers"):
+            self.assertIn("Workspace is not a git repository.", data["workspace_gate"]["git_blockers"])
+        else:
+            self.assertTrue(data["workspace_gate"]["public_ready"], data)
 
     def test_reference_endpoint_keeps_draft_only_contract(self):
         client = self.make_client()
