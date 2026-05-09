@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from io import BytesIO
 import json
 import uuid
@@ -1088,3 +1089,70 @@ def run_synthetic_adapter_sequence_result(
         service_date=service_date,
     )
     return _adapter_sequence_result_from_checks(checks)
+
+
+def run_synthetic_adapter_sequence_http(
+    base_url: str,
+    *,
+    timeout: float = 5.0,
+    profile: str = "example_interpreting",
+    case_number: str = "999/26.0SMOKE",
+    service_date: str = "2026-05-04",
+) -> AdapterSequenceResult:
+    caller = build_http_adapter_caller(base_url, timeout=timeout)
+    return run_synthetic_adapter_sequence_result(
+        caller.base_url,
+        fetch_json=caller.fetch_json,
+        post_json=caller.post_json,
+        post_multipart=caller.post_multipart,
+        profile=profile,
+        case_number=case_number,
+        service_date=service_date,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the synthetic LegalPDF adapter sequence against a live app and "
+            "print a secret-free JSON summary. Use an isolated synthetic runtime."
+        ),
+    )
+    parser.add_argument("--base-url", default="http://127.0.0.1:8766")
+    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--profile", default="example_interpreting")
+    parser.add_argument("--case-number", default="999/26.0SMOKE")
+    parser.add_argument("--service-date", default="2026-05-04")
+    parser.add_argument(
+        "--allow-synthetic-recording",
+        action="store_true",
+        help=(
+            "Required because the sequence prepares artifacts and records "
+            "synthetic draft IDs. Run it against an isolated synthetic runtime."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Accepted for consistency with other smoke helpers; output is always JSON.",
+    )
+    args = parser.parse_args(argv)
+    if not args.allow_synthetic_recording:
+        parser.error(
+            "--allow-synthetic-recording is required because this sequence prepares "
+            "artifacts and records synthetic draft IDs; use an isolated synthetic runtime"
+        )
+
+    result = run_synthetic_adapter_sequence_http(
+        args.base_url,
+        timeout=args.timeout,
+        profile=args.profile,
+        case_number=args.case_number,
+        service_date=args.service_date,
+    )
+    print(json.dumps(result.safe_summary(), ensure_ascii=False, indent=2))
+    return 0 if result.status == "ready" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
