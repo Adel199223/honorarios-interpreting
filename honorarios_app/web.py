@@ -696,7 +696,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
     @app.post("/api/drafts/record")
     async def api_record_draft(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return record_draft(payload, paths)
+            return record_draft(payload, paths, require_handoff_reviewed_for_prepared_payload=True)
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",

@@ -2,12 +2,14 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
+from io import BytesIO
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from honorarios_app.web import create_app
-from scripts.local_app_smoke import _adapter_questions_are_numbered, run_smoke
+from scripts.local_app_smoke import _adapter_questions_are_numbered, _post_expected_blocked_json, run_smoke
 from scripts.public_repo_gate import analyze_tracked
 
 
@@ -129,6 +131,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertEqual(isolated_attachment["writes"], "temporary synthetic runtime only")
         isolated_adapter = next(check for check in data["checks"] if check["key"] == "isolated_adapter_contract_smoke")
         self.assertIn("--adapter-contract-checks", isolated_adapter["command_template"])
+        self.assertIn("source upload", isolated_adapter["description"].lower())
+        self.assertIn("numbered", isolated_adapter["description"].lower())
+        self.assertIn("stale", isolated_adapter["description"].lower())
         self.assertIn("Manual Draft Handoff", isolated_adapter["description"])
         self.assertEqual(isolated_adapter["writes"], "temporary synthetic runtime only")
         isolated_gmail = next(check for check in data["checks"] if check["key"] == "isolated_gmail_api_smoke")
@@ -524,6 +529,34 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(contract.json()["write_allowed"])
         self.assertFalse(contract.json()["legalpdf_write_allowed"])
         self.assertFalse(contract.json()["managed_data_changed"])
+        contract_data = contract.json()
+        binding = contract_data["prepared_review_binding"]
+        self.assertEqual(binding["preflight_response_field"], "preflight_review")
+        self.assertEqual(binding["prepare_request_field"], "preflight_review")
+        self.assertEqual(binding["prepare_response_field"], "prepared_review")
+        self.assertEqual(binding["handoff_required_fields"], [
+            "payload",
+            "prepared_manifest",
+            "prepared_review_token",
+            "review_fingerprint",
+        ])
+        self.assertEqual(binding["record_required_fields"], [
+            "payload",
+            "prepared_manifest",
+            "prepared_review_token",
+            "review_fingerprint",
+            "gmail_handoff_reviewed",
+            "draft_id",
+            "message_id",
+            "thread_id",
+        ])
+        self.assertTrue(binding["stale_after_payload_or_manifest_change"])
+        self.assertTrue(binding["local_workflow_guard_only"])
+        steps = {step["endpoint"]: step for step in contract_data["sequence"]}
+        self.assertIn("preflight_review", steps["/api/prepare"]["required_request_fields"])
+        self.assertIn("prepared_review.prepared_review_token", steps["/api/prepare"]["response_fields"])
+        self.assertIn("prepared_review_token", steps["/api/gmail/manual-handoff"]["required_request_fields"])
+        self.assertIn("review_fingerprint", steps["/api/drafts/record"]["required_request_fields"])
         blocked_detail = client.get("/api/integration/apply-detail", params={"report_id": "../private"})
         self.assertEqual(blocked_detail.status_code, 400)
         self.assertFalse(blocked_detail.json()["send_allowed"])
@@ -807,6 +840,15 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 }
             if url.endswith("/api/gmail/manual-handoff"):
                 self.assertEqual(payload["payload"], "/tmp/adapter-packet.draft.json")
+                if payload["prepared_review_token"] == "stale-prepared-token":
+                    return {
+                        "status": "blocked",
+                        "message": "Prepared review token is stale. Prepare the PDF again from the reviewed request.",
+                        "mode": "manual_handoff",
+                        "draft_only": True,
+                        "send_allowed": False,
+                        "write_allowed": False,
+                    }
                 self.assertEqual(payload["prepared_review_token"], "prepared-token")
                 return {
                     "status": "ready",
@@ -819,6 +861,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 }
             if url.endswith("/api/drafts/record"):
                 self.assertTrue(payload["gmail_handoff_reviewed"])
+                if payload["prepared_review_token"] == "stale-prepared-token":
+                    return {
+                        "status": "blocked",
+                        "message": "Prepared review token is stale. Prepare the PDF again from the reviewed request.",
+                        "send_allowed": False,
+                    }
                 self.assertEqual(payload["prepared_review_token"], "prepared-token")
                 return {
                     "status": "recorded",
@@ -890,11 +938,34 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("adapter_review_missing_questions", names)
         self.assertIn("adapter_apply_answers_ready", names)
         self.assertIn("adapter_manual_handoff_packet", names)
+        self.assertIn("adapter_manual_handoff_rejects_stale_review", names)
+        self.assertIn("adapter_record_rejects_stale_review", names)
+        self.assertIn("adapter_record_stale_no_local_write", names)
         self.assertIn("adapter_record_draft", names)
         self.assertIn("http://public-candidate.test/api/sources/upload", [item[0] for item in seen_uploads])
         self.assertIn("http://public-candidate.test/api/review/apply-answers", seen_posts)
         self.assertIn("http://public-candidate.test/api/gmail/manual-handoff", seen_posts)
         self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
+
+    def test_local_app_smoke_expected_blocked_helper_parses_http_400_json(self):
+        def post_json(url, payload):
+            body = json.dumps({
+                "status": "blocked",
+                "message": "Prepared review token is stale.",
+                "send_allowed": False,
+            }).encode("utf-8")
+            raise urllib.error.HTTPError(url, 400, "Bad Request", {}, BytesIO(body))
+
+        payload, error = _post_expected_blocked_json(
+            post_json,
+            "http://public-candidate.test/api/drafts/record",
+            {"prepared_review_token": "stale-prepared-token"},
+            "blocked_helper",
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(payload["status"], "blocked")
+        self.assertFalse(payload["send_allowed"])
 
     def test_adapter_contract_smoke_requires_numbered_review_questions(self):
         self.assertTrue(_adapter_questions_are_numbered(

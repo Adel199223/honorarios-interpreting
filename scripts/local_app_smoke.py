@@ -441,6 +441,61 @@ def _post_workflow_json(
         return None, _check(check_name, False, f"Could not call {url}: {exc}")
 
 
+def _post_expected_blocked_json(
+    post_json: PostJsonFetcher,
+    url: str,
+    payload: dict[str, Any],
+    check_name: str,
+) -> tuple[Any | None, dict[str, Any] | None]:
+    try:
+        return post_json(url, payload), None
+    except urllib.error.HTTPError as exc:
+        if exc.code != 400:
+            return None, _check(check_name, False, f"Expected HTTP 400 from {url}, got HTTP {exc.code}.")
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+            close = getattr(exc, "close", None)
+            if callable(close):
+                close()
+            return json.loads(body), None
+        except (ValueError, json.JSONDecodeError) as parse_exc:
+            return None, _check(check_name, False, f"Could not parse blocked JSON response from {url}: {parse_exc}")
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        return None, _check(check_name, False, f"Could not call {url}: {exc}")
+
+
+def _prepared_review_blocked(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    message = str(payload.get("message") or payload.get("detail") or "").lower()
+    return (
+        payload.get("status") == "blocked"
+        and payload.get("send_allowed") is False
+        and "prepared review" in message
+        and ("stale" in message or "current" in message or "again" in message)
+    )
+
+
+def _history_record_snapshot(history: Any) -> dict[str, str]:
+    if not isinstance(history, dict):
+        return {"draft_log": "", "duplicates": ""}
+    return {
+        "draft_log": json.dumps(history.get("draft_log") or [], ensure_ascii=True, sort_keys=True),
+        "duplicates": json.dumps(history.get("duplicates") or [], ensure_ascii=True, sort_keys=True),
+    }
+
+
+def _fetch_history_record_snapshot(
+    fetch_json: JsonFetcher,
+    base: str,
+    check_name: str,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    try:
+        return _history_record_snapshot(fetch_json(_url(base, "/api/history"))), None
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        return None, _check(check_name, False, f"Could not load local draft history from /api/history: {exc}")
+
+
 def _workflow_prepare_payload_ready(payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     items = payload.get("items")
     first_item = items[0] if isinstance(items, list) and items else {}
@@ -1094,6 +1149,39 @@ def _run_adapter_contract_checks(
     if not prepare_ready:
         return checks
 
+    stale_prepared_fields = {**prepared_fields, "prepared_review_token": "stale-prepared-token"}
+    stale_handoff_response, error_check = _post_expected_blocked_json(
+        post_json,
+        _url(base, "/api/gmail/manual-handoff"),
+        {"payload": draft_payload, **stale_prepared_fields},
+        "adapter_manual_handoff_rejects_stale_review",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_manual_handoff_stale_send_allowed",
+        stale_handoff_response,
+        "Adapter stale Manual Draft Handoff rejection keeps send_allowed false.",
+    ))
+    stale_handoff_blocked = (
+        isinstance(stale_handoff_response, dict)
+        and _prepared_review_blocked(stale_handoff_response)
+        and not bool(stale_handoff_response.get("copyable_prompt"))
+    )
+    checks.append(_check(
+        "adapter_manual_handoff_rejects_stale_review",
+        stale_handoff_blocked,
+        "Adapter Manual Draft Handoff rejects stale prepared-review credentials before returning a handoff packet." if stale_handoff_blocked else "Adapter Manual Draft Handoff did not reject stale prepared-review credentials.",
+        {
+            "status": stale_handoff_response.get("status") if isinstance(stale_handoff_response, dict) else None,
+            "message": stale_handoff_response.get("message") if isinstance(stale_handoff_response, dict) else None,
+            "copyable_prompt_present": bool(stale_handoff_response.get("copyable_prompt")) if isinstance(stale_handoff_response, dict) else None,
+        },
+    ))
+    if not stale_handoff_blocked:
+        return checks
+
     handoff_response, error_check = _post_workflow_json(
         post_json,
         _url(base, "/api/gmail/manual-handoff"),
@@ -1128,6 +1216,83 @@ def _run_adapter_contract_checks(
         },
     ))
     if not handoff_ready:
+        return checks
+
+    before_stale_record_snapshot, error_check = _fetch_history_record_snapshot(
+        fetch_json,
+        base,
+        "adapter_record_stale_no_local_write",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+
+    stale_record_response, error_check = _post_expected_blocked_json(
+        post_json,
+        _url(base, "/api/drafts/record"),
+        {
+            "payload": draft_payload,
+            "draft_id": "draft-stale-adapter-smoke",
+            "message_id": "message-stale-adapter-smoke",
+            "thread_id": "thread-stale-adapter-smoke",
+            "status": "active",
+            "notes": "Synthetic stale LegalPDF adapter contract smoke record.",
+            "gmail_handoff_reviewed": True,
+            **stale_prepared_fields,
+        },
+        "adapter_record_rejects_stale_review",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_record_stale_send_allowed",
+        stale_record_response,
+        "Adapter stale draft-record rejection keeps send_allowed false.",
+    ))
+    stale_record_blocked = (
+        isinstance(stale_record_response, dict)
+        and _prepared_review_blocked(stale_record_response)
+        and stale_record_response.get("status") != "recorded"
+    )
+    checks.append(_check(
+        "adapter_record_rejects_stale_review",
+        stale_record_blocked,
+        "Adapter draft recording rejects stale prepared-review credentials before writing local records." if stale_record_blocked else "Adapter draft recording did not reject stale prepared-review credentials.",
+        {
+            "status": stale_record_response.get("status") if isinstance(stale_record_response, dict) else None,
+            "message": stale_record_response.get("message") if isinstance(stale_record_response, dict) else None,
+            "recorded_duplicate_count": stale_record_response.get("recorded_duplicate_count") if isinstance(stale_record_response, dict) else None,
+        },
+    ))
+    if not stale_record_blocked:
+        return checks
+
+    after_stale_record_snapshot, error_check = _fetch_history_record_snapshot(
+        fetch_json,
+        base,
+        "adapter_record_stale_no_local_write",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    stale_record_no_write = before_stale_record_snapshot == after_stale_record_snapshot
+    checks.append(_check(
+        "adapter_record_stale_no_local_write",
+        stale_record_no_write,
+        "Adapter stale draft-record attempt left draft log and duplicate index unchanged." if stale_record_no_write else "Adapter stale draft-record attempt changed local draft or duplicate records.",
+        {
+            "draft_log_changed": (
+                before_stale_record_snapshot.get("draft_log") != after_stale_record_snapshot.get("draft_log")
+                if before_stale_record_snapshot and after_stale_record_snapshot else None
+            ),
+            "duplicates_changed": (
+                before_stale_record_snapshot.get("duplicates") != after_stale_record_snapshot.get("duplicates")
+                if before_stale_record_snapshot and after_stale_record_snapshot else None
+            ),
+        },
+    ))
+    if not stale_record_no_write:
         return checks
 
     record_response, error_check = _post_workflow_json(

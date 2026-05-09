@@ -2,7 +2,7 @@
 
 This contract describes how a future LegalPDF Translate integration should call the standalone LegalPDF Honorários workflow without copying its internals or bypassing its safety rules.
 
-Current contract version: `2026-05-07.manual-handoff.v1`
+Current contract version: `2026-05-09.prepared-review.v2`
 
 ## Boundary
 
@@ -34,18 +34,33 @@ The future LegalPDF adapter may call the Honorários app endpoints, but it must 
 4. Run non-writing batch preflight.
    - Endpoint: `POST /api/prepare/preflight`
    - Effect: validates queued requests without writing PDFs, payloads, manifests, draft logs, duplicate records, or reference data.
+   - Response: keep the returned `preflight_review` with `review_fingerprint` and `preflight_review_token`.
 
 5. Prepare artifacts after review/preflight is ready.
    - Endpoint: `POST /api/prepare`
    - Effect: writes this app's generated PDFs, previews, manifests, and draft payloads only.
+   - Request: pass the current `preflight_review` for the same queue snapshot.
+   - Response: keep the returned `prepared_review` with `manifest`, `prepared_review_token`, `review_fingerprint`, and `payload_paths`.
 
 6. Build the Manual Draft Handoff packet.
    - Endpoint: `POST /api/gmail/manual-handoff`
    - Effect: read-only. Reloads the prepared payload, validates attachment paths, and returns copy-ready draft-only handoff text with attachment names and hashes.
+   - Request: pass `payload`, `prepared_manifest`, `prepared_review_token`, and `review_fingerprint` from the current `/api/prepare` response.
 
 7. Record the created draft.
    - Endpoint: `POST /api/drafts/record`
    - Effect: writes this app's draft log and duplicate index only, after the Gmail draft exists and the handoff checklist has been reviewed.
+   - Request: pass the same prepared-review fields, `gmail_handoff_reviewed: true`, and the returned Gmail draft/message/thread IDs.
+
+## Prepared Review Binding
+
+`preflight_review` and `prepared_review` are local workflow guards. They are not a public security boundary, but future callers must treat them as required freshness checks.
+
+- `/api/prepare/preflight` returns `preflight_review`.
+- `/api/prepare` must receive the current `preflight_review` and returns `prepared_review`.
+- `/api/gmail/manual-handoff`, `/api/gmail/drafts/create`, and prepared-payload `/api/drafts/record` require `prepared_manifest`, `prepared_review_token`, and `review_fingerprint`.
+- Any source, intake, queue, packet-mode, payload, manifest, PDF, or attachment change makes the old prepared review stale.
+- A stale or mismatched token must block before returning a handoff packet, calling Gmail, or writing local draft/duplicate records.
 
 ## Required Safety Rules
 
@@ -87,7 +102,7 @@ Use the isolated smoke before changing this boundary:
 python scripts\isolated_app_smoke.py --adapter-contract-checks --json
 ```
 
-It drives the future caller sequence through review, packet preflight, prepare, Manual Draft Handoff, and synthetic local draft recording in a temporary runtime. It must not contact Gmail or write to LegalPDF Translate.
+It drives the future caller sequence through source upload, numbered-answer review recovery, packet preflight, prepare, Manual Draft Handoff, stale prepared-review rejection, and synthetic local draft recording in a temporary runtime. It must not contact Gmail or write to LegalPDF Translate.
 - `write_allowed: false`
 - `legalpdf_write_allowed: false`
 - `managed_data_changed: false`
