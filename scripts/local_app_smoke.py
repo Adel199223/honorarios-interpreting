@@ -176,6 +176,36 @@ def _send_allowed_check(name: str, payload: Any, success_message: str) -> dict[s
     )
 
 
+PUBLIC_READINESS_SECRET_MARKERS = (
+    "GOCSPX",
+    "ya29.",
+    "sk-",
+    "gho_",
+    "ghp_",
+    "C:\\Users\\",
+    "C:/Users/",
+)
+
+
+def _public_readiness_exposures(value: Any, path: str = "$") -> list[dict[str, str]]:
+    exposures: list[dict[str, str]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if key == "root" and isinstance(child, str) and child not in {"", "project-root"}:
+                exposures.append({"path": child_path, "kind": "unredacted_root"})
+            if key == "match_preview" and isinstance(child, str) and child not in {"", "[redacted]"}:
+                exposures.append({"path": child_path, "kind": "unredacted_match_preview"})
+            exposures.extend(_public_readiness_exposures(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            exposures.extend(_public_readiness_exposures(child, f"{path}[{index}]"))
+    elif isinstance(value, str):
+        if any(marker in value for marker in PUBLIC_READINESS_SECRET_MARKERS):
+            exposures.append({"path": path, "kind": "secret_like_or_local_path_value"})
+    return exposures
+
+
 def _gmail_status_guidance_text(gmail_status: dict[str, Any]) -> str:
     parts: list[str] = []
 
@@ -990,6 +1020,21 @@ def run_smoke(
             },
         ))
         checks.append(_gmail_status_mode_guidance_check(gmail_status))
+
+    public_readiness = endpoint_payloads.get("/api/public-readiness")
+    if isinstance(public_readiness, dict):
+        exposures = _public_readiness_exposures(public_readiness)
+        exposed_paths = sorted({item["path"] for item in exposures})
+        checks.append(_check(
+            "public_readiness_secret_free",
+            not exposures,
+            "/api/public-readiness redacts local roots and secret-like match previews." if not exposures else "/api/public-readiness exposes unredacted local or secret-like values.",
+            {
+                "exposed_paths": exposed_paths,
+                "exposed_kinds": sorted({item["kind"] for item in exposures}),
+                "exposed_count": len(exposures),
+            },
+        ))
 
     diagnostics = endpoint_payloads.get("/api/diagnostics/status")
     if isinstance(diagnostics, dict) and "checks" in diagnostics:

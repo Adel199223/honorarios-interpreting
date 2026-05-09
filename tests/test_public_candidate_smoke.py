@@ -544,6 +544,55 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertEqual(report["status"], "ready", report)
         self.assertFalse(report["send_allowed"])
 
+    def test_local_app_smoke_blocks_public_readiness_secret_previews(self):
+        client = self.make_client()
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            if path == "/api/public-readiness":
+                return {
+                    "status": "ready",
+                    "public_ready": True,
+                    "send_allowed": False,
+                    "tracked_gate": {
+                        "status": "ready",
+                        "public_repo_ready": True,
+                        "send_allowed": False,
+                        "root": "C:" + "\\Users\\FA507\\private-project",
+                        "content_findings": [{
+                            "kind": "google_client_secret",
+                            "path": "config/gmail.local.json",
+                            "line": 3,
+                            "match_preview": "GOCSPX" + "-private-client-secret",
+                        }],
+                    },
+                    "workspace_gate": {
+                        "status": "blocked",
+                        "public_ready": False,
+                        "send_allowed": False,
+                        "root": "project-root",
+                        "content_findings": [],
+                    },
+                }
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+        )
+        public_check = next(check for check in report["checks"] if check["name"] == "public_readiness_secret_free")
+        self.assertEqual(report["status"], "blocked", report)
+        self.assertEqual(public_check["status"], "blocked")
+        self.assertIn("$.tracked_gate.root", public_check["details"]["exposed_paths"])
+        self.assertIn("$.tracked_gate.content_findings[0].match_preview", public_check["details"]["exposed_paths"])
+
     def test_local_app_smoke_runner_optional_interaction_contract_is_injectable(self):
         client = self.make_client()
 
