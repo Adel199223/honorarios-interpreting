@@ -107,4 +107,6 @@ It drives the future caller sequence through source upload, numbered-answer revi
 - `legalpdf_write_allowed: false`
 - `managed_data_changed: false`
 
+The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, prepared-review request-field helpers, stale-token helpers, and contract validation used by the smoke runner, so future LegalPDF integration work can build on the same draft-only boundary instead of retyping endpoint rules.
+
 Use that endpoint as the machine-readable source for future LegalPDF integration planning.

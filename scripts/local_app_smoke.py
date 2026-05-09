@@ -17,6 +17,14 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.legalpdf_adapter_caller import (
+    LegalPdfAdapterCaller,
+    adapter_numbered_answers as _adapter_numbered_answers,
+    adapter_questions_are_numbered as _adapter_questions_are_numbered,
+    prepared_review_request_fields as _prepared_review_request_fields,
+    stale_prepared_review_fields,
+)
+
 
 TextFetcher = Callable[[str], str]
 JsonFetcher = Callable[[str], Any]
@@ -798,58 +806,6 @@ def _run_gmail_api_checks(
     return checks
 
 
-def _prepared_review_request_fields(prepared_review: dict[str, Any]) -> dict[str, str]:
-    return {
-        "prepared_manifest": str(prepared_review.get("manifest") or "").strip(),
-        "prepared_review_token": str(prepared_review.get("prepared_review_token") or "").strip(),
-        "review_fingerprint": str(prepared_review.get("review_fingerprint") or "").strip(),
-    }
-
-
-def _adapter_answer_for_field(field: str, *, case_number: str, service_date: str) -> str:
-    answers = {
-        "case_number": case_number,
-        "service_date": service_date,
-        "service_date_source": service_date,
-        "payment_entity": "Example Court",
-        "service_place": "Example Police Station",
-        "service_entity": "Example Police / Example Police Station",
-        "claim_transport": "yes",
-        "transport.destination": "Example City",
-        "transport.km_one_way": "12",
-        "closing_city": "Example City",
-        "closing_date": service_date,
-    }
-    return answers.get(field, "Example City")
-
-
-def _adapter_numbered_answers(questions: list[Any], *, case_number: str, service_date: str) -> str:
-    lines: list[str] = []
-    for question in questions:
-        if not isinstance(question, dict):
-            continue
-        number = question.get("number")
-        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
-            continue
-        field = str(question.get("field") or "")
-        lines.append(f"{number}. {_adapter_answer_for_field(field, case_number=case_number, service_date=service_date)}")
-    return "\n".join(lines)
-
-
-def _adapter_questions_are_numbered(questions: list[Any], question_text: str) -> bool:
-    if not questions or not question_text.strip():
-        return False
-    for question in questions:
-        if not isinstance(question, dict):
-            return False
-        number = question.get("number")
-        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
-            return False
-        if f"{number}." not in question_text:
-            return False
-    return True
-
-
 def _run_adapter_contract_checks(
     base: str,
     *,
@@ -861,8 +817,14 @@ def _run_adapter_contract_checks(
     service_date: str,
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
+    caller = LegalPdfAdapterCaller(
+        base,
+        fetch_json=fetch_json,
+        post_json=post_json,
+        post_multipart=post_multipart,
+    )
     try:
-        contract = fetch_json(_url(base, "/api/integration/adapter-contract"))
+        contract = caller.fetch_contract()
     except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
         return [_check("adapter_contract_fetch", False, f"Could not load LegalPDF adapter contract: {exc}")]
 
@@ -871,18 +833,9 @@ def _run_adapter_contract_checks(
         contract,
         "LegalPDF adapter contract keeps send_allowed false.",
     ))
+    validation = caller.validate_contract(contract)
     gmail_boundary = contract.get("gmail_boundary") if isinstance(contract, dict) and isinstance(contract.get("gmail_boundary"), dict) else {}
-    read_only = (
-        isinstance(contract, dict)
-        and contract.get("status") == "ready"
-        and contract.get("recommended_gmail_mode") == "manual_handoff"
-        and contract.get("draft_only") is True
-        and contract.get("send_allowed") is False
-        and contract.get("write_allowed") is False
-        and contract.get("legalpdf_write_allowed") is False
-        and contract.get("managed_data_changed") is False
-        and gmail_boundary.get("required_tool") == "_create_draft"
-    )
+    read_only = validation.ready
     checks.append(_check(
         "adapter_contract_read_only",
         read_only,
@@ -903,16 +856,7 @@ def _run_adapter_contract_checks(
         for step in sequence
         if isinstance(step, dict)
     }
-    required_endpoints = {
-        "/api/sources/upload",
-        "/api/review",
-        "/api/review/apply-answers",
-        "/api/prepare/preflight",
-        "/api/prepare",
-        "/api/gmail/manual-handoff",
-        "/api/drafts/record",
-    }
-    missing_endpoints = sorted(required_endpoints.difference(endpoints))
+    missing_endpoints = validation.missing_endpoints
     checks.append(_check(
         "adapter_contract_sequence",
         not missing_endpoints,
@@ -1149,7 +1093,7 @@ def _run_adapter_contract_checks(
     if not prepare_ready:
         return checks
 
-    stale_prepared_fields = {**prepared_fields, "prepared_review_token": "stale-prepared-token"}
+    stale_prepared_fields = stale_prepared_review_fields(prepared_fields)
     stale_handoff_response, error_check = _post_expected_blocked_json(
         post_json,
         _url(base, "/api/gmail/manual-handoff"),
