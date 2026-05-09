@@ -117,6 +117,18 @@ class PlaywrightBrowserDriver:
         if value not in actual:
             raise RuntimeError(f"Expected {selector} value to contain {value!r}; got {actual!r}")
 
+    def expect_button_disabled(self, selector: str) -> None:
+        locator = self._page.locator(selector)
+        locator.wait_for(state="attached", timeout=self.timeout_ms)
+        if not locator.is_disabled(timeout=self.timeout_ms):
+            raise RuntimeError(f"Expected {selector} to be disabled.")
+
+    def expect_button_enabled(self, selector: str) -> None:
+        locator = self._page.locator(selector)
+        locator.wait_for(state="attached", timeout=self.timeout_ms)
+        if not locator.is_enabled(timeout=self.timeout_ms):
+            raise RuntimeError(f"Expected {selector} to be enabled.")
+
 
 def _safe_step(checks: list[dict[str, Any]], name: str, message: str, action) -> bool:
     try:
@@ -411,17 +423,31 @@ def run_browser_flow_smoke(
 
         if record_helper:
             fake_response = '{"id":"draft-smoke","message":{"id":"message-smoke","threadId":"thread-smoke"}}'
-            def _expect_record_id() -> None:
+            def _expect_record_value(selector: str, value: str) -> None:
                 if hasattr(driver, "expect_selector_value"):
-                    driver.expect_selector_value("#record_draft_id", "draft-smoke")
+                    driver.expect_selector_value(selector, value)
                 else:
-                    driver.expect_selector_text("#record_draft_id", "draft-smoke")
+                    driver.expect_selector_text(selector, value)
 
             if not _safe_step(checks, "browser_record_helper", "Browser parsed Gmail IDs and autofilled the local record form without recording.", lambda: (
                 driver.fill("#gmail-response-raw", fake_response),
                 driver.click("#parse-gmail-response"),
+                driver.expect_button_disabled("#record-parsed-prepared-draft"),
+                driver.expect_selector_attribute_contains(
+                    "#record-parsed-prepared-draft",
+                    "title",
+                    "Review the PDF preview and exact Gmail args before local recording.",
+                ),
                 driver.click("#autofill-record-from-prepared"),
-                _expect_record_id(),
+                _expect_record_value("#record_draft_id", "draft-smoke"),
+                _expect_record_value("#record_message_id", "message-smoke"),
+                _expect_record_value("#record_thread_id", "thread-smoke"),
+                _expect_record_value("#record_payload", ".draft.json"),
+                driver.expect_button_disabled("#record-parsed-prepared-draft"),
+                driver.check("#gmail_handoff_reviewed"),
+                driver.expect_button_enabled("#record-parsed-prepared-draft"),
+                driver.fill("#source_text", "Stale state marker"),
+                driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed"),
             )):
                 return _report(base, checks)
 

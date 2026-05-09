@@ -536,6 +536,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
     def test_browser_iab_smoke_attempts_guarded_upload_evidence(self):
         root = Path(__file__).resolve().parents[1]
         smoke_js = (root / "scripts" / "browser_iab_smoke.mjs").read_text(encoding="utf-8")
+        flow_py = (root / "scripts" / "browser_flow_smoke.py").read_text(encoding="utf-8")
         for text in [
             "createSyntheticUploadFixtures",
             "setSyntheticInputFile",
@@ -583,9 +584,22 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, smoke_js)
+        for text in [
+            'driver.expect_button_disabled("#record-parsed-prepared-draft")',
+            "Review the PDF preview and exact Gmail args before local recording.",
+            '_expect_record_value("#record_payload", ".draft.json")',
+            'driver.check("#gmail_handoff_reviewed")',
+            'driver.expect_button_enabled("#record-parsed-prepared-draft")',
+            'driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed")',
+        ]:
+            with self.subTest(browser_flow=text):
+                self.assertIn(text, flow_py)
         self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
+        self.assertNotIn('driver.click("#record-parsed-prepared-draft")', flow_py)
+        self.assertNotIn('driver.click("#record-draft")', flow_py)
+        self.assertNotIn('driver.click("#create-gmail-api-draft")', flow_py)
 
     def test_browser_js_routes_one_click_recording_through_strict_prepared_endpoint(self):
         root = Path(__file__).resolve().parents[1]
