@@ -137,7 +137,7 @@ EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
 LEGALPDF_APPLY_REPORT_ID_RE = re.compile(r"^legalpdf-import-apply-[A-Za-z0-9_.-]+$")
 AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
-LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-07.manual-handoff.v1"
+LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-09.prepared-review.v2"
 _GMAIL_CREATE_LOCKS_GUARD = threading.Lock()
 _GMAIL_CREATE_LOCKS: dict[str, Any] = {}
 
@@ -2314,7 +2314,7 @@ def diagnostics_status_payload() -> dict[str, Any]:
         {
             "key": "isolated_adapter_contract_smoke",
             "label": "LegalPDF adapter contract smoke",
-            "description": "Runs the future LegalPDF caller sequence in a temporary synthetic runtime: review, packet preflight, prepare, Manual Draft Handoff, and local draft recording with no Gmail network call.",
+            "description": "Runs the future LegalPDF caller sequence in a temporary synthetic runtime: source upload, numbered-answer review recovery, packet preflight, prepare, stale prepared-review rejection, Manual Draft Handoff, and local draft recording with no Gmail network call.",
             "command_template": "python scripts/isolated_app_smoke.py --adapter-contract-checks --json",
             "effect": "temporary_isolated_runtime_adapter_contract",
             "writes": "temporary synthetic runtime only",
@@ -2683,12 +2683,46 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
             "local_recording_requires_reviewed_handoff": True,
             "send_allowed": False,
         },
+        "prepared_review_binding": {
+            "purpose": "Bind preflight, prepared artifacts, Manual Draft Handoff, Gmail Draft API creation, and fast local recording to the same reviewed payload/manifest fingerprint.",
+            "preflight_response_field": "preflight_review",
+            "prepare_request_field": "preflight_review",
+            "prepare_response_field": "prepared_review",
+            "handoff_required_fields": [
+                "payload",
+                "prepared_manifest",
+                "prepared_review_token",
+                "review_fingerprint",
+            ],
+            "record_required_fields": [
+                "payload",
+                "prepared_manifest",
+                "prepared_review_token",
+                "review_fingerprint",
+                "gmail_handoff_reviewed",
+                "draft_id",
+                "message_id",
+                "thread_id",
+            ],
+            "gmail_api_create_required_fields": [
+                "payload",
+                "prepared_manifest",
+                "prepared_review_token",
+                "review_fingerprint",
+                "gmail_handoff_reviewed",
+            ],
+            "stale_after_payload_or_manifest_change": True,
+            "local_workflow_guard_only": True,
+            "send_allowed": False,
+        },
         "sequence": [
             {
                 "step": 1,
                 "name": "recover_source_or_start_blank",
                 "endpoint": "/api/sources/upload",
                 "method": "POST",
+                "required_request_fields": ["file", "source_kind"],
+                "response_fields": ["status", "candidate_intake", "source_evidence"],
                 "effect": "stores source evidence in this app only",
                 "notes": "Use local PDF/photo upload evidence or manual entry. LegalPDF should not write its own honorários files directly.",
             },
@@ -2697,6 +2731,8 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
                 "name": "review_intake",
                 "endpoint": "/api/review",
                 "method": "POST",
+                "required_request_fields": ["intake"],
+                "response_fields": ["status", "effective_intake", "questions", "question_text", "draft_text"],
                 "effect": "read_only",
                 "notes": "Classifies translation set-asides, applies profile/default evidence, returns Portuguese draft text and numbered questions.",
             },
@@ -2705,6 +2741,8 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
                 "name": "apply_numbered_answers_when_needed",
                 "endpoint": "/api/review/apply-answers",
                 "method": "POST",
+                "required_request_fields": ["intake", "answers"],
+                "response_fields": ["status", "effective_intake", "applied_fields", "draft_text"],
                 "effect": "read_only_intake_update_in_request_context",
                 "notes": "Compact answers rerun normal review and do not bypass duplicates, date conflicts, recipient checks, or draft-only safeguards.",
             },
@@ -2713,6 +2751,11 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
                 "name": "check_batch_preflight",
                 "endpoint": "/api/prepare/preflight",
                 "method": "POST",
+                "required_request_fields": ["intakes", "packet_mode"],
+                "response_fields": [
+                    "preflight_review.review_fingerprint",
+                    "preflight_review.preflight_review_token",
+                ],
                 "effect": "read_only",
                 "notes": "Validate all queued requests before any PDF, payload, manifest, or draft record is written.",
             },
@@ -2721,6 +2764,15 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
                 "name": "prepare_artifacts",
                 "endpoint": "/api/prepare",
                 "method": "POST",
+                "required_request_fields": ["intakes", "packet_mode", "preflight_review"],
+                "response_fields": [
+                    "prepared_review.manifest",
+                    "prepared_review.prepared_review_token",
+                    "prepared_review.review_fingerprint",
+                    "prepared_review.payload_paths",
+                    "items[].draft_payload",
+                    "packet.draft_payload",
+                ],
                 "effect": "writes_this_app_output_only",
                 "notes": "Creates PDFs, PNG previews when available, manifests, and draft payloads after review/preflight succeeds.",
             },
@@ -2729,6 +2781,13 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
                 "name": "build_manual_handoff_packet",
                 "endpoint": "/api/gmail/manual-handoff",
                 "method": "POST",
+                "required_request_fields": [
+                    "payload",
+                    "prepared_manifest",
+                    "prepared_review_token",
+                    "review_fingerprint",
+                ],
+                "response_fields": ["status", "copyable_prompt", "attachment_files", "attachment_sha256"],
                 "effect": "read_only",
                 "notes": "Reloads and validates the prepared payload, then returns copy-ready draft-only handoff text with attachment names and hashes.",
             },
@@ -2737,6 +2796,17 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
                 "name": "record_created_draft",
                 "endpoint": "/api/drafts/record",
                 "method": "POST",
+                "required_request_fields": [
+                    "payload",
+                    "prepared_manifest",
+                    "prepared_review_token",
+                    "review_fingerprint",
+                    "gmail_handoff_reviewed",
+                    "draft_id",
+                    "message_id",
+                    "thread_id",
+                ],
+                "response_fields": ["status", "draft_id", "message_id", "thread_id", "recorded_duplicate_count"],
                 "effect": "writes_this_app_duplicate_and_draft_logs",
                 "notes": "Use only after the Gmail draft exists and the PDF preview plus exact draft args were reviewed.",
             },
@@ -6499,11 +6569,18 @@ def recorded_duplicate_keys(payload: dict[str, Any], loaded_payload: dict[str, A
     return []
 
 
-def record_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+def record_draft(
+    payload: dict[str, Any],
+    paths: AppPaths,
+    *,
+    require_handoff_reviewed_for_prepared_payload: bool = False,
+) -> dict[str, Any]:
     payload_path = str(payload.get("payload") or "").strip()
     status = str(payload.get("status") or "active").strip()
     if payload_path and status in {"active", "drafted"}:
         require_current_prepared_review(payload, payload_path, paths)
+        if require_handoff_reviewed_for_prepared_payload and not bool(payload.get("gmail_handoff_reviewed")):
+            raise IntakeError("Review the PDF preview and exact Gmail draft args before local recording.")
 
     supersedes = _coerce_supersedes(payload.get("supersedes"))
     supersede_records: list[tuple[str, dict[str, Any]]] = []
