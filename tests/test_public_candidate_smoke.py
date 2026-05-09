@@ -85,8 +85,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Copy isolated source upload smoke command",
             "Copy isolated attachment smoke command",
             "Copy advanced Gmail API smoke command",
+            "Copy Browser/IAB review smoke command",
             "Copy Browser/IAB upload smoke command",
             "Copy Browser/IAB attachment smoke command",
+            "Copy Browser/IAB answers/apply smoke command",
             "Copy Browser/IAB attachment stale smoke command",
             "Copy Browser/IAB Recent Work smoke command",
             "Preview destination diff",
@@ -105,6 +107,19 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("messages.send", page)
         self.assertNotIn("drafts.send", page)
 
+    def test_public_docs_list_browser_iab_answers_apply_diagnostics(self):
+        root = Path(__file__).resolve().parents[1]
+        docs = {
+            "README.md": (root / "README.md").read_text(encoding="utf-8"),
+            "docs/web-app-roadmap.md": (root / "docs" / "web-app-roadmap.md").read_text(encoding="utf-8"),
+            "docs/process-optimizations.md": (root / "docs" / "process-optimizations.md").read_text(encoding="utf-8"),
+        }
+        for relative, text in docs.items():
+            with self.subTest(relative=relative):
+                self.assertIn("Browser/IAB answers/apply", text)
+                self.assertIn("--browser-answer-questions", text)
+                self.assertIn("--browser-apply-history", text)
+
     def test_diagnostics_status_lists_safe_smoke_commands(self):
         client = self.make_client()
         response = client.get("/api/diagnostics/status")
@@ -118,8 +133,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("source_upload_smoke", keys)
         self.assertIn("supporting_attachment_smoke", keys)
         self.assertIn("isolated_supporting_attachment_smoke", keys)
+        self.assertIn("isolated_source_upload_smoke", keys)
         self.assertIn("isolated_adapter_contract_smoke", keys)
         self.assertIn("isolated_gmail_api_smoke", keys)
+        self.assertIn("browser_iab_smoke", keys)
         self.assertIn("browser_iab_upload_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_smoke", keys)
         self.assertIn("browser_iab_answer_apply_smoke", keys)
@@ -147,6 +164,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("--browser-upload-photo", browser_upload["command_template"])
         self.assertIn("--browser-upload-pdf", browser_upload["command_template"])
         self.assertEqual(browser_upload["writes"], "none")
+        browser_review = next(check for check in data["checks"] if check["key"] == "browser_iab_smoke")
+        self.assertIn("--browser-iab-click-through", browser_review["command_template"])
+        self.assertEqual(browser_review["writes"], "none")
         browser_supporting = next(check for check in data["checks"] if check["key"] == "browser_iab_supporting_attachment_smoke")
         self.assertIn("--browser-upload-supporting-attachment", browser_supporting["command_template"])
         self.assertEqual(browser_supporting["writes"], "synthetic supporting-attachment artifact only")
@@ -373,9 +393,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "#diagnostics-result",
             "#copy-isolated-source-upload-smoke-command",
             "#copy-isolated-adapter-contract-smoke-command",
+            "#copy-browser-iab-review-smoke-command",
             "#copy-browser-iab-answer-apply-smoke-command",
             "isolated_source_upload_smoke",
             "isolated_adapter_contract_smoke",
+            "browser_iab_smoke",
             "browser_iab_answer_apply_smoke",
             "--source-upload-checks",
             "--adapter-contract-checks",
@@ -1705,6 +1727,18 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         self.assertIn("supporting_attachment_stale=browser_supporting_attachment_stale", python_runner_block)
         self.assertNotIn("--browser-supporting-attachment-stale requires --browser-iab-click-through", smoke_source)
+
+    def test_local_app_smoke_requires_full_diagnostics_command_set(self):
+        root = Path(__file__).resolve().parents[1]
+        smoke_source = (root / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
+        required_block = smoke_source.split("required_keys = {", 1)[1].split("}", 1)[0]
+        for key in [
+            "isolated_source_upload_smoke",
+            "browser_iab_smoke",
+            "browser_iab_answer_apply_smoke",
+        ]:
+            with self.subTest(key=key):
+                self.assertIn(key, required_block)
 
     def test_isolated_app_smoke_forwards_browser_iab_answer_and_apply_flags(self):
         root = Path(__file__).resolve().parents[1]
