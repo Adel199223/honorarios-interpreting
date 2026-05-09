@@ -78,6 +78,8 @@ def run_isolated_app_smoke(
     browser_upload_supporting_attachment: bool = False,
     browser_correction_mode: bool = False,
     browser_iab_click_through: bool = False,
+    browser_answer_questions: bool = False,
+    browser_apply_history: bool = False,
     browser_profile_proposal: bool = False,
     browser_gmail_api_create: bool = False,
     browser_manual_handoff_stale: bool = False,
@@ -125,6 +127,8 @@ def run_isolated_app_smoke(
             browser_upload_pdf=browser_upload_pdf,
             browser_upload_supporting_attachment=browser_upload_supporting_attachment,
             browser_correction_mode=browser_correction_mode,
+            browser_answer_questions=browser_answer_questions,
+            browser_apply_history=browser_apply_history,
             browser_profile_proposal=browser_profile_proposal,
             browser_gmail_api_create=browser_gmail_api_create,
             browser_manual_handoff_stale=browser_manual_handoff_stale,
@@ -174,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-upload-pdf", action="store_true")
     parser.add_argument("--browser-upload-supporting-attachment", action="store_true", help="With browser click-through, upload a disposable synthetic declaration through the Supporting proof UI.")
     parser.add_argument("--browser-correction-mode", action="store_true")
+    parser.add_argument("--browser-answer-questions", action="store_true", help="With Browser/IAB click-through, intentionally leave one required field blank, apply compact numbered answers, and rerun review without preparing artifacts.")
+    parser.add_argument("--browser-apply-history", action="store_true", help="With Browser/IAB click-through, check LegalPDF Apply History, Detail, and read-only Restore Plan UI without writing artifacts.")
     parser.add_argument("--browser-profile-proposal", action="store_true", help="With Browser/IAB click-through, preview a synthetic unknown recurring pattern as a proposed service profile without saving.")
     parser.add_argument("--browser-gmail-api-create", action="store_true", help="With Browser/IAB click-through, use fake Gmail mode to create and read-only verify a synthetic draft in the isolated runtime.")
     parser.add_argument("--browser-manual-handoff-stale", action="store_true", help="With Browser/IAB click-through and replacement/packet prepare, verify Manual Draft Handoff stale gates without recording drafts or calling Gmail.")
@@ -201,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
         browser_upload_pdf=args.browser_upload_pdf,
         browser_upload_supporting_attachment=args.browser_upload_supporting_attachment,
         browser_correction_mode=args.browser_correction_mode,
+        browser_answer_questions=args.browser_answer_questions,
+        browser_apply_history=args.browser_apply_history,
         browser_profile_proposal=args.browser_profile_proposal,
         browser_gmail_api_create=args.browser_gmail_api_create,
         browser_manual_handoff_stale=args.browser_manual_handoff_stale,

@@ -1084,6 +1084,7 @@ def run_smoke(
             "isolated_gmail_api_smoke",
             "browser_iab_upload_smoke",
             "browser_iab_supporting_attachment_smoke",
+            "browser_iab_answer_apply_smoke",
             "browser_iab_supporting_attachment_stale_smoke",
             "browser_iab_profile_proposal_smoke",
             "browser_iab_recent_work_lifecycle_smoke",

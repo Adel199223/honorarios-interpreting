@@ -160,6 +160,12 @@ When working inside Codex with the Browser plugin, use the Browser/IAB runner in
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-answer-questions --json
 ```
 
+For disposable Browser/IAB coverage of the numbered-answer loop plus LegalPDF Apply History, use the isolated launcher:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-answer-questions --browser-apply-history --json
+```
+
 Raw shell subprocesses cannot drive the Codex in-app Browser runtime, so that command reports a short blocker with `details.node_repl_cell`. Paste that cell into the Codex Node REPL Browser surface, or import the runner directly there:
 
 ```javascript
