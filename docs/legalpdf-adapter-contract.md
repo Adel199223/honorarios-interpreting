@@ -107,6 +107,6 @@ It drives the future caller sequence through source upload, numbered-answer revi
 - `legalpdf_write_allowed: false`
 - `managed_data_changed: false`
 
-The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, prepared-review request-field helpers, stale-token helpers, contract validation, the injected synthetic adapter sequence used by the smoke runner, and a secret-free `AdapterSequenceResult.safe_summary()` for future callers that need readiness signals without copyable Gmail prompts or local payload paths.
+The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, reusable HTTP JSON/multipart transport, prepared-review request-field helpers, stale-token helpers, contract validation, the injected synthetic adapter sequence used by the smoke runner, and a secret-free `AdapterSequenceResult.safe_summary()` for future callers that need readiness signals without copyable Gmail prompts or local payload paths.
 
 Use that endpoint as the machine-readable source for future LegalPDF integration planning.
