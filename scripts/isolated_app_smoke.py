@@ -81,6 +81,7 @@ def run_isolated_app_smoke(
     browser_profile_proposal: bool = False,
     browser_gmail_api_create: bool = False,
     browser_manual_handoff_stale: bool = False,
+    browser_supporting_attachment_stale: bool = False,
     browser_recent_work_lifecycle: bool = False,
     browser_prepare_replacement: bool = False,
     browser_prepare_packet: bool = False,
@@ -99,7 +100,7 @@ def run_isolated_app_smoke(
     thread: threading.Thread | None = None
     previous_fake_gmail = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
     try:
-        seed_active_draft = bool(browser_prepare_replacement or browser_recent_work_lifecycle)
+        seed_active_draft = bool(browser_prepare_replacement or browser_recent_work_lifecycle or browser_supporting_attachment_stale)
         manifest = create_synthetic_runtime(root, seed_active_draft=seed_active_draft)
         if gmail_api_checks or browser_gmail_api_create:
             os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
@@ -127,6 +128,7 @@ def run_isolated_app_smoke(
             browser_profile_proposal=browser_profile_proposal,
             browser_gmail_api_create=browser_gmail_api_create,
             browser_manual_handoff_stale=browser_manual_handoff_stale,
+            browser_supporting_attachment_stale=browser_supporting_attachment_stale,
             browser_recent_work_lifecycle=browser_recent_work_lifecycle,
             browser_prepare_replacement=browser_prepare_replacement,
             browser_prepare_packet=browser_prepare_packet,
@@ -175,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-profile-proposal", action="store_true", help="With Browser/IAB click-through, preview a synthetic unknown recurring pattern as a proposed service profile without saving.")
     parser.add_argument("--browser-gmail-api-create", action="store_true", help="With Browser/IAB click-through, use fake Gmail mode to create and read-only verify a synthetic draft in the isolated runtime.")
     parser.add_argument("--browser-manual-handoff-stale", action="store_true", help="With Browser/IAB click-through and replacement/packet prepare, verify Manual Draft Handoff stale gates without recording drafts or calling Gmail.")
+    parser.add_argument("--browser-supporting-attachment-stale", action="store_true", help="With Browser/IAB click-through and replacement/packet prepare, upload a synthetic Supporting proof after handoff review and verify prepared Gmail surfaces go stale.")
     parser.add_argument("--browser-recent-work-lifecycle", action="store_true", help="With Browser/IAB click-through, verify seeded Recent Work lifecycle controls without Gmail verify or local status writes.")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With browser correction mode, prepare a replacement against a seeded synthetic active draft.")
     parser.add_argument("--browser-prepare-packet", action="store_true")
@@ -201,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_profile_proposal=args.browser_profile_proposal,
         browser_gmail_api_create=args.browser_gmail_api_create,
         browser_manual_handoff_stale=args.browser_manual_handoff_stale,
+        browser_supporting_attachment_stale=args.browser_supporting_attachment_stale,
         browser_recent_work_lifecycle=args.browser_recent_work_lifecycle,
         browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,

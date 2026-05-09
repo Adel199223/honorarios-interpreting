@@ -302,6 +302,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Copy advanced Gmail API smoke command",
             "Copy Browser/IAB upload smoke command",
             "Copy Browser/IAB attachment smoke command",
+            "Copy Browser/IAB attachment stale smoke command",
             "Copy Browser/IAB Recent Work smoke command",
             "Preview destination diff",
             "Preview guarded destination",
@@ -335,6 +336,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("isolated_gmail_api_smoke", keys)
         self.assertIn("browser_iab_upload_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_smoke", keys)
+        self.assertIn("browser_iab_supporting_attachment_stale_smoke", keys)
         self.assertIn("browser_iab_profile_proposal_smoke", keys)
         self.assertIn("browser_iab_recent_work_lifecycle_smoke", keys)
         self.assertIn("browser_iab_manual_handoff_stale_smoke", keys)
@@ -362,6 +364,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         browser_supporting = next(check for check in data["checks"] if check["key"] == "browser_iab_supporting_attachment_smoke")
         self.assertIn("--browser-upload-supporting-attachment", browser_supporting["command_template"])
         self.assertEqual(browser_supporting["writes"], "synthetic supporting-attachment artifact only")
+        browser_supporting_stale = next(check for check in data["checks"] if check["key"] == "browser_iab_supporting_attachment_stale_smoke")
+        self.assertIn("--browser-supporting-attachment-stale", browser_supporting_stale["command_template"])
+        self.assertIn("Supporting proof", browser_supporting_stale["description"])
+        self.assertEqual(browser_supporting_stale["writes"], "temporary synthetic runtime only")
         browser_profile_proposal = next(check for check in data["checks"] if check["key"] == "browser_iab_profile_proposal_smoke")
         self.assertIn("--browser-profile-proposal", browser_profile_proposal["command_template"])
         self.assertEqual(browser_profile_proposal["writes"], "none")
@@ -536,6 +542,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_photo_upload_evidence",
             "browser_pdf_upload_evidence",
             "browser_supporting_attachment_upload_evidence",
+            "browser_supporting_attachment_stale",
             "browser_record_helper",
             "browser_profile_proposal",
             "browser_recent_work_lifecycle",
@@ -546,10 +553,15 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "#diagnostics-result",
             "#copy-isolated-source-upload-smoke-command",
             "#copy-isolated-adapter-contract-smoke-command",
+            "#copy-browser-iab-supporting-attachment-stale-smoke-command",
             "isolated_source_upload_smoke",
             "isolated_adapter_contract_smoke",
+            "browser_iab_supporting_attachment_stale_smoke",
             "--source-upload-checks",
             "--adapter-contract-checks",
+            "--supporting-attachment-stale",
+            "supportingAttachmentStale",
+            "supporting attachments changed",
             "data-use-profile-proposal",
             "#preview-profile-change",
             "#gmail-response-raw",
@@ -584,6 +596,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "review changed",
             "review reset",
             "intake form changed",
+            "supporting attachments changed",
             "data-stale-reason",
             'removeAttribute("data-stale-reason")',
         ]:
@@ -1071,6 +1084,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     {"name": "browser_supporting_attachment_upload_evidence", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_correction_mode", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_replacement_prepare", "status": "ready", "message": "ok", "details": {}},
+                    {"name": "browser_supporting_attachment_stale", "status": "ready", "message": "ok", "details": {}},
                     {"name": "browser_record_helper", "status": "ready", "message": "ok", "details": {}},
                 ],
                 "failure_count": 0,
@@ -1088,6 +1102,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             browser_upload_supporting_attachment=True,
             browser_correction_mode=True,
             browser_prepare_replacement=True,
+            browser_supporting_attachment_stale=True,
             browser_record_helper=True,
             browser_apply_history=True,
             browser_runner=browser_runner,
@@ -1107,6 +1122,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(seen_kwargs["upload_supporting_attachment"])
         self.assertTrue(seen_kwargs["correction_mode"])
         self.assertTrue(seen_kwargs["prepare_replacement"])
+        self.assertTrue(seen_kwargs["supporting_attachment_stale"])
         self.assertTrue(seen_kwargs["record_helper"])
         self.assertTrue(seen_kwargs["apply_history"])
 

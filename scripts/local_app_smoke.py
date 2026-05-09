@@ -324,6 +324,7 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         f"  profileProposal: {str(bool(kwargs.get('profile_proposal'))).lower()},\n"
         f"  gmailApiCreate: {str(bool(kwargs.get('gmail_api_create'))).lower()},\n"
         f"  manualHandoffStale: {str(bool(kwargs.get('manual_handoff_stale'))).lower()},\n"
+        f"  supportingAttachmentStale: {str(bool(kwargs.get('supporting_attachment_stale'))).lower()},\n"
         f"  recentWorkLifecycle: {str(bool(kwargs.get('recent_work_lifecycle'))).lower()},\n"
         "  timeoutMs: 15000,\n"
         "});\n"
@@ -378,6 +379,8 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         cmd.append("--gmail-api-create")
     if kwargs.get("manual_handoff_stale"):
         cmd.append("--manual-handoff-stale")
+    if kwargs.get("supporting_attachment_stale"):
+        cmd.append("--supporting-attachment-stale")
     if kwargs.get("recent_work_lifecycle"):
         cmd.append("--recent-work-lifecycle")
     correction_reason = kwargs.get("correction_reason")
@@ -1259,6 +1262,7 @@ def run_smoke(
     browser_profile_proposal: bool = False,
     browser_gmail_api_create: bool = False,
     browser_manual_handoff_stale: bool = False,
+    browser_supporting_attachment_stale: bool = False,
     browser_recent_work_lifecycle: bool = False,
     browser_iab_click_through: bool = False,
     browser_runner: BrowserRunner | None = None,
@@ -1379,6 +1383,7 @@ def run_smoke(
             "isolated_gmail_api_smoke",
             "browser_iab_upload_smoke",
             "browser_iab_supporting_attachment_smoke",
+            "browser_iab_supporting_attachment_stale_smoke",
             "browser_iab_profile_proposal_smoke",
             "browser_iab_recent_work_lifecycle_smoke",
             "browser_iab_manual_handoff_stale_smoke",
@@ -1483,6 +1488,17 @@ def run_smoke(
                     "failure_count": 1,
                     "send_allowed": False,
                 }
+            elif browser_supporting_attachment_stale and not browser_iab_click_through:
+                browser_report = {
+                    "status": "blocked",
+                    "checks": [_check(
+                        "browser_supporting_attachment_stale",
+                        False,
+                        "--browser-supporting-attachment-stale requires --browser-iab-click-through and is intended for an isolated prepared-payload runtime.",
+                    )],
+                    "failure_count": 1,
+                    "send_allowed": False,
+                }
             elif browser_iab_click_through:
                 browser_report = _run_browser_iab_smoke_subprocess(
                     base,
@@ -1501,6 +1517,7 @@ def run_smoke(
                     profile_proposal=browser_profile_proposal,
                     gmail_api_create=browser_gmail_api_create,
                     manual_handoff_stale=browser_manual_handoff_stale,
+                    supporting_attachment_stale=browser_supporting_attachment_stale,
                     recent_work_lifecycle=browser_recent_work_lifecycle,
                 )
             else:
@@ -1547,6 +1564,7 @@ def run_smoke(
                 profile_proposal=browser_profile_proposal,
                 gmail_api_create=browser_gmail_api_create,
                 manual_handoff_stale=browser_manual_handoff_stale,
+                supporting_attachment_stale=browser_supporting_attachment_stale,
                 recent_work_lifecycle=browser_recent_work_lifecycle,
                 iab_click_through=browser_iab_click_through,
             )
@@ -1591,6 +1609,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-profile-proposal", action="store_true", help="With --browser-iab-click-through, preview a synthetic unknown recurring pattern as a proposed Service profile without saving or writing artifacts.")
     parser.add_argument("--browser-gmail-api-create", action="store_true", help="With --browser-iab-click-through against an isolated fake-Gmail runtime, prepare a synthetic PDF payload, create a fake Gmail draft, and verify it read-only.")
     parser.add_argument("--browser-manual-handoff-stale", action="store_true", help="With --browser-click-through and a prepared payload, build the Manual Draft Handoff packet, then change intake text and verify stale gates clear it.")
+    parser.add_argument("--browser-supporting-attachment-stale", action="store_true", help="With --browser-iab-click-through and a prepared payload, build the Manual Draft Handoff packet, then upload a synthetic Supporting proof and verify stale gates clear it.")
     parser.add_argument("--browser-recent-work-lifecycle", action="store_true", help="With --browser-iab-click-through against seeded history, verify Recent Work lifecycle controls without clicking Gmail verify or local status writes.")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With --browser-click-through and --browser-correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still never records drafts or calls Gmail.")
     parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")
@@ -1621,6 +1640,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_profile_proposal=args.browser_profile_proposal,
         browser_gmail_api_create=args.browser_gmail_api_create,
         browser_manual_handoff_stale=args.browser_manual_handoff_stale,
+        browser_supporting_attachment_stale=args.browser_supporting_attachment_stale,
         browser_recent_work_lifecycle=args.browser_recent_work_lifecycle,
         browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,
