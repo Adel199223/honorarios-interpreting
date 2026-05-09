@@ -399,6 +399,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         record_helper_block = smoke_js.split("if (args.recordHelper)", 1)[1].split("if (args.supportingAttachmentStale)", 1)[0]
         flow_packet_block = flow_py.split("def _prepare_packet()", 1)[1].split("if prepare_packet:", 1)[0]
         flow_record_helper_block = flow_py.split("if record_helper:", 1)[1].split("if manual_handoff_stale:", 1)[0]
+        flow_supporting_stale_block = flow_py.split("if supporting_attachment_stale:", 1)[1].split("if manual_handoff_stale:", 1)[0]
 
         preflight_index = packet_block.index('click(tab, "#preflight-batch-intakes"')
         close_index = packet_block.index("closeReviewDrawerIfOpen()")
@@ -427,9 +428,17 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn('driver.check("#gmail_handoff_reviewed")', flow_record_helper_block)
         self.assertIn('driver.expect_button_enabled("#record-parsed-prepared-draft")', flow_record_helper_block)
         self.assertIn('driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed")', flow_record_helper_block)
+        self.assertIn("record_helper_should_mutate_prepared_state = not (manual_handoff_stale or supporting_attachment_stale)", flow_record_helper_block)
+        self.assertIn('driver.set_input_file("#supporting-attachment-file", supporting_upload_path)', flow_supporting_stale_block)
+        self.assertIn('driver.expect_button_disabled("#copy-manual-handoff-prompt")', flow_supporting_stale_block)
+        self.assertIn('driver.expect_selector_value_equals("#record_payload", "")', flow_supporting_stale_block)
+        self.assertIn('driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "supporting attachments changed")', flow_supporting_stale_block)
         self.assertNotIn('driver.click("#record-parsed-prepared-draft")', flow_record_helper_block)
         self.assertNotIn('driver.click("#record-draft")', flow_record_helper_block)
         self.assertNotIn('driver.click("#create-gmail-api-draft")', flow_record_helper_block)
+        self.assertNotIn('driver.click("#record-parsed-prepared-draft")', flow_supporting_stale_block)
+        self.assertNotIn('driver.click("#record-draft")', flow_supporting_stale_block)
+        self.assertNotIn('driver.click("#create-gmail-api-draft")', flow_supporting_stale_block)
 
     def test_browser_js_routes_one_click_recording_through_strict_prepared_endpoint(self):
         root = Path(__file__).resolve().parents[1]

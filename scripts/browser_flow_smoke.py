@@ -117,6 +117,13 @@ class PlaywrightBrowserDriver:
         if value not in actual:
             raise RuntimeError(f"Expected {selector} value to contain {value!r}; got {actual!r}")
 
+    def expect_selector_value_equals(self, selector: str, value: str) -> None:
+        locator = self._page.locator(selector)
+        locator.wait_for(state="visible", timeout=self.timeout_ms)
+        actual = locator.input_value(timeout=self.timeout_ms)
+        if actual != value:
+            raise RuntimeError(f"Expected {selector} value to equal {value!r}; got {actual!r}")
+
     def expect_button_disabled(self, selector: str) -> None:
         locator = self._page.locator(selector)
         locator.wait_for(state="attached", timeout=self.timeout_ms)
@@ -236,6 +243,7 @@ def run_browser_flow_smoke(
     prepare_packet: bool = False,
     record_helper: bool = False,
     manual_handoff_stale: bool = False,
+    supporting_attachment_stale: bool = False,
     headless: bool = True,
     timeout_ms: int = 10000,
 ) -> dict[str, Any]:
@@ -262,6 +270,7 @@ def run_browser_flow_smoke(
             (upload_photo and not photo_upload_path)
             or (upload_pdf and not pdf_upload_path)
             or (upload_supporting_attachment and not supporting_upload_path)
+            or (supporting_attachment_stale and not supporting_upload_path)
         ):
             temp_dir = tempfile.TemporaryDirectory(prefix="honorarios-browser-smoke-")
             temp_path = Path(temp_dir.name)
@@ -269,7 +278,7 @@ def run_browser_flow_smoke(
                 photo_upload_path = _make_synthetic_photo(temp_path)
             if upload_pdf and not pdf_upload_path:
                 pdf_upload_path = _make_synthetic_pdf(temp_path, case_number=case_number, service_date=service_date)
-            if upload_supporting_attachment and not supporting_upload_path:
+            if (upload_supporting_attachment or supporting_attachment_stale) and not supporting_upload_path:
                 supporting_upload_path = _make_synthetic_supporting_pdf(temp_path, case_number=case_number, service_date=service_date)
 
         forbidden = FORBIDDEN_PREPARE_POSTS if (prepare_packet or prepare_replacement) else FORBIDDEN_DEFAULT_POSTS
@@ -423,11 +432,19 @@ def run_browser_flow_smoke(
 
         if record_helper:
             fake_response = '{"id":"draft-smoke","message":{"id":"message-smoke","threadId":"thread-smoke"}}'
+            record_helper_should_mutate_prepared_state = not (manual_handoff_stale or supporting_attachment_stale)
+
             def _expect_record_value(selector: str, value: str) -> None:
                 if hasattr(driver, "expect_selector_value"):
                     driver.expect_selector_value(selector, value)
                 else:
                     driver.expect_selector_text(selector, value)
+
+            def _maybe_mark_record_helper_stale() -> None:
+                if not record_helper_should_mutate_prepared_state:
+                    return
+                driver.fill("#source_text", "Stale state marker")
+                driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed")
 
             if not _safe_step(checks, "browser_record_helper", "Browser parsed Gmail IDs and autofilled the local record form without recording.", lambda: (
                 driver.fill("#gmail-response-raw", fake_response),
@@ -446,8 +463,42 @@ def run_browser_flow_smoke(
                 driver.expect_button_disabled("#record-parsed-prepared-draft"),
                 driver.check("#gmail_handoff_reviewed"),
                 driver.expect_button_enabled("#record-parsed-prepared-draft"),
-                driver.fill("#source_text", "Stale state marker"),
-                driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed"),
+                _maybe_mark_record_helper_stale(),
+            )):
+                return _report(base, checks)
+
+        if supporting_attachment_stale:
+            if not prepare_replacement and not prepare_packet:
+                checks.append(_check(
+                    "browser_supporting_attachment_stale",
+                    False,
+                    "Supporting attachment stale smoke requires a prepared replacement or packet payload.",
+                ))
+                return _report(base, checks)
+            if not supporting_upload_path:
+                checks.append(_check("browser_supporting_attachment_stale", False, "Supporting attachment stale smoke requires an upload path."))
+                return _report(base, checks)
+
+            def _expect_empty_record_payload() -> None:
+                if hasattr(driver, "expect_selector_value_equals"):
+                    driver.expect_selector_value_equals("#record_payload", "")
+                elif hasattr(driver, "expect_selector_value"):
+                    driver.expect_selector_value("#record_payload", "")
+                else:
+                    driver.expect_selector_text("#record_payload", "")
+
+            if not _safe_step(checks, "browser_supporting_attachment_stale", "Browser cleared prepared Gmail surfaces after a supporting attachment changed.", lambda: (
+                driver.click("#build-manual-handoff"),
+                driver.expect_selector_text("#manual-handoff-packet", "Manual handoff packet ready"),
+                driver.set_input_file("#supporting-attachment-file", supporting_upload_path),
+                driver.click("#supporting-attachment-form button[type=submit]"),
+                driver.expect_selector_text("#supporting-attachment-list", "synthetic-declaracao.pdf"),
+                driver.expect_selector_attribute_contains("#manual-handoff-packet", "class", "hidden"),
+                driver.expect_button_disabled("#copy-manual-handoff-prompt"),
+                driver.expect_button_disabled("#create-gmail-api-draft"),
+                driver.expect_button_disabled("#record-parsed-prepared-draft"),
+                _expect_empty_record_payload(),
+                driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "supporting attachments changed"),
             )):
                 return _report(base, checks)
 
@@ -512,6 +563,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prepare-packet", action="store_true", help="Also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--record-helper", action="store_true", help="After packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
     parser.add_argument("--manual-handoff-stale", action="store_true", help="After a prepared payload, build the Manual Draft Handoff packet, then change intake text and verify stale gates clear it.")
+    parser.add_argument("--supporting-attachment-stale", action="store_true", help="After a prepared payload, build the Manual Draft Handoff packet, then upload a synthetic Supporting proof and verify stale gates clear it.")
     parser.add_argument("--headed", action="store_true")
     parser.add_argument("--timeout-ms", type=int, default=10000)
     parser.add_argument("--json", action="store_true")
@@ -534,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
         prepare_packet=args.prepare_packet,
         record_helper=args.record_helper,
         manual_handoff_stale=args.manual_handoff_stale,
+        supporting_attachment_stale=args.supporting_attachment_stale,
         headless=not args.headed,
         timeout_ms=args.timeout_ms,
     )
