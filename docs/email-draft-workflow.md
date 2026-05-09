@@ -41,13 +41,33 @@ Example Interpreter
 
 ## Safety Rule
 
-Use only the Gmail draft tool:
+The always-available browser path is **Manual Draft Handoff**:
+
+- prepare and preview the PDF
+- review the exact displayed `gmail_create_draft_args`
+- create the draft with the draft-only Gmail `_create_draft` connector outside this app
+- paste the returned draft/message/thread IDs into the browser app and record them locally
+- keep duplicate protection immediate through `data/gmail-draft-log.json` and `data/duplicate-index.json`
+
+The local Gmail Draft API connector remains available as an optional direct draft-creation path:
+
+- configure OAuth in ignored `config/gmail.local.json` using `config/gmail.example.json` as the template
+- store OAuth tokens only in ignored `config/gmail-token.local.json`
+- expose readiness through `/api/gmail/status`, which must not return client secrets or tokens
+- create drafts only with Gmail `users.drafts.create`
+- before contacting Gmail, reload the prepared payload and check duplicate-index plus active draft log records for every underlying request
+- block drafted/sent duplicates before the Gmail network call unless correction mode includes `supersedes` and a short correction reason
+- record the returned draft ID/message ID/thread ID immediately through the existing draft-log and duplicate-index code
+
+The manual connector handoff uses only the Gmail draft tool:
 
 ```text
 _create_draft
 ```
 
-Do not use `_send_email` or `_send_draft` unless the user explicitly asks to send after reviewing the draft.
+No app route, script, UI copy, payload, or smoke output should introduce a Gmail send, draft-send, trash, or delete action. The user reviews the created draft in Gmail and sends it manually.
+
+Do not use `_send_email` or `_send_draft`.
 
 ## Batch Command
 
@@ -90,7 +110,7 @@ Draft payloads include a connector-ready object:
 }
 ```
 
-Pass that object to Gmail `_create_draft`. The `attachment_files` value is always an array, even for one PDF.
+In the browser, Manual Draft Handoff stays available in every Gmail state: pass this same object to Gmail `_create_draft` manually, then paste and record the returned IDs locally. If Gmail API OAuth is connected, the optional `Create Gmail Draft` action converts this same object into a MIME message, attaches every file, checks duplicates and active drafts one last time, calls Gmail `users.drafts.create`, then records the returned IDs locally. If Gmail returns an API/network error, the app reports a blocked result and writes no draft log or duplicate-index record. The `attachment_files` value is always an array, even for one PDF.
 
 When the user asks to include supporting proof, such as a `declaração`, add the file path to `additional_attachment_files` in the intake. The generated honorários PDF remains the primary attachment, and the draft payload must include all files in `attachment_file_list`. Use `email_body` in the intake only when that specific draft needs wording different from the default body, for example to mention that both the honorários request and declaration are attached. The browser app's `Supporting proof / declarations` control does this for local PDF/image proof files automatically and uses wording that mentions the documento(s) comprovativo(s). Pass `attachment_files` to Gmail `_create_draft` as an array of absolute local file paths.
 
@@ -108,11 +128,34 @@ After `_create_draft` returns, record the returned IDs:
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
 
-Browser shortcut:
+Browser Manual Draft Handoff path:
 
 1. Prepare the PDF and draft payload.
 2. Review the PDF preview and exact displayed `gmail_create_draft_args`, then tick the Gmail handoff checklist.
-3. Create the Gmail draft with `_create_draft` using the displayed `gmail_create_draft_args`.
+3. Create the draft externally with `_create_draft`.
+4. Paste the response, parse IDs, and click `Record parsed response + prepared payload`.
+5. Confirm the local record shows duplicate protection and the draft-log path.
+
+Optional connected Gmail API path:
+
+1. Prepare the PDF and draft payload.
+2. Review the PDF preview and exact displayed `gmail_create_draft_args`, then tick the Gmail handoff checklist.
+3. Open `Gmail Draft API (optional direct draft creation)` only if OAuth is connected and click `Create Gmail Draft`.
+4. Confirm the draft-created panel shows the recipient, subject, attachment names/hashes, draft ID, message ID, thread ID, duplicate protection, and local draft-log path.
+
+For non-Google testing of that direct path, run:
+
+```powershell
+python scripts/isolated_app_smoke.py --gmail-api-checks --json
+```
+
+The isolated smoke enables `HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1` only for disposable synthetic runtime data. It prepares a fake payload, creates deterministic fake Gmail draft IDs, records them locally, verifies duplicate-index updates, and never contacts Google.
+
+Browser recovery shortcut:
+
+1. Prepare the PDF and draft payload.
+2. Review the PDF preview and exact displayed `gmail_create_draft_args`, then tick the Gmail handoff checklist.
+3. Create the Gmail draft outside the app with `_create_draft` using the displayed `gmail_create_draft_args`.
 4. Paste the returned Gmail connector response into `Paste Gmail _create_draft response`.
 5. Click `Record parsed response + prepared payload` to parse the IDs, fill the latest prepared packet or individual payload, and update the local draft log and duplicate index.
 
@@ -154,7 +197,7 @@ If a draft has the wrong recipient, attachment, or case mapping:
 
 1. Do not send or edit the mistaken draft.
 2. Correct the intake and run `scripts/prepare_honorarios.py --allow-existing-draft --correction-reason "<short reason>"` again.
-3. Create a new Gmail draft with `_create_draft`.
+3. Create a new Gmail draft through the in-app `Create Gmail Draft` action, or use `_create_draft` manually as recovery mode.
 4. Record the new draft in `data/gmail-draft-log.json`.
 5. Ensure the corrected draft remains `status: drafted` in `data/duplicate-index.json`.
 6. Mark the old draft as `superseded` or `trashed`, including the new `superseded_by` draft ID.

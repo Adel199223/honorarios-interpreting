@@ -37,6 +37,10 @@
             <span>+</span>
           </summary>
           <div class="more-nav">
+            <button class="nav-button" type="button" data-panel="profiles">
+              <span>Profiles</span>
+              <span class="nav-meta">Person</span>
+            </button>
             <button class="nav-button" type="button" data-panel="references">
               <span>References</span>
               <span class="nav-meta">Data</span>
@@ -68,9 +72,9 @@
           <div class="compact-gmail-strip">
             <div>
               <strong>Live mode: using your real local profiles, duplicate index, and Gmail draft log.</strong>
-              <p>Draft creation stays manual and review-first.</p>
+              <p id="gmail-api-status-summary">Checking Manual Draft Handoff and local Gmail Draft API status...</p>
             </div>
-            <span class="status-chip info">Draft-only Gmail</span>
+            <span class="status-chip info" id="gmail-api-status-pill">checking</span>
           </div>
 
           <div class="compact-gmail-strip ai-status-strip">
@@ -98,9 +102,14 @@
 
               <form id="intake-form" class="form-grid compact-grid">
                 <div class="field">
-                  <label for="profile">Profile</label>
+                  <label for="personal_profile_id">Personal profile</label>
+                  <select id="personal_profile_id"></select>
+                  <p class="field-hint">Defaults to the main profile. Supplies applicant, address, IBAN, IVA/IRS, origin, and saved distances.</p>
+                </div>
+                <div class="field">
+                  <label for="profile">Service profile</label>
                   <select id="profile"></select>
-                  <p class="field-hint">Auto-detect profile is recommended for uploaded sources; choose a profile only when you want to override it.</p>
+                  <p class="field-hint">Auto-detect profile is recommended for uploaded sources; this now means the service profile, separate from the personal profile above.</p>
                 </div>
                 <div class="field">
                   <label for="case_number">Case Number</label>
@@ -228,8 +237,8 @@
               <div class="result-card next-safe-action-card hidden" id="next-safe-action">
                 <div class="result-header">
                   <div>
-                    <strong>Next Safe Action</strong>
-                    <p>After review, the app will show the safest next step here.</p>
+                    <strong>Suggested Next Step</strong>
+                    <p>Recommended next step. This is not a separate task; it explains why the app paused, what you can do now, and what remains blocked.</p>
                   </div>
                   <span class="status-chip info" id="next-safe-action-chip">Waiting</span>
                 </div>
@@ -313,13 +322,60 @@
           </div>
         </section>
 
+        <section class="page-view secondary-route-view hidden" id="panel-profiles">
+          <div class="panel secondary-route-hero">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Profiles</p>
+                <h2>LegalPDF Honorários</h2>
+                <p class="panel-copy">Edit the applicant, payment, travel distances, and Gmail-reply details used in honorários documents.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel profile-overview-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Profiles</p>
+                <h3>Profiles</h3>
+                <p class="panel-copy">Set the contact, payment, and travel details used in fee-request documents and Gmail replies.</p>
+              </div>
+              <div class="button-row profile-page-actions">
+                <button type="button" id="add-personal-profile">Add profile</button>
+                <button type="button" id="copy-legalpdf-personal-profiles">Copy profiles from LegalPDF</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel profile-summary-panel">
+            <p id="personal-profile-count">No profiles loaded yet.</p>
+            <p class="eyebrow">Main Profile Summary</p>
+            <div class="profile-record-card" id="personal-profile-primary-card">
+              Main profile summary will appear here.
+            </div>
+            <p class="eyebrow">Profile Records</p>
+            <p class="panel-copy">Edit saved contact, payment, and travel details here.</p>
+            <div id="personal-profile-list" class="profile-record-list"></div>
+          </div>
+
+          <div class="panel profile-how-panel">
+            <p class="eyebrow">How It Works</p>
+            <h3>Choose the details used in documents</h3>
+            <div class="result-card compact-result">
+              <strong>Profiles are guarded and the main profile is used in fee-request documents and Gmail replies.</strong>
+              <p>Edit one profile at a time, then save your changes. Travel distances help fill interpretation travel details automatically.</p>
+              <span class="status-chip ready">Setup</span>
+            </div>
+          </div>
+        </section>
+
         <section class="page-view secondary-route-view hidden" id="panel-references">
           <div class="panel secondary-route-hero">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">References</p>
                 <h2>Reference Data</h2>
-                <p class="panel-copy">Profiles, court emails, and known destinations used by the generator.</p>
+                <p class="panel-copy">Service profiles, court emails, and fallback destinations used by the generator.</p>
               </div>
             </div>
           </div>
@@ -343,7 +399,7 @@
               <div>
                 <p class="eyebrow">Local Safety</p>
                 <h3>Local Diagnostics</h3>
-                <p class="panel-copy">Copy safe smoke commands for this app before and after workflow changes. These checks are draft-only and do not call Gmail.</p>
+                <p class="panel-copy">Copy safe smoke commands for this app before and after workflow changes. These checks are draft-only, non-sending, and the Browser/IAB proposal check previews guarded reference edits without saving.</p>
               </div>
               <span class="status-chip info" id="diagnostics-chip">checking</span>
             </div>
@@ -353,11 +409,16 @@
               <button type="button" id="copy-source-upload-smoke-command" data-copy-diagnostic-command="source_upload_smoke">Copy source upload smoke command</button>
               <button type="button" id="copy-supporting-attachment-smoke-command" data-copy-diagnostic-command="supporting_attachment_smoke">Copy supporting attachment smoke command</button>
               <button type="button" id="copy-isolated-attachment-smoke-command" data-copy-diagnostic-command="isolated_supporting_attachment_smoke">Copy isolated attachment smoke command</button>
+              <button type="button" id="copy-isolated-gmail-api-smoke-command" data-copy-diagnostic-command="isolated_gmail_api_smoke">Copy advanced Gmail API smoke command</button>
               <button type="button" id="copy-browser-iab-upload-smoke-command" data-copy-diagnostic-command="browser_iab_upload_smoke">Copy Browser/IAB upload smoke command</button>
               <button type="button" id="copy-browser-iab-attachment-smoke-command" data-copy-diagnostic-command="browser_iab_supporting_attachment_smoke">Copy Browser/IAB attachment smoke command</button>
+              <button type="button" id="copy-browser-iab-profile-proposal-smoke-command" data-copy-diagnostic-command="browser_iab_profile_proposal_smoke">Copy Browser/IAB profile proposal smoke command</button>
+              <button type="button" id="copy-browser-iab-recent-work-smoke-command" data-copy-diagnostic-command="browser_iab_recent_work_lifecycle_smoke">Copy Browser/IAB Recent Work smoke command</button>
+              <button type="button" id="copy-browser-iab-handoff-stale-smoke-command" data-copy-diagnostic-command="browser_iab_manual_handoff_stale_smoke">Copy Browser/IAB handoff stale smoke command</button>
+              <button type="button" id="copy-browser-iab-gmail-api-smoke-command" data-copy-diagnostic-command="browser_iab_gmail_api_smoke">Copy Browser/IAB fake Gmail smoke command</button>
             </div>
             <div class="result-card compact-result" id="diagnostics-result">
-              Local Diagnostics will list the default live smoke, Source upload smoke, Supporting attachment smoke, isolated source-upload smoke, isolated attachment smoke, Browser/IAB review smoke, Browser/IAB upload smoke, and Browser/IAB attachment smoke.
+              Local Diagnostics will list the default live smoke, Source upload smoke, Supporting attachment smoke, isolated source-upload smoke, isolated attachment smoke, advanced/future Gmail API smoke, Browser/IAB review smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB handoff stale smoke, and Browser/IAB fake Gmail API smoke. Manual Draft Handoff remains available whenever OAuth is not the right path.
             </div>
           </div>
           <div class="panel local-backup-panel">
@@ -392,6 +453,15 @@
               <input id="confirm-local-backup-restore" type="checkbox">
               <span>I reviewed the import preview and want to restore these local JSON datasets.</span>
             </label>
+            <div class="field">
+              <label for="local-backup-restore-phrase">Restore Confirmation Phrase</label>
+              <input id="local-backup-restore-phrase" autocomplete="off" placeholder="RESTORE LOCAL HONORARIOS BACKUP">
+              <p class="field-hint">Type the exact phrase shown in the preview before restoring local backup data.</p>
+            </div>
+            <div class="field">
+              <label for="local-backup-restore-reason">Restore Reason</label>
+              <textarea id="local-backup-restore-reason" rows="2" placeholder="Example: restore after a mistaken local reference edit."></textarea>
+            </div>
             <div class="result-card" id="local-backup-result">No backup action has run yet.</div>
           </div>
           <div class="panel integration-preview-panel">
@@ -418,6 +488,7 @@
               <button type="button" id="export-legalpdf-import-report">Export preview report</button>
               <button type="button" id="build-legalpdf-integration-checklist">Build integration checklist</button>
               <button type="button" id="build-legalpdf-adapter-import-plan">Build adapter import plan</button>
+              <a class="ghost-button" href="/api/integration/adapter-contract" target="_blank" rel="noreferrer">LegalPDF Adapter Contract</a>
             </div>
             <div class="apply-confirmation-grid">
               <div class="field">
@@ -454,8 +525,8 @@
           </div>
           <div class="reference-columns">
             <div class="panel profile-reference-panel">
-              <h3>Profiles</h3>
-              <p class="field-hint">Profiles are guarded: edits are validated against recipient rules and previewed before they are saved.</p>
+              <h3>Service profiles</h3>
+              <p class="field-hint">Service profiles are guarded service patterns: edits are validated against recipient rules and previewed before they are saved.</p>
               <form id="service-profile-form" class="reference-form profile-form-grid">
                 <div class="field">
                   <label for="profile_key">Key</label>
@@ -583,8 +654,17 @@
                   <label for="court_source">Source</label>
                   <input id="court_source" autocomplete="off" placeholder="Verified from Gmail or source document">
                 </div>
+                <div class="field field-wide">
+                  <label for="court_change_reason">Change Reason</label>
+                  <textarea id="court_change_reason" rows="2" placeholder="Example: corrected recipient after source document review."></textarea>
+                </div>
+                <button id="preview-court-email-change" type="button">Preview court-email diff</button>
                 <button type="submit">Save court email</button>
               </form>
+              <div class="result-card hidden" id="court-email-preview-card">
+                <strong>Preview guarded court email</strong>
+                <pre id="court-email-preview-text"></pre>
+              </div>
               <div id="court-list" class="data-list"></div>
             </div>
             <div class="panel">
@@ -606,8 +686,17 @@
                   <label for="destination_notes">Notes</label>
                   <textarea id="destination_notes" rows="2" placeholder="Payment entity or exception note"></textarea>
                 </div>
+                <div class="field field-wide">
+                  <label for="destination_change_reason">Change Reason</label>
+                  <textarea id="destination_change_reason" rows="2" placeholder="Example: corrected Marmelar-to-Serpa distance."></textarea>
+                </div>
+                <button id="preview-destination-change" type="button">Preview destination diff</button>
                 <button type="submit">Save destination</button>
               </form>
+              <div class="result-card hidden" id="destination-preview-card">
+                <strong>Preview guarded destination</strong>
+                <pre id="destination-preview-text"></pre>
+              </div>
               <div id="destination-list" class="data-list"></div>
             </div>
           </div>
@@ -641,6 +730,24 @@
               <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="not_found">not_found</button>
             </div>
           </div>
+          <div class="panel history-lifecycle-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Draft Lifecycle</p>
+                <h3>Draft lifecycle actions</h3>
+                <p class="panel-copy">Verify a draft exists through read-only Gmail access, or mark a draft as manually sent after you send it yourself in Gmail.</p>
+              </div>
+              <span class="status-chip info">Local bookkeeping</span>
+            </div>
+            <div class="form-grid compact-grid">
+              <div class="field">
+                <label for="history-sent-date">Manual sent date</label>
+                <input id="history-sent-date" type="date">
+                <p class="field-hint">Used only when you click `Mark manually sent`; it does not contact Gmail.</p>
+              </div>
+            </div>
+            <div class="result-card compact-result hidden" id="history-draft-action-result"></div>
+          </div>
           <div class="reference-columns two">
             <div class="panel">
               <h3>Duplicate Index</h3>
@@ -653,6 +760,129 @@
           </div>
         </section>
       </main>
+    </div>
+
+    <div class="workspace-drawer-backdrop hidden" id="personal-profile-drawer-backdrop" aria-hidden="true">
+      <section class="workspace-drawer workspace-drawer-profile" id="personal-profile-drawer" aria-labelledby="personal-profile-drawer-title">
+        <div class="workspace-drawer-header">
+          <div>
+            <p class="eyebrow">Profiles</p>
+            <h2 id="personal-profile-drawer-title">Edit Profile</h2>
+          </div>
+          <button type="button" class="ghost-button" id="personal-profile-close">Close</button>
+        </div>
+        <p class="panel-copy" id="personal-profile-drawer-summary">Update the details, then save.</p>
+        <form id="personal-profile-form" class="profile-editor-form">
+          <input type="hidden" id="pp_id">
+          <div class="form-grid compact-grid">
+            <div class="field">
+              <label for="pp_first_name">First name</label>
+              <input id="pp_first_name" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="pp_last_name">Last name</label>
+              <input id="pp_last_name" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="pp_document_name_override">Document name override</label>
+              <input id="pp_document_name_override" autocomplete="off">
+              <p class="field-hint">Optional name used in the document signature.</p>
+            </div>
+            <div class="field">
+              <label for="pp_email">Email</label>
+              <input id="pp_email" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="pp_phone_number">Phone</label>
+              <input id="pp_phone_number" autocomplete="off">
+              <p class="field-hint">Optional phone number for Gmail reply signatures.</p>
+            </div>
+            <div class="field">
+              <label for="pp_travel_origin_label">Travel origin</label>
+              <input id="pp_travel_origin_label" autocomplete="off" placeholder="Marmelar">
+              <p class="field-hint">Starting point used for interpretation travel-distance text.</p>
+            </div>
+            <div class="field field-wide">
+              <label for="pp_postal_address">Postal address</label>
+              <textarea id="pp_postal_address" rows="3"></textarea>
+            </div>
+            <div class="field">
+              <label for="pp_iban">IBAN</label>
+              <input id="pp_iban" autocomplete="off">
+              <p class="field-hint">Used in fee-request payment instructions.</p>
+            </div>
+            <div class="field">
+              <label for="pp_iva_text">IVA text</label>
+              <input id="pp_iva_text" autocomplete="off" placeholder="23%">
+            </div>
+            <div class="field">
+              <label for="pp_irs_text">IRS text</label>
+              <input id="pp_irs_text" autocomplete="off" placeholder="Sem retenção">
+            </div>
+          </div>
+          <label class="check-row">
+            <input id="pp_make_main" type="checkbox">
+            <span>Use as the main profile when saving</span>
+          </label>
+          <div class="profile-distance-editor">
+            <h3>Interpretation distances</h3>
+            <p class="field-hint">Add one-way distances from your travel origin. These help fill interpretation travel details automatically.</p>
+            <div class="form-grid compact-grid">
+              <div class="field">
+                <label for="pp_distance_city">City</label>
+                <input id="pp_distance_city" autocomplete="off" placeholder="For example, Beja">
+              </div>
+              <div class="field">
+                <label for="pp_distance_km">One-way distance (km)</label>
+                <input id="pp_distance_km" inputmode="numeric" autocomplete="off" placeholder="39">
+              </div>
+            </div>
+            <div class="button-row compact-button-row">
+              <button type="button" id="pp_add_distance">Add or update distance</button>
+            </div>
+            <p class="field-hint">Saved city distances are ready to use in interpretation requests.</p>
+            <div id="pp_distance_list" class="profile-distance-list"></div>
+          </div>
+          <details class="advanced-distance-data">
+            <summary>Advanced distance data</summary>
+            <textarea id="pp_distances_json" rows="6" placeholder="{ &quot;Beja&quot;: 39 }"></textarea>
+          </details>
+          <div class="drawer-action-row">
+            <button type="button" id="pp_set_main">Main profile</button>
+            <button type="button" id="pp_delete">Delete profile</button>
+            <button type="button" id="pp_close_bottom">Close</button>
+            <button type="submit" class="primary-button">Save profile</button>
+          </div>
+        </form>
+        <div class="result-card hidden" id="legalpdf-personal-profile-import-card">
+          <div class="result-header">
+            <div>
+              <strong>Copy profiles from LegalPDF</strong>
+              <p>Preview first. This app reads LegalPDF settings but never writes to LegalPDF.</p>
+            </div>
+            <span class="status-chip info">Preview</span>
+          </div>
+          <div id="legalpdf-personal-profile-import-body"></div>
+          <div class="form-grid compact-grid">
+            <div class="field field-wide">
+              <label for="legalpdf_personal_import_reason">Import reason</label>
+              <input id="legalpdf_personal_import_reason" autocomplete="off" placeholder="Copying current LegalPDF applicant profile into Honorários.">
+            </div>
+            <div class="field">
+              <label for="legalpdf_personal_import_phrase">Confirmation phrase</label>
+              <input id="legalpdf_personal_import_phrase" autocomplete="off" placeholder="COPY LEGALPDF PROFILES">
+            </div>
+          </div>
+          <label class="check-row">
+            <input id="confirm_legalpdf_personal_import" type="checkbox">
+            <span>I reviewed the preview and want to copy these profiles into this app only.</span>
+          </label>
+          <div class="button-row">
+            <button type="button" id="preview-legalpdf-personal-profiles">Preview copy</button>
+            <button type="button" id="apply-legalpdf-personal-profiles">Apply reviewed copy</button>
+          </div>
+        </div>
+      </section>
     </div>
 
     <div class="workspace-drawer-backdrop hidden" id="interpretation-review-drawer-backdrop" aria-hidden="true">
@@ -670,8 +900,8 @@
         <div class="result-card next-safe-action-card hidden" id="drawer-next-safe-action">
           <div class="result-header">
             <div>
-              <strong>Next Safe Action</strong>
-              <p>The app points to the safest next move before any PDF, draft payload, or local record step.</p>
+              <strong>Suggested Next Step</strong>
+              <p>Recommended next step. This is not a separate task; it explains why the app paused, what you can do now, and what remains blocked.</p>
             </div>
             <span class="status-chip info" id="drawer-next-safe-action-chip">Waiting</span>
           </div>
@@ -769,11 +999,88 @@
           </div>
         </div>
 
+        <div class="result-card" id="manual-handoff-card">
+          <div class="result-header">
+            <div>
+              <strong>Manual Draft Handoff</strong>
+              <p>Manual Draft Handoff is always available as the safe fallback: review the PDF preview, copy the exact `_create_draft` args, create the draft manually, then record the returned IDs locally.</p>
+            </div>
+            <span class="status-chip ready" id="manual-handoff-chip">Recommended</span>
+          </div>
+          <p id="manual-handoff-status">Manual handoff is always draft-only and never sends email automatically.</p>
+          <ol class="handoff-steps">
+            <li>Review the generated PDF preview and recipient.</li>
+            <li>Use the exact displayed `gmail_create_draft_args` with `_create_draft`.</li>
+            <li>Paste the `_create_draft` response below, parse IDs, and record locally.</li>
+          </ol>
+          <div class="button-row compact-button-row">
+            <button type="button" id="build-manual-handoff">Build handoff packet</button>
+            <button type="button" id="copy-manual-handoff-prompt">Copy handoff prompt</button>
+          </div>
+          <div class="result-card compact-result hidden" id="manual-handoff-packet"></div>
+        </div>
+
+        <details class="result-card gmail-api-deferred-panel" id="gmail-api-deferred-panel">
+          <summary>
+            <span>
+              <strong>Gmail Draft API (optional direct draft creation)</strong>
+              <small>Use this only after the PDF preview, exact draft args, duplicate checks, and Gmail handoff checklist are current. Manual Draft Handoff remains available.</small>
+            </span>
+            <span class="status-chip info" id="gmail-api-drawer-chip">Draft-only Gmail</span>
+          </summary>
+          <div id="gmail-api-card" class="gmail-api-deferred-body">
+            <p id="gmail-api-drawer-status">Checking Gmail Draft API status...</p>
+            <div class="gmail-setup-card" id="gmail-setup-card">
+              <div class="result-header compact-result-header">
+                <div>
+                  <strong>Gmail OAuth setup</strong>
+                  <p id="gmail-setup-next-step">Manual Draft Handoff works with or without OAuth. Save local Google OAuth client details only when you want optional in-app draft creation.</p>
+                </div>
+                <span class="status-chip info" id="gmail-setup-chip">setup</span>
+              </div>
+              <div class="form-grid compact-grid">
+                <div class="field field-wide">
+                  <label for="gmail-client-id">OAuth client ID</label>
+                  <input id="gmail-client-id" autocomplete="off" placeholder="...apps.googleusercontent.com">
+                </div>
+                <div class="field field-wide">
+                  <label for="gmail-client-secret">OAuth client secret</label>
+                  <input id="gmail-client-secret" type="password" autocomplete="off" placeholder="Paste once, then save locally">
+                  <small>Saved only to ignored <code>config/gmail.local.json</code>; status responses never show the secret.</small>
+                </div>
+                <div class="field field-wide">
+                  <label for="gmail-redirect-uri">Redirect URI</label>
+                  <input id="gmail-redirect-uri" autocomplete="off" value="http://127.0.0.1:8766/api/gmail/oauth/callback">
+                  <small>Use this same loopback URL in Google Console for this local app.</small>
+                </div>
+              </div>
+              <div class="button-row">
+                <button type="button" id="save-gmail-config">Save local Gmail config</button>
+              </div>
+              <div class="result-card compact-result hidden" id="gmail-config-result"></div>
+            </div>
+            <div class="button-row">
+              <button type="button" id="connect-gmail-oauth">Connect Gmail Draft API</button>
+              <button type="button" class="primary-button" id="create-gmail-api-draft">Create Gmail Draft</button>
+            </div>
+            <div class="result-card compact-result hidden" id="gmail-api-result"></div>
+            <div class="record-autofill-note">
+              <div>
+                <strong>Verify Gmail draft exists</strong>
+                <p>After a draft is created or recorded, check the Draft ID read-only through Gmail `users.drafts.get`.</p>
+                <span>No local records are changed by this verification.</span>
+              </div>
+              <button type="button" class="mini-button" id="verify-gmail-draft">Verify Gmail draft exists</button>
+            </div>
+            <div class="result-card compact-result hidden" id="gmail-verify-result"></div>
+          </div>
+        </details>
+
         <div class="result-card">
           <div class="result-header">
             <div>
-              <strong>Record Gmail Draft</strong>
-              <p>After `_create_draft`, paste the returned IDs here.</p>
+              <strong>Manual Draft Handoff</strong>
+              <p>Recovery: record Gmail draft manually after the reviewed `_create_draft` response is available.</p>
             </div>
             <span class="status-chip info">Local log</span>
           </div>
@@ -837,7 +1144,6 @@
             </div>
           </form>
         </div>
-
         <div class="form-actions drawer-action-row">
           <button type="button" id="interpretation-clear-review">Start blank request</button>
           <button type="button" id="interpretation-close-review-footer">Close</button>

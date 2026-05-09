@@ -34,21 +34,39 @@ from .services import (
     google_photos_list_session_media,
     google_photos_oauth_callback,
     google_photos_oauth_start,
+    gmail_api_config_save,
+    gmail_api_draft_verify,
+    gmail_api_oauth_callback,
+    gmail_api_oauth_start,
+    gmail_api_status,
+    manual_handoff_packet,
+    legalpdf_adapter_contract,
     legalpdf_apply_report_detail,
     legalpdf_apply_history,
     legalpdf_apply_restore_plan,
     load_app_reference,
+    new_personal_profile,
+    personal_profiles_summary,
     preflight_intakes,
     prepare_intakes,
+    apply_legalpdf_personal_profile_import,
     record_draft,
     recover_source_upload,
     review_intake,
+    review_intake_with_profile_evidence,
     resolve_artifact_path,
+    create_and_record_gmail_api_draft,
     preview_local_backup_import,
+    preview_court_email_upsert,
+    preview_known_destination_upsert,
+    preview_legalpdf_personal_profile_import,
     preview_legalpdf_import,
     preview_service_profile_upsert,
     preview_profile_rollback,
     rollback_service_profile,
+    delete_personal_profile,
+    save_personal_profile,
+    set_main_personal_profile,
     restore_local_backup,
     store_supporting_attachment_upload,
     upsert_court_email,
@@ -103,10 +121,24 @@ def create_app(**path_overrides: Any) -> FastAPI:
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/reference/destinations/preview")
+    async def api_reference_destination_preview(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return preview_known_destination_upsert(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/reference/court-emails")
     async def api_reference_court_email(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return upsert_court_email(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/reference/court-emails/preview")
+    async def api_reference_court_email_preview(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return preview_court_email_upsert(payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -141,6 +173,55 @@ def create_app(**path_overrides: Any) -> FastAPI:
     @app.get("/api/ai/status")
     async def api_ai_status() -> dict[str, Any]:
         return ai_status_payload(paths.ai_config)
+
+    @app.get("/api/profiles/summary")
+    async def api_profiles_summary() -> dict[str, Any]:
+        try:
+            return personal_profiles_summary(paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/profiles/new")
+    async def api_profiles_new() -> dict[str, Any]:
+        try:
+            return new_personal_profile(paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/profiles/save")
+    async def api_profiles_save(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return save_personal_profile(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/profiles/set-main")
+    async def api_profiles_set_main(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return set_main_personal_profile(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/profiles/delete")
+    async def api_profiles_delete(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return delete_personal_profile(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/profiles/import-legalpdf-preview")
+    async def api_profiles_import_legalpdf_preview(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return preview_legalpdf_personal_profile_import(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/profiles/import-legalpdf")
+    async def api_profiles_import_legalpdf(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return apply_legalpdf_personal_profile_import(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/diagnostics/status")
     async def api_diagnostics_status() -> dict[str, Any]:
@@ -184,6 +265,75 @@ def create_app(**path_overrides: Any) -> FastAPI:
             return google_photos_import_selected(payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/gmail/status")
+    async def api_gmail_status() -> dict[str, Any]:
+        return gmail_api_status(paths)
+
+    @app.post("/api/gmail/config")
+    async def api_gmail_config_save(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return gmail_api_config_save(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/gmail/oauth/start")
+    async def api_gmail_oauth_start() -> dict[str, Any]:
+        try:
+            return gmail_api_oauth_start(paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/gmail/oauth/callback")
+    async def api_gmail_oauth_callback(code: str = "", state: str = "") -> dict[str, Any]:
+        try:
+            return gmail_api_oauth_callback(code=code, state=state, paths=paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/gmail/drafts/create")
+    async def api_gmail_drafts_create(payload: dict[str, Any]) -> Any:
+        try:
+            return create_and_record_gmail_api_draft(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "draft_only": True,
+                "send_allowed": False,
+            })
+
+    @app.post("/api/gmail/drafts/verify")
+    async def api_gmail_drafts_verify(payload: dict[str, Any]) -> Any:
+        try:
+            return gmail_api_draft_verify(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "gmail_api_action": "users.drafts.get",
+                "read_only": True,
+                "draft_only": True,
+                "send_allowed": False,
+                "write_allowed": False,
+                "managed_data_changed": False,
+                "local_records_changed": False,
+            })
+
+    @app.post("/api/gmail/manual-handoff")
+    async def api_gmail_manual_handoff(payload: dict[str, Any]) -> Any:
+        try:
+            return manual_handoff_packet(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "mode": "manual_handoff",
+                "draft_only": True,
+                "send_allowed": False,
+                "write_allowed": False,
+                "managed_data_changed": False,
+            })
 
     @app.get("/api/public-readiness")
     async def api_public_readiness() -> dict[str, Any]:
@@ -230,6 +380,10 @@ def create_app(**path_overrides: Any) -> FastAPI:
             return preview_legalpdf_import(payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/integration/adapter-contract")
+    async def api_integration_adapter_contract() -> dict[str, Any]:
+        return legalpdf_adapter_contract(paths)
 
     @app.post("/api/integration/import-report")
     async def api_integration_import_report(payload: dict[str, Any]) -> dict[str, Any]:
@@ -327,7 +481,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
     async def api_intake_from_profile(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             intake = build_profile_intake(payload, paths)
-            return {"status": "created", "intake": intake, "review": review_intake(intake, paths)}
+            return {"status": "created", "intake": intake, "review": review_intake_with_profile_evidence(intake, paths)}
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -336,7 +490,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
         intake = payload.get("intake", payload)
         if not isinstance(intake, dict):
             raise HTTPException(status_code=400, detail="Request must include an intake object.")
-        return review_intake(intake, paths)
+        return review_intake_with_profile_evidence(intake, paths)
 
     @app.post("/api/review/apply-answers")
     async def api_review_apply_answers(payload: dict[str, Any]) -> dict[str, Any]:
@@ -364,6 +518,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
         file: UploadFile = File(...),
         source_kind: str = Form(...),
         profile: str = Form(""),
+        personal_profile_id: str = Form(""),
         visible_text: str = Form(""),
         visible_metadata_text: str = Form(""),
         ai_recovery: str = Form("auto"),
@@ -376,6 +531,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 content=content,
                 source_kind=source_kind,
                 profile_name=profile,
+                personal_profile_id=personal_profile_id,
                 visible_text=visible_text or visible_metadata_text,
                 ai_recovery_mode=ai_recovery,
                 paths=paths,

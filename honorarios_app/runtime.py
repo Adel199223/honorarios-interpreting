@@ -37,6 +37,8 @@ def runtime_path_overrides(runtime_root: str | Path) -> dict[str, Path]:
         "integration_report_output_dir": root / "output" / "integration-reports",
         "ai_config": root / "config" / "ai.local.json",
         "google_photos_config": root / "config" / "google-photos.local.json",
+        "gmail_config": root / "config" / "gmail.local.json",
+        "personal_profiles": root / "config" / "profiles.local.json",
     }
 
 
@@ -57,6 +59,29 @@ def synthetic_profile() -> dict[str, Any]:
         "default_closing_phrase": "Pede deferimento,",
         "signature_label": "O Requerente,",
         "signature_name": "Example Interpreter",
+    }
+
+
+def synthetic_personal_profiles() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "primary_profile_id": "primary",
+        "profiles": [{
+            "id": "primary",
+            "first_name": "Example",
+            "last_name": "Interpreter",
+            "document_name_override": "Example Interpreter",
+            "email": "interpreter@example.test",
+            "phone_number": "",
+            "postal_address": "Example Street 1, 1000-000 Example City",
+            "iban": "EXAMPLE0000000000000000000",
+            "iva_text": "23%",
+            "irs_text": "Sem retenção",
+            "travel_origin_label": "Example City",
+            "travel_distances_by_city": {
+                "Example City": 12
+            },
+        }],
     }
 
 
@@ -158,6 +183,7 @@ def create_synthetic_runtime(runtime_root: str | Path, *, seed_active_draft: boo
     root.mkdir(parents=True, exist_ok=True)
 
     _write_json(paths["profile"], synthetic_profile())
+    _write_json(paths["personal_profiles"], synthetic_personal_profiles())
     _write_json(paths["email_config"], synthetic_email_config())
     _write_json(paths["service_profiles"], synthetic_service_profiles())
     _write_json(paths["court_emails"], synthetic_court_emails())
@@ -166,6 +192,11 @@ def create_synthetic_runtime(runtime_root: str | Path, *, seed_active_draft: boo
     _write_json(paths["ai_config"], {"model": "gpt-5.4-mini"})
     _write_json(paths["google_photos_config"], {
         "notes": "Synthetic isolated runtime. Configure real credentials only in private local files.",
+    })
+    _write_json(paths["gmail_config"], {
+        "notes": "Synthetic isolated runtime. Configure real Gmail OAuth credentials only in private local files.",
+        "redirect_uri": "http://127.0.0.1:8766/api/gmail/oauth/callback",
+        "token_path": str(root / "config" / "gmail-token.local.json"),
     })
 
     duplicate_records: list[dict[str, Any]] = []

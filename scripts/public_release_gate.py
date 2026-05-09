@@ -56,6 +56,7 @@ PRIVATE_PATTERNS = [
     ("private_user_path", re.compile(r"C:[\\/]+Users[\\/]+FA507[^\s\"'`<>]+", re.IGNORECASE)),
     ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b")),
     ("google_client_secret", re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{10,}\b")),
+    ("google_access_token", re.compile(r"\bya29\.[A-Za-z0-9_\-\.]+\b")),
 ]
 
 

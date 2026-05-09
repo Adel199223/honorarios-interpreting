@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,21 +52,34 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "LegalPDF Integration Preview",
             "Build integration checklist",
             "Build adapter import plan",
+            "LegalPDF Adapter Contract",
             "LegalPDF Apply History",
             "LegalPDF Restore Plan",
             "Refresh apply history",
+            "Restore Confirmation Phrase",
+            "RESTORE LOCAL HONORARIOS BACKUP",
+            "Restore Reason",
             "Local Diagnostics",
             "Source upload smoke",
             "Supporting attachment smoke",
             "Copy isolated attachment smoke command",
+            "Copy advanced Gmail API smoke command",
             "Copy Browser/IAB upload smoke command",
             "Copy Browser/IAB attachment smoke command",
+            "Copy Browser/IAB Recent Work smoke command",
+            "Preview destination diff",
+            "Preview guarded destination",
+            "Preview court-email diff",
+            "Preview guarded court email",
+            "Gmail Draft API",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, page)
         self.assertNotIn("_send_email", page)
         self.assertNotIn("_send_draft", page)
+        self.assertNotIn("messages.send", page)
+        self.assertNotIn("drafts.send", page)
 
     def test_diagnostics_status_lists_safe_smoke_commands(self):
         client = self.make_client()
@@ -80,12 +94,21 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("source_upload_smoke", keys)
         self.assertIn("supporting_attachment_smoke", keys)
         self.assertIn("isolated_supporting_attachment_smoke", keys)
+        self.assertIn("isolated_gmail_api_smoke", keys)
         self.assertIn("browser_iab_upload_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_smoke", keys)
+        self.assertIn("browser_iab_profile_proposal_smoke", keys)
+        self.assertIn("browser_iab_recent_work_lifecycle_smoke", keys)
+        self.assertIn("browser_iab_manual_handoff_stale_smoke", keys)
+        self.assertIn("browser_iab_gmail_api_smoke", keys)
         isolated_attachment = next(check for check in data["checks"] if check["key"] == "isolated_supporting_attachment_smoke")
         self.assertIn("scripts/isolated_app_smoke.py", isolated_attachment["command_template"])
         self.assertIn("--supporting-attachment-checks", isolated_attachment["command_template"])
         self.assertEqual(isolated_attachment["writes"], "temporary synthetic runtime only")
+        isolated_gmail = next(check for check in data["checks"] if check["key"] == "isolated_gmail_api_smoke")
+        self.assertIn("--gmail-api-checks", isolated_gmail["command_template"])
+        self.assertIn("fake Gmail", isolated_gmail["description"])
+        self.assertEqual(isolated_gmail["writes"], "temporary synthetic runtime only")
         browser_upload = next(check for check in data["checks"] if check["key"] == "browser_iab_upload_smoke")
         self.assertIn("--browser-upload-photo", browser_upload["command_template"])
         self.assertIn("--browser-upload-pdf", browser_upload["command_template"])
@@ -93,6 +116,21 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         browser_supporting = next(check for check in data["checks"] if check["key"] == "browser_iab_supporting_attachment_smoke")
         self.assertIn("--browser-upload-supporting-attachment", browser_supporting["command_template"])
         self.assertEqual(browser_supporting["writes"], "synthetic supporting-attachment artifact only")
+        browser_profile_proposal = next(check for check in data["checks"] if check["key"] == "browser_iab_profile_proposal_smoke")
+        self.assertIn("--browser-profile-proposal", browser_profile_proposal["command_template"])
+        self.assertEqual(browser_profile_proposal["writes"], "none")
+        browser_recent_work = next(check for check in data["checks"] if check["key"] == "browser_iab_recent_work_lifecycle_smoke")
+        self.assertIn("--browser-recent-work-lifecycle", browser_recent_work["command_template"])
+        self.assertIn("Recent Work", browser_recent_work["description"])
+        self.assertEqual(browser_recent_work["writes"], "temporary synthetic runtime only")
+        browser_manual_handoff_stale = next(check for check in data["checks"] if check["key"] == "browser_iab_manual_handoff_stale_smoke")
+        self.assertIn("--browser-manual-handoff-stale", browser_manual_handoff_stale["command_template"])
+        self.assertIn("Manual Draft Handoff", browser_manual_handoff_stale["description"])
+        self.assertEqual(browser_manual_handoff_stale["writes"], "temporary synthetic runtime only")
+        browser_gmail_api = next(check for check in data["checks"] if check["key"] == "browser_iab_gmail_api_smoke")
+        self.assertIn("--browser-gmail-api-create", browser_gmail_api["command_template"])
+        self.assertIn("fake Gmail", browser_gmail_api["description"])
+        self.assertEqual(browser_gmail_api["writes"], "temporary synthetic runtime only")
         dumped = json.dumps(data, sort_keys=True)
         self.assertNotIn("C:\\Users\\FA507", dumped)
         self.assertNotIn("_send_email", dumped)
@@ -126,6 +164,93 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         dumped = json.dumps(data, sort_keys=True).lower()
         self.assertNotIn("gho_", dumped)
         self.assertNotIn("sk-", dumped)
+
+    def test_gmail_status_is_secret_free_and_draft_only(self):
+        client = self.make_client()
+        response = client.get("/api/gmail/status")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["gmail_api_action"], "users.drafts.create")
+        self.assertTrue(data["draft_only"])
+        self.assertFalse(data["send_allowed"])
+        for raw_secret_key in [
+            "client_secret",
+            "access_token",
+            "refresh_token",
+            "authorization",
+            "token",
+        ]:
+            self.assertNotIn(raw_secret_key, data)
+
+    def test_fake_gmail_draft_create_records_synthetic_duplicate_only(self):
+        runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime.cleanup)
+        root = Path(runtime.name)
+        duplicate_index = root / "duplicate-index.json"
+        draft_log = root / "gmail-draft-log.json"
+        profile_change_log = root / "profile-change-log.json"
+        duplicate_index.write_text("[]", encoding="utf-8")
+        draft_log.write_text("[]", encoding="utf-8")
+        profile_change_log.write_text("[]", encoding="utf-8")
+        pdf = root / "synthetic.pdf"
+        pdf.write_bytes(b"%PDF-1.4\nsynthetic")
+        payload = {
+            "payload_schema_version": 1,
+            "gmail_tool": "_create_draft",
+            "case_number": "999/26.0SMOKE",
+            "service_date": "2026-05-04",
+            "to": "court@example.test",
+            "subject": "Requerimento de honorários",
+            "body": "Bom dia,",
+            "attachment_files": [str(pdf)],
+            "attachment_basenames": ["synthetic.pdf"],
+            "attachment_sha256": {},
+            "gmail_create_draft_args": {
+                "to": "court@example.test",
+                "subject": "Requerimento de honorários",
+                "body": "Bom dia,",
+                "attachment_files": [str(pdf)],
+            },
+            "draft_only": True,
+            "send_allowed": False,
+            "gmail_create_draft_ready": True,
+            "gmail_create_draft_blocker": "",
+        }
+        payload_path = root / "synthetic.draft.json"
+        payload_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        previous = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
+        os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
+        try:
+            client = TestClient(create_app(
+                duplicate_index=duplicate_index,
+                draft_log=draft_log,
+                profile_change_log=profile_change_log,
+                output_dir=root / "pdf",
+                html_dir=root / "html",
+                draft_output_dir=root / "email-drafts",
+                manifest_dir=root / "manifests",
+                render_dir=root / "previews",
+                intake_output_dir=root / "intakes",
+                source_upload_dir=root / "source-uploads",
+                packet_output_dir=root / "packets",
+                backup_output_dir=root / "backups",
+                integration_report_output_dir=root / "integration-reports",
+                gmail_config=root / "gmail.local.json",
+            ))
+            response = client.post("/api/gmail/drafts/create", json={
+                "payload": str(payload_path),
+                "gmail_handoff_reviewed": True,
+            })
+        finally:
+            if previous is None:
+                os.environ.pop("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE", None)
+            else:
+                os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = previous
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertTrue(data["confirmation"]["fake_mode"])
+        self.assertEqual(data["confirmation"]["recorded_duplicate_count"], 1)
+        self.assertEqual(json.loads(duplicate_index.read_text(encoding="utf-8"))[0]["status"], "drafted")
 
     def test_browser_js_keeps_legalpdf_restore_controls_guarded(self):
         root = Path(__file__).resolve().parents[1]
@@ -172,6 +297,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_pdf_upload_evidence",
             "browser_supporting_attachment_upload_evidence",
             "browser_record_helper",
+            "browser_profile_proposal",
+            "browser_recent_work_lifecycle",
+            "browser_batch_stale_gating",
+            "browser_legalpdf_import_gates",
+            "data-use-profile-proposal",
+            "#preview-profile-change",
             "#gmail-response-raw",
             "#autofill-record-from-prepared",
             "#record_draft_id",
@@ -304,7 +435,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         checklist = client.post("/api/integration/checklist", json=payload)
         plan = client.post("/api/integration/import-plan", json=payload)
         history = client.get("/api/integration/apply-history")
-        for response in [preview, report, checklist, plan, history]:
+        contract = client.get("/api/integration/adapter-contract")
+        for response in [preview, report, checklist, plan, history, contract]:
             self.assertEqual(response.status_code, 200, response.text)
             data = response.json()
             self.assertFalse(data["send_allowed"])
@@ -318,6 +450,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(history.json()["write_allowed"])
         self.assertFalse(history.json()["managed_data_changed"])
         self.assertEqual(history.json()["report_count"], 0)
+        self.assertEqual(contract.json()["recommended_gmail_mode"], "manual_handoff")
+        self.assertFalse(contract.json()["write_allowed"])
+        self.assertFalse(contract.json()["legalpdf_write_allowed"])
+        self.assertFalse(contract.json()["managed_data_changed"])
         blocked_detail = client.get("/api/integration/apply-detail", params={"report_id": "../private"})
         self.assertEqual(blocked_detail.status_code, 400)
         self.assertFalse(blocked_detail.json()["send_allowed"])

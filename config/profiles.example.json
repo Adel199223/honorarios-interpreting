@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "primary_profile_id": "primary",
+  "profiles": [
+    {
+      "id": "primary",
+      "first_name": "Example",
+      "last_name": "Interpreter",
+      "document_name_override": "Example Interpreter",
+      "email": "interpreter@example.test",
+      "phone_number": "",
+      "postal_address": "Example Street 1, 1000-000 Example City",
+      "iban": "EXAMPLE_IBAN",
+      "iva_text": "23%",
+      "irs_text": "Sem retenção",
+      "travel_origin_label": "Example City",
+      "travel_distances_by_city": {
+        "Example City": 12
+      }
+    }
+  ]
+}

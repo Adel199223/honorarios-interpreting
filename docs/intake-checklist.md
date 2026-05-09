@@ -22,6 +22,8 @@ Set it aside if it looks like translation:
 
 ## Required Fields
 
+First choose the personal profile to use, or leave the browser app on the main personal profile. Personal profiles supply the applicant name, postal address, IBAN, IVA/IRS wording, travel origin, and saved city distances. They are separate from service profiles.
+
 For recurring service patterns, create the first draft of the intake from `data/service-profiles.json`:
 
 ```powershell

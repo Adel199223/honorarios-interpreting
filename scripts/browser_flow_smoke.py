@@ -103,6 +103,13 @@ class PlaywrightBrowserDriver:
         if text not in content:
             raise RuntimeError(f"Expected {selector} to contain {text!r}; got {content!r}")
 
+    def expect_selector_attribute_contains(self, selector: str, attribute: str, value: str) -> None:
+        locator = self._page.locator(selector)
+        locator.wait_for(state="attached", timeout=self.timeout_ms)
+        actual = locator.get_attribute(attribute, timeout=self.timeout_ms) or ""
+        if value not in actual:
+            raise RuntimeError(f"Expected {selector} {attribute} to contain {value!r}; got {actual!r}")
+
     def expect_selector_value(self, selector: str, value: str) -> None:
         locator = self._page.locator(selector)
         locator.wait_for(state="visible", timeout=self.timeout_ms)
@@ -216,6 +223,7 @@ def run_browser_flow_smoke(
     prepare_replacement: bool = False,
     prepare_packet: bool = False,
     record_helper: bool = False,
+    manual_handoff_stale: bool = False,
     headless: bool = True,
     timeout_ms: int = 10000,
 ) -> dict[str, Any]:
@@ -260,7 +268,8 @@ def run_browser_flow_smoke(
             driver.goto(base + "/"),
             driver.expect_text("Start Interpretation Request"),
             driver.expect_text("Review Case Details"),
-            driver.expect_text("Next Safe Action"),
+            driver.expect_text("Suggested Next Step"),
+            driver.expect_text("Suggested Next Step"),
             driver.expect_text("Draft-only Gmail"),
         )):
             return _report(base, checks)
@@ -271,7 +280,8 @@ def run_browser_flow_smoke(
             driver.fill("#case_number", case_number)
             driver.fill("#service_date", "" if answer_questions else service_date)
             driver.click("#review-intake")
-            driver.expect_selector_text("#drawer-next-safe-action", "Next Safe Action")
+            driver.expect_selector_text("#drawer-next-safe-action", "Suggested Next Step")
+            driver.expect_selector_text("#drawer-next-safe-action", "not a separate task")
             if answer_questions:
                 driver.expect_text("Answer the numbered questions")
                 driver.expect_selector_visible("#numbered-answers")
@@ -411,6 +421,23 @@ def run_browser_flow_smoke(
             )):
                 return _report(base, checks)
 
+        if manual_handoff_stale:
+            if not prepare_replacement and not prepare_packet:
+                checks.append(_check(
+                    "browser_manual_handoff_stale",
+                    False,
+                    "Manual handoff stale smoke requires a prepared replacement or packet payload.",
+                ))
+                return _report(base, checks)
+            if not _safe_step(checks, "browser_manual_handoff_stale", "Browser cleared the manual handoff packet and kept record helpers gated after intake changes.", lambda: (
+                driver.click("#build-manual-handoff"),
+                driver.expect_selector_text("#manual-handoff-packet", "Manual handoff packet ready"),
+                driver.fill("#source_text", "Manual handoff stale marker"),
+                driver.expect_selector_attribute_contains("#manual-handoff-packet", "class", "hidden"),
+                driver.expect_selector_text("#prepare-results", "intake form changed"),
+            )):
+                return _report(base, checks)
+
         if not _safe_step(checks, "browser_workspace_reset", "Browser reset the synthetic workspace after smoke checks.", lambda: (
             driver.click("#reset-workspace"),
             driver.expect_selector_text("#batch-count-chip", "0 queued"),
@@ -454,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prepare-replacement", action="store_true", help="With --correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still blocks record/status writes.")
     parser.add_argument("--prepare-packet", action="store_true", help="Also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--record-helper", action="store_true", help="After packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
+    parser.add_argument("--manual-handoff-stale", action="store_true", help="After a prepared payload, build the Manual Draft Handoff packet, then change intake text and verify stale gates clear it.")
     parser.add_argument("--headed", action="store_true")
     parser.add_argument("--timeout-ms", type=int, default=10000)
     parser.add_argument("--json", action="store_true")
@@ -475,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
         prepare_replacement=args.prepare_replacement,
         prepare_packet=args.prepare_packet,
         record_helper=args.record_helper,
+        manual_handoff_stale=args.manual_handoff_stale,
         headless=not args.headed,
         timeout_ms=args.timeout_ms,
     )

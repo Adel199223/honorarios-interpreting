@@ -9,6 +9,7 @@ Create a public GitHub repo only after this checklist is complete.
 - Run `python scripts/public_release_gate.py --json` on the exact candidate tree and require `public_ready: true`.
 - In the browser app, use References -> Public GitHub Readiness to run the current-workspace gate and Build sanitized candidate to create a candidate tree.
 - Remove or ignore real `config/profile.json`.
+- Remove or ignore real `config/profiles.local.json`.
 - Remove or ignore real `config/email.json`.
 - Remove or ignore `data/gmail-draft-log.json`, `data/duplicate-index.json`, and `data/precedents.json`.
 - Remove or ignore all `output/` and `tmp/` artifacts.
@@ -24,7 +25,7 @@ Create a public GitHub repo only after this checklist is complete.
 - Confirm the generated public smoke suite covers the LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF integration preview/report/checklist/import-plan/apply-history/apply-detail/apply-restore-plan APIs, guarded LegalPDF restore-control copy, confirmation-blocked LegalPDF apply and restore behavior, injected browser click-through smoke, injected optional interaction smoke, and the privacy gate.
 - Confirm the browser app starts with `python -m honorarios_app.web --host 127.0.0.1 --port 8765`.
 - With the app running, confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json` returns `status: ready`.
-- In the browser app, open References -> Local Diagnostics and confirm the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, Browser/IAB upload smoke, and Browser/IAB attachment smoke commands are visible and copyable. This panel must remain read-only and Gmail-free.
+- In the browser app, open References -> Local Diagnostics and confirm the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, isolated fake-Gmail Draft API smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB Manual Draft Handoff stale smoke, and Browser/IAB fake Gmail API smoke commands are visible and copyable. This panel must remain read-only and must not contact real Gmail.
 - Confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --source-upload-checks --json` returns `status: ready`; this API-only path verifies synthetic photo/PDF Source Evidence and Review Attention without browser tooling, PDF preparation, draft recording, or Gmail calls.
 - Confirm `python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --supporting-attachment-checks --json` returns `status: ready`; this API-only path verifies synthetic declaration/proof upload evidence without preparing PDFs, creating draft payloads, recording drafts, or calling Gmail.
 - Confirm `python scripts/isolated_app_smoke.py --supporting-attachment-checks --json` returns `status: ready`; this runs the same declaration/proof attachment evidence check inside a temporary synthetic runtime so private source-upload folders remain untouched.

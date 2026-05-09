@@ -33,10 +33,13 @@ The app supports the main workflow:
 - import a selected/downloaded Google Photos image through the local photo path, with pasted visible filename/date metadata
 - connect Google Photos OAuth Picker when private local credentials are configured, choose one photo, and import it through the same review pipeline
 - use OpenAI OCR/autofill when `OPENAI_API_KEY` or ignored `config/ai.local.json` is configured
+- use Manual Draft Handoff as the always-available safe fallback, with or without Gmail OAuth
+- optionally connect a local Gmail Draft API OAuth client when ignored `config/gmail.local.json` is configured
+- maintain personal Profiles for applicant, address, IBAN, IVA/IRS wording, travel origin, and interpretation distances
 - auto-detect the best service profile from local evidence when you upload a source, while still showing the profile decision for review
 - propose a guarded reusable service profile when a new upload looks like a recurring pattern that does not match existing profiles
 - create an intake from a known service profile
-- show a `Next Safe Action` card that points to the safest next step after each review or preparation result
+- show a `Suggested Next Step` card that points to the safest next step after each review or preparation result
 - review the Portuguese draft text before generating the PDF
 - queue multiple reviewed requests, run a non-writing batch preflight, and prepare a batch package only after the queue is clean
 - enable Packet mode for a batch when several requerimentos should become one combined PDF attachment
@@ -44,15 +47,19 @@ The app supports the main workflow:
 - apply short numbered answers directly in the review drawer, then re-run the same review without rebuilding the intake manually
 - block translation/word-count requests
 - warn about duplicate `sent` or `drafted` case/date records
-- generate the PDF and Gmail `_create_draft` payload
+- generate the PDF and Gmail draft payload
+- copy exact `_create_draft` args and record returned Gmail draft IDs through Manual Draft Handoff after PDF preview and checklist review
+- optionally create a Gmail draft directly through Gmail `users.drafts.create` after OAuth is connected, PDF preview is current, exact args are reviewed, and the Gmail handoff checklist is ticked
+- verify a created or recorded Gmail draft read-only through Gmail `users.drafts.get` without changing Gmail or local logs
 - clear stale PDF previews, draft payload paths, Gmail record-helper IDs, and active-draft state whenever the source, review, reset action, or intake form changes after preparation
-- record returned Gmail draft IDs so duplicates are protected immediately
+- record returned Gmail draft IDs through the manual handoff helper, or automatically when the optional in-app Gmail Draft API path succeeds, so duplicates are protected immediately
 - parse a pasted Gmail `_create_draft` response to fill the draft/message/thread ID fields locally
 - autofill the Record Gmail Draft form from the prepared packet or individual payload while preserving pasted Gmail draft/message/thread IDs
 - require a visible Gmail handoff checklist before the one-click `Record parsed response + prepared payload` helper can write to the local draft log
 - record the parsed Gmail response and latest prepared payload in one local-only step after the draft is created externally
 - handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
 - filter Recent Work by lifecycle state (`active`, `drafted`, `sent`, `superseded`, `trashed`, `not_found`) to separate current duplicate blockers from audit history
+- use Recent Work row actions to verify a Gmail draft read-only or mark a draft as manually sent after you send it yourself in Gmail
 - reset the current browser workspace when a test or old review leaves synthetic fields, prepared payloads, or queued requests on screen
 - maintain known destinations/kilometers and court email aliases from the References screen
 - maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
@@ -61,9 +68,20 @@ The app supports the main workflow:
 - build a read-only LegalPDF adapter import plan that flags destructive profile or recipient changes
 - apply a reviewed, non-blocked LegalPDF import plan only after explicit confirmation, with a pre-apply backup and private apply report
 
+There are now two different profile types:
+
+- **Personal profiles** live in ignored local data (`config/profiles.local.json`) and provide the applicant name, signature name, address, IBAN, IVA/IRS wording, travel origin, and personal travel distances used by the generator. The selected personal profile is adapted back into the legacy `config/profile.json` contract so existing CLI scripts keep working.
+- **Service profiles** live in `data/service-profiles.json` and describe recurring service patterns such as PJ/GNR Ferreira, GNR Serpa, or Tribunal do Trabalho de Beja. They provide payment entity, recipient, service place wording, transport destination, and profile-specific defaults.
+
 Service profile edits are guarded because they affect legal wording, payment entities, and recipient logic. The browser app validates the profile, checks recipient consistency against the court email directory, shows a sample draft preview, and records a local profile-change log after saving. Use the preview button when you want to inspect the diff without writing anything. Profile rollbacks must also be previewed first; they are blocked if the current profile no longer matches the selected change log entry.
 
-The browser app does not send email. It prepares connector-ready Gmail draft arguments only.
+The browser app does not send email. **Manual Draft Handoff** is always available: prepare and preview the PDF, click `Build handoff packet`, copy the generated draft-only `_create_draft` prompt, then paste the returned draft/message/thread IDs back into the app for local recording. Missing Gmail OAuth is normal and non-blocking, and connected OAuth only adds an optional direct draft-creation path.
+
+The optional direct Gmail API path is available when you want in-app draft creation. To configure it, either paste your Google OAuth desktop client ID/secret into the collapsed `Gmail Draft API (optional direct draft creation)` card in the app or copy `config/gmail.example.json` to ignored `config/gmail.local.json` and fill it manually. The app saves the secret only in the ignored local config, never returns it from status endpoints, stores OAuth tokens separately in ignored `config/gmail-token.local.json`, and calls only Gmail `users.drafts.create` after review.
+
+Before the app calls Gmail, it reloads the prepared draft payload, validates attachment arrays and draft-only flags, and checks `data/duplicate-index.json` plus `data/gmail-draft-log.json` for every request represented in the payload. A drafted or sent blocker stops draft creation before any Gmail network call. Replacement drafts are allowed only with correction mode, `supersedes`, and a short correction reason.
+
+After a draft is created or manually recorded, the drawer and Recent Work rows can verify that draft ID with Gmail `users.drafts.get`. This is read-only confirmation: it reports whether Gmail still has the draft and, when available, the message/thread IDs plus To/Subject metadata. It never writes duplicate records, draft logs, Gmail messages, or local reference data. Recent Work can also mark a draft as `sent` after you manually send it in Gmail; that is local bookkeeping only and updates the duplicate index with `sent_date`.
 
 To smoke-check the running local app without creating PDFs or Gmail drafts:
 
@@ -71,7 +89,7 @@ To smoke-check the running local app without creating PDFs or Gmail drafts:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
-The smoke runner checks the LegalPDF-style workflow landmarks, the `Next Safe Action` guidance surface, draft-only Gmail contract, Google Photos/AI status endpoints, local diagnostics status, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email` or `_send_draft` appears on the homepage.
+The smoke runner checks the LegalPDF-style workflow landmarks, the `Suggested Next Step` guidance surface, draft-only Gmail contract, Manual Draft Handoff status, Gmail Draft API status, Google Photos/AI status endpoints, local diagnostics status, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email`, `_send_draft`, `messages.send`, or `drafts.send` appears on the homepage.
 
 For a real browser review-flow click-through, use the opt-in browser smoke:
 
@@ -79,7 +97,7 @@ For a real browser review-flow click-through, use the opt-in browser smoke:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next Safe Action` card, adds it to the batch queue, and runs the non-writing `Check batch preflight` action. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
+This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Suggested Next Step` safety card, adds it to the batch queue, and runs the non-writing `Check batch preflight` action. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
 
 Browser smoke checks now reset the workspace at the end of a successful run, so synthetic values such as `999/26.0SMOKE` and queued test requests do not linger in the open app tab. Python browser smoke clicks `Reset workspace`; the Browser/IAB smoke verifies that control and then reloads the local app as a safer adapter-compatible reset. You can also click `Reset workspace` yourself in the left sidebar when you want a clean New Job surface without changing any real duplicate records, draft logs, generated PDFs, or Gmail state.
 
@@ -93,7 +111,31 @@ The shell command returns a Node REPL handoff cell because raw subprocesses shou
 
 Add `--browser-upload-photo --browser-upload-pdf` to the same command when you want Browser/IAB to try the source upload-evidence path with disposable synthetic files. Add `--browser-upload-supporting-attachment` when you want it to verify the `Supporting proof / declarations` UI path as well. If the in-app Browser adapter cannot set local file inputs, the smoke reports a clean tooling blocker instead of touching real private files.
 
+To verify the unknown-pattern profile proposal path without saving reference data, use:
+
+```powershell
+python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-profile-proposal --json
+```
+
+That Browser/IAB check enters a synthetic unfamiliar GNR/MP pattern, verifies `Profile proposal` in Source Evidence, previews the proposed Service profile in the guarded editor, checks LegalPDF import apply controls remain phrase/reason gated, and then resets the browser workspace. It is UI-only and Gmail-free.
+
+To verify the Recent Work lifecycle controls without touching real draft logs or Gmail, use the isolated Browser/IAB lifecycle smoke:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recent-work-lifecycle --json
+```
+
+That check seeds a disposable active draft, opens Recent Work, verifies the status filters, sent-date field, `Verify draft exists`, and `Mark manually sent` controls, and does not click Gmail verification or local status-write actions.
+
 When a prepared payload already exists in the smoke flow, add `--browser-record-helper` to verify the safe post-Gmail handoff: the browser parses fake `_create_draft` IDs and autofills the local record form, but it does not click `Record parsed response + prepared payload`, `Record draft`, or any Gmail action.
+
+To verify the Manual Draft Handoff stale-state guard after a prepared replacement payload, use the isolated Browser/IAB handoff smoke:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-manual-handoff-stale --json
+```
+
+That check builds the copy-ready handoff packet in a disposable runtime, edits the intake source text, and confirms the packet plus record helpers are cleared before anything can be recorded. It never calls Gmail.
 
 To verify upload recovery and `Review Attention` without any browser driver or file-picker support, use the API-level source upload smoke:
 
@@ -115,7 +157,21 @@ For the same supporting-proof check in a temporary runtime that leaves the priva
 python scripts/isolated_app_smoke.py --supporting-attachment-checks --json
 ```
 
-The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, Browser/IAB review smoke, Browser/IAB upload smoke, and Browser/IAB attachment smoke commands for PowerShell. The browser only copies commands; it does not run shell commands or call Gmail.
+The direct Gmail API smoke is isolated safety coverage. To exercise Gmail draft creation without touching real Gmail or private runtime data, use the isolated fake-Gmail smoke:
+
+```powershell
+python scripts/isolated_app_smoke.py --gmail-api-checks --json
+```
+
+That command enables `HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1` only for the temporary synthetic runtime, prepares a disposable payload, calls the in-app Gmail Draft API path, records deterministic fake draft/message/thread IDs, and verifies duplicate-index protection. It never contacts Google.
+
+To exercise the connected-Gmail browser UI without touching real Gmail, use the isolated Browser/IAB fake-Gmail smoke. It prepares a synthetic payload, clicks `Create Gmail Draft`, then clicks `Verify created draft`; both actions run only against the temporary fake Gmail runtime.
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-gmail-api-create --json
+```
+
+The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, isolated fake-Gmail API smoke, Browser/IAB review smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB handoff stale smoke, and Browser/IAB fake Gmail API smoke commands for PowerShell. The browser only copies commands; it does not run shell commands or call Gmail.
 
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 
@@ -163,13 +219,15 @@ This exercises profile intake creation, active-draft checking, and packet-mode P
 
 ## Local Backups
 
-Use References -> Local Backup before moving the app, making large reference edits, or preparing future LegalPDF integration work. `Export backup` writes a private JSON file under `output/backups/` and also shows the JSON in the app for copying. The backup includes service profiles, court emails, known destinations, duplicate index records, Gmail draft log records, and profile-change history.
+Use References -> Local Backup before moving the app, making large reference edits, editing personal Profiles, or preparing future LegalPDF integration work. `Export backup` writes a private JSON file under `output/backups/` and also shows the JSON in the app for copying. The backup includes personal profiles, service profiles, court emails, known destinations, duplicate index records, Gmail draft log records, and profile-change history.
 
-The app now shows a `Latest backup` status card in References and warns when no recent backup exists before high-risk local edits such as saving profiles, court emails, destinations, profile rollbacks, or restoring backup data. A backup is considered fresh for 24 hours; the warning is advisory, but it is meant to catch exactly the kind of manual reference changes that would be painful to reconstruct.
+The app now shows a `Latest backup` status card in References and warns when no recent backup exists before high-risk local edits such as saving personal profiles, saving service profiles, court emails, destinations, profile rollbacks, or restoring backup data. A backup is considered fresh for 24 hours; the warning is advisory, but it is meant to catch exactly the kind of manual reference changes that would be painful to reconstruct.
 
-Restores are preview-first. Paste backup JSON, click `Preview backup import`, review dataset counts, check the restore confirmation box, then click `Restore backup after preview`. The app writes an automatic pre-restore backup before replacing any local JSON file. These backup files contain private case/draft history and must not be published.
+Restores are preview-first. Paste backup JSON, click `Preview backup import`, review dataset counts, check the restore confirmation box, type the exact phrase `RESTORE LOCAL HONORARIOS BACKUP`, add a short restore reason, then click `Restore backup after preview`. The app writes an automatic pre-restore backup before replacing any local JSON file. These backup files contain private case/draft history and must not be published.
 
 For future LegalPDF reintegration work, use References -> LegalPDF Integration Preview instead of the restore controls. It accepts a backup-like JSON and optional profile mappings such as `legalpdf_pj_beja = pj_gnr_beja`, then shows profile and court-email create/update/unchanged differences with `write_allowed: false`. You can also export a private Markdown/JSON preview report under `output/integration-reports/`, build a read-only integration checklist, or build a read-only adapter import plan that marks destructive profile updates and recipient drift as blockers.
+
+The future LegalPDF caller boundary is documented in `docs/legalpdf-adapter-contract.md` and exposed as `GET /api/integration/adapter-contract`. That contract is read-only and secret-free: it defines the safe sequence from source recovery and review through non-writing preflight, PDF/payload preparation, Manual Draft Handoff, and local draft recording. It explicitly keeps Manual Draft Handoff as the always-available Gmail boundary, while the Gmail Draft API remains an optional direct draft-creation path.
 
 The guarded apply button is available only for reviewed, non-blocked plans. It requires `confirm_apply=true`, the exact phrase `APPLY LEGALPDF IMPORT PLAN`, and an apply reason. It writes a pre-apply backup and private apply report, updates only this app's local reference files, never touches LegalPDF Translate, and never creates Gmail actions.
 
@@ -177,7 +235,7 @@ LegalPDF Apply History shows summary-only records of guarded applies, including 
 
 If a reviewed apply needs to be rolled back, the restore button requires `confirm_restore=true`, the exact phrase `RESTORE LEGALPDF APPLY BACKUP`, and a restore reason. The app writes a pre-restore backup first, restores or removes only the touched local profile/email records from the pre-apply backup, writes a private restore report, never touches LegalPDF Translate, and never creates Gmail actions.
 
-OpenAI recovery is evidence-only. It may extract visible text, case/date/place clues, court email, and translation indicators from photos or scanned documents, but the existing duplicate checks, date-conflict questions, profile defaults, PDF generator, and Gmail draft safety rules remain authoritative. The OpenAI request uses a strict Responses JSON Schema named `honorarios_source_recovery`, so OCR/autofill returns predictable fields instead of free-form prose. The prompt also includes the learned honorários patterns for PJ/GNR host buildings, Beringel/Beja payment separation, Tribunal do Trabalho de Beja, Gabinete Médico-Legal de Beja, and word-count translation set-asides, while still telling the model not to infer kilometers, recipients, IBAN, or payment defaults. The app reports the AI schema name, prompt version, fields found, fields not found, and a `Review Attention` summary in Source Evidence so weak recovery, date conflicts, set-asides, duplicates, missing questions, source warnings, profile fallback, and profile proposals are visible before any PDF step. Uploaded sources now default to `Auto-detect profile`: local deterministic rules score the recovered evidence, choose a high-confidence profile such as `pj_gnr_beja`, `gnr_serpa_judicial`, or `beja_trabalho`, and show the decision in Source Evidence. If you manually choose a profile, that choice is kept and any conflicting automatic suggestion is shown only as review evidence. When no known profile matches but the evidence includes a stable service place/payment pattern, Source Evidence can show a `Profile proposal`; click `Preview proposed profile` to load it into the guarded profile editor, then preview/save it there. For Google Photos-style screenshots or selected-photo imports, compact filenames such as `20260415_205459.jpg` are treated as visible photo metadata and surfaced as `photo_metadata_date`; crop/partial-image warnings stay visible in Source Evidence. For weak/scanned notification PDFs, the app renders the first pages to local PNG evidence with `pdftoppm` when available and gives those images to OpenAI recovery. The app exposes `/api/ai/status` to show whether OpenAI OCR is ready without revealing the API key. Store optional local settings in ignored `config/ai.local.json`:
+OpenAI recovery is evidence-only. It may extract visible text, case/date/place clues, court email, and translation indicators from photos or scanned documents, but the existing duplicate checks, date-conflict questions, profile defaults, PDF generator, and Gmail draft safety rules remain authoritative. The OpenAI request uses a strict Responses JSON Schema named `honorarios_source_recovery`, so OCR/autofill returns predictable fields instead of free-form prose. The prompt also includes the learned honorários patterns for PJ/GNR host buildings, Beringel/Beja payment separation, Tribunal do Trabalho de Beja, Gabinete Médico-Legal de Beja, and word-count translation set-asides, while still telling the model not to infer kilometers, recipients, IBAN, or payment defaults. The app reports the AI schema name, prompt version, fields found, fields not found, and a `Review Attention` summary in Source Evidence so weak recovery, date conflicts, set-asides, duplicates, missing questions, source warnings, profile fallback, and profile proposals are visible before any PDF step. Uploaded sources now default to `Auto-detect profile`: local deterministic rules score the recovered evidence, choose a high-confidence profile such as `pj_gnr_beja`, `gnr_serpa_judicial`, or `beja_trabalho`, and show the decision in Source Evidence. Blank/manual review uses the same evidence path when you paste source text, so known patterns can fill safe service-profile defaults and unknown recurring patterns can propose a guarded profile without writing reference data. If you manually choose a profile, that choice is kept and any conflicting automatic suggestion is shown only as review evidence. When no known profile matches but the evidence includes a stable service place/payment pattern, Source Evidence can show a `Profile proposal`; click `Preview proposed profile` to load it into the guarded profile editor, then preview/save it there. For Google Photos-style screenshots or selected-photo imports, compact filenames such as `20260415_205459.jpg` are treated as visible photo metadata and surfaced as `photo_metadata_date`; crop/partial-image warnings stay visible in Source Evidence. For weak/scanned notification PDFs, the app renders the first pages to local PNG evidence with `pdftoppm` when available and gives those images to OpenAI recovery. The app exposes `/api/ai/status` to show whether OpenAI OCR is ready without revealing the API key. Store optional local settings in ignored `config/ai.local.json`:
 
 ```json
 {
@@ -351,7 +409,7 @@ Use the short payload-based form whenever possible:
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --thread-id <thread-id>
 ```
 
-In the browser app, the Record Gmail Draft card can parse a pasted Gmail `_create_draft` response and fill the draft/message/thread ID fields locally. It can also fill the payload path and active status from the latest prepared packet or individual payload while preserving already pasted IDs. The lowest-friction path is: review the PDF preview and exact `_create_draft` args, tick the Gmail handoff checklist, create the draft with `_create_draft`, paste the returned connector response, then click `Record parsed response + prepared payload`. That parses the IDs, fills the latest packet or individual payload path, and records the draft locally without creating, sending, or modifying any Gmail message.
+In the browser app, the Manual Draft Handoff card can build a copy-ready prompt from the prepared payload. That packet includes the exact `_create_draft` args, attachment names, and attachment hashes, and it writes nothing locally. The Record Gmail Draft card can then parse a pasted Gmail `_create_draft` response and fill the draft/message/thread ID fields locally. The lowest-friction path is: review the PDF preview and exact `_create_draft` args, click `Build handoff packet`, copy the prompt into the draft-only Gmail connector, paste the returned connector response, tick the Gmail handoff checklist, then click `Record parsed response + prepared payload`. That parses the IDs, fills the latest packet or individual payload path, and records the draft locally without creating, sending, or modifying any Gmail message.
 
 The older explicit form still works:
 
@@ -367,6 +425,8 @@ When a draft is manually sent later, update the matching duplicate-index record 
 python scripts/record_gmail_draft.py --payload <payload-json> --draft-id <draft-id> --message-id <message-id> --status sent --sent-date <YYYY-MM-DD>
 ```
 
+In the browser app, you can do the same from **Recent Work**: choose the sent date, then click `Mark manually sent` on the matching active/drafted row. This does not contact Gmail; it only updates the local draft log and duplicate index after you have sent the message yourself in Gmail.
+
 For packet emails containing multiple honorários requests, store one duplicate-index record per underlying request, not just one record for the packet attachment.
 
 ## Stored Defaults
@@ -377,7 +437,7 @@ Reusable personal and payment details live in:
 
 Keep that file local. It contains payment details that should not be shared publicly.
 
-For future public GitHub publishing, keep real runtime files local and ignored: `config/profile.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, `data/profile-change-log.json`, `data/precedents.json`, `output/`, and `tmp/`. Publish only sanitized seed examples and synthetic tests.
+For future public GitHub publishing, keep real runtime files local and ignored: `config/profile.json`, `config/profiles.local.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, `data/profile-change-log.json`, `data/precedents.json`, `output/`, and `tmp/`. Publish only sanitized seed examples and synthetic tests.
 
 Public sanitized repository:
 

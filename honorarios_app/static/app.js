@@ -7,15 +7,22 @@ const state = {
   lastPrepared: null,
   aiStatus: null,
   googlePhotosStatus: null,
+  gmailStatus: null,
   googlePhotosPicker: null,
   diagnosticsStatus: null,
   draftLifecycle: null,
   lastProfileProposal: null,
   localBackupPreview: null,
   legalPdfImportPreview: null,
+  legalPdfPersonalProfileImportPreview: null,
   backupStatus: null,
   historyStatusFilter: "all",
   currentNextSafeAction: null,
+  currentPersonalProfile: null,
+  gmailCreateInFlight: false,
+  gmailCreateCompletedPayload: "",
+  lastGmailCreateConfirmation: null,
+  lastManualHandoff: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -36,9 +43,9 @@ function setStatus(status, message) {
 
   pill.textContent = normalized.replaceAll("_", " ");
   pill.className = "status-chip";
-  if (["ready", "prepared", "recorded"].includes(normalized)) {
+  if (["ready", "prepared", "recorded", "verified"].includes(normalized)) {
     pill.classList.add("ready");
-  } else if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked"].includes(normalized)) {
+  } else if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "reconciliation_mismatch"].includes(normalized)) {
     pill.classList.add("blocked");
   } else if (normalized === "error") {
     pill.classList.add("error");
@@ -63,7 +70,7 @@ function setCard(element, message, kind = "") {
 
 function statusChipClass(status) {
   if (["ready", "prepared", "recorded", "clear", "active", "drafted", "sent"].includes(status)) return "ready";
-  if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "stale", "superseded", "trashed", "not_found"].includes(status)) return "blocked";
+  if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "stale", "superseded", "trashed", "not_found", "reconciliation_mismatch"].includes(status)) return "blocked";
   if (status === "error") return "error";
   return "info";
 }
@@ -103,6 +110,14 @@ const SAFE_ACTION_GATES = {
     states: ["review_gmail_draft_args"],
     reason: "Prepare the PDF and Gmail draft payload before copying draft args.",
   },
+  "build-manual-handoff": {
+    states: ["review_gmail_draft_args"],
+    reason: "Prepare the PDF and Gmail draft payload before building the manual handoff packet.",
+  },
+  "copy-manual-handoff-prompt": {
+    states: ["review_gmail_draft_args"],
+    reason: "Build the manual handoff packet before copying its prompt.",
+  },
   "autofill-record-from-prepared": {
     states: ["review_gmail_draft_args"],
     reason: "Prepare the PDF and Gmail draft payload before autofilling record values.",
@@ -110,6 +125,10 @@ const SAFE_ACTION_GATES = {
   "record-parsed-prepared-draft": {
     states: ["review_gmail_draft_args"],
     reason: "Prepare the payload, create the Gmail draft manually, then paste the Gmail response.",
+  },
+  "create-gmail-api-draft": {
+    states: ["review_gmail_draft_args"],
+    reason: "Prepare the payload, review the PDF preview and exact Gmail args, then create the Gmail draft.",
   },
   "record-draft": {
     states: ["review_gmail_draft_args"],
@@ -159,11 +178,42 @@ function syncActionGates(action = state.currentNextSafeAction) {
         && Boolean($("#gmail-response-raw")?.value.trim())
         && handoffReviewed;
     }
+    if (id === "build-manual-handoff") {
+      enabled = enabled && Boolean(preparedRecordTarget()?.draft_payload);
+    }
+    if (id === "copy-manual-handoff-prompt") {
+      enabled = enabled && Boolean(state.lastManualHandoff?.copyable_prompt);
+    }
+    if (id === "create-gmail-api-draft") {
+      const handoffReviewed = Boolean($("#gmail_handoff_reviewed")?.checked);
+      const connected = Boolean(state.gmailStatus?.connected);
+      const targetPayload = preparedRecordTarget()?.draft_payload || "";
+      if (!connected) {
+        blockedReason = "Gmail Draft API is optional and not connected. Use Manual Draft Handoff now, or connect Gmail API before using this button.";
+      } else if (!handoffReviewed) {
+        blockedReason = "Review the PDF preview and exact Gmail args before creating the Gmail draft.";
+      } else if (state.gmailCreateInFlight) {
+        blockedReason = "Gmail draft creation is already in progress.";
+      } else if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
+        blockedReason = "This prepared payload already created a Gmail draft. Change the request or prepare again before creating another.";
+      }
+      enabled = enabled
+        && handoffReviewed
+        && connected
+        && Boolean(targetPayload)
+        && !state.gmailCreateInFlight
+        && state.gmailCreateCompletedPayload !== targetPayload;
+    }
     if (id === "record-draft") {
+      const targetPayload = preparedRecordTarget()?.draft_payload || "";
+      if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
+        blockedReason = "This prepared payload was already recorded through Gmail Draft API. Change the request or prepare again before recording another draft.";
+      }
       enabled = enabled
         && Boolean($("#record_payload")?.value.trim())
         && Boolean($("#record_draft_id")?.value.trim())
-        && Boolean($("#record_message_id")?.value.trim());
+        && Boolean($("#record_message_id")?.value.trim())
+        && (!targetPayload || state.gmailCreateCompletedPayload !== targetPayload);
     }
     setActionGate(id, enabled, enabled ? actionDetail : blockedReason, actionState);
   });
@@ -172,6 +222,10 @@ function syncActionGates(action = state.currentNextSafeAction) {
 function clearPreparedArtifacts(reason = "stale prepared result") {
   state.lastPrepared = null;
   state.draftLifecycle = null;
+  state.gmailCreateInFlight = false;
+  state.gmailCreateCompletedPayload = "";
+  state.lastGmailCreateConfirmation = null;
+  state.lastManualHandoff = null;
   $("#prepare-results").innerHTML = "";
   $("#pdf-preview-panel").classList.add("hidden");
   $("#pdf-preview").innerHTML = "";
@@ -182,6 +236,17 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
   $("#record_supersedes").value = "";
   $("#gmail_handoff_reviewed").checked = false;
   $("#gmail-response-raw").value = "";
+  const gmailResult = $("#gmail-api-result");
+  if (gmailResult) {
+    gmailResult.className = "result-card compact-result hidden";
+    gmailResult.textContent = "";
+  }
+  const gmailVerifyResult = $("#gmail-verify-result");
+  if (gmailVerifyResult) {
+    gmailVerifyResult.className = "result-card compact-result hidden";
+    gmailVerifyResult.textContent = "";
+  }
+  renderManualHandoffPacket(null);
   renderDraftLifecycle(null);
   syncActionGates(null);
   const message = String(reason || "").trim();
@@ -199,6 +264,15 @@ function filterHistoryRecords(records, defaultStatus = "") {
   const values = Array.isArray(records) ? records : [];
   if (filter === "all") return values;
   return values.filter((record) => historyRecordStatus(record, defaultStatus) === filter);
+}
+
+function indexedHistoryRecords(records, defaultStatus = "") {
+  const filter = state.historyStatusFilter || "all";
+  const values = Array.isArray(records) ? records : [];
+  return values
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => filter === "all" || historyRecordStatus(item, defaultStatus) === filter)
+    .reverse();
 }
 
 function historyStatusCounts() {
@@ -254,6 +328,12 @@ async function copyText(value) {
   textarea.remove();
 }
 
+function todayIsoDate() {
+  const date = new Date();
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return offsetDate.toISOString().slice(0, 10);
+}
+
 function parseReferenceLines(value) {
   return String(value || "")
     .split(/\n|,/)
@@ -274,6 +354,8 @@ function fillFormFromIntake(intake) {
     service_place: intake.service_place,
     km_one_way: intake.transport?.km_one_way,
     source_text: intake.source_text,
+    personal_profile_id: intake.personal_profile_id,
+    profile: intake.service_profile_key,
   };
   Object.entries(values).forEach(([id, value]) => {
     const input = $(`#${id}`);
@@ -299,9 +381,13 @@ function mergeFormIntoCurrentIntake() {
     "recipient_email",
     "service_place",
     "source_text",
+    "personal_profile_id",
   ].forEach((key) => {
     if (payload[key]) intake[key] = payload[key];
   });
+  if (payload.profile) {
+    intake.service_profile_key = payload.profile;
+  }
   if (payload.km_one_way) {
     intake.transport = { ...(intake.transport || {}), km_one_way: Number(payload.km_one_way) || payload.km_one_way };
   }
@@ -354,11 +440,34 @@ function renderNextSafeAction(action) {
     chip.textContent = String(action.state || "next").replaceAll("_", " ");
     chip.className = `status-chip ${blocked ? "blocked" : "ready"}`;
     const targetButton = action.button_id
-      ? `<div class="button-row compact-button-row"><button type="button" class="mini-button" data-next-action-target="${escapeHtml(action.button_id)}">Go to this step</button></div>`
+      ? `<div class="button-row compact-button-row"><button type="button" class="mini-button" data-next-action-target="${escapeHtml(action.button_id)}">Take me there</button></div>`
       : "";
+    const whyText = action.why || "This suggested step explains why the app paused here and keeps risky actions gated until the review state changes.";
+    const allowedText = action.allowed_next || action.title || "Review the current state before continuing.";
+    const blockedText = action.blocked
+      ? "PDF creation, Gmail draft creation, and local draft recording stay blocked until this step is resolved."
+      : "Email sending is still blocked by design; any later Gmail or local record step must use reviewed draft-only data.";
     body.className = "next-safe-action-body";
     body.innerHTML = `
-      <strong>${escapeHtml(action.title || "Next safe action")}</strong>
+      <p class="safe-action-helper">This is the app's Suggested Next Step. It is not a separate task; it points to the next thing to review, answer, or click.</p>
+      <div class="safe-action-summary-grid">
+        <div>
+          <span>Recommended next step</span>
+          <strong>${escapeHtml(action.title || "Suggested next step")}</strong>
+        </div>
+        <div>
+          <span>Why this appears</span>
+          <p>${escapeHtml(whyText)}</p>
+        </div>
+        <div>
+          <span>What is allowed now</span>
+          <p>${escapeHtml(allowedText)}</p>
+        </div>
+        <div>
+          <span>Still blocked</span>
+          <p>${escapeHtml(blockedText)}</p>
+        </div>
+      </div>
       <p>${escapeHtml(action.detail || "Review the current state before continuing.")}</p>
       ${targetButton}
     `;
@@ -466,6 +575,7 @@ function addSupportingAttachmentToIntake(attachment) {
     state.currentIntake = removeEmpty(collectProfilePayload()) || {};
   }
   state.currentIntake = mergeSupportingAttachmentsIntoIntake(state.currentIntake, [storedPath]);
+  clearPreparedArtifacts("supporting attachments changed");
   renderSupportingAttachmentList();
   syncActionGates();
   return state.currentIntake;
@@ -684,6 +794,68 @@ function applyParsedGmailDraftIds(ids) {
 
 function preparedRecordTarget() {
   return state.lastPrepared?.packet || state.lastPrepared?.items?.[0] || null;
+}
+
+function renderManualHandoffPacket(packet) {
+  const box = $("#manual-handoff-packet");
+  if (!box) return;
+  if (!packet) {
+    box.className = "result-card compact-result hidden";
+    box.innerHTML = "";
+    return;
+  }
+
+  const status = String(packet.status || "ready");
+  const chipClass = statusChipClass(status);
+  const attachmentNames = Array.isArray(packet.attachment_basenames) ? packet.attachment_basenames : [];
+  const hashes = packet.attachment_sha256 && typeof packet.attachment_sha256 === "object"
+    ? packet.attachment_sha256
+    : {};
+  const hashRows = Object.entries(hashes).map(([file, hash]) => (
+    `<li><code>${escapeHtml(pathBasename(file))}</code><span>${escapeHtml(hash)}</span></li>`
+  )).join("");
+  box.className = `result-card compact-result ${chipClass}`;
+  box.innerHTML = `
+    <div class="result-header compact-result-header">
+      <div>
+        <strong>${escapeHtml(packet.message || "Manual handoff packet ready.")}</strong>
+        <p>Copy this prompt into the draft-only Gmail connector, then paste returned IDs back into this drawer.</p>
+      </div>
+      <span class="status-chip ${chipClass}">${escapeHtml(String(packet.mode || "manual_handoff").replaceAll("_", " "))}</span>
+    </div>
+    <div class="prepared-meta">
+      <div>To: <code>${escapeHtml(packet.to || "")}</code></div>
+      <div>Subject: <strong>${escapeHtml(packet.subject || "")}</strong></div>
+      <div>Payload: <code>${escapeHtml(packet.payload_path || "")}</code></div>
+      <div>Attachments: ${attachmentNames.length ? attachmentNames.map((name) => `<code>${escapeHtml(name)}</code>`).join(" ") : "none"}</div>
+      <div>Attachment count: ${escapeHtml(packet.attachment_count || 0)}</div>
+    </div>
+    ${hashRows ? `
+      <details class="attachment-hashes">
+        <summary>Attachment hashes</summary>
+        <ul>${hashRows}</ul>
+      </details>
+    ` : ""}
+    <strong>Copy-ready handoff prompt</strong>
+    <pre class="draft-args">${escapeHtml(packet.copyable_prompt || "")}</pre>
+  `;
+}
+
+async function buildManualHandoffPacket() {
+  const target = preparedRecordTarget();
+  if (!target?.draft_payload) {
+    throw new Error("Prepare a PDF and Gmail draft payload before building the manual handoff packet.");
+  }
+  const data = await requestJson("/api/gmail/manual-handoff", {
+    method: "POST",
+    body: JSON.stringify({ payload: target.draft_payload }),
+  });
+  state.lastManualHandoff = data;
+  renderManualHandoffPacket(data);
+  setStatus(data.status || "ready", data.message || "Manual handoff packet ready.");
+  showAlert("Manual handoff packet ready to copy.", "recorded");
+  syncActionGates();
+  return data;
 }
 
 function preparedRecordNote(target) {
@@ -1096,13 +1268,20 @@ function renderSourceAttention(attention) {
 function renderSourceEvidence(data) {
   const box = $("#source-evidence");
   const body = $("#source-evidence-body");
-  if (!data?.source) {
+  const reviewEvidence = data?.review_evidence || null;
+  if (!data?.source && !reviewEvidence) {
     box.className = "result-card hidden";
     body.innerHTML = "";
     return;
   }
-  const evidence = data.source_evidence || {};
-  const source = data.source;
+  const evidence = data.source_evidence || reviewEvidence || {};
+  const source = data.source || {
+    source_kind: "manual_review",
+    filename: evidence.filename || "Manual review",
+    artifact_url: "",
+    sha256: "",
+    metadata: {},
+  };
   const metadata = source.metadata || {};
   const warnings = evidence.warnings || metadata.warnings || [];
   const profileDecision = evidence.auto_profile || data.candidate_intake?.auto_profile || {};
@@ -1124,7 +1303,12 @@ function renderSourceEvidence(data) {
       </div>`
     : "";
   const renderedPageUrls = evidence.rendered_page_urls || [];
-  const preview = source.source_kind === "photo"
+  const preview = source.source_kind === "manual_review"
+    ? `<div class="manual-evidence-placeholder">
+        <strong>Manual review evidence</strong>
+        <p>The app used the typed/pasted fields and source text to suggest service-profile defaults before any PDF or Gmail draft step.</p>
+      </div>`
+    : source.source_kind === "photo"
     ? `<img class="source-preview-image" src="${escapeHtml(source.artifact_url)}" alt="Uploaded source preview">`
     : renderedPageUrls.length
       ? `<div class="rendered-page-strip">
@@ -1292,6 +1476,7 @@ async function uploadSource(sourceKind, options = {}) {
   form.append("file", file);
   form.append("source_kind", sourceKind === "google_photos" ? "photo" : sourceKind);
   form.append("profile", $("#profile").value || "");
+  form.append("personal_profile_id", $("#personal_profile_id").value || "");
   form.append("visible_text", visibleText);
   if (googlePhotosMetadata) {
     form.append("visible_metadata_text", googlePhotosMetadata);
@@ -1398,9 +1583,11 @@ function bindSourceDropZone() {
 async function loadReference() {
   state.reference = await requestJson("/api/reference");
   state.aiStatus = state.reference?.ai || null;
+  state.gmailStatus = state.reference?.gmail?.api || null;
   state.backupStatus = state.reference?.backup || null;
   renderReference();
   renderAiStatus(state.aiStatus);
+  renderGmailStatus(state.gmailStatus);
   renderBackupStatus(state.backupStatus);
 }
 
@@ -1418,6 +1605,12 @@ async function loadBackupStatus() {
 async function loadGooglePhotosStatus() {
   state.googlePhotosStatus = await requestJson("/api/google-photos/status");
   renderGooglePhotosStatus(state.googlePhotosStatus);
+}
+
+async function loadGmailStatus() {
+  state.gmailStatus = await requestJson("/api/gmail/status");
+  renderGmailStatus(state.gmailStatus);
+  return state.gmailStatus;
 }
 
 function diagnosticCommand(check) {
@@ -1549,6 +1742,302 @@ function renderGooglePhotosStatus(data) {
     summary.textContent = "Google Photos OAuth credentials are configured. Connect Google Photos OAuth, or use the selected-photo local import with pasted metadata.";
   } else {
     summary.textContent = data?.message || "OAuth Picker is not connected in this standalone app yet. Use selected-photo import with pasted metadata.";
+  }
+}
+
+function renderGmailSetup(data) {
+  const setup = data?.setup || {};
+  const card = $("#gmail-setup-card");
+  const chip = $("#gmail-setup-chip");
+  const nextStep = $("#gmail-setup-next-step");
+  const redirect = $("#gmail-redirect-uri");
+  if (!card) return;
+  const connected = Boolean(data?.connected);
+  const configured = Boolean(data?.configured);
+  const manualReady = Boolean(data?.manual_handoff_ready);
+  const setupStatus = setup.status || (connected ? "ready" : manualReady ? "manual_handoff" : configured ? "connect" : "configure");
+  const chipKind = connected ? "ready" : manualReady ? "info" : configured ? "info" : "blocked";
+  if (chip) {
+    chip.textContent = setupStatus;
+    chip.className = `status-chip ${chipKind}`;
+  }
+  if (nextStep) {
+    nextStep.textContent = setup.next_step || "Manual Draft Handoff is always available. Connect Gmail API only when you want optional in-app draft creation.";
+  }
+  if (redirect && !redirect.dataset.userEdited) {
+    redirect.value = setup.redirect_uri || redirect.value || "http://127.0.0.1:8766/api/gmail/oauth/callback";
+  }
+}
+
+function renderGmailStatus(data) {
+  const summary = $("#gmail-api-status-summary");
+  const pill = $("#gmail-api-status-pill");
+  const drawerStatus = $("#gmail-api-drawer-status");
+  const drawerChip = $("#gmail-api-drawer-chip");
+  const manualStatus = $("#manual-handoff-status");
+  const manualChip = $("#manual-handoff-chip");
+  const deferredPanel = $("#gmail-api-deferred-panel");
+  const connected = Boolean(data?.connected);
+  const configured = Boolean(data?.configured);
+  const manualReady = Boolean(data?.manual_handoff_ready);
+  const recommendedMode = data?.recommended_mode || (connected ? "gmail_api" : "manual_handoff");
+  const text = data?.message || "Gmail Draft API status is not loaded yet.";
+  const chipText = recommendedMode === "gmail_api" ? "Gmail connected" : "Manual handoff";
+  const chipKind = recommendedMode === "gmail_api" ? "ready" : manualReady ? "info" : "blocked";
+  if (summary) {
+    summary.textContent = recommendedMode === "gmail_api"
+      ? `${text} Manual Draft Handoff remains available as a safe fallback.`
+      : "Manual Draft Handoff is active: prepare the PDF and draft payload, use the exact _create_draft args, then record returned draft IDs locally.";
+  }
+  if (pill) {
+    pill.textContent = chipText;
+    pill.className = `status-chip ${chipKind}`;
+  }
+  if (manualStatus) {
+    manualStatus.textContent = recommendedMode === "gmail_api"
+      ? "Gmail API is connected. Manual Draft Handoff remains available as a safe fallback for recovery or connector-based drafting."
+      : "Manual Draft Handoff is the supported primary mode when Gmail OAuth is not connected.";
+  }
+  if (manualChip) {
+    manualChip.textContent = recommendedMode === "gmail_api" ? "Fallback" : "Recommended";
+    manualChip.className = `status-chip ${recommendedMode === "gmail_api" ? "info" : "ready"}`;
+  }
+  if (deferredPanel) {
+    deferredPanel.open = recommendedMode === "gmail_api";
+  }
+  if (drawerStatus) {
+    drawerStatus.textContent = `${text} Scope: ${data?.scope || "gmail.compose"}. Direct in-app creation stays optional; no send action exists.`;
+  }
+  if (drawerChip) {
+    drawerChip.textContent = connected ? "connected" : configured ? "optional" : "later";
+    drawerChip.className = `status-chip ${chipKind}`;
+  }
+  renderGmailSetup(data);
+  syncActionGates();
+}
+
+async function saveGmailConfig() {
+  const resultBox = $("#gmail-config-result");
+  const clientId = $("#gmail-client-id")?.value.trim() || "";
+  const clientSecret = $("#gmail-client-secret")?.value.trim() || "";
+  const redirectUri = $("#gmail-redirect-uri")?.value.trim() || "";
+  if (!clientId || !clientSecret) {
+    throw new Error("Paste both the Google OAuth client ID and client secret before saving Gmail config.");
+  }
+  const data = await requestJson("/api/gmail/config", {
+    method: "POST",
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+    }),
+  });
+  $("#gmail-client-secret").value = "";
+  state.gmailStatus = data.gmail || data;
+  renderGmailStatus(state.gmailStatus);
+  if (resultBox) {
+    const setup = data.setup || {};
+    resultBox.className = "result-card compact-result ready";
+    resultBox.innerHTML = `
+      <div class="result-header compact-result-header">
+        <div>
+          <strong>${escapeHtml(data.message || "Gmail config saved locally.")}</strong>
+          <p>Secret-free status is refreshed. Next step: ${escapeHtml(setup.next_step || "connect Gmail OAuth")}.</p>
+        </div>
+        <span class="status-chip ready">saved</span>
+      </div>
+      <div>Config: <code>${escapeHtml(data.config_path || "config/gmail.local.json")}</code></div>
+      ${data.backup_path ? `<div>Previous config backup: <code>${escapeHtml(data.backup_path)}</code></div>` : ""}
+    `;
+  }
+  renderGmailApiResult({
+    status: "saved",
+    message: "Gmail OAuth config saved locally. The client secret was not returned.",
+  }, "ready");
+  return data;
+}
+
+async function startGmailOAuth() {
+  const data = await requestJson("/api/gmail/oauth/start", { method: "POST" });
+  state.gmailStatus = { ...(state.gmailStatus || {}), configured: true, connected: false };
+  renderGmailStatus(state.gmailStatus);
+  renderGmailApiResult({
+    status: data.status,
+    message: "Gmail OAuth window opened. Finish Google authorization, then return here and refresh status.",
+  });
+  if (data.authorization_url) {
+    window.open(data.authorization_url, "_blank", "noopener,noreferrer");
+  }
+  return data;
+}
+
+function renderGmailApiResult(data, kind = "") {
+  const box = $("#gmail-api-result");
+  if (!box) return;
+  if (!data) {
+    box.className = "result-card compact-result hidden";
+    box.textContent = "";
+    return;
+  }
+  const confirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
+  const status = confirmation.status || data.status || kind || "info";
+  const chipKind = statusChipClass(status === "created" ? "ready" : status);
+  const duplicates = (
+    confirmation.duplicate_records_created
+    || data.duplicate_keys
+    || data.record?.duplicate_keys
+    || []
+  )
+    .map((item) => [item.case_number, item.service_date, item.service_period_label].filter(Boolean).join(" · "))
+    .filter(Boolean)
+    .join("; ");
+  const hashes = confirmation.attachment_sha256 && typeof confirmation.attachment_sha256 === "object"
+    ? Object.entries(confirmation.attachment_sha256)
+    : [];
+  box.className = `result-card compact-result ${chipKind}`;
+  box.innerHTML = `
+    <div class="result-header compact-result-header">
+      <div>
+        <strong>${escapeHtml(data.message || status.replaceAll("_", " "))}</strong>
+        <p>Created as a Gmail draft only. Review and send manually in Gmail.</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${confirmation.fake_mode ? `<div><span class="status-chip info">synthetic smoke</span></div>` : ""}
+    ${confirmation.draft_id ? `<div>Draft ID: <code>${escapeHtml(confirmation.draft_id)}</code></div>` : ""}
+    ${confirmation.message_id ? `<div>Message ID: <code>${escapeHtml(confirmation.message_id)}</code></div>` : ""}
+    ${confirmation.thread_id ? `<div>Thread ID: <code>${escapeHtml(confirmation.thread_id)}</code></div>` : ""}
+    ${confirmation.to ? `<div>To: <code>${escapeHtml(confirmation.to)}</code></div>` : ""}
+    ${confirmation.subject ? `<div>Subject: <strong>${escapeHtml(confirmation.subject)}</strong></div>` : ""}
+    ${confirmation.attachment_basenames?.length ? `<div>Attachments: ${confirmation.attachment_basenames.map((item) => `<code>${escapeHtml(item)}</code>`).join(" ")}</div>` : ""}
+    ${hashes.length ? `<details><summary>Attachment hashes</summary><pre class="draft-args">${escapeHtml(JSON.stringify(Object.fromEntries(hashes), null, 2))}</pre></details>` : ""}
+    ${duplicates ? `<div>Duplicate protection: <strong>${escapeHtml(duplicates)}</strong></div>` : ""}
+    ${confirmation.draft_log_path ? `<div>Draft log: <code>${escapeHtml(confirmation.draft_log_path)}</code></div>` : ""}
+    ${confirmation.draft_id ? `
+      <div class="button-row compact-button-row">
+        <button type="button" class="mini-button" data-verify-created-draft="true">Verify created draft</button>
+      </div>
+    ` : ""}
+  `;
+}
+
+function renderGmailVerifyResult(data, kind = "") {
+  const box = $("#gmail-verify-result");
+  if (!box) return;
+  if (!data) {
+    box.className = "result-card compact-result hidden";
+    box.textContent = "";
+    return;
+  }
+  const status = data.status || kind || "info";
+  const chipKind = statusChipClass(status === "verified" ? "ready" : status === "not_found" || status === "reconciliation_mismatch" ? "blocked" : status);
+  const mismatchRows = [];
+  if (data.expected_message_id && data.message_id && data.message_id_matches === false) {
+    mismatchRows.push(`Message ID differs from the local value: Gmail has ${data.message_id}.`);
+  }
+  if (data.expected_thread_id && data.thread_id && data.thread_id_matches === false) {
+    mismatchRows.push(`Thread ID differs from the local value: Gmail has ${data.thread_id}.`);
+  }
+  box.className = `result-card compact-result ${chipKind}`;
+  box.innerHTML = `
+    <div class="result-header compact-result-header">
+      <div>
+        <strong>${escapeHtml(data.message || status.replaceAll("_", " "))}</strong>
+        <p>Read-only Gmail draft verification. No local records were changed.</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${data.fake_mode ? `<div><span class="status-chip info">synthetic smoke</span></div>` : ""}
+    ${data.draft_id ? `<div>Draft ID: <code>${escapeHtml(data.draft_id)}</code></div>` : ""}
+    ${data.message_id ? `<div>Message ID: <code>${escapeHtml(data.message_id)}</code></div>` : ""}
+    ${data.thread_id ? `<div>Thread ID: <code>${escapeHtml(data.thread_id)}</code></div>` : ""}
+    ${data.to ? `<div>To: <code>${escapeHtml(data.to)}</code></div>` : ""}
+    ${data.subject ? `<div>Subject: <strong>${escapeHtml(data.subject)}</strong></div>` : ""}
+    ${mismatchRows.length ? `<ul>${mismatchRows.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+    <div><span class="status-chip info">${escapeHtml(data.gmail_api_action || "users.drafts.get")}</span></div>
+  `;
+}
+
+async function verifyGmailDraft() {
+  const draftId = $("#record_draft_id")?.value.trim() || "";
+  if (!draftId) {
+    throw new Error("Paste or create a Gmail draft ID before verifying it.");
+  }
+  const data = await requestJson("/api/gmail/drafts/verify", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty({
+      draft_id: draftId,
+      message_id: $("#record_message_id")?.value.trim() || "",
+      thread_id: $("#record_thread_id")?.value.trim() || "",
+    })),
+  });
+  renderGmailVerifyResult(data, data.status || "verified");
+  setStatus(data.status || "verified", data.message || "Gmail draft verification completed.");
+  return data;
+}
+
+async function verifyCreatedGmailDraft() {
+  const confirmation = state.lastGmailCreateConfirmation || {};
+  const draftId = String(confirmation.draft_id || $("#record_draft_id")?.value.trim() || "").trim();
+  if (!draftId) {
+    throw new Error("Create a Gmail draft before verifying the created draft.");
+  }
+  const data = await requestJson("/api/gmail/drafts/verify", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty({
+      draft_id: draftId,
+      message_id: confirmation.message_id || $("#record_message_id")?.value.trim() || "",
+      thread_id: confirmation.thread_id || $("#record_thread_id")?.value.trim() || "",
+    })),
+  });
+  renderGmailVerifyResult(data, data.status || "verified");
+  setStatus(data.status || "verified", data.message || "Gmail draft verification completed.");
+  return data;
+}
+
+async function createGmailApiDraft() {
+  if (state.gmailCreateInFlight) return null;
+  if (!$("#gmail_handoff_reviewed")?.checked) {
+    throw new Error("Review the PDF preview and exact Gmail args before creating a Gmail draft.");
+  }
+  const target = preparedRecordTarget();
+  if (!target?.draft_payload) {
+    throw new Error("Prepare a PDF and Gmail draft payload before creating a Gmail draft.");
+  }
+  const supersedes = $("#record_supersedes").value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const correctionReason = $("#correction_reason")?.value.trim() || "";
+  state.gmailCreateInFlight = true;
+  renderGmailApiResult({ status: "info", message: "Creating Gmail draft and recording duplicate protection..." }, "info");
+  syncActionGates();
+  try {
+    const data = await requestJson("/api/gmail/drafts/create", {
+      method: "POST",
+      body: JSON.stringify(removeEmpty({
+        payload: target.draft_payload,
+        gmail_handoff_reviewed: true,
+        supersedes,
+        correction_reason: correctionReason,
+        notes: correctionReason || $("#record_notes").value.trim() || preparedRecordNote(target),
+      })),
+    });
+    $("#record_payload").value = target.draft_payload;
+    $("#record_draft_id").value = data.draft_id || data.confirmation?.draft_id || "";
+    $("#record_message_id").value = data.message_id || data.confirmation?.message_id || "";
+    $("#record_thread_id").value = data.thread_id || data.confirmation?.thread_id || "";
+    $("#record_status").value = "active";
+    state.gmailCreateCompletedPayload = target.draft_payload;
+    state.lastGmailCreateConfirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
+    renderGmailApiResult(data, "created");
+    setStatus("recorded", "Gmail draft created and recorded locally. Review and send it manually in Gmail.");
+    showAlert("Gmail draft created and duplicate protection updated.", "recorded");
+    await loadReference();
+    return data;
+  } finally {
+    state.gmailCreateInFlight = false;
+    syncActionGates();
   }
 }
 
@@ -1726,6 +2215,12 @@ function renderLocalBackupResult(data, kind = "info") {
   const preRestore = data?.pre_restore_backup_file ? `<div class="data-item"><strong>Pre-restore backup</strong><code>${escapeHtml(data.pre_restore_backup_file)}</code></div>` : "";
   const datasets = data?.dataset_names || data?.restored_datasets || [];
   const datasetRow = datasets.length ? `<div class="data-item"><strong>Datasets</strong><span>${escapeHtml(datasets.join(", "))}</span></div>` : "";
+  const restoreRequirements = data?.restore_requirements?.confirmation_phrase
+    ? `<div class="data-item"><strong>Required restore phrase</strong><code>${escapeHtml(data.restore_requirements.confirmation_phrase)}</code></div>`
+    : "";
+  const restoreReason = data?.restore_reason
+    ? `<div class="data-item"><strong>Restore reason</strong><span>${escapeHtml(data.restore_reason)}</span></div>`
+    : "";
   body.className = `result-card ${chipKind}`;
   body.innerHTML = `
     <div class="result-header">
@@ -1738,6 +2233,8 @@ function renderLocalBackupResult(data, kind = "info") {
     ${backupFile}
     ${preRestore}
     ${datasetRow}
+    ${restoreRequirements}
+    ${restoreReason}
     ${countRows}
   `;
 }
@@ -1755,6 +2252,8 @@ async function exportLocalBackup() {
   $("#local-backup-json").value = JSON.stringify(data.backup, null, 2);
   state.localBackupPreview = null;
   $("#confirm-local-backup-restore").checked = false;
+  $("#local-backup-restore-phrase").value = "";
+  $("#local-backup-restore-reason").value = "";
   renderLocalBackupResult(data, "exported");
   if (data.backup_status) {
     state.backupStatus = data.backup_status;
@@ -1770,6 +2269,8 @@ async function previewLocalBackupImport() {
   });
   state.localBackupPreview = data;
   $("#confirm-local-backup-restore").checked = false;
+  $("#local-backup-restore-phrase").value = "";
+  $("#local-backup-restore-reason").value = "";
   renderLocalBackupResult(data, "ready");
   return data;
 }
@@ -1782,12 +2283,27 @@ async function restoreLocalBackupImport() {
   if (!$("#confirm-local-backup-restore").checked) {
     throw new Error("Check the restore confirmation box before using Restore backup after preview.");
   }
+  const confirmationPhrase = $("#local-backup-restore-phrase").value.trim();
+  const restoreReason = $("#local-backup-restore-reason").value.trim();
+  if (!confirmationPhrase) {
+    throw new Error("Type the exact restore confirmation phrase before restoring local data.");
+  }
+  if (!restoreReason) {
+    throw new Error("Add a short restore reason before restoring local data.");
+  }
   const data = await requestJson("/api/backup/import", {
     method: "POST",
-    body: JSON.stringify({ backup_json: localBackupJsonText(), confirm_restore: true }),
+    body: JSON.stringify({
+      backup_json: localBackupJsonText(),
+      confirm_restore: true,
+      confirmation_phrase: confirmationPhrase,
+      restore_reason: restoreReason,
+    }),
   });
   state.localBackupPreview = null;
   $("#confirm-local-backup-restore").checked = false;
+  $("#local-backup-restore-phrase").value = "";
+  $("#local-backup-restore-reason").value = "";
   renderLocalBackupResult(data, "restored");
   if (data.backup_status) {
     state.backupStatus = data.backup_status;
@@ -2316,14 +2832,137 @@ async function applyLegalPdfRestore(reportId) {
   return data;
 }
 
+function historySourceRecords(source) {
+  if (source === "duplicates") return state.reference?.duplicates || [];
+  return state.reference?.draft_log || [];
+}
+
+function historyRecordByIndex(source, index) {
+  const records = historySourceRecords(source);
+  const record = records[Number(index)];
+  if (!record) {
+    throw new Error("History record is no longer available. Refresh Recent Work and try again.");
+  }
+  return record;
+}
+
+function isActiveDraftHistoryRecord(record, defaultStatus = "") {
+  return ["active", "drafted"].includes(historyRecordStatus(record, defaultStatus));
+}
+
+function renderHistoryDraftActions(record, index, source, defaultStatus = "") {
+  const draftId = String(record?.draft_id || "").trim();
+  if (!draftId) return "";
+  const messageId = String(record?.message_id || "").trim();
+  const canMarkSent = isActiveDraftHistoryRecord(record, defaultStatus) && messageId;
+  return `
+    <div class="button-row compact-button-row history-row-actions">
+      <button type="button" class="mini-button" data-history-verify-draft="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Verify draft exists</button>
+      ${canMarkSent ? `<button type="button" class="mini-button" data-history-mark-sent="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Mark manually sent</button>` : ""}
+    </div>
+  `;
+}
+
+function renderHistoryDraftActionResult(data, kind = "") {
+  const box = $("#history-draft-action-result");
+  if (!box) return;
+  if (!data) {
+    box.className = "result-card compact-result hidden";
+    box.textContent = "";
+    return;
+  }
+  const status = data.status || kind || "info";
+  const chipKind = statusChipClass(status === "verified" ? "ready" : status);
+  const duplicateCount = Number(data.recorded_duplicate_count || data.duplicate_records_created?.length || 0);
+  box.className = `result-card compact-result ${chipKind}`;
+  box.innerHTML = `
+    <div class="result-header compact-result-header">
+      <div>
+        <strong>${escapeHtml(data.message || status.replaceAll("_", " "))}</strong>
+        <p>${status === "recorded" ? "Local bookkeeping only. Gmail was not contacted and no email was sent." : "Read-only Gmail draft verification. No local records were changed."}</p>
+      </div>
+      <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
+    </div>
+    ${data.draft_id ? `<div>Draft ID: <code>${escapeHtml(data.draft_id)}</code></div>` : ""}
+    ${data.message_id ? `<div>Message ID: <code>${escapeHtml(data.message_id)}</code></div>` : ""}
+    ${data.thread_id ? `<div>Thread ID: <code>${escapeHtml(data.thread_id)}</code></div>` : ""}
+    ${data.sent_date ? `<div>Sent date: <strong>${escapeHtml(data.sent_date)}</strong></div>` : ""}
+    ${data.gmail_api_action ? `<div><span class="status-chip info">${escapeHtml(data.gmail_api_action)}</span></div>` : ""}
+    ${duplicateCount ? `<div>Duplicate records updated: <strong>${escapeHtml(duplicateCount)}</strong></div>` : ""}
+  `;
+}
+
+function historyDraftStatusPayload(record, sentDate) {
+  const payloadPath = String(record.payload || record.draft_payload || "").trim();
+  return removeEmpty({
+    payload: payloadPath,
+    draft_payload: String(record.draft_payload || "").trim(),
+    case_number: record.case_number,
+    service_date: record.service_date,
+    service_period_label: record.service_period_label,
+    service_start_time: record.service_start_time,
+    service_end_time: record.service_end_time,
+    recipient: record.recipient || record.recipient_email,
+    pdf: record.pdf,
+    draft_id: record.draft_id,
+    message_id: record.message_id,
+    thread_id: record.thread_id,
+    status: "sent",
+    sent_date: sentDate,
+    notes: `Marked manually sent from Recent Work on ${sentDate}.`,
+  });
+}
+
+async function verifyHistoryDraft(index, source = "draft_log") {
+  const record = historyRecordByIndex(source, index);
+  const draftId = String(record.draft_id || "").trim();
+  if (!draftId) throw new Error("This history row has no Gmail draft ID to verify.");
+  const data = await requestJson("/api/gmail/drafts/verify", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty({
+      draft_id: draftId,
+      message_id: record.message_id,
+      thread_id: record.thread_id,
+    })),
+  });
+  renderHistoryDraftActionResult(data, data.status || "verified");
+  setStatus(data.status || "verified", data.message || "Gmail draft verification completed.");
+  return data;
+}
+
+async function markHistoryDraftSent(index, source = "draft_log") {
+  const record = historyRecordByIndex(source, index);
+  const draftId = String(record.draft_id || "").trim();
+  const messageId = String(record.message_id || "").trim();
+  if (!draftId || !messageId) {
+    throw new Error("This history row needs both draft ID and message ID before it can be marked sent.");
+  }
+  const sentDateInput = $("#history-sent-date");
+  const sentDate = (sentDateInput?.value || todayIsoDate()).trim();
+  if (sentDateInput && !sentDateInput.value) sentDateInput.value = sentDate;
+  if (!sentDate) throw new Error("Choose the sent date before marking this draft as sent.");
+  const confirmed = window.confirm(`Mark Gmail draft ${draftId} as manually sent on ${sentDate}? This is local bookkeeping only; it does not contact Gmail.`);
+  if (!confirmed) return null;
+  const data = await requestJson("/api/drafts/status", {
+    method: "POST",
+    body: JSON.stringify(historyDraftStatusPayload(record, sentDate)),
+  });
+  renderHistoryDraftActionResult({ ...data, sent_date: sentDate, message: `Marked ${draftId} as manually sent.` }, "recorded");
+  setStatus("recorded", `Marked Gmail draft ${draftId} as manually sent locally.`);
+  showAlert("Marked draft as sent locally. Duplicate protection now keeps the sent status.", "recorded");
+  await loadReference();
+  return data;
+}
+
 function renderReference() {
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
-  const duplicateRecords = filterHistoryRecords(state.reference?.duplicates || [], "sent").slice().reverse();
-  const draftLogRecords = filterHistoryRecords(state.reference?.draft_log || [], "").slice().reverse();
+  const duplicateRecords = indexedHistoryRecords(state.reference?.duplicates || [], "sent");
+  const draftLogRecords = indexedHistoryRecords(state.reference?.draft_log || [], "");
   profileSelect.innerHTML = `<option value="">Auto-detect profile - recommended for uploads</option>` + Object.entries(profiles)
     .map(([key, value]) => `<option value="${escapeHtml(key)}">${escapeHtml(key)} - ${escapeHtml(value.description || "")}</option>`)
     .join("");
+  renderPersonalProfiles();
 
   $("#profile-list").innerHTML = Object.entries(profiles).map(([key, value]) => (
     `<div class="data-item">
@@ -2331,7 +2970,7 @@ function renderReference() {
       <span>${escapeHtml(value.description || "")}</span>
       <button type="button" class="mini-button" data-edit-profile="${escapeHtml(key)}">Edit guarded profile</button>
     </div>`
-  )).join("");
+  )).join("") || `<div class="data-item">No service profiles found.</div>`;
 
   $("#court-list").innerHTML = (state.reference?.court_emails || []).map((item, index) => (
     `<div class="data-item">
@@ -2352,12 +2991,22 @@ function renderReference() {
 
   renderHistoryStatusFilters();
 
-  $("#duplicate-list").innerHTML = duplicateRecords.length ? duplicateRecords.map((item) => (
-    `<div class="data-item"><strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong><span class="status-chip ${statusChipClass(item.status || "sent")}">${escapeHtml(item.status || "sent")}</span><code>${escapeHtml(item.draft_id || item.pdf || "")}</code></div>`
+  $("#duplicate-list").innerHTML = duplicateRecords.length ? duplicateRecords.map(({ item, index }) => (
+    `<div class="data-item">
+      <strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong>
+      <span class="status-chip ${statusChipClass(item.status || "sent")}">${escapeHtml(item.status || "sent")}</span>
+      <code>${escapeHtml(item.draft_id || item.pdf || "")}</code>
+      ${renderHistoryDraftActions(item, index, "duplicates", "sent")}
+    </div>`
   )).join("") : `<div class="data-item empty-history-item">No duplicate records for the selected history filter.</div>`;
 
-  $("#draft-log-list").innerHTML = draftLogRecords.length ? draftLogRecords.map((item) => (
-    `<div class="data-item"><strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong><span class="status-chip ${statusChipClass(item.status || "")}">${escapeHtml(item.status || "")}</span><code>${escapeHtml(item.draft_id || "")}</code></div>`
+  $("#draft-log-list").innerHTML = draftLogRecords.length ? draftLogRecords.map(({ item, index }) => (
+    `<div class="data-item">
+      <strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong>
+      <span class="status-chip ${statusChipClass(item.status || "")}">${escapeHtml(item.status || "")}</span>
+      <code>${escapeHtml(item.draft_id || "")}</code>
+      ${renderHistoryDraftActions(item, index, "draft_log", "")}
+    </div>`
   )).join("") : `<div class="data-item empty-history-item">No Gmail draft records for the selected history filter.</div>`;
 
   $("#profile-change-list").innerHTML = (state.reference?.profile_change_log || [])
@@ -2365,47 +3014,100 @@ function renderReference() {
     .reverse()
     .map(({ item, index }) => (
     `<div class="data-item">
-      <strong>${escapeHtml(item.profile_key || "")} · ${escapeHtml(item.action || "")}</strong>
+      <strong>${escapeHtml(item.record_key || item.profile_key || "")} · ${escapeHtml(item.action || "")}</strong>
+      ${item.reference_kind ? `<span class="status-chip info">${escapeHtml(item.reference_kind)}</span>` : ""}
       <span>${escapeHtml((item.changes || []).length)} change(s)</span>
       <code>${escapeHtml(item.reason || item.changed_at || "")}</code>
       <div class="button-row">
-        <button type="button" class="mini-button" data-preview-profile-rollback="${index}">Preview rollback</button>
-        <button type="button" class="mini-button" data-restore-profile-rollback="${index}">Restore previous profile</button>
+        ${item.reference_kind
+          ? `<span class="field-hint">Reference edit recorded for audit.</span>`
+          : `<button type="button" class="mini-button" data-preview-profile-rollback="${index}">Preview rollback</button>
+             <button type="button" class="mini-button" data-restore-profile-rollback="${index}">Restore previous profile</button>`}
       </div>
     </div>`
   )).join("");
 }
 
-async function saveDestinationReference() {
-  maybeShowBackupReminder("saving destinations");
-  const payload = {
+function collectDestinationReferencePayload() {
+  return {
     destination: $("#destination_name").value.trim(),
     km_one_way: $("#destination_km").value.trim(),
     institution_examples: parseReferenceLines($("#destination_examples").value),
     notes: $("#destination_notes").value.trim(),
+    change_reason: $("#destination_change_reason").value.trim(),
   };
-  const data = await requestJson("/api/reference/destinations", {
-    method: "POST",
-    body: JSON.stringify(removeEmpty(payload)),
-  });
-  setStatus("recorded", `Saved destination ${data.record.destination}.`);
-  showAlert(`Saved destination ${data.record.destination}.`, "recorded");
-  await loadReference();
 }
 
-async function saveCourtEmailReference() {
-  maybeShowBackupReminder("saving court emails");
-  const payload = {
+function collectCourtEmailReferencePayload() {
+  return {
     key: $("#court_key").value.trim(),
     name: $("#court_name").value.trim(),
     email: $("#court_email").value.trim(),
     payment_entity_aliases: parseReferenceLines($("#court_aliases").value),
     source: $("#court_source").value.trim(),
+    change_reason: $("#court_change_reason").value.trim(),
   };
+}
+
+function renderReferencePreview(data, cardSelector, textSelector) {
+  const card = $(cardSelector);
+  const text = $(textSelector);
+  card.classList.remove("hidden");
+  const change = data.reference_change || {};
+  text.textContent = JSON.stringify({
+    status: data.status,
+    kind: data.kind,
+    action: change.action,
+    record_key: change.record_key,
+    reason: change.reason,
+    changes: change.changes || [],
+    record: data.record || {},
+    write_allowed: data.write_allowed === true,
+    send_allowed: data.send_allowed === true,
+  }, null, 2);
+}
+
+async function previewDestinationReference() {
+  const data = await requestJson("/api/reference/destinations/preview", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(collectDestinationReferencePayload())),
+  });
+  renderReferencePreview(data, "#destination-preview-card", "#destination-preview-text");
+  setStatus("ready", `Previewed destination ${data.record.destination}. Nothing was saved.`);
+  showAlert("Destination diff previewed. Nothing was saved.", "recorded");
+}
+
+async function saveDestinationReference() {
+  maybeShowBackupReminder("saving destinations");
+  const payload = collectDestinationReferencePayload();
+  const data = await requestJson("/api/reference/destinations", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(payload)),
+  });
+  renderReferencePreview(data, "#destination-preview-card", "#destination-preview-text");
+  setStatus("recorded", `Saved destination ${data.record.destination}.`);
+  showAlert(`Saved destination ${data.record.destination}.`, "recorded");
+  await loadReference();
+}
+
+async function previewCourtEmailReference() {
+  const data = await requestJson("/api/reference/court-emails/preview", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(collectCourtEmailReferencePayload())),
+  });
+  renderReferencePreview(data, "#court-email-preview-card", "#court-email-preview-text");
+  setStatus("ready", `Previewed court email ${data.record.email}. Nothing was saved.`);
+  showAlert("Court-email diff previewed. Nothing was saved.", "recorded");
+}
+
+async function saveCourtEmailReference() {
+  maybeShowBackupReminder("saving court emails");
+  const payload = collectCourtEmailReferencePayload();
   const data = await requestJson("/api/reference/court-emails", {
     method: "POST",
     body: JSON.stringify(removeEmpty(payload)),
   });
+  renderReferencePreview(data, "#court-email-preview-card", "#court-email-preview-text");
   setStatus("recorded", `Saved court email ${data.record.email}.`);
   showAlert(`Saved court email ${data.record.email}.`, "recorded");
   await loadReference();
@@ -2493,6 +3195,8 @@ function fillDestinationReferenceForm(index) {
   $("#destination_km").value = item.km_one_way ?? item.km ?? "";
   $("#destination_examples").value = (item.institution_examples || []).join("\n");
   $("#destination_notes").value = item.notes || "";
+  $("#destination_change_reason").value = "";
+  $("#destination-preview-card").classList.add("hidden");
 }
 
 function fillCourtEmailReferenceForm(index) {
@@ -2503,6 +3207,8 @@ function fillCourtEmailReferenceForm(index) {
   $("#court_email").value = item.email || "";
   $("#court_aliases").value = (item.payment_entity_aliases || []).join("\n");
   $("#court_source").value = item.source || "";
+  $("#court_change_reason").value = "";
+  $("#court-email-preview-card").classList.add("hidden");
 }
 
 function fillServiceProfileReferenceForm(key) {
@@ -2582,8 +3288,261 @@ function renderProfilePreview(data) {
   ].join("\n");
 }
 
+function personalProfilesData() {
+  return state.reference?.personal_profiles || { profiles: [], primary_profile_id: "" };
+}
+
+function personalProfileName(profile) {
+  return profile?.display_name || profile?.document_name_override || `${profile?.first_name || ""} ${profile?.last_name || ""}`.trim() || profile?.id || "Profile";
+}
+
+function renderPersonalProfileSelector() {
+  const select = $("#personal_profile_id");
+  if (!select) return;
+  const data = personalProfilesData();
+  const primary = data.primary_profile_id || "";
+  const options = (data.profiles || []).map((profile) => {
+    const id = profile.id || "";
+    const suffix = id === primary ? " (main)" : "";
+    return `<option value="${escapeHtml(id)}">${escapeHtml(personalProfileName(profile) + suffix)}</option>`;
+  }).join("");
+  select.innerHTML = options || `<option value="">Main profile</option>`;
+  if (state.currentIntake?.personal_profile_id) {
+    select.value = state.currentIntake.personal_profile_id;
+  } else if (primary) {
+    select.value = primary;
+  }
+}
+
+function renderPersonalProfiles() {
+  const data = personalProfilesData();
+  const profiles = data.profiles || [];
+  const primaryId = data.primary_profile_id || "";
+  const main = data.main_profile || profiles.find((profile) => profile.id === primaryId) || profiles[0] || {};
+  const count = $("#personal-profile-count");
+  if (count) count.textContent = `${profiles.length} profile(s) ready.`;
+  const primaryCard = $("#personal-profile-primary-card");
+  if (primaryCard) {
+    primaryCard.innerHTML = `
+      <div class="profile-record-card-header">
+        <div>
+          <p class="eyebrow">Main Profile Summary</p>
+          <strong>${escapeHtml(personalProfileName(main))}</strong>
+          <p>${escapeHtml(main.email || main.phone_number || "Add email or phone details to use them in Gmail replies.")}</p>
+          <span>Travel origin: ${escapeHtml(main.travel_origin_label || "")}</span>
+          <span>${escapeHtml(String(Object.keys(main.travel_distances_by_city || {}).length))} saved city distance(s).</span>
+        </div>
+        <span class="status-chip ready">Main profile</span>
+      </div>`;
+  }
+  const list = $("#personal-profile-list");
+  if (list) {
+    list.innerHTML = profiles.map((profile) => `
+      <div class="profile-record-card">
+        <div class="profile-record-card-header">
+          <div>
+            <p class="eyebrow">Profile Record</p>
+            <strong>${escapeHtml(personalProfileName(profile))}</strong>
+            <p>${escapeHtml(profile.email || profile.phone_number || "Add email or phone details to use them in Gmail replies.")}</p>
+            <span>Travel origin: ${escapeHtml(profile.travel_origin_label || "")}</span>
+            <span>${escapeHtml(String(Object.keys(profile.travel_distances_by_city || {}).length))} saved city distance(s).</span>
+          </div>
+          ${profile.id === primaryId ? `<span class="status-chip ready">Main profile</span>` : ""}
+        </div>
+        <p>Edit this profile's contact, payment, and travel details.</p>
+        <div class="button-row">
+          <button type="button" class="mini-button" data-edit-personal-profile="${escapeHtml(profile.id || "")}">Edit</button>
+          <button type="button" class="mini-button" data-main-personal-profile="${escapeHtml(profile.id || "")}" ${profile.id === primaryId ? "disabled" : ""}>Main profile</button>
+          <button type="button" class="mini-button" data-delete-personal-profile="${escapeHtml(profile.id || "")}" ${profiles.length <= 1 ? "disabled" : ""}>Delete profile</button>
+        </div>
+      </div>
+    `).join("") || `<div class="data-item">No profiles yet.</div>`;
+  }
+  renderPersonalProfileSelector();
+}
+
+function openPersonalProfileDrawer(profile) {
+  const profileData = profile || {};
+  state.currentPersonalProfile = { ...profileData, travel_distances_by_city: { ...(profileData.travel_distances_by_city || {}) } };
+  $("#pp_id").value = state.currentPersonalProfile.id || "";
+  $("#pp_first_name").value = state.currentPersonalProfile.first_name || "";
+  $("#pp_last_name").value = state.currentPersonalProfile.last_name || "";
+  $("#pp_document_name_override").value = state.currentPersonalProfile.document_name_override || "";
+  $("#pp_email").value = state.currentPersonalProfile.email || "";
+  $("#pp_phone_number").value = state.currentPersonalProfile.phone_number || "";
+  $("#pp_travel_origin_label").value = state.currentPersonalProfile.travel_origin_label || "Marmelar";
+  $("#pp_postal_address").value = state.currentPersonalProfile.postal_address || "";
+  $("#pp_iban").value = state.currentPersonalProfile.iban || "";
+  $("#pp_iva_text").value = state.currentPersonalProfile.iva_text || "23%";
+  $("#pp_irs_text").value = state.currentPersonalProfile.irs_text || "Sem retenção";
+  $("#pp_make_main").checked = state.currentPersonalProfile.id === personalProfilesData().primary_profile_id;
+  $("#personal-profile-drawer-title").textContent = state.currentPersonalProfile.id ? "Edit Profile" : "Add Profile";
+  $("#personal-profile-drawer-summary").textContent = `Editing ${personalProfileName(state.currentPersonalProfile)}. Update the details, then save.`;
+  syncPersonalDistanceJson();
+  renderPersonalDistanceList();
+  $("#personal-profile-drawer-backdrop").classList.remove("hidden");
+  $("#personal-profile-drawer-backdrop").setAttribute("aria-hidden", "false");
+}
+
+function closePersonalProfileDrawer() {
+  $("#personal-profile-drawer-backdrop").classList.add("hidden");
+  $("#personal-profile-drawer-backdrop").setAttribute("aria-hidden", "true");
+}
+
+function currentPersonalProfileFromForm() {
+  let distances = state.currentPersonalProfile?.travel_distances_by_city || {};
+  const rawJson = $("#pp_distances_json").value.trim();
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) distances = parsed;
+    } catch (_error) {
+      // Keep the interactive list as source of truth when advanced JSON is malformed.
+    }
+  }
+  return {
+    id: $("#pp_id").value.trim(),
+    first_name: $("#pp_first_name").value.trim(),
+    last_name: $("#pp_last_name").value.trim(),
+    document_name_override: $("#pp_document_name_override").value.trim(),
+    email: $("#pp_email").value.trim(),
+    phone_number: $("#pp_phone_number").value.trim(),
+    postal_address: $("#pp_postal_address").value.trim(),
+    iban: $("#pp_iban").value.trim(),
+    iva_text: $("#pp_iva_text").value.trim(),
+    irs_text: $("#pp_irs_text").value.trim(),
+    travel_origin_label: $("#pp_travel_origin_label").value.trim(),
+    travel_distances_by_city: distances,
+  };
+}
+
+function syncPersonalDistanceJson() {
+  $("#pp_distances_json").value = JSON.stringify(state.currentPersonalProfile?.travel_distances_by_city || {}, null, 2);
+}
+
+function renderPersonalDistanceList() {
+  const list = $("#pp_distance_list");
+  const distances = state.currentPersonalProfile?.travel_distances_by_city || {};
+  const rows = Object.entries(distances).map(([city, km]) => `
+    <div class="profile-distance-row">
+      <div>
+        <strong>${escapeHtml(city)}</strong>
+        <span>${escapeHtml(km)} km one way</span>
+      </div>
+      <button type="button" class="mini-button" data-delete-profile-distance="${escapeHtml(city)}">Delete destination</button>
+    </div>
+  `).join("");
+  list.innerHTML = rows || `<div class="data-item">No saved city distances yet.</div>`;
+}
+
+function addPersonalDistance() {
+  if (!state.currentPersonalProfile) state.currentPersonalProfile = { travel_distances_by_city: {} };
+  const city = $("#pp_distance_city").value.trim();
+  const km = Number($("#pp_distance_km").value);
+  if (!city || !Number.isFinite(km) || km < 0) {
+    throw new Error("Add a city and a valid one-way distance.");
+  }
+  state.currentPersonalProfile.travel_distances_by_city = {
+    ...(state.currentPersonalProfile.travel_distances_by_city || {}),
+    [city]: Math.round(km),
+  };
+  $("#pp_distance_city").value = "";
+  $("#pp_distance_km").value = "";
+  syncPersonalDistanceJson();
+  renderPersonalDistanceList();
+}
+
+async function saveCurrentPersonalProfile() {
+  maybeShowBackupReminder("saving a personal profile");
+  const data = await requestJson("/api/profiles/save", {
+    method: "POST",
+    body: JSON.stringify({ profile: currentPersonalProfileFromForm(), make_main: $("#pp_make_main").checked }),
+  });
+  state.reference.personal_profiles = data.profiles;
+  renderPersonalProfiles();
+  setStatus("recorded", data.message || "Personal profile saved.");
+  showAlert(data.message || "Personal profile saved.", "recorded");
+  closePersonalProfileDrawer();
+  await loadReference();
+}
+
+async function setMainPersonalProfile(profileId = "") {
+  const id = profileId || $("#pp_id").value.trim();
+  if (!id) throw new Error("Choose a profile first.");
+  const data = await requestJson("/api/profiles/set-main", {
+    method: "POST",
+    body: JSON.stringify({ profile_id: id }),
+  });
+  state.reference.personal_profiles = data.profiles;
+  renderPersonalProfiles();
+  showAlert(data.message || "Main profile updated.", "recorded");
+  await loadReference();
+}
+
+async function deletePersonalProfile(profileId = "") {
+  const id = profileId || $("#pp_id").value.trim();
+  if (!id) throw new Error("Choose a profile first.");
+  maybeShowBackupReminder("deleting a personal profile");
+  const data = await requestJson("/api/profiles/delete", {
+    method: "POST",
+    body: JSON.stringify({ profile_id: id }),
+  });
+  state.reference.personal_profiles = data.profiles;
+  renderPersonalProfiles();
+  showAlert(data.message || "Personal profile deleted.", "recorded");
+  closePersonalProfileDrawer();
+  await loadReference();
+}
+
+function renderLegalPdfPersonalProfileImport(data) {
+  const card = $("#legalpdf-personal-profile-import-card");
+  const body = $("#legalpdf-personal-profile-import-body");
+  card.classList.remove("hidden");
+  const changes = (data?.changes || []).map((item) => `
+    <div class="data-item">
+      <strong>${escapeHtml(item.display_name || item.profile_id || "")}</strong>
+      <span>${escapeHtml(item.action || "")}</span>
+      <code>${escapeHtml(item.profile_id || "")}</code>
+    </div>
+  `).join("");
+  body.innerHTML = `
+    <p>${escapeHtml(data?.message || "Preview LegalPDF profile copy before applying.")}</p>
+    <div class="data-list">${changes || `<div class="data-item">No profile changes found.</div>`}</div>
+    <p class="field-hint">Confirmation phrase: ${escapeHtml(data?.confirmation_phrase || "COPY LEGALPDF PROFILES")}</p>
+  `;
+}
+
+async function previewLegalPdfPersonalProfiles() {
+  const data = await requestJson("/api/profiles/import-legalpdf-preview", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  state.legalPdfPersonalProfileImportPreview = data;
+  renderLegalPdfPersonalProfileImport(data);
+  showAlert("LegalPDF personal profile import previewed. No files were changed.", "recorded");
+  showPanel("profiles");
+}
+
+async function applyLegalPdfPersonalProfiles() {
+  maybeShowBackupReminder("copying LegalPDF personal profiles");
+  const data = await requestJson("/api/profiles/import-legalpdf", {
+    method: "POST",
+    body: JSON.stringify({
+      confirm_import: Boolean($("#confirm_legalpdf_personal_import").checked),
+      confirmation_phrase: $("#legalpdf_personal_import_phrase").value.trim(),
+      import_reason: $("#legalpdf_personal_import_reason").value.trim(),
+    }),
+  });
+  state.reference.personal_profiles = data.profiles;
+  renderPersonalProfiles();
+  renderLegalPdfPersonalProfileImport({ ...data, confirmation_phrase: "COPY LEGALPDF PROFILES" });
+  showAlert(data.message || "LegalPDF personal profiles copied locally.", "recorded");
+  await loadReference();
+}
+
 function collectProfilePayload() {
   return {
+    personal_profile_id: $("#personal_profile_id").value,
     profile: $("#profile").value,
     case_number: $("#case_number").value.trim(),
     service_date: $("#service_date").value,
@@ -2772,6 +3731,14 @@ async function preflightBatchIntakes(options = {}) {
 
 function applyReview(data) {
   clearPreparedArtifacts("review changed");
+  if (data.effective_intake || data.intake) {
+    state.currentIntake = data.effective_intake || data.intake;
+    fillFormFromIntake(state.currentIntake);
+  }
+  if (data.review_evidence) {
+    state.lastProfileProposal = data.profile_proposal || data.review_evidence.profile_proposal || null;
+    renderSourceEvidence(data);
+  }
   setStatus(data.status, data.message);
   showQuestions(data);
   renderNextSafeAction(data.next_safe_action || null);
@@ -2779,7 +3746,8 @@ function applyReview(data) {
   showAlert(alertNeeded ? data.message : "", data.status === "error" ? "error" : "blocked");
   updateHomeReviewCard(data);
   $("#draft-text").textContent = data.draft_text || data.question_text || "The Portuguese draft will appear here before the PDF is created.";
-  $("#recipient-summary").textContent = data.recipient ? `To: ${data.recipient}` : "Recipient appears here after review.";
+  const profileText = data.personal_profile?.personal_profile_name ? ` · Profile: ${data.personal_profile.personal_profile_name}` : "";
+  $("#recipient-summary").textContent = data.recipient ? `To: ${data.recipient}${profileText}` : `Recipient appears here after review.${profileText}`;
   if (data.active_gmail_drafts || data.duplicate) {
     state.draftLifecycle = {
       status: ["duplicate", "active_draft"].includes(data.status) ? "blocked" : data.status,
@@ -2827,8 +3795,10 @@ function renderPrepared(data) {
   const items = data.items || [];
   const packet = data.packet || null;
   const first = items[0];
+  state.lastManualHandoff = null;
   $("#prepare-results").removeAttribute("data-stale-reason");
   $("#gmail_handoff_reviewed").checked = false;
+  renderManualHandoffPacket(null);
   renderNextSafeAction(data.next_safe_action || null);
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
@@ -3033,14 +4003,30 @@ window.honorariosResetWorkspace = (event) => {
   resetWorkspace();
 };
 
-function showPanel(panelName) {
+function normalizePanelName(panelName) {
+  const normalized = String(panelName || "").replace(/^#/, "").trim();
+  if (normalized === "profile") return "profiles";
+  return ["new-job", "profiles", "references", "history"].includes(normalized) ? normalized : "new-job";
+}
+
+function syncPanelHash(panelName) {
+  const targetHash = `#${panelName}`;
+  if (window.location.hash === targetHash) return;
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${targetHash}`);
+}
+
+function showPanel(panelName, options = {}) {
+  const panel = normalizePanelName(panelName);
   document.querySelectorAll(".nav-button[data-panel]").forEach((item) => {
-    item.classList.toggle("active", item.dataset.panel === panelName);
-    item.classList.toggle("is-active", item.dataset.panel === panelName);
+    item.classList.toggle("active", item.dataset.panel === panel);
+    item.classList.toggle("is-active", item.dataset.panel === panel);
   });
-  ["new-job", "references", "history"].forEach((panel) => {
-    $(`#panel-${panel}`).classList.toggle("hidden", panel !== panelName);
+  ["new-job", "profiles", "references", "history"].forEach((panelId) => {
+    $(`#panel-${panelId}`).classList.toggle("hidden", panelId !== panel);
   });
+  if (options.updateHash !== false) {
+    syncPanelHash(panel);
+  }
 }
 
 function bindNavigation() {
@@ -3106,6 +4092,7 @@ function bindActions() {
     await loadReference();
     await loadAiStatus().catch(() => {});
     await loadGooglePhotosStatus().catch(() => {});
+    await loadGmailStatus().catch(() => {});
     await loadBackupStatus().catch(() => {});
     await loadDiagnosticsStatus().catch(() => {});
   });
@@ -3258,6 +4245,101 @@ function bindActions() {
       showAlert(error.message, "blocked");
     }
   });
+  $("#add-personal-profile").addEventListener("click", async () => {
+    try {
+      const data = await requestJson("/api/profiles/new");
+      openPersonalProfileDrawer(data.profile || {});
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#copy-legalpdf-personal-profiles").addEventListener("click", async () => {
+    try {
+      await previewLegalPdfPersonalProfiles();
+      $("#legalpdf-personal-profile-import-card").classList.remove("hidden");
+      openPersonalProfileDrawer(personalProfilesData().main_profile || {});
+    } catch (error) {
+      showPanel("profiles");
+      $("#legalpdf-personal-profile-import-card").classList.remove("hidden");
+      renderLegalPdfPersonalProfileImport({ status: "blocked", message: error.message, changes: [] });
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#personal-profile-close").addEventListener("click", closePersonalProfileDrawer);
+  $("#pp_close_bottom").addEventListener("click", closePersonalProfileDrawer);
+  $("#personal-profile-drawer-backdrop").addEventListener("click", (event) => {
+    if (event.target?.id === "personal-profile-drawer-backdrop") closePersonalProfileDrawer();
+  });
+  $("#personal-profile-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await saveCurrentPersonalProfile();
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#pp_set_main").addEventListener("click", async () => {
+    try {
+      await setMainPersonalProfile();
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#pp_delete").addEventListener("click", async () => {
+    try {
+      await deletePersonalProfile();
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#pp_add_distance").addEventListener("click", () => {
+    try {
+      addPersonalDistance();
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#pp_distance_list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-delete-profile-distance]");
+    if (!button || !state.currentPersonalProfile) return;
+    const city = button.dataset.deleteProfileDistance || "";
+    delete state.currentPersonalProfile.travel_distances_by_city?.[city];
+    syncPersonalDistanceJson();
+    renderPersonalDistanceList();
+  });
+  $("#personal-profile-list").addEventListener("click", async (event) => {
+    const editButton = event.target.closest("[data-edit-personal-profile]");
+    const mainButton = event.target.closest("[data-main-personal-profile]");
+    const deleteButton = event.target.closest("[data-delete-personal-profile]");
+    try {
+      if (editButton) {
+        const profile = (personalProfilesData().profiles || []).find((item) => item.id === editButton.dataset.editPersonalProfile);
+        openPersonalProfileDrawer(profile || {});
+      } else if (mainButton) {
+        await setMainPersonalProfile(mainButton.dataset.mainPersonalProfile);
+      } else if (deleteButton) {
+        await deletePersonalProfile(deleteButton.dataset.deletePersonalProfile);
+      }
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#preview-legalpdf-personal-profiles").addEventListener("click", async () => {
+    try {
+      await previewLegalPdfPersonalProfiles();
+    } catch (error) {
+      renderLegalPdfPersonalProfileImport({ status: "blocked", message: error.message, changes: [] });
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#apply-legalpdf-personal-profiles").addEventListener("click", async () => {
+    try {
+      await applyLegalPdfPersonalProfiles();
+    } catch (error) {
+      renderLegalPdfPersonalProfileImport({ status: "blocked", message: error.message, changes: [] });
+      showAlert(error.message, "blocked");
+    }
+  });
   $("#service-profile-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -3316,10 +4398,26 @@ function bindActions() {
       showAlert(error.message, "blocked");
     }
   });
+  $("#preview-destination-change").addEventListener("click", async () => {
+    try {
+      await previewDestinationReference();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
   $("#court-email-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
       await saveCourtEmailReference();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#preview-court-email-change").addEventListener("click", async () => {
+    try {
+      await previewCourtEmailReference();
     } catch (error) {
       setStatus("blocked", error.message);
       showAlert(error.message, "blocked");
@@ -3343,6 +4441,30 @@ function bindActions() {
     state.historyStatusFilter = filter;
     renderReference();
   });
+  const handleHistoryDraftAction = async (event) => {
+    const verifyButton = event.target.closest("[data-history-verify-draft]");
+    const markSentButton = event.target.closest("[data-history-mark-sent]");
+    const button = verifyButton || markSentButton;
+    if (!button) return;
+    event.preventDefault();
+    try {
+      button.disabled = true;
+      const source = button.dataset.historySource || "draft_log";
+      if (verifyButton) {
+        await verifyHistoryDraft(button.dataset.historyVerifyDraft, source);
+      } else {
+        await markHistoryDraftSent(button.dataset.historyMarkSent, source);
+      }
+    } catch (error) {
+      renderHistoryDraftActionResult({ status: "blocked", message: error.message }, "blocked");
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    } finally {
+      button.disabled = false;
+    }
+  };
+  $("#duplicate-list").addEventListener("click", handleHistoryDraftAction);
+  $("#draft-log-list").addEventListener("click", handleHistoryDraftAction);
   $("#notification-upload-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -3391,6 +4513,60 @@ function bindActions() {
       setStatus("blocked", error.message);
       showAlert(error.message, "blocked");
       renderGooglePhotosPickerResult({ status: "blocked", message: error.message }, "blocked");
+    }
+  });
+  $("#gmail-redirect-uri").addEventListener("input", () => {
+    $("#gmail-redirect-uri").dataset.userEdited = "true";
+  });
+  $("#save-gmail-config").addEventListener("click", async () => {
+    try {
+      await saveGmailConfig();
+    setStatus("ready", "Gmail OAuth config saved locally. Manual Draft Handoff remains ready. Connect Gmail Draft API when you want optional direct drafting.");
+    } catch (error) {
+      const resultBox = $("#gmail-config-result");
+      if (resultBox) {
+        resultBox.className = "result-card compact-result blocked";
+        resultBox.textContent = error.message;
+      }
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#connect-gmail-oauth").addEventListener("click", async () => {
+    try {
+      await startGmailOAuth();
+    } catch (error) {
+      renderGmailApiResult({ status: "blocked", message: error.message }, "blocked");
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#create-gmail-api-draft").addEventListener("click", async () => {
+    try {
+      await createGmailApiDraft();
+    } catch (error) {
+      renderGmailApiResult({ status: "blocked", message: error.message }, "blocked");
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#verify-gmail-draft").addEventListener("click", async () => {
+    try {
+      await verifyGmailDraft();
+    } catch (error) {
+      renderGmailVerifyResult({ status: "blocked", message: error.message }, "blocked");
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#gmail-api-result").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-verify-created-draft]");
+    if (!button) return;
+    try {
+      await verifyCreatedGmailDraft();
+    } catch (error) {
+      renderGmailVerifyResult({ status: "blocked", message: error.message }, "blocked");
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
     }
   });
   $("#google-photos-picker-start").addEventListener("click", async () => {
@@ -3609,6 +4785,25 @@ function bindActions() {
       showAlert(error.message, "blocked");
     }
   });
+  $("#build-manual-handoff").addEventListener("click", async () => {
+    try {
+      await buildManualHandoffPacket();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#copy-manual-handoff-prompt").addEventListener("click", async () => {
+    try {
+      if (!state.lastManualHandoff?.copyable_prompt) {
+        throw new Error("Build the manual handoff packet before copying its prompt.");
+      }
+      await copyText(state.lastManualHandoff.copyable_prompt);
+      showAlert("Copied manual handoff prompt.", "recorded");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
   $("#parse-gmail-response").addEventListener("click", () => {
     try {
       const ids = applyParsedGmailDraftIds(parseGmailDraftIds($("#gmail-response-raw").value));
@@ -3678,6 +4873,8 @@ function bindActions() {
 
 bindNavigation();
 bindActions();
+window.addEventListener("hashchange", () => showPanel(window.location.hash, { updateHash: false }));
+showPanel(window.location.hash || "new-job", { updateHash: false });
 renderBatchQueue();
 loadReference().catch((error) => {
   setStatus("error", error.message);
@@ -3686,6 +4883,7 @@ loadReference().catch((error) => {
 });
 loadAiStatus().catch(() => {});
 loadGooglePhotosStatus().catch(() => {});
+loadGmailStatus().catch(() => {});
 loadBackupStatus().catch(() => {});
 loadDiagnosticsStatus().catch(() => {});
 loadLegalPdfApplyHistory().catch(() => {});

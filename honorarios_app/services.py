@@ -9,6 +9,7 @@ import re
 import shutil
 import secrets
 import subprocess
+import threading
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,14 @@ from scripts.build_email_draft import (
     validate_draft_payload,
 )
 from scripts.build_packet_pdf import PacketError, build_packet_pdf
-from scripts.create_intake import DEFAULT_SERVICE_PROFILES, build_intake, current_lisbon_date, load_profiles
+from scripts.create_intake import (
+    DEFAULT_SERVICE_PROFILES,
+    build_intake,
+    current_lisbon_date,
+    deep_merge,
+    load_profiles,
+    remove_empty_values,
+)
 from scripts.generate_pdf import (
     BLOCKING_DUPLICATE_STATUSES,
     DEFAULT_DUPLICATE_INDEX,
@@ -65,6 +73,31 @@ from scripts.request_identity import normalize_case_number, request_identity_key
 from scripts.source_classification import detect_translation_source, format_translation_rejection
 
 from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
+from .gmail_draft_api import (
+    create_gmail_draft_from_payload,
+    gmail_oauth_callback,
+    gmail_oauth_start,
+    gmail_status_payload,
+    save_gmail_local_config,
+    verify_gmail_draft_exists,
+)
+from .personal_profiles import (
+    LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE,
+    apply_profile_defaults_to_intake,
+    blank_profile,
+    find_profile,
+    load_legalpdf_profiles,
+    load_profile_store,
+    merge_profile_stores,
+    missing_required_fields,
+    personal_profile_import_report,
+    profile_display_name,
+    profile_from_mapping,
+    profile_summary,
+    profile_to_generator_profile,
+    save_profile_store,
+    validate_profile,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,6 +133,9 @@ EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
 LEGALPDF_APPLY_REPORT_ID_RE = re.compile(r"^legalpdf-import-apply-[A-Za-z0-9_.-]+$")
 AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
+LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-07.manual-handoff.v1"
+_GMAIL_CREATE_LOCKS_GUARD = threading.Lock()
+_GMAIL_CREATE_LOCKS: dict[str, Any] = {}
 
 
 @dataclass(slots=True)
@@ -125,6 +161,8 @@ class AppPaths:
     integration_report_output_dir: Path = DEFAULT_INTEGRATION_REPORT_OUTPUT_DIR
     ai_config: Path = ROOT / "config" / "ai.local.json"
     google_photos_config: Path = ROOT / "config" / "google-photos.local.json"
+    gmail_config: Path = ROOT / "config" / "gmail.local.json"
+    personal_profiles: Path = ROOT / "config" / "profiles.local.json"
 
 
 def timestamp_slug() -> str:
@@ -1297,6 +1335,129 @@ def build_profile_proposal(candidate: dict[str, Any], profile_decision: dict[str
     }
 
 
+def _requested_service_profile_from_intake(intake: dict[str, Any]) -> str:
+    auto_profile = intake.get("auto_profile")
+    requested_from_auto = ""
+    if isinstance(auto_profile, dict):
+        requested_from_auto = str(auto_profile.get("requested_profile") or "").strip()
+    return str(
+        intake.get("profile")
+        or intake.get("profile_name")
+        or intake.get("service_profile_key")
+        or requested_from_auto
+        or ""
+    ).strip()
+
+
+def _service_profile_defaults(profile_key: str, profiles: dict[str, Any]) -> dict[str, Any]:
+    profile = profiles.get(profile_key)
+    if not isinstance(profile, dict):
+        return {}
+    defaults = profile.get("defaults") or {}
+    if not isinstance(defaults, dict):
+        return {}
+    return copy.deepcopy(defaults)
+
+
+def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    """Review an intake and include non-writing service-profile evidence.
+
+    Upload recovery already shows profile decisions and guarded profile proposals.
+    This wrapper gives manual/pasted review the same proactive help without
+    saving reference data or skipping the normal duplicate/PDF/Gmail guards.
+    """
+    profiles = load_profiles(paths.service_profiles)
+    requested_profile = _requested_service_profile_from_intake(intake)
+    existing_auto = intake.get("auto_profile")
+    evidence_text = combine_text_parts(
+        str(intake.get("source_text") or ""),
+        str(intake.get("notes") or ""),
+        str(intake.get("addressee") or ""),
+        str(intake.get("payment_entity") or ""),
+        str(intake.get("recipient_email") or ""),
+        str(intake.get("service_entity") or ""),
+        str(intake.get("service_place") or ""),
+        str(intake.get("service_place_phrase") or ""),
+    )
+    ai_recovery = intake.get("ai_recovery") if isinstance(intake.get("ai_recovery"), dict) else {}
+
+    if isinstance(existing_auto, dict) and existing_auto:
+        profile_decision = copy.deepcopy(existing_auto)
+    else:
+        profile_decision = choose_service_profile(
+            requested_profile=requested_profile,
+            extracted_text=evidence_text,
+            ai_recovery=ai_recovery,
+            profiles=profiles,
+        )
+
+    reviewed_intake = copy.deepcopy(intake)
+    if profile_decision.get("auto_applied"):
+        profile_key = str(profile_decision.get("profile_key") or "").strip()
+        defaults = _service_profile_defaults(profile_key, profiles)
+        reviewed_intake = deep_merge(defaults, remove_empty_values(reviewed_intake))
+        reviewed_intake["service_profile_key"] = profile_key
+        reviewed_intake.setdefault("closing_date", app_current_date())
+    reviewed_intake["auto_profile"] = profile_decision
+
+    review = review_intake(reviewed_intake, paths)
+    candidate = copy.deepcopy(review.get("effective_intake") or reviewed_intake)
+    candidate.setdefault("auto_profile", profile_decision)
+
+    deterministic_fields = extract_candidate_fields(str(candidate.get("source_text") or evidence_text), paths)
+    metadata = {}
+    if str(candidate.get("photo_metadata_date") or "").strip():
+        metadata["visible_metadata_date"] = str(candidate.get("photo_metadata_date") or "").strip()
+    profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
+    field_evidence = build_field_evidence(
+        candidate=candidate,
+        deterministic_fields=deterministic_fields,
+        metadata=metadata,
+        ai_recovery=ai_recovery,
+        profile_decision=profile_decision,
+        profiles=profiles,
+    )
+    review_evidence = {
+        "filename": "Manual review",
+        "kind": "manual_review",
+        "case_number": candidate.get("case_number", ""),
+        "raw_case_number": candidate.get("raw_case_number", candidate.get("source_case_number", "")),
+        "service_date": candidate.get("service_date", ""),
+        "photo_metadata_date": candidate.get("photo_metadata_date", ""),
+        "recipient_email": candidate.get("recipient_email", ""),
+        "service_place": candidate.get("service_place", ""),
+        "question_count": len(review.get("questions") or []),
+        "ai_status": ai_recovery.get("status", "not_attempted") if ai_recovery else "not_attempted",
+        "ai_attempted": bool(ai_recovery.get("attempted")) if ai_recovery else False,
+        "ai_schema_name": ai_recovery.get("schema_name", "") if ai_recovery else "",
+        "ai_prompt_version": ai_recovery.get("prompt_version", "") if ai_recovery else "",
+        "auto_profile": profile_decision,
+        "profile_evidence": build_profile_evidence(profile_decision),
+        "field_evidence": field_evidence,
+        "attention": build_source_attention(
+            candidate=candidate,
+            review=review,
+            ai_recovery=ai_recovery,
+            profile_decision=profile_decision,
+            profile_proposal=profile_proposal,
+            field_evidence=field_evidence,
+            warnings=[],
+        ),
+        "profile_proposal": profile_proposal,
+        "warnings": [],
+        "rendered_page_urls": [],
+        "rendered_page_count": 0,
+    }
+    return {
+        **review,
+        "intake": reviewed_intake,
+        "auto_profile": profile_decision,
+        "profile_proposal": profile_proposal,
+        "review_evidence": review_evidence,
+        "send_allowed": False,
+    }
+
+
 def _first_ai_field(ai_recovery: dict[str, Any], *names: str) -> str:
     fields = ai_recovery.get("fields") if isinstance(ai_recovery, dict) else {}
     if not isinstance(fields, dict):
@@ -1641,6 +1802,7 @@ def recover_source_upload(
     content: bytes,
     source_kind: str,
     profile_name: str = "",
+    personal_profile_id: str = "",
     visible_text: str = "",
     ai_recovery_mode: str = "auto",
     paths: AppPaths,
@@ -1715,6 +1877,8 @@ def recover_source_upload(
         paths=paths,
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
+    if str(personal_profile_id or "").strip():
+        candidate["personal_profile_id"] = str(personal_profile_id or "").strip()
     candidate["auto_profile"] = profile_decision
     profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
     review = review_intake(candidate, paths)
@@ -1855,7 +2019,7 @@ def normalize_destination_record(payload: dict[str, Any], existing: dict[str, An
     }
 
 
-def upsert_known_destination(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+def _destination_upsert_context(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise IntakeError("Destination payload must be an object.")
     records = load_known_destinations(paths)
@@ -1866,15 +2030,52 @@ def upsert_known_destination(payload: dict[str, Any], paths: AppPaths) -> dict[s
     )
     existing = records[existing_index] if existing_index is not None else None
     record = normalize_destination_record(payload, existing)
+    change = reference_change_payload(
+        reference_kind="destination",
+        record_key=record["destination"],
+        before=copy.deepcopy(existing) if existing is not None else None,
+        after=record,
+        reason=str(payload.get("change_reason") or ""),
+    )
+    return {
+        "records": records,
+        "existing_index": existing_index,
+        "existing": existing,
+        "record": record,
+        "reference_change": change,
+    }
+
+
+def preview_known_destination_upsert(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    context = _destination_upsert_context(payload, paths)
+    return {
+        "status": "preview",
+        "kind": "destination",
+        "record": context["record"],
+        "reference_change": context["reference_change"],
+        "write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def upsert_known_destination(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    context = _destination_upsert_context(payload, paths)
+    records = context["records"]
+    existing_index = context["existing_index"]
+    record = context["record"]
     if existing_index is None:
         records.append(record)
     else:
         records[existing_index] = record
     write_json_list(paths.known_destinations, records)
+    change = context["reference_change"]
+    if change.get("changes"):
+        append_profile_change_log(change, paths)
     return {
         "status": "saved",
         "kind": "destination",
         "record": record,
+        "reference_change": change,
         "count": len(records),
         "send_allowed": False,
     }
@@ -1904,7 +2105,7 @@ def normalize_court_email_record(payload: dict[str, Any], existing: dict[str, An
     }
 
 
-def upsert_court_email(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+def _court_email_upsert_context(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise IntakeError("Court email payload must be an object.")
     records = read_json_list(paths.court_emails)
@@ -1915,15 +2116,52 @@ def upsert_court_email(payload: dict[str, Any], paths: AppPaths) -> dict[str, An
     )
     existing = records[existing_index] if existing_index is not None else None
     record = normalize_court_email_record(payload, existing)
+    change = reference_change_payload(
+        reference_kind="court_email",
+        record_key=record["key"],
+        before=copy.deepcopy(existing) if existing is not None else None,
+        after=record,
+        reason=str(payload.get("change_reason") or ""),
+    )
+    return {
+        "records": records,
+        "existing_index": existing_index,
+        "existing": existing,
+        "record": record,
+        "reference_change": change,
+    }
+
+
+def preview_court_email_upsert(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    context = _court_email_upsert_context(payload, paths)
+    return {
+        "status": "preview",
+        "kind": "court_email",
+        "record": context["record"],
+        "reference_change": context["reference_change"],
+        "write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def upsert_court_email(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    context = _court_email_upsert_context(payload, paths)
+    records = context["records"]
+    existing_index = context["existing_index"]
+    record = context["record"]
     if existing_index is None:
         records.append(record)
     else:
         records[existing_index] = record
     write_json_list(paths.court_emails, records)
+    change = context["reference_change"]
+    if change.get("changes"):
+        append_profile_change_log(change, paths)
     return {
         "status": "saved",
         "kind": "court_email",
         "record": record,
+        "reference_change": change,
         "count": len(records),
         "send_allowed": False,
     }
@@ -1937,10 +2175,12 @@ def write_json_object(path: Path, data: dict[str, Any]) -> None:
 BACKUP_SCHEMA_VERSION = 1
 BACKUP_KIND = "honorarios_local_backup"
 BACKUP_RECENT_SECONDS = 24 * 60 * 60
+LOCAL_BACKUP_RESTORE_PHRASE = "RESTORE LOCAL HONORARIOS BACKUP"
 
 
 def backup_dataset_paths(paths: AppPaths) -> dict[str, tuple[Path, type]]:
     return {
+        "personal_profiles": (paths.personal_profiles, dict),
         "service_profiles": (paths.service_profiles, dict),
         "court_emails": (paths.court_emails, list),
         "known_destinations": (paths.known_destinations, list),
@@ -2066,6 +2306,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "temporary synthetic runtime only",
         },
         {
+            "key": "isolated_gmail_api_smoke",
+            "label": "Advanced/future Gmail Draft API smoke",
+            "description": "Advanced future OAuth path check: runs fake Gmail drafts.create against a temporary synthetic runtime, then verifies local draft-log and duplicate-index updates without contacting Google. The recommended daily path remains Manual Draft Handoff.",
+            "command_template": "python scripts/isolated_app_smoke.py --gmail-api-checks --json",
+            "effect": "temporary_isolated_runtime_fake_gmail",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
             "key": "browser_iab_smoke",
             "label": "Browser/IAB review smoke",
             "description": "Uses the Codex in-app Browser runner for the review drawer and batch UI path without local file uploads.",
@@ -2088,6 +2336,38 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --browser-click-through --browser-iab-click-through --browser-upload-supporting-attachment --json",
             "effect": "browser_synthetic_upload_only",
             "writes": "synthetic supporting-attachment artifact only",
+        },
+        {
+            "key": "browser_iab_profile_proposal_smoke",
+            "label": "Browser/IAB profile proposal smoke",
+            "description": "Uses the Codex in-app Browser runner to recover an unknown recurring pattern, preview the proposed Service profile in the guarded editor, and verify LegalPDF import gates without saving.",
+            "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --browser-click-through --browser-iab-click-through --browser-profile-proposal --json",
+            "effect": "browser_ui_only",
+            "writes": "none",
+        },
+        {
+            "key": "browser_iab_recent_work_lifecycle_smoke",
+            "label": "Browser/IAB Recent Work lifecycle smoke",
+            "description": "Runs the Codex in-app Browser runner against an isolated seeded draft history and verifies Recent Work lifecycle controls without clicking Gmail verify or local status writes.",
+            "command_template": "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recent-work-lifecycle --json",
+            "effect": "temporary_isolated_runtime_browser_ui",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
+            "key": "browser_iab_manual_handoff_stale_smoke",
+            "label": "Browser/IAB Manual Draft Handoff stale smoke",
+            "description": "Runs the Codex in-app Browser runner against an isolated runtime, prepares a synthetic replacement, builds the Manual Draft Handoff packet, then verifies intake changes clear stale handoff and record-helper state.",
+            "command_template": "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-manual-handoff-stale --json",
+            "effect": "temporary_isolated_runtime_browser_artifacts",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
+            "key": "browser_iab_gmail_api_smoke",
+            "label": "Browser/IAB fake Gmail Draft API smoke",
+            "description": "Runs the Codex in-app Browser runner against an isolated runtime with fake Gmail mode, creates a synthetic draft through users.drafts.create, then verifies it read-only through users.drafts.get without contacting Google.",
+            "command_template": "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-gmail-api-create --json",
+            "effect": "temporary_isolated_runtime_fake_gmail_browser",
+            "writes": "temporary synthetic runtime only",
         },
     ]
     return {
@@ -2196,6 +2476,11 @@ def preview_local_backup_import(payload: dict[str, Any], paths: AppPaths) -> dic
         "message": "Backup import is valid. Preview only; no local files were changed.",
         "counts": validation["counts"],
         "dataset_names": validation["dataset_names"],
+        "restore_requirements": {
+            "confirmation_phrase": LOCAL_BACKUP_RESTORE_PHRASE,
+            "required_fields": ["confirm_restore", "confirmation_phrase", "restore_reason"],
+        },
+        "write_allowed": False,
         "send_allowed": False,
     }
 
@@ -2349,6 +2634,132 @@ def preview_legalpdf_import(payload: dict[str, Any], paths: AppPaths) -> dict[st
         "court_email_action_summary": _action_summary(court_rows),
         "mapping_count": len(profile_mappings),
         "write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
+    """Return the read-only integration boundary for a future LegalPDF adapter."""
+    return {
+        "status": "ready",
+        "contract_version": LEGALPDF_ADAPTER_CONTRACT_VERSION,
+        "generated_on": app_current_date(),
+        "purpose": "Stable read-only contract for a future LegalPDF Translate caller to use this standalone honorários workflow without copying internals.",
+        "documentation": "docs/legalpdf-adapter-contract.md",
+        "standalone_app": "LegalPDF Honorários",
+        "legalpdf_write_allowed": False,
+        "write_allowed": False,
+        "send_allowed": False,
+        "draft_only": True,
+        "managed_data_changed": False,
+        "recommended_gmail_mode": "manual_handoff",
+        "gmail_boundary": {
+            "primary": "Build a Manual Draft Handoff packet from a prepared payload, create the Gmail draft outside this app, then record returned draft identifiers locally after the handoff checklist is reviewed.",
+            "optional_later": "When OAuth is connected, this app may create drafts through its guarded Gmail Draft API path. This contract does not require that path.",
+            "required_tool": "_create_draft",
+            "attachment_files_shape": "array_of_absolute_existing_paths",
+            "local_recording_requires_reviewed_handoff": True,
+            "send_allowed": False,
+        },
+        "sequence": [
+            {
+                "step": 1,
+                "name": "recover_source_or_start_blank",
+                "endpoint": "/api/sources/upload",
+                "method": "POST",
+                "effect": "stores source evidence in this app only",
+                "notes": "Use local PDF/photo upload evidence or manual entry. LegalPDF should not write its own honorários files directly.",
+            },
+            {
+                "step": 2,
+                "name": "review_intake",
+                "endpoint": "/api/review",
+                "method": "POST",
+                "effect": "read_only",
+                "notes": "Classifies translation set-asides, applies profile/default evidence, returns Portuguese draft text and numbered questions.",
+            },
+            {
+                "step": 3,
+                "name": "apply_numbered_answers_when_needed",
+                "endpoint": "/api/review/apply-answers",
+                "method": "POST",
+                "effect": "read_only_intake_update_in_request_context",
+                "notes": "Compact answers rerun normal review and do not bypass duplicates, date conflicts, recipient checks, or draft-only safeguards.",
+            },
+            {
+                "step": 4,
+                "name": "check_batch_preflight",
+                "endpoint": "/api/prepare/preflight",
+                "method": "POST",
+                "effect": "read_only",
+                "notes": "Validate all queued requests before any PDF, payload, manifest, or draft record is written.",
+            },
+            {
+                "step": 5,
+                "name": "prepare_artifacts",
+                "endpoint": "/api/prepare",
+                "method": "POST",
+                "effect": "writes_this_app_output_only",
+                "notes": "Creates PDFs, PNG previews when available, manifests, and draft payloads after review/preflight succeeds.",
+            },
+            {
+                "step": 6,
+                "name": "build_manual_handoff_packet",
+                "endpoint": "/api/gmail/manual-handoff",
+                "method": "POST",
+                "effect": "read_only",
+                "notes": "Reloads and validates the prepared payload, then returns copy-ready draft-only handoff text with attachment names and hashes.",
+            },
+            {
+                "step": 7,
+                "name": "record_created_draft",
+                "endpoint": "/api/drafts/record",
+                "method": "POST",
+                "effect": "writes_this_app_duplicate_and_draft_logs",
+                "notes": "Use only after the Gmail draft exists and the PDF preview plus exact draft args were reviewed.",
+            },
+        ],
+        "caller_responsibilities": [
+            "Treat prepared artifacts as stale after any source, review, profile, queue, packet-mode, or intake change.",
+            "Show numbered missing questions to the user and rerun review after answers.",
+            "Stop for translation or word-count sources instead of generating an interpreting request.",
+            "Stop for metadata/document date conflicts unless the date is explicitly user-confirmed.",
+            "Respect duplicate-index and active-draft blockers; use correction mode only with a short reason.",
+            "Use packet underlying_requests when one Gmail draft covers multiple requerimentos.",
+            "Never write to LegalPDF Translate from this app contract.",
+        ],
+        "authoritative_sources": [
+            "this_project_pdf_generator",
+            "this_project_duplicate_index",
+            "this_project_service_profiles",
+            "this_project_personal_profiles",
+            "this_project_gmail_draft_payload_validator",
+        ],
+        "forbidden_capabilities": [
+            "gmail_message_sending",
+            "gmail_draft_sending",
+            "gmail_trash_or_delete",
+            "gmail_mailbox_search",
+            "legalpdf_translate_writes",
+            "direct_duplicate_index_bypass",
+            "direct_pdf_generation_without_review",
+        ],
+        "safety_flags": {
+            "translation_set_aside_before_questions": True,
+            "numbered_questions_required": True,
+            "metadata_conflicts_block_generation": True,
+            "duplicates_block_generation": True,
+            "active_drafts_block_generation_without_correction": True,
+            "packet_underlying_requests_required": True,
+            "manual_handoff_primary_when_gmail_oauth_disconnected": True,
+            "secret_free": True,
+        },
+        "profiles": {
+            "personal_profiles": "Selected personal profile supplies applicant, address, IBAN/payment wording, IVA/IRS, travel origin, and personal distances.",
+            "service_profiles": "Auto-detected or explicitly selected service profile supplies payment/service-place pattern, recipient, and transport defaults.",
+        },
+        "paths_are_contractual": False,
+        "private_runtime_files_exposed": False,
         "send_allowed": False,
     }
 
@@ -3714,9 +4125,15 @@ def export_legalpdf_import_report(payload: dict[str, Any], paths: AppPaths) -> d
 def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not bool(payload.get("confirm_restore")):
         raise IntakeError("Backup restore requires confirm_restore=true.")
+    phrase = str(payload.get("confirmation_phrase") or "").strip()
+    if phrase != LOCAL_BACKUP_RESTORE_PHRASE:
+        raise IntakeError(f"Backup restore requires the exact confirmation phrase: {LOCAL_BACKUP_RESTORE_PHRASE}")
+    restore_reason = str(payload.get("restore_reason") or "").strip()
+    if not restore_reason:
+        raise IntakeError("Backup restore requires a short restore_reason explaining why this rollback is safe.")
     validation = validate_backup_payload(payload, paths)
     pre_restore_backup = backup_payload(paths)
-    pre_restore_backup["reason"] = "Automatic backup before local restore."
+    pre_restore_backup["reason"] = f"Automatic backup before local restore. Restore reason: {restore_reason}"
     pre_restore_file = write_backup_file(pre_restore_backup, paths, prefix="pre-restore-backup")
 
     dataset_paths = backup_dataset_paths(paths)
@@ -3733,6 +4150,7 @@ def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
         "restored_datasets": validation["dataset_names"],
         "counts": validation["counts"],
         "pre_restore_backup_file": str(pre_restore_file),
+        "restore_reason": restore_reason,
         "backup_status": backup_status_payload(paths),
         "send_allowed": False,
     }
@@ -3786,6 +4204,40 @@ def profile_change_payload(
         "after_hash": after_hash,
         "before_profile": copy.deepcopy(before) if before is not None else None,
         "after_profile": copy.deepcopy(after) if after is not None else None,
+        "changes": changes,
+        "send_allowed": False,
+    }
+
+
+def reference_change_payload(
+    *,
+    reference_kind: str,
+    record_key: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    reason: str = "",
+) -> dict[str, Any]:
+    changed_at = datetime.now(timezone.utc).isoformat()
+    changes = diff_json_values(before or {}, after or {})
+    if before is None and after is not None:
+        action = "created"
+    elif before is not None and after is None:
+        action = "deleted"
+    else:
+        action = "updated" if changes else "unchanged"
+    after_hash = stable_json_hash(after) if after is not None else ""
+    return {
+        "change_id": f"{timestamp_slug()}_{(after_hash or stable_json_hash(before or {}))[:12]}",
+        "changed_at": changed_at,
+        "reference_kind": reference_kind,
+        "record_key": record_key,
+        "profile_key": f"{reference_kind}:{record_key}",
+        "action": action,
+        "reason": str(reason or "").strip(),
+        "before_hash": stable_json_hash(before) if before is not None else "",
+        "after_hash": after_hash,
+        "before_record": copy.deepcopy(before) if before is not None else None,
+        "after_record": copy.deepcopy(after) if after is not None else None,
         "changes": changes,
         "send_allowed": False,
     }
@@ -4231,10 +4683,10 @@ def apply_numbered_answers(payload: dict[str, Any], paths: AppPaths) -> dict[str
         apply_answer_to_intake(intake, field, mapped[field])
         applied_fields.append(field)
 
-    review = review_intake(intake, paths)
+    review = review_intake_with_profile_evidence(intake, paths)
     return {
         **review,
-        "intake": intake,
+        "intake": review.get("intake", intake),
         "applied_fields": applied_fields,
         "mapped_answers": mapped,
         "send_allowed": False,
@@ -4416,23 +4868,553 @@ def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | No
     )
 
 
-def prepared_next_safe_action(packet_mode: bool = False) -> dict[str, Any]:
+def prepared_next_safe_action(packet_mode: bool = False, gmail_status: dict[str, Any] | None = None) -> dict[str, Any]:
     attachment_label = "packet PDF" if packet_mode else "generated PDF"
+    if (
+        isinstance(gmail_status, dict)
+        and gmail_status.get("recommended_mode") == "gmail_api"
+        and bool(gmail_status.get("draft_create_ready"))
+    ):
+        return next_safe_action(
+            state="review_gmail_draft_args",
+            title="Create Gmail Draft in-app",
+            detail=(
+                f"Inspect the {attachment_label}, recipient, body, and attachment array. Then tick the Gmail handoff checklist and use the guarded Create Gmail Draft action. Manual Draft Handoff remains available as a fallback."
+            ),
+            button_id="create-gmail-api-draft",
+            blocked=False,
+        )
     return next_safe_action(
         state="review_gmail_draft_args",
-        title="Review Gmail draft args before handoff",
+        title="Use Manual Draft Handoff",
         detail=(
-            f"Inspect the {attachment_label}, recipient, body, and attachment array. Then use Gmail _create_draft outside the app and record the returned IDs locally."
+            f"Inspect the {attachment_label}, recipient, body, and attachment array. Then use the exact _create_draft args in Manual Draft Handoff and record the returned Gmail IDs locally."
         ),
         button_id="record-parsed-prepared-draft",
         blocked=False,
     )
 
 
+def _legacy_profile_defaults(paths: AppPaths) -> dict[str, Any]:
+    return _read_json_object_if_exists(paths.profile)
+
+
+def load_personal_profiles(paths: AppPaths) -> dict[str, Any]:
+    return load_profile_store(paths.personal_profiles, paths.profile, paths.known_destinations)
+
+
+def personal_profiles_summary(paths: AppPaths) -> dict[str, Any]:
+    return profile_summary(load_personal_profiles(paths))
+
+
+def selected_personal_profile(paths: AppPaths, intake: dict[str, Any] | None = None) -> dict[str, Any]:
+    store = load_personal_profiles(paths)
+    profile_id = str((intake or {}).get("personal_profile_id") or "").strip()
+    return find_profile(store, profile_id)
+
+
+def generator_profile_for_intake(paths: AppPaths, intake: dict[str, Any] | None = None) -> dict[str, Any]:
+    profile = selected_personal_profile(paths, intake)
+    return profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
+
+
+def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    profile = selected_personal_profile(paths, intake)
+    effective, provenance = apply_profile_defaults_to_intake(intake, profile)
+    generator_profile = profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
+    return effective, generator_profile, provenance
+
+
+def personal_profile_payload(profile: dict[str, Any], *, is_main: bool = False) -> dict[str, Any]:
+    return {
+        **profile,
+        "display_name": profile_display_name(profile),
+        "is_main": is_main,
+        "missing_required_fields": missing_required_fields(profile),
+    }
+
+
+def new_personal_profile(paths: AppPaths) -> dict[str, Any]:
+    profile = blank_profile()
+    return {
+        "status": "created",
+        "profile": personal_profile_payload(profile),
+        "write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def save_personal_profile(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    incoming = profile_from_mapping(payload.get("profile") if isinstance(payload.get("profile"), dict) else payload)
+    validate_profile(incoming)
+    store = load_personal_profiles(paths)
+    profiles = [
+        copy.deepcopy(incoming) if str(profile.get("id") or "") == incoming["id"] else profile
+        for profile in store.get("profiles", [])
+        if isinstance(profile, dict)
+    ]
+    if incoming["id"] not in {str(profile.get("id") or "") for profile in profiles}:
+        profiles.append(copy.deepcopy(incoming))
+    primary_id = incoming["id"] if bool(payload.get("make_main") or payload.get("is_main")) else store.get("primary_profile_id")
+    saved = save_profile_store(
+        paths.personal_profiles,
+        paths.profile,
+        {"schema_version": 1, "primary_profile_id": primary_id, "profiles": profiles},
+        legacy_defaults=_legacy_profile_defaults(paths),
+    )
+    return {
+        "status": "saved",
+        "message": f"Saved personal profile {profile_display_name(incoming)}.",
+        "profile": personal_profile_payload(incoming, is_main=saved.get("primary_profile_id") == incoming["id"]),
+        "profiles": profile_summary(saved),
+        "write_allowed": True,
+        "send_allowed": False,
+    }
+
+
+def set_main_personal_profile(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    profile_id = str(payload.get("profile_id") or payload.get("id") or "").strip()
+    if not profile_id:
+        raise IntakeError("Missing personal profile id.")
+    store = load_personal_profiles(paths)
+    profile = find_profile(store, profile_id)
+    saved = save_profile_store(
+        paths.personal_profiles,
+        paths.profile,
+        {"schema_version": 1, "primary_profile_id": profile_id, "profiles": store.get("profiles", [])},
+        legacy_defaults=_legacy_profile_defaults(paths),
+    )
+    return {
+        "status": "saved",
+        "message": f"{profile_display_name(profile)} is now the main personal profile.",
+        "profiles": profile_summary(saved),
+        "write_allowed": True,
+        "send_allowed": False,
+    }
+
+
+def delete_personal_profile(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    profile_id = str(payload.get("profile_id") or payload.get("id") or "").strip()
+    if not profile_id:
+        raise IntakeError("Missing personal profile id.")
+    store = load_personal_profiles(paths)
+    profiles = [profile for profile in store.get("profiles", []) if isinstance(profile, dict)]
+    if len(profiles) <= 1:
+        raise IntakeError("Cannot delete the only personal profile.")
+    remaining = [profile for profile in profiles if str(profile.get("id") or "") != profile_id]
+    if len(remaining) == len(profiles):
+        raise IntakeError(f"Unknown personal profile: {profile_id}")
+    primary_id = str(store.get("primary_profile_id") or "")
+    if primary_id == profile_id:
+        primary_id = str(remaining[0].get("id") or "")
+    saved = save_profile_store(
+        paths.personal_profiles,
+        paths.profile,
+        {"schema_version": 1, "primary_profile_id": primary_id, "profiles": remaining},
+        legacy_defaults=_legacy_profile_defaults(paths),
+    )
+    return {
+        "status": "deleted",
+        "message": "Personal profile deleted locally. LegalPDF Translate was not modified.",
+        "profiles": profile_summary(saved),
+        "write_allowed": True,
+        "send_allowed": False,
+    }
+
+
+def preview_legalpdf_personal_profile_import(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    incoming = load_legalpdf_profiles(payload)
+    current = load_personal_profiles(paths)
+    _merged, changes = merge_profile_stores(current, incoming)
+    return {
+        "status": "previewed",
+        "message": "LegalPDF personal profile import preview is ready. No local files were changed and LegalPDF was not modified.",
+        "incoming_profile_count": len(incoming.get("profiles") or []),
+        "current_profile_count": len(current.get("profiles") or []),
+        "primary_profile_id": incoming.get("primary_profile_id"),
+        "changes": changes,
+        "confirmation_phrase": LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE,
+        "write_allowed": False,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def apply_legalpdf_personal_profile_import(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    if not bool(payload.get("confirm_import")):
+        raise IntakeError("LegalPDF profile import requires confirm_import=true and the exact confirmation phrase.")
+    phrase = str(payload.get("confirmation_phrase") or "").strip()
+    if phrase != LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE:
+        raise IntakeError(f'LegalPDF profile import requires confirmation phrase "{LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE}".')
+    reason = str(payload.get("import_reason") or payload.get("reason") or "").strip()
+    if len(reason) < 8:
+        raise IntakeError("LegalPDF profile import requires a short import_reason.")
+    incoming = load_legalpdf_profiles(payload)
+    current = load_personal_profiles(paths)
+    merged, changes = merge_profile_stores(current, incoming)
+    pre_import_backup = backup_payload(paths)
+    pre_import_backup["reason"] = f"Automatic backup before LegalPDF personal profile import: {reason}"
+    backup_file = write_backup_file(pre_import_backup, paths, prefix="pre-legalpdf-profiles-import-backup")
+    saved = save_profile_store(
+        paths.personal_profiles,
+        paths.profile,
+        merged,
+        legacy_defaults=_legacy_profile_defaults(paths),
+    )
+    report = personal_profile_import_report(changes, reason, str(backup_file))
+    paths.integration_report_output_dir.mkdir(parents=True, exist_ok=True)
+    report_id = f"legalpdf-personal-profiles-import-{timestamp_slug()}-{secrets.token_hex(4)}"
+    report_file = paths.integration_report_output_dir / f"{report_id}.json"
+    report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {
+        "status": "imported",
+        "message": "LegalPDF personal profiles were copied into this Honorários app. LegalPDF Translate was not modified.",
+        "profiles": profile_summary(saved),
+        "changes": changes,
+        "pre_import_backup_file": str(backup_file),
+        "import_report_file": str(report_file),
+        "backup_status": backup_status_payload(paths),
+        "write_allowed": True,
+        "legalpdf_write_allowed": False,
+        "send_allowed": False,
+    }
+
+
+def gmail_api_status(paths: AppPaths) -> dict[str, Any]:
+    return gmail_status_payload(paths.gmail_config)
+
+
+def gmail_api_config_save(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    return save_gmail_local_config(payload, paths.gmail_config)
+
+
+def gmail_api_oauth_start(paths: AppPaths) -> dict[str, Any]:
+    return gmail_oauth_start(paths.gmail_config)
+
+
+def gmail_api_oauth_callback(*, code: str, state: str, paths: AppPaths) -> dict[str, Any]:
+    return gmail_oauth_callback(code=code, state=state, config_path=paths.gmail_config)
+
+
+def gmail_api_draft_verify(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    return verify_gmail_draft_exists(payload, paths.gmail_config)
+
+
+def _load_prepared_draft_payload(payload_path: str | Path) -> tuple[Path, dict[str, Any]]:
+    raw_path = Path(str(payload_path or "").strip())
+    if not str(raw_path):
+        raise IntakeError("Gmail draft creation requires a prepared draft payload path.")
+    path = raw_path if raw_path.is_absolute() else ROOT / raw_path
+    absolute = path.resolve()
+    if not absolute.exists() or not absolute.is_file():
+        raise IntakeError(f"Prepared draft payload does not exist: {absolute}")
+    try:
+        payload = json.loads(absolute.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise IntakeError(f"Prepared draft payload is invalid JSON: {absolute}") from exc
+    if not isinstance(payload, dict):
+        raise IntakeError(f"Prepared draft payload must be a JSON object: {absolute}")
+    errors = validate_draft_payload(payload)
+    if errors:
+        raise IntakeError("Prepared draft payload is not Gmail-ready: " + "; ".join(errors))
+    return absolute, payload
+
+
+def _prepared_payload_request_identities(draft_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    source_requests = draft_payload.get("underlying_requests")
+    if not isinstance(source_requests, list) or not source_requests:
+        source_requests = [draft_payload]
+
+    identities: list[dict[str, Any]] = []
+    for source in source_requests:
+        if not isinstance(source, dict):
+            continue
+        case_number = str(source.get("case_number") or "").strip()
+        service_date = str(source.get("service_date") or "").strip()
+        if not case_number or not service_date:
+            continue
+        identity: dict[str, Any] = {
+            "case_number": case_number,
+            "service_date": service_date,
+            "service_period_label": str(source.get("service_period_label") or "").strip(),
+            "service_start_time": str(source.get("service_start_time") or "").strip(),
+            "service_end_time": str(source.get("service_end_time") or "").strip(),
+        }
+        identities.append(identity)
+
+    if not identities:
+        raise IntakeError("Prepared Gmail payload is missing case/date identity for duplicate checks.")
+    return identities
+
+
+def _gmail_correction_reason(payload: dict[str, Any]) -> str:
+    for key in ("correction_reason", "reason", "notes"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _lifecycle_blocking_draft_ids(lifecycle: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    active = lifecycle.get("active_gmail_drafts") if isinstance(lifecycle.get("active_gmail_drafts"), list) else []
+    duplicates = lifecycle.get("duplicate_records") if isinstance(lifecycle.get("duplicate_records"), list) else []
+    for record in [*active, *duplicates]:
+        if not isinstance(record, dict):
+            continue
+        draft_id = str(record.get("draft_id") or "").strip()
+        status = str(record.get("status") or "").strip()
+        if draft_id and status in {"active", "drafted"}:
+            ids.append(draft_id)
+    return sorted(set(ids))
+
+
+def _assert_gmail_create_duplicate_clear(
+    *,
+    request_payload: dict[str, Any],
+    draft_payload: dict[str, Any],
+    paths: AppPaths,
+) -> dict[str, Any]:
+    identities = _prepared_payload_request_identities(draft_payload)
+    lifecycles: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    for identity in identities:
+        lifecycle = draft_lifecycle_for_intake(identity, paths)
+        lifecycle["request_identity"] = duplicate_key_payload(identity)
+        lifecycles.append(lifecycle)
+        if lifecycle.get("status") != "clear":
+            blockers.append(lifecycle)
+
+    if not blockers:
+        return {
+            "requests": [duplicate_key_payload(identity) for identity in identities],
+            "lifecycles": lifecycles,
+            "blockers": [],
+            "correction_mode": False,
+        }
+
+    sent_blockers = [
+        blocker for blocker in blockers
+        if not bool(blocker.get("replacement_allowed"))
+    ]
+    if sent_blockers:
+        descriptions = [
+            " · ".join(str(item) for item in blocker.get("request_identity", {}).values() if item)
+            for blocker in sent_blockers
+        ]
+        raise IntakeError(
+            "Gmail draft creation blocked before contacting Gmail because a sent or non-replaceable "
+            f"request already exists: {'; '.join(descriptions)}."
+        )
+
+    supersedes = _coerce_supersedes(request_payload.get("supersedes"))
+    correction_reason = _gmail_correction_reason(request_payload)
+    if not supersedes or len(correction_reason) < 8:
+        raise IntakeError(
+            "Gmail draft creation blocked before contacting Gmail because an active/drafted request already exists. "
+            "Use correction mode with supersedes plus a short correction reason before creating a replacement draft."
+        )
+
+    required_supersedes = sorted(set().union(*[_lifecycle_blocking_draft_ids(blocker) for blocker in blockers]))
+    if required_supersedes:
+        missing = [draft_id for draft_id in required_supersedes if draft_id not in supersedes]
+        if missing:
+            raise IntakeError(
+                "Correction mode must supersede the blocking draft ID(s) before Gmail is contacted: "
+                + ", ".join(missing)
+            )
+        draft_log_ids = {
+            str(record.get("draft_id") or "").strip()
+            for record in load_draft_log(paths.draft_log)
+            if str(record.get("draft_id") or "").strip()
+        }
+        unknown = [draft_id for draft_id in supersedes if draft_id not in draft_log_ids]
+        if unknown:
+            raise IntakeError(
+                "Correction mode references draft ID(s) that are not in the local draft log, so Gmail was not contacted: "
+                + ", ".join(unknown)
+            )
+    elif any(blocker.get("duplicate_records") for blocker in blockers):
+        raise IntakeError(
+            "Gmail draft creation blocked before contacting Gmail because a drafted duplicate has no draft ID to supersede. "
+            "Mark the old record as superseded/trashed first, then create the replacement."
+        )
+
+    return {
+        "requests": [duplicate_key_payload(identity) for identity in identities],
+        "lifecycles": lifecycles,
+        "blockers": blockers,
+        "correction_mode": True,
+        "correction_reason": correction_reason,
+        "supersedes": supersedes,
+    }
+
+
+def _gmail_create_confirmation(
+    *,
+    gmail_result: dict[str, Any],
+    record_result: dict[str, Any],
+    payload_path: Path,
+    duplicate_check: dict[str, Any],
+    paths: AppPaths,
+) -> dict[str, Any]:
+    attachment_files = [str(item) for item in gmail_result.get("attachment_files") or []]
+    attachment_hashes = dict(gmail_result.get("attachment_sha256") or {})
+    return {
+        "status": "created",
+        "provider": "gmail_api",
+        "gmail_api_action": gmail_result.get("gmail_api_action", "users.drafts.create"),
+        "fake_mode": bool(gmail_result.get("fake_mode")),
+        "draft_id": gmail_result.get("draft_id", ""),
+        "message_id": gmail_result.get("message_id", ""),
+        "thread_id": gmail_result.get("thread_id", ""),
+        "to": gmail_result.get("to", ""),
+        "subject": gmail_result.get("subject", ""),
+        "attachment_files": attachment_files,
+        "attachment_basenames": list(gmail_result.get("attachment_basenames") or [Path(item).name for item in attachment_files]),
+        "attachment_sha256": attachment_hashes,
+        "attachment_count": len(attachment_files),
+        "duplicate_records_created": list(record_result.get("duplicate_keys") or []),
+        "recorded_duplicate_count": int(record_result.get("recorded_duplicate_count") or 0),
+        "superseded_drafts": list(record_result.get("superseded_drafts") or []),
+        "duplicate_check_requests": list(duplicate_check.get("requests") or []),
+        "correction_mode": bool(duplicate_check.get("correction_mode")),
+        "draft_payload": str(payload_path),
+        "draft_log_path": str(paths.draft_log.resolve()),
+        "duplicate_index_path": str(paths.duplicate_index.resolve()),
+        "draft_only": True,
+        "send_allowed": False,
+    }
+
+
+def _gmail_create_lock_for_payload(draft_payload: dict[str, Any]):
+    identities = [
+        duplicate_key_payload(identity)
+        for identity in _prepared_payload_request_identities(draft_payload)
+    ]
+    key = json.dumps(identities, ensure_ascii=True, sort_keys=True)
+    with _GMAIL_CREATE_LOCKS_GUARD:
+        lock = _GMAIL_CREATE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _GMAIL_CREATE_LOCKS[key] = lock
+        return lock
+
+
+def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    if not bool(payload.get("gmail_handoff_reviewed")):
+        raise IntakeError("Review the PDF preview and exact Gmail draft args before creating a Gmail draft.")
+    payload_path, draft_payload = _load_prepared_draft_payload(payload.get("payload") or payload.get("draft_payload"))
+    with _gmail_create_lock_for_payload(draft_payload):
+        duplicate_check = _assert_gmail_create_duplicate_clear(
+            request_payload=payload,
+            draft_payload=draft_payload,
+            paths=paths,
+        )
+        try:
+            result = create_gmail_draft_from_payload(draft_payload, paths.gmail_config)
+        except IntakeError:
+            raise
+        except Exception as exc:
+            raise IntakeError(
+                "Gmail Draft API could not create the draft. No local draft record or duplicate-index entry was written. "
+                "Check Gmail connection status before trying again."
+            ) from exc
+        record_payload = {
+            "payload": str(payload_path),
+            "draft_id": result["draft_id"],
+            "message_id": result["message_id"],
+            "thread_id": result.get("thread_id", ""),
+            "status": "active",
+            "notes": str(payload.get("notes") or payload.get("correction_reason") or "Created through the local Gmail Draft API.").strip(),
+            "supersedes": _coerce_supersedes(payload.get("supersedes")),
+        }
+        record_result = record_draft(record_payload, paths)
+        confirmation = _gmail_create_confirmation(
+            gmail_result=result,
+            record_result=record_result,
+            payload_path=payload_path,
+            duplicate_check=duplicate_check,
+            paths=paths,
+        )
+        return {
+            "status": "created",
+            "message": "Gmail draft created and recorded locally. Review and send it manually in Gmail.",
+            "gmail_api_action": result["gmail_api_action"],
+            "draft_id": result["draft_id"],
+            "message_id": result["message_id"],
+            "thread_id": result.get("thread_id", ""),
+            "to": result["to"],
+            "subject": result["subject"],
+            "attachment_basenames": result["attachment_basenames"],
+            "attachment_files": result["attachment_files"],
+            "attachment_sha256": result["attachment_sha256"],
+            "draft_payload": str(payload_path),
+            "record": record_result,
+            "confirmation": confirmation,
+            "duplicate_check": duplicate_check,
+            "duplicate_keys": record_result.get("duplicate_keys", []),
+            "recorded_duplicate_count": record_result.get("recorded_duplicate_count", 0),
+            "fake_mode": bool(result.get("fake_mode")),
+            "draft_only": True,
+            "send_allowed": False,
+        }
+
+
+def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    payload_path, draft_payload = _load_prepared_draft_payload(payload.get("payload") or payload.get("draft_payload"))
+    args = draft_payload.get("gmail_create_draft_args")
+    if not isinstance(args, dict):
+        raise IntakeError("Prepared draft payload is missing gmail_create_draft_args.")
+
+    attachment_files = [str(item) for item in args.get("attachment_files") or []]
+    attachment_basenames = [Path(item).name for item in attachment_files]
+    attachment_hashes: dict[str, str] = {}
+    for item in attachment_files:
+        path = Path(item)
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        attachment_hashes[str(path)] = digest.hexdigest()
+
+    args_json = json.dumps(args, ensure_ascii=False, indent=2)
+    prompt = "\n".join([
+        "Create a Gmail draft only using `_create_draft` with these exact arguments.",
+        "Leave it as a draft for manual review.",
+        "Return draft_id, message_id, and thread_id so I can record the draft locally.",
+        "",
+        args_json,
+    ])
+    return {
+        "status": "ready",
+        "mode": "manual_handoff",
+        "message": "Manual handoff packet ready. Copy the prompt into the draft-only Gmail connector, then paste the returned IDs back here.",
+        "gmail_tool": "_create_draft",
+        "payload_path": str(payload_path),
+        "to": str(args.get("to") or ""),
+        "subject": str(args.get("subject") or ""),
+        "body": str(args.get("body") or ""),
+        "attachment_files": attachment_files,
+        "attachment_basenames": attachment_basenames,
+        "attachment_sha256": attachment_hashes,
+        "attachment_count": len(attachment_files),
+        "gmail_create_draft_args": args,
+        "copyable_args_json": args_json,
+        "copyable_prompt": prompt,
+        "record_next_step": "After `_create_draft` returns IDs, paste the response into Manual Draft Handoff and record locally.",
+        "draft_only": True,
+        "send_allowed": False,
+        "write_allowed": False,
+        "managed_data_changed": False,
+    }
+
+
 def load_app_reference(paths: AppPaths) -> dict[str, Any]:
     duplicate_records = read_json_list(paths.duplicate_index)
     draft_records = read_json_list(paths.draft_log)
     return {
+        "personal_profiles": personal_profiles_summary(paths),
         "service_profiles": load_profiles(paths.service_profiles),
         "court_emails": read_json_list(paths.court_emails),
         "known_destinations": load_known_destinations(paths),
@@ -4443,6 +5425,7 @@ def load_app_reference(paths: AppPaths) -> dict[str, Any]:
             "tool": "_create_draft",
             "send_allowed": False,
             "draft_only": True,
+            "api": gmail_status_payload(paths.gmail_config),
         },
         "ai": ai_status_payload(paths.ai_config),
         "backup": backup_status_payload(paths),
@@ -4451,7 +5434,7 @@ def load_app_reference(paths: AppPaths) -> dict[str, Any]:
 
 def build_profile_intake(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     profiles = load_profiles(paths.service_profiles)
-    return build_intake(
+    intake = build_intake(
         profile_name=str(payload.get("profile") or payload.get("profile_name") or ""),
         case_number=str(payload.get("case_number") or ""),
         service_date=str(payload.get("service_date") or ""),
@@ -4481,6 +5464,14 @@ def build_profile_intake(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
         source_text=payload.get("source_text"),
         notes=payload.get("notes"),
     )
+    personal_profile_id = str(payload.get("personal_profile_id") or "").strip()
+    if personal_profile_id:
+        intake["personal_profile_id"] = personal_profile_id
+    profile_name = str(payload.get("profile") or payload.get("profile_name") or "").strip()
+    if profile_name:
+        intake["service_profile_key"] = profile_name
+    effective, _profile, _provenance = effective_intake_for_profile(intake, paths)
+    return effective
 
 
 def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
@@ -4494,7 +5485,18 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "send_allowed": False,
         }
 
-    questions = missing_questions(intake)
+    try:
+        effective_intake, profile, profile_provenance = effective_intake_for_profile(intake, paths)
+    except (IntakeError, OSError, json.JSONDecodeError) as exc:
+        return {
+            "status": "error",
+            "message": str(exc),
+            "questions": [],
+            "next_safe_action": review_next_safe_action("error"),
+            "send_allowed": False,
+        }
+
+    questions = missing_questions(effective_intake)
     if questions:
         return {
             "status": "needs_info",
@@ -4505,7 +5507,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "send_allowed": False,
         }
 
-    duplicate = find_duplicate_record(intake, paths.duplicate_index)
+    duplicate = find_duplicate_record(effective_intake, paths.duplicate_index)
     if duplicate:
         return {
             "status": "duplicate",
@@ -4517,7 +5519,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         }
 
     draft_log = load_draft_log(paths.draft_log)
-    active_drafts = active_drafts_for(intake, draft_log)
+    active_drafts = active_drafts_for(effective_intake, draft_log)
     if active_drafts:
         draft_ids = ", ".join(str(record.get("draft_id") or "") for record in active_drafts)
         return {
@@ -4530,11 +5532,10 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         }
 
     try:
-        profile = load_json(paths.profile)
         email_config = load_json(paths.email_config)
         court_directory = read_json_list(paths.court_emails)
-        rendered = build_rendered_request(intake, profile)
-        recipient, recipient_source = resolve_recipient(intake, email_config, court_directory)
+        rendered = build_rendered_request(effective_intake, profile)
+        recipient, recipient_source = resolve_recipient(effective_intake, email_config, court_directory)
     except (IntakeError, OSError, json.JSONDecodeError) as exc:
         return {
             "status": "error",
@@ -4548,11 +5549,13 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         "status": "ready",
         "message": "Ready for PDF generation and Gmail draft payload preparation.",
         "case_number": rendered.case_number,
-        "service_date": str(intake.get("service_date") or intake.get("photo_metadata_date") or ""),
-        "payment_entity": str(intake.get("payment_entity") or ""),
-        "service_entity": str(intake.get("service_entity") or intake.get("service_place") or ""),
+        "service_date": str(effective_intake.get("service_date") or effective_intake.get("photo_metadata_date") or ""),
+        "payment_entity": str(effective_intake.get("payment_entity") or ""),
+        "service_entity": str(effective_intake.get("service_entity") or effective_intake.get("service_place") or ""),
         "recipient": recipient,
         "recipient_source": recipient_source,
+        "effective_intake": effective_intake,
+        "personal_profile": profile_provenance,
         "draft_text": rendered_request_text(rendered),
         "questions": [],
         "next_safe_action": review_next_safe_action("ready"),
@@ -4776,11 +5779,13 @@ def preflight_intakes(
 
     normalized_correction_reason = str(correction_reason or "").strip()
     correction_mode = bool(normalized_correction_reason)
-    profile = load_json(paths.profile)
+    effective_records = [effective_intake_for_profile(intake, paths) for intake in intakes]
+    effective_intakes = [record[0] for record in effective_records]
+    generator_profiles = [record[1] for record in effective_records]
     email_config = load_json(paths.email_config)
     court_directory = read_json_list(paths.court_emails)
     draft_log = load_draft_log(paths.draft_log)
-    intake_paths = planned_intake_paths(intakes, paths)
+    intake_paths = planned_intake_paths(effective_intakes, paths)
     effective_allow_duplicate = bool(allow_duplicate or correction_mode)
     effective_allow_existing_draft = bool(allow_existing_draft or correction_mode)
 
@@ -4788,13 +5793,13 @@ def preflight_intakes(
     blockers: list[dict[str, Any]] = []
     seen_keys: dict[tuple[str, str, str], str] = {}
 
-    for index, (intake_path, intake) in enumerate(zip(intake_paths, intakes), start=1):
+    for index, (intake_path, intake, generator_profile) in enumerate(zip(intake_paths, effective_intakes, generator_profiles), start=1):
         lifecycle = draft_lifecycle_for_intake(intake, paths)
         try:
             key = validate_intake_before_generation(
                 intake_path,
                 intake,
-                profile=profile,
+                profile=generator_profile,
                 email_config=email_config,
                 court_directory=court_directory,
                 duplicate_index=paths.duplicate_index,
@@ -4837,7 +5842,7 @@ def preflight_intakes(
     packet: dict[str, Any] | None = None
     if packet_mode and not blockers:
         try:
-            recipient = validate_packet_recipients(intakes, email_config, court_directory)
+            recipient = validate_packet_recipients(effective_intakes, email_config, court_directory)
             packet = {
                 "status": "ready",
                 "recipient": recipient,
@@ -4899,16 +5904,18 @@ def prepare_intakes(
 
     normalized_correction_reason = str(correction_reason or "").strip()
     correction_mode = bool(normalized_correction_reason)
-    profile = load_json(paths.profile)
+    effective_records = [effective_intake_for_profile(intake, paths) for intake in intakes]
+    effective_intakes = [record[0] for record in effective_records]
+    generator_profiles = [record[1] for record in effective_records]
     email_config = load_json(paths.email_config)
     court_directory = read_json_list(paths.court_emails)
     draft_log = load_draft_log(paths.draft_log)
-    intake_paths = planned_intake_paths(intakes, paths)
+    intake_paths = planned_intake_paths(effective_intakes, paths)
     seen_keys: dict[tuple[str, str, str], Path] = {}
     lifecycle_checks: list[dict[str, Any]] = []
 
     if correction_mode:
-        for intake in intakes:
+        for intake in effective_intakes:
             lifecycle = draft_lifecycle_for_intake(intake, paths)
             lifecycle_checks.append(lifecycle)
             if not lifecycle["replacement_allowed"]:
@@ -4920,11 +5927,11 @@ def prepare_intakes(
     effective_allow_duplicate = bool(allow_duplicate or correction_mode)
     effective_allow_existing_draft = bool(allow_existing_draft or correction_mode)
 
-    for intake_path, intake in zip(intake_paths, intakes):
+    for intake_path, intake, generator_profile in zip(intake_paths, effective_intakes, generator_profiles):
         key = validate_intake_before_generation(
             intake_path,
             intake,
-            profile=profile,
+            profile=generator_profile,
             email_config=email_config,
             court_directory=court_directory,
             duplicate_index=paths.duplicate_index,
@@ -4938,9 +5945,9 @@ def prepare_intakes(
         seen_keys[key] = intake_path
 
     if packet_mode:
-        validate_packet_recipients(intakes, email_config, court_directory)
+        validate_packet_recipients(effective_intakes, email_config, court_directory)
 
-    write_intake_files(intakes, intake_paths)
+    write_intake_files(effective_intakes, intake_paths)
 
     effective_render_previews = render_previews
     preview_warning = ""
@@ -4948,26 +5955,27 @@ def prepare_intakes(
         effective_render_previews = False
         preview_warning = "pdftoppm is not available; PDF generated without PNG preview."
 
-    items = [
-        prepare_one(
-            intake_path,
-            profile=profile,
-            email_config=email_config,
-            court_directory=court_directory,
-            template_path=paths.template,
-            duplicate_index=paths.duplicate_index,
-            output_dir=paths.output_dir,
-            html_dir=paths.html_dir,
-            draft_output_dir=paths.draft_output_dir,
-            render_dir=paths.render_dir,
-            draft_log=draft_log,
-            allow_duplicate=effective_allow_duplicate,
-            allow_existing_draft=effective_allow_existing_draft,
-            render_previews=effective_render_previews,
-            correction_reason=normalized_correction_reason,
+    items = []
+    for intake_path, generator_profile in zip(intake_paths, generator_profiles):
+        items.append(
+            prepare_one(
+                intake_path,
+                profile=generator_profile,
+                email_config=email_config,
+                court_directory=court_directory,
+                template_path=paths.template,
+                duplicate_index=paths.duplicate_index,
+                output_dir=paths.output_dir,
+                html_dir=paths.html_dir,
+                draft_output_dir=paths.draft_output_dir,
+                render_dir=paths.render_dir,
+                draft_log=draft_log,
+                allow_duplicate=effective_allow_duplicate,
+                allow_existing_draft=effective_allow_existing_draft,
+                render_previews=effective_render_previews,
+                correction_reason=normalized_correction_reason,
+            )
         )
-        for intake_path in intake_paths
-    ]
     if correction_mode:
         for item, lifecycle in zip(items, lifecycle_checks):
             item["correction_mode"] = True
@@ -4984,7 +5992,7 @@ def prepare_intakes(
     packet = None
     if packet_mode:
         packet = build_packet_result(
-            intakes=intakes,
+            intakes=effective_intakes,
             items=items,
             paths=paths,
             email_config=email_config,
@@ -4994,6 +6002,7 @@ def prepare_intakes(
         )
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"
+    gmail_status = gmail_api_status(paths)
     manifest = {
         "status": "prepared",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -5002,7 +6011,7 @@ def prepare_intakes(
         "correction_mode": correction_mode,
         "correction_reason": normalized_correction_reason,
         "packet_mode": bool(packet_mode),
-        "next_safe_action": prepared_next_safe_action(packet_mode=bool(packet_mode)),
+        "next_safe_action": prepared_next_safe_action(packet_mode=bool(packet_mode), gmail_status=gmail_status),
         "items": items,
         "manifest": str(manifest_path.resolve()),
     }
@@ -5140,8 +6149,7 @@ def recorded_duplicate_keys(payload: dict[str, Any], loaded_payload: dict[str, A
 
 def record_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     supersedes = _coerce_supersedes(payload.get("supersedes"))
-    _record_draft_once(payload, paths)
-    superseded_drafts: list[str] = []
+    supersede_records: list[tuple[str, dict[str, Any]]] = []
     if supersedes:
         draft_log = load_draft_log(paths.draft_log)
         existing_by_id = {str(record.get("draft_id") or "").strip(): record for record in draft_log}
@@ -5149,16 +6157,21 @@ def record_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             old_record = existing_by_id.get(old_draft_id)
             if not old_record:
                 raise IntakeError(f"Cannot supersede unknown draft ID: {old_draft_id}")
-            _record_draft_once(
-                _payload_from_existing_draft(
-                    old_record,
-                    status="superseded",
-                    superseded_by=str(payload.get("draft_id") or "").strip(),
-                    notes=str(payload.get("notes") or "Superseded by corrected draft.").strip(),
-                ),
-                paths,
-            )
-            superseded_drafts.append(old_draft_id)
+            supersede_records.append((old_draft_id, old_record))
+
+    _record_draft_once(payload, paths)
+    superseded_drafts: list[str] = []
+    for old_draft_id, old_record in supersede_records:
+        _record_draft_once(
+            _payload_from_existing_draft(
+                old_record,
+                status="superseded",
+                superseded_by=str(payload.get("draft_id") or "").strip(),
+                notes=str(payload.get("notes") or "Superseded by corrected draft.").strip(),
+            ),
+            paths,
+        )
+        superseded_drafts.append(old_draft_id)
 
     loaded_payload = _load_draft_payload_for_response(payload)
     service_date = str(payload.get("service_date") or "").strip()

@@ -29,7 +29,8 @@ LANDMARKS = [
     "Start Interpretation Request",
     "Review Case Details",
     "Review Interpretation Request",
-    "Next Safe Action",
+    "Suggested Next Step",
+    "Suggested Next Step",
     "Drop or paste a notification PDF, photo, or screenshot here",
     "Google Photos selected-photo import",
     "Open Google Photos Picker",
@@ -37,16 +38,22 @@ LANDMARKS = [
     "Packet mode",
     "Packet draft recording helper",
     "Gmail handoff checklist",
+    "Manual Draft Handoff",
+    "Build handoff packet",
+    "Copy handoff prompt",
+    "Gmail Draft API",
     "LegalPDF Integration Preview",
     "Build adapter import plan",
+    "LegalPDF Adapter Contract",
     "LegalPDF Apply History",
     "LegalPDF Restore Plan",
     "Refresh apply history",
     "Draft-only Gmail",
 ]
-FORBIDDEN_HOMEPAGE_COPY = ["_send_email", "_send_draft", "Send email", "Send draft"]
+FORBIDDEN_HOMEPAGE_COPY = ["_send_email", "_send_draft", "messages.send", "drafts.send", "Send email", "Send draft"]
 JSON_ENDPOINTS = [
     "/api/reference",
+    "/api/gmail/status",
     "/api/google-photos/status",
     "/api/ai/status",
     "/api/public-readiness",
@@ -169,6 +176,77 @@ def _send_allowed_check(name: str, payload: Any, success_message: str) -> dict[s
     )
 
 
+def _gmail_status_guidance_text(gmail_status: dict[str, Any]) -> str:
+    parts: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+
+    add(gmail_status.get("status"))
+    add(gmail_status.get("message"))
+    add(gmail_status.get("recommended_mode"))
+    setup = gmail_status.get("setup")
+    if isinstance(setup, dict):
+        add(setup.get("status"))
+        add(setup.get("next_step"))
+        add(setup.get("description"))
+        steps = setup.get("steps")
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, dict):
+                    add(step.get("label"))
+                    add(step.get("description"))
+                else:
+                    add(step)
+    return " ".join(parts).lower()
+
+
+def _gmail_status_mode_guidance_check(gmail_status: dict[str, Any]) -> dict[str, Any]:
+    connected = gmail_status.get("connected") is True
+    draft_ready = gmail_status.get("draft_create_ready") is True
+    manual_ready = gmail_status.get("manual_handoff_ready") is True
+    recommended_mode = gmail_status.get("recommended_mode")
+    guidance_text = _gmail_status_guidance_text(gmail_status)
+    mentions_manual = "manual draft handoff" in guidance_text or "manual handoff" in guidance_text
+    mentions_fallback = "fallback" in guidance_text
+
+    if connected:
+        passed = (
+            recommended_mode == "gmail_api"
+            and draft_ready
+            and manual_ready
+            and mentions_manual
+            and mentions_fallback
+        )
+        message = (
+            "Connected Gmail status keeps direct draft creation primary while preserving Manual Draft Handoff as a visible fallback."
+            if passed
+            else "Connected Gmail status must keep Manual Draft Handoff visible as a safe fallback."
+        )
+    else:
+        passed = recommended_mode == "manual_handoff" and manual_ready and mentions_manual
+        message = (
+            "Disconnected Gmail status presents Manual Draft Handoff as the normal path."
+            if passed
+            else "Disconnected Gmail status must make Manual Draft Handoff the normal path."
+        )
+
+    return _check(
+        "gmail_status_mode_guidance",
+        passed,
+        message,
+        {
+            "connected": connected,
+            "draft_create_ready": draft_ready,
+            "manual_handoff_ready": manual_ready,
+            "recommended_mode": recommended_mode,
+            "mentions_manual_handoff": mentions_manual,
+            "mentions_fallback": mentions_fallback,
+        },
+    )
+
+
 _TINY_PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
     b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?"
@@ -213,6 +291,10 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         f"  preparePacket: {str(bool(kwargs.get('prepare_packet'))).lower()},\n"
         f"  recordHelper: {str(bool(kwargs.get('record_helper'))).lower()},\n"
         f"  applyHistory: {str(bool(kwargs.get('apply_history'))).lower()},\n"
+        f"  profileProposal: {str(bool(kwargs.get('profile_proposal'))).lower()},\n"
+        f"  gmailApiCreate: {str(bool(kwargs.get('gmail_api_create'))).lower()},\n"
+        f"  manualHandoffStale: {str(bool(kwargs.get('manual_handoff_stale'))).lower()},\n"
+        f"  recentWorkLifecycle: {str(bool(kwargs.get('recent_work_lifecycle'))).lower()},\n"
         "  timeoutMs: 15000,\n"
         "});\n"
         "nodeRepl.write(JSON.stringify(result, null, 2));"
@@ -260,6 +342,14 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         cmd.append("--record-helper")
     if kwargs.get("apply_history"):
         cmd.append("--apply-history")
+    if kwargs.get("profile_proposal"):
+        cmd.append("--profile-proposal")
+    if kwargs.get("gmail_api_create"):
+        cmd.append("--gmail-api-create")
+    if kwargs.get("manual_handoff_stale"):
+        cmd.append("--manual-handoff-stale")
+    if kwargs.get("recent_work_lifecycle"):
+        cmd.append("--recent-work-lifecycle")
     correction_reason = kwargs.get("correction_reason")
     if correction_reason:
         cmd.extend(["--correction-reason", str(correction_reason)])
@@ -484,6 +574,136 @@ def _run_interaction_checks(
     return checks
 
 
+def _run_gmail_api_checks(
+    base: str,
+    *,
+    post_json: PostJsonFetcher,
+    gmail_status: dict[str, Any],
+    profile: str,
+    case_number: str,
+    service_date: str,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    if not bool(gmail_status.get("fake_mode")):
+        return [_check(
+            "gmail_api_fake_mode_required",
+            False,
+            "Gmail Draft API smoke requires HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1 in an isolated synthetic runtime.",
+            {"fake_mode": gmail_status.get("fake_mode"), "connected": gmail_status.get("connected")},
+        )]
+
+    intake_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/intake/from-profile"),
+        {"profile": profile, "case_number": case_number, "service_date": service_date},
+        "gmail_api_build_intake",
+    )
+    if error_check:
+        return [error_check]
+    checks.append(_send_allowed_check(
+        "gmail_api_build_intake_send_allowed",
+        intake_response,
+        "Synthetic Gmail API intake creation keeps send_allowed false.",
+    ))
+    intake = intake_response.get("intake") if isinstance(intake_response, dict) else None
+    review = intake_response.get("review") if isinstance(intake_response, dict) else {}
+    ready = (
+        isinstance(intake_response, dict)
+        and intake_response.get("status") == "created"
+        and isinstance(intake, dict)
+        and isinstance(review, dict)
+        and review.get("status") == "ready"
+    )
+    checks.append(_check(
+        "gmail_api_build_intake",
+        ready,
+        "Synthetic Gmail API smoke built a ready intake." if ready else "Synthetic Gmail API smoke could not build a ready intake.",
+        {"status": intake_response.get("status") if isinstance(intake_response, dict) else None},
+    ))
+    if not ready or not isinstance(intake, dict):
+        return checks
+
+    prepare_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/prepare"),
+        {"intakes": [intake], "render_previews": False, "packet_mode": False},
+        "gmail_api_prepare_payload",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "gmail_api_prepare_payload_send_allowed",
+        prepare_response,
+        "Synthetic Gmail API prepare response keeps send_allowed false.",
+    ))
+    items = prepare_response.get("items") if isinstance(prepare_response, dict) else []
+    first_item = items[0] if isinstance(items, list) and items else {}
+    payload_path = str(first_item.get("draft_payload") or "")
+    args = first_item.get("gmail_create_draft_args") if isinstance(first_item, dict) else {}
+    attachment_files = args.get("attachment_files") if isinstance(args, dict) else None
+    prepared = (
+        isinstance(prepare_response, dict)
+        and prepare_response.get("status") == "prepared"
+        and bool(payload_path)
+        and isinstance(attachment_files, list)
+        and bool(attachment_files)
+    )
+    checks.append(_check(
+        "gmail_api_prepare_payload",
+        prepared,
+        "Synthetic Gmail API smoke prepared a draft payload with attachment arrays." if prepared else "Synthetic Gmail API smoke did not produce a prepared payload.",
+        {
+            "status": prepare_response.get("status") if isinstance(prepare_response, dict) else None,
+            "payload_path_present": bool(payload_path),
+            "attachment_count": len(attachment_files) if isinstance(attachment_files, list) else None,
+        },
+    ))
+    if not prepared:
+        return checks
+
+    create_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/gmail/drafts/create"),
+        {
+            "payload": payload_path,
+            "gmail_handoff_reviewed": True,
+            "notes": "Advanced/future synthetic Gmail API smoke.",
+        },
+        "gmail_api_create_draft",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "gmail_api_create_draft_send_allowed",
+        create_response,
+        "Synthetic Gmail API create response keeps send_allowed false.",
+    ))
+    confirmation = create_response.get("confirmation") if isinstance(create_response, dict) else {}
+    duplicate_count = confirmation.get("recorded_duplicate_count") if isinstance(confirmation, dict) else None
+    created = (
+        isinstance(create_response, dict)
+        and create_response.get("status") == "created"
+        and bool(create_response.get("draft_id"))
+        and isinstance(confirmation, dict)
+        and confirmation.get("fake_mode") is True
+        and duplicate_count == 1
+    )
+    checks.append(_check(
+        "gmail_api_create_draft",
+        created,
+        "Synthetic Gmail API fake create recorded a draft and duplicate blocker." if created else "Synthetic Gmail API fake create did not return the expected confirmation.",
+        {
+            "status": create_response.get("status") if isinstance(create_response, dict) else None,
+            "fake_mode": confirmation.get("fake_mode") if isinstance(confirmation, dict) else None,
+            "recorded_duplicate_count": duplicate_count,
+            "draft_id_present": bool(create_response.get("draft_id")) if isinstance(create_response, dict) else False,
+        },
+    ))
+    return checks
+
+
 def _attention_summary(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -655,6 +875,7 @@ def run_smoke(
     interaction_checks: bool = False,
     source_upload_checks: bool = False,
     supporting_attachment_checks: bool = False,
+    gmail_api_checks: bool = False,
     source_upload_profile: str = "",
     interaction_profile: str = "example_interpreting",
     interaction_case_number: str = "999/26.0SMOKE",
@@ -669,6 +890,10 @@ def run_smoke(
     browser_answer_questions: bool = False,
     browser_correction_mode: bool = False,
     browser_apply_history: bool = False,
+    browser_profile_proposal: bool = False,
+    browser_gmail_api_create: bool = False,
+    browser_manual_handoff_stale: bool = False,
+    browser_recent_work_lifecycle: bool = False,
     browser_iab_click_through: bool = False,
     browser_runner: BrowserRunner | None = None,
 ) -> dict[str, Any]:
@@ -740,6 +965,26 @@ def run_smoke(
             {"exposed": exposed},
         ))
 
+    gmail_status = endpoint_payloads.get("/api/gmail/status")
+    if isinstance(gmail_status, dict):
+        secret_keys = {"client_secret", "access_token", "refresh_token", "authorization", "token"}
+        exposed = sorted(secret_keys.intersection(gmail_status.keys()))
+        checks.append(_check(
+            "gmail_status_secret_free",
+            not exposed
+            and gmail_status.get("gmail_api_action") == "users.drafts.create"
+            and gmail_status.get("draft_only") is True
+            and gmail_status.get("send_allowed") is False,
+            "/api/gmail/status exposes only draft-create readiness without token or client-secret values.",
+            {
+                "exposed": exposed,
+                "gmail_api_action": gmail_status.get("gmail_api_action"),
+                "draft_only": gmail_status.get("draft_only"),
+                "send_allowed": gmail_status.get("send_allowed"),
+            },
+        ))
+        checks.append(_gmail_status_mode_guidance_check(gmail_status))
+
     diagnostics = endpoint_payloads.get("/api/diagnostics/status")
     if isinstance(diagnostics, dict) and "checks" in diagnostics:
         diagnostic_checks = diagnostics.get("checks") if isinstance(diagnostics.get("checks"), list) else []
@@ -749,8 +994,13 @@ def run_smoke(
             "source_upload_smoke",
             "supporting_attachment_smoke",
             "isolated_supporting_attachment_smoke",
+            "isolated_gmail_api_smoke",
             "browser_iab_upload_smoke",
             "browser_iab_supporting_attachment_smoke",
+            "browser_iab_profile_proposal_smoke",
+            "browser_iab_recent_work_lifecycle_smoke",
+            "browser_iab_manual_handoff_stale_smoke",
+            "browser_iab_gmail_api_smoke",
         }
         missing = sorted(required_keys.difference(check_keys))
         checks.append(_check(
@@ -784,9 +1034,64 @@ def run_smoke(
             post_multipart=multipart_poster,
         ))
 
+    if gmail_api_checks:
+        checks.extend(_run_gmail_api_checks(
+            base,
+            post_json=json_poster,
+            gmail_status=gmail_status if isinstance(gmail_status, dict) else {},
+            profile=interaction_profile,
+            case_number=interaction_case_number,
+            service_date=interaction_service_date,
+        ))
+
     if browser_click_through:
-        if browser_runner is None:
-            if browser_iab_click_through:
+        if browser_gmail_api_create and not bool(gmail_status.get("fake_mode") if isinstance(gmail_status, dict) else False):
+            browser_report = {
+                "status": "blocked",
+                "checks": [_check(
+                    "browser_gmail_api_fake_mode_required",
+                    False,
+                    "--browser-gmail-api-create must run only against an isolated app with HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1.",
+                    {"fake_mode": gmail_status.get("fake_mode") if isinstance(gmail_status, dict) else None},
+                )],
+                "failure_count": 1,
+                "send_allowed": False,
+            }
+        elif browser_gmail_api_create and not browser_iab_click_through:
+            browser_report = {
+                "status": "blocked",
+                "checks": [_check(
+                    "browser_gmail_api_create",
+                    False,
+                    "--browser-gmail-api-create requires --browser-iab-click-through because the connected Gmail UI path is implemented in the Browser/IAB runner.",
+                )],
+                "failure_count": 1,
+                "send_allowed": False,
+            }
+        elif browser_runner is None:
+            if browser_profile_proposal and not browser_iab_click_through:
+                browser_report = {
+                    "status": "blocked",
+                    "checks": [_check(
+                        "browser_profile_proposal",
+                        False,
+                        "--browser-profile-proposal requires --browser-iab-click-through because the proposal-to-editor preview is implemented in the Browser/IAB runner.",
+                    )],
+                    "failure_count": 1,
+                    "send_allowed": False,
+                }
+            elif browser_recent_work_lifecycle and not browser_iab_click_through:
+                browser_report = {
+                    "status": "blocked",
+                    "checks": [_check(
+                        "browser_recent_work_lifecycle",
+                        False,
+                        "--browser-recent-work-lifecycle requires --browser-iab-click-through and is intended for an isolated seeded draft-history runtime.",
+                    )],
+                    "failure_count": 1,
+                    "send_allowed": False,
+                }
+            elif browser_iab_click_through:
                 browser_report = _run_browser_iab_smoke_subprocess(
                     base,
                     profile=interaction_profile,
@@ -801,6 +1106,10 @@ def run_smoke(
                     prepare_packet=browser_prepare_packet,
                     record_helper=browser_record_helper,
                     apply_history=browser_apply_history,
+                    profile_proposal=browser_profile_proposal,
+                    gmail_api_create=browser_gmail_api_create,
+                    manual_handoff_stale=browser_manual_handoff_stale,
+                    recent_work_lifecycle=browser_recent_work_lifecycle,
                 )
             else:
                 try:
@@ -826,6 +1135,7 @@ def run_smoke(
                         prepare_replacement=browser_prepare_replacement,
                         prepare_packet=browser_prepare_packet,
                         record_helper=browser_record_helper,
+                        manual_handoff_stale=browser_manual_handoff_stale,
                     )
         else:
             browser_report = browser_runner(
@@ -842,6 +1152,10 @@ def run_smoke(
                 prepare_packet=browser_prepare_packet,
                 record_helper=browser_record_helper,
                 apply_history=browser_apply_history,
+                profile_proposal=browser_profile_proposal,
+                gmail_api_create=browser_gmail_api_create,
+                manual_handoff_stale=browser_manual_handoff_stale,
+                recent_work_lifecycle=browser_recent_work_lifecycle,
                 iab_click_through=browser_iab_click_through,
             )
         checks.extend(browser_report.get("checks", []) if isinstance(browser_report, dict) else [])
@@ -868,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interaction-checks", action="store_true", help="Also exercise the opt-in profile/review/packet-prepare contract. This may create local draft payload/PDF artifacts on a real app.")
     parser.add_argument("--source-upload-checks", action="store_true", help="Upload disposable synthetic photo/PDF sources through the API and verify Source Evidence/Review Attention without preparing PDFs or drafts.")
     parser.add_argument("--supporting-attachment-checks", action="store_true", help="Upload a disposable synthetic declaration/proof PDF through the attachment API and verify it cannot prepare PDFs, record drafts, or call Gmail.")
+    parser.add_argument("--gmail-api-checks", action="store_true", help="Run isolated synthetic Gmail Draft API create checks. Requires fake Gmail API mode and can write synthetic draft-log/duplicate records.")
     parser.add_argument("--source-upload-profile", default="", help="Optional profile key to pass to source upload smoke. Defaults to Auto-detect.")
     parser.add_argument("--interaction-profile", default="example_interpreting")
     parser.add_argument("--interaction-case-number", default="999/26.0SMOKE")
@@ -880,6 +1195,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-answer-questions", action="store_true", help="With --browser-click-through, intentionally leave one required field blank, apply compact numbered answers, and rerun review without preparing artifacts.")
     parser.add_argument("--browser-correction-mode", action="store_true", help="With --browser-click-through, check draft lifecycle/correction UI without preparing a replacement draft.")
     parser.add_argument("--browser-apply-history", action="store_true", help="With --browser-iab-click-through, check the LegalPDF Apply History, Detail, and read-only Restore Plan UI without writing artifacts.")
+    parser.add_argument("--browser-profile-proposal", action="store_true", help="With --browser-iab-click-through, preview a synthetic unknown recurring pattern as a proposed Service profile without saving or writing artifacts.")
+    parser.add_argument("--browser-gmail-api-create", action="store_true", help="With --browser-iab-click-through against an isolated fake-Gmail runtime, prepare a synthetic PDF payload, create a fake Gmail draft, and verify it read-only.")
+    parser.add_argument("--browser-manual-handoff-stale", action="store_true", help="With --browser-click-through and a prepared payload, build the Manual Draft Handoff packet, then change intake text and verify stale gates clear it.")
+    parser.add_argument("--browser-recent-work-lifecycle", action="store_true", help="With --browser-iab-click-through against seeded history, verify Recent Work lifecycle controls without clicking Gmail verify or local status writes.")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With --browser-click-through and --browser-correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still never records drafts or calls Gmail.")
     parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--browser-record-helper", action="store_true", help="With --browser-click-through and packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
@@ -892,6 +1211,7 @@ def main(argv: list[str] | None = None) -> int:
         interaction_checks=args.interaction_checks,
         source_upload_checks=args.source_upload_checks,
         supporting_attachment_checks=args.supporting_attachment_checks,
+        gmail_api_checks=args.gmail_api_checks,
         source_upload_profile=args.source_upload_profile,
         interaction_profile=args.interaction_profile,
         interaction_case_number=args.interaction_case_number,
@@ -904,6 +1224,10 @@ def main(argv: list[str] | None = None) -> int:
         browser_answer_questions=args.browser_answer_questions,
         browser_correction_mode=args.browser_correction_mode,
         browser_apply_history=args.browser_apply_history,
+        browser_profile_proposal=args.browser_profile_proposal,
+        browser_gmail_api_create=args.browser_gmail_api_create,
+        browser_manual_handoff_stale=args.browser_manual_handoff_stale,
+        browser_recent_work_lifecycle=args.browser_recent_work_lifecycle,
         browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,
         browser_record_helper=args.browser_record_helper,

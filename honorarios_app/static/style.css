@@ -898,6 +898,56 @@ button[aria-disabled="true"]:disabled {
   border: 1px solid rgba(117, 218, 255, 0.16);
 }
 
+.gmail-setup-card {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(117, 218, 255, 0.055);
+  border: 1px solid rgba(117, 218, 255, 0.16);
+}
+
+.gmail-setup-card small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.gmail-api-deferred-panel {
+  display: block;
+}
+
+.gmail-api-deferred-panel > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.gmail-api-deferred-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.gmail-api-deferred-panel > summary small,
+.handoff-steps {
+  color: var(--muted);
+}
+
+.gmail-api-deferred-body {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(117, 218, 255, 0.14);
+}
+
+.handoff-steps {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding-left: 22px;
+}
+
 .gmail-response-parser p {
   margin: 5px 0 0;
   color: var(--muted);
@@ -1065,6 +1115,36 @@ button[aria-disabled="true"]:disabled {
   margin: 0;
 }
 
+.next-safe-action-body .safe-action-helper {
+  color: var(--muted-2);
+}
+
+.safe-action-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.safe-action-summary-grid > div {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(2, 10, 18, 0.36);
+  padding: 12px;
+}
+
+.safe-action-summary-grid span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted-2);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.safe-action-summary-grid strong {
+  display: block;
+}
+
 .next-safe-action-body .button-row {
   margin-top: 2px;
 }
@@ -1149,6 +1229,90 @@ pre {
 
 .profile-reference-panel {
   grid-column: 1 / -1;
+}
+
+.profile-page-actions {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+.profile-record-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.profile-record-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(117, 218, 255, 0.16);
+  background: rgba(2, 10, 18, 0.56);
+}
+
+.profile-record-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.profile-record-card strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 18px;
+}
+
+.profile-record-card p,
+.profile-record-card span {
+  margin: 0;
+  color: var(--muted);
+}
+
+.profile-editor-form {
+  display: grid;
+  gap: 18px;
+}
+
+.profile-distance-editor {
+  display: grid;
+  gap: 12px;
+  padding-top: 6px;
+}
+
+.profile-distance-list {
+  display: grid;
+  gap: 10px;
+}
+
+.profile-distance-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid rgba(117, 218, 255, 0.12);
+  border-radius: var(--radius-sm);
+  background: rgba(2, 10, 18, 0.48);
+}
+
+.profile-distance-row strong,
+.profile-distance-row span {
+  display: block;
+}
+
+.profile-distance-row span {
+  color: var(--muted);
+}
+
+.advanced-distance-data {
+  padding: 12px 0;
+  color: var(--muted);
+}
+
+.workspace-drawer-profile {
+  width: min(920px, calc(100vw - 32px));
 }
 
 .profile-form-grid {
@@ -1494,6 +1658,20 @@ pre {
   color: var(--accent);
   font-weight: 700;
   text-decoration: none;
+}
+
+.manual-evidence-placeholder {
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(117, 218, 255, 0.2);
+  background: rgba(2, 10, 18, 0.72);
+  color: var(--muted);
+}
+
+.manual-evidence-placeholder strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
 }
 
 .rendered-page-strip {

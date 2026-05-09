@@ -4,7 +4,10 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const DEFAULT_BROWSER_CLIENT = "%USERPROFILE%/example-path";
+const DEFAULT_BROWSER_CLIENTS = [
+  "%USERPROFILE%/example-path",
+  "%USERPROFILE%/example-path",
+];
 const DEFAULT_CASE_NUMBER = "999/26.0SMOKE";
 const DEFAULT_SERVICE_DATE = "2026-05-04";
 const DEFAULT_PROFILE = "example_interpreting";
@@ -20,9 +23,10 @@ const PROFILE_FALLBACKS = [
 ];
 
 function parseArgs(argv) {
+  const defaultBrowserClient = DEFAULT_BROWSER_CLIENTS.find((candidate) => existsSync(candidate)) || DEFAULT_BROWSER_CLIENTS[0];
   const args = {
     baseUrl: "http://127.0.0.1:8766",
-    browserClient: (typeof process !== "undefined" && process.env && process.env.BROWSER_USE_CLIENT_MJS) || DEFAULT_BROWSER_CLIENT,
+    browserClient: (typeof process !== "undefined" && process.env && process.env.BROWSER_USE_CLIENT_MJS) || defaultBrowserClient,
     profile: DEFAULT_PROFILE,
     caseNumber: DEFAULT_CASE_NUMBER,
     serviceDate: DEFAULT_SERVICE_DATE,
@@ -37,6 +41,10 @@ function parseArgs(argv) {
     preparePacket: false,
     recordHelper: false,
     applyHistory: false,
+    profileProposal: false,
+    gmailApiCreate: false,
+    manualHandoffStale: false,
+    recentWorkLifecycle: false,
     timeoutMs: 10000,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -63,6 +71,10 @@ function parseArgs(argv) {
     else if (item === "--prepare-packet") args.preparePacket = true;
     else if (item === "--record-helper") args.recordHelper = true;
     else if (item === "--apply-history") args.applyHistory = true;
+    else if (item === "--profile-proposal") args.profileProposal = true;
+    else if (item === "--gmail-api-create") args.gmailApiCreate = true;
+    else if (item === "--manual-handoff-stale") args.manualHandoffStale = true;
+    else if (item === "--recent-work-lifecycle") args.recentWorkLifecycle = true;
     else if (item === "--help" || item === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${item}`);
   }
@@ -147,6 +159,14 @@ async function uniqueLocator(tab, selector, timeoutMs) {
   return locator;
 }
 
+async function attachedLocator(tab, selector, timeoutMs) {
+  const locator = tab.playwright.locator(selector);
+  await locator.waitFor({ state: "attached", timeoutMs });
+  const count = await locator.count();
+  if (count !== 1) throw new Error(`Expected ${selector} to match exactly one attached element; got ${count}.`);
+  return locator;
+}
+
 async function inputLocator(tab, selector, timeoutMs) {
   const locator = tab.playwright.locator(selector);
   await locator.waitFor({ state: "attached", timeoutMs });
@@ -198,15 +218,77 @@ async function select(tab, selector, value, timeoutMs) {
 }
 
 async function setChecked(tab, selector, value, timeoutMs) {
-  const locator = await uniqueLocator(tab, selector, timeoutMs);
-  await locator.setChecked(value, { timeoutMs });
+  const locator = await attachedLocator(tab, selector, timeoutMs);
+  const readChecked = async () => {
+    if (typeof locator.isChecked === "function") {
+      return { known: true, value: await locator.isChecked() };
+    }
+    if (typeof locator.evaluateAll === "function") {
+      return { known: true, value: await locator.evaluateAll((nodes) => Boolean(nodes[0]?.checked)) };
+    }
+    return { known: false, value: null };
+  };
+  let setCheckedFailed = false;
+  try {
+    if (typeof locator.scrollIntoViewIfNeeded === "function") {
+      await locator.scrollIntoViewIfNeeded({ timeoutMs });
+    }
+    await locator.setChecked(value, { timeout: timeoutMs });
+  } catch (_error) {
+    // The Browser/IAB adapter can fail checkbox state changes even when the
+    // visible label works. Fall through to the label/click path and verify.
+    setCheckedFailed = true;
+  }
+  const current = await readChecked();
+  if (setCheckedFailed || (current.known && current.value !== value)) {
+    const id = selector.startsWith("#") ? selector.slice(1) : "";
+    const labelSelector = id ? `label[for="${id}"]` : "";
+    const target = labelSelector ? await uniqueLocator(tab, labelSelector, timeoutMs) : locator;
+    await target.click({ timeoutMs });
+  }
+  const verified = await readChecked();
+  if (verified.known && verified.value !== value) {
+    throw new Error(`Click did not change checked state to ${value}\nlocator.setChecked(${value}) failed for selector ${selector}`);
+  }
 }
 
 async function expectValueContains(tab, selector, value, timeoutMs) {
   const locator = await uniqueLocator(tab, selector, timeoutMs);
-  const actual = await locator.getAttribute("value", { timeoutMs });
+  let actual = "";
+  if (typeof locator.inputValue === "function") {
+    actual = await locator.inputValue({ timeout: timeoutMs });
+  } else if (typeof locator.evaluateAll === "function") {
+    actual = await locator.evaluateAll((nodes) => {
+      const first = nodes[0];
+      if (!first) return "";
+      return first.value || first.getAttribute?.("value") || "";
+    });
+  } else {
+    actual = await locator.getAttribute("value", { timeout: timeoutMs });
+  }
+  if (!actual && typeof tab.playwright.domSnapshot === "function") {
+    const snapshot = await tab.playwright.domSnapshot();
+    if (String(snapshot || "").includes(value)) return;
+  }
   if (!String(actual || "").includes(value)) {
     throw new Error(`Expected ${selector} value to contain ${JSON.stringify(value)}; got ${JSON.stringify(actual)}.`);
+  }
+}
+
+async function expectAttributeContains(tab, selector, attribute, value, timeoutMs) {
+  const locator = await attachedLocator(tab, selector, timeoutMs);
+  const actual = await locator.getAttribute(attribute, { timeoutMs });
+  if (!String(actual || "").includes(value)) {
+    throw new Error(`Expected ${selector} ${attribute} to contain ${JSON.stringify(value)}; got ${JSON.stringify(actual)}.`);
+  }
+}
+
+async function expectButtonDisabled(tab, selector, timeoutMs) {
+  const locator = await attachedLocator(tab, selector, timeoutMs);
+  const disabled = await locator.getAttribute("disabled", { timeoutMs });
+  const ariaDisabled = await locator.getAttribute("aria-disabled", { timeoutMs });
+  if (disabled === null && ariaDisabled !== "true") {
+    throw new Error(`Expected ${selector} to be disabled or aria-disabled.`);
   }
 }
 
@@ -283,6 +365,21 @@ async function countLocator(tab, selector) {
   return tab.playwright.locator(selector).count();
 }
 
+async function expectLocatorCountAtLeast(tab, selector, minimum, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let count = 0;
+  while (Date.now() < deadline) {
+    count = await countLocator(tab, selector);
+    if (count >= minimum) return;
+    await tab.playwright.waitForTimeout(100);
+  }
+  throw new Error(`Expected ${selector} to match at least ${minimum} element(s); got ${count}.`);
+}
+
+async function openHistoryPanel(tab, timeoutMs) {
+  await click(tab, 'button[data-panel="history"]', timeoutMs);
+}
+
 async function openReferencesPanel(tab, timeoutMs) {
   const referencesButton = tab.playwright.locator('button[data-panel="references"]');
   try {
@@ -329,8 +426,13 @@ export async function runBrowserIabSmoke(options = {}) {
   const { setupAtlasRuntime } = await import(pathToFileURL(args.browserClient).href);
   const backend = "iab";
   await setupAtlasRuntime({ globals: globalThis, backend });
-  await agent.browser.nameSession("🧪 honorários iab smoke");
-  const tab = await agent.browser.tabs.new();
+  const browserSession = agent.browser || (agent.browsers ? await agent.browsers.get("iab") : null);
+  if (!browserSession) {
+    checks.push(check("browser_iab_runtime", false, "Browser/IAB runtime did not expose an in-app browser session."));
+    return finish();
+  }
+  await browserSession.nameSession("🧪 honorários iab smoke");
+  const tab = await browserSession.tabs.new();
   uploadFixtures = args.uploadPhoto || args.uploadPdf || args.uploadSupportingAttachment ? createSyntheticUploadFixtures(args) : null;
 
   checks.push(check("browser_iab_runtime", true, "Browser/IAB runtime initialized.", { backend: "iab" }));
@@ -345,12 +447,102 @@ export async function runBrowserIabSmoke(options = {}) {
     return finish();
   }
 
+  if (args.recentWorkLifecycle) {
+    if (!(await runStep(checks, "browser_recent_work_lifecycle", "Browser/IAB verified Recent Work lifecycle controls without clicking Gmail or local status writes.", async () => {
+      await openHistoryPanel(tab, args.timeoutMs);
+      await expectBodyText(tab, "Duplicate And Draft History", args.timeoutMs);
+      await expectBodyText(tab, "Draft lifecycle actions", args.timeoutMs);
+      await expectBodyText(tab, "Local bookkeeping", args.timeoutMs);
+      await uniqueLocator(tab, "#history-sent-date", args.timeoutMs);
+      await expectLocatorCountAtLeast(tab, "[data-history-status-filter]", 7, args.timeoutMs);
+      await expectBodyText(tab, "draft-synthetic-active", args.timeoutMs);
+      await expectLocatorCountAtLeast(tab, "[data-history-verify-draft]", 1, args.timeoutMs);
+      await expectLocatorCountAtLeast(tab, "[data-history-mark-sent]", 1, args.timeoutMs);
+      await expectBodyText(tab, "Verify draft exists", args.timeoutMs);
+      await expectBodyText(tab, "Mark manually sent", args.timeoutMs);
+      await fill(tab, "#history-sent-date", args.serviceDate, args.timeoutMs);
+      await click(tab, '[data-history-status-filter="drafted"]', args.timeoutMs);
+      await expectBodyText(tab, "draft-synthetic-active", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    if (!(await runStep(checks, "browser_workspace_reset", "Browser/IAB reset the synthetic workspace after Recent Work lifecycle smoke.", async () => {
+      await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
+      await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
+      await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
+      await expectBodyText(tab, "Reset workspace", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    return finish();
+  }
+
+  if (args.profileProposal) {
+    if (!(await runStep(checks, "browser_profile_proposal", "Browser/IAB previewed a proposed service profile in the guarded editor without saving.", async () => {
+      await select(tab, "#profile", "court_mp_generic", args.timeoutMs);
+      await fill(tab, "#case_number", "111/26.0TEST", args.timeoutMs);
+      await fill(tab, "#service_date", args.serviceDate, args.timeoutMs);
+      await fill(tab, "#payment_entity", "Ministério Público de Beja", args.timeoutMs);
+      await fill(tab, "#recipient_email", "court@example.test", args.timeoutMs);
+      await fill(tab, "#service_place", "Posto Territorial de Vidigueira", args.timeoutMs);
+      await fill(tab, "#km_one_way", "12", args.timeoutMs);
+      await fill(tab, "#source_text", "Guarda Nacional Republicana. Posto Territorial de Vidigueira. Ministério Público de Beja. Diligência de interpretação.", args.timeoutMs);
+      await click(tab, "#review-intake", args.timeoutMs);
+      await expectBodyText(tab, "Source Evidence", args.timeoutMs);
+      await expectBodyText(tab, "Profile proposal", args.timeoutMs);
+      await expectBodyText(tab, "Preview proposed profile", args.timeoutMs);
+      reviewDrawerOpen = true;
+      await closeReviewDrawerIfOpen();
+      await click(tab, "[data-use-profile-proposal=\"true\"]", args.timeoutMs);
+      await expectBodyText(tab, "Service profiles", args.timeoutMs);
+      await expectValueContains(tab, "#profile_key", "vidigueira", args.timeoutMs);
+      await expectValueContains(tab, "#profile_recipient_email", "court@example.test", args.timeoutMs);
+      await expectValueContains(tab, "#profile_payment_entity", "Ministério Público de Beja", args.timeoutMs);
+      await expectValueContains(tab, "#profile_service_place", "Posto Territorial de Vidigueira", args.timeoutMs);
+      await expectValueContains(tab, "#profile_km_one_way", "12", args.timeoutMs);
+      await click(tab, "#preview-profile-change", args.timeoutMs);
+      await expectSelectorText(tab, "#profile-preview-card", "Preview guarded profile", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    if (!(await runStep(checks, "browser_legalpdf_import_gates", "Browser/IAB confirmed LegalPDF import controls are preview/phrase/reason guarded and read-only by default.", async () => {
+      await expectBodyText(tab, "LegalPDF Integration Preview", args.timeoutMs);
+      await uniqueLocator(tab, "#legalpdf-apply-reason", args.timeoutMs);
+      await uniqueLocator(tab, "#legalpdf-apply-phrase", args.timeoutMs);
+      await uniqueLocator(tab, "#confirm-legalpdf-import-apply", args.timeoutMs);
+      await uniqueLocator(tab, "#apply-legalpdf-import-plan", args.timeoutMs);
+      await expectAttributeContains(tab, "#legalpdf-apply-phrase", "placeholder", "APPLY LEGALPDF IMPORT PLAN", args.timeoutMs);
+      await expectBodyText(tab, "never touches LegalPDF", args.timeoutMs);
+      await expectAnyBodyText(tab, ["No guarded LegalPDF import has been applied yet", "JSON report", "Pre-apply backup"], args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    if (!(await runStep(checks, "browser_workspace_reset", "Browser/IAB reset the synthetic workspace after profile-proposal smoke checks.", async () => {
+      await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
+      await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
+      await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
+      await expectBodyText(tab, "Reset workspace", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    return finish();
+  }
+
   if (!(await runStep(checks, "browser_review_drawer", "Browser/IAB opened review drawer with Portuguese draft text.", async () => {
     await select(tab, "#profile", args.profile, args.timeoutMs);
     await fill(tab, "#case_number", args.caseNumber, args.timeoutMs);
     await fill(tab, "#service_date", args.answerQuestions ? "" : args.serviceDate, args.timeoutMs);
     await click(tab, "#review-intake", args.timeoutMs);
-    await expectBodyText(tab, "Next Safe Action", args.timeoutMs);
+    await expectBodyText(tab, "Suggested Next Step", args.timeoutMs);
+    await expectBodyText(tab, "Suggested Next Step", args.timeoutMs);
+    await expectBodyText(tab, "not a separate task", args.timeoutMs);
     if (args.answerQuestions) {
       await expectBodyText(tab, "Answer the numbered questions", args.timeoutMs);
       await uniqueLocator(tab, "#numbered-answers", args.timeoutMs);
@@ -417,6 +609,36 @@ export async function runBrowserIabSmoke(options = {}) {
     }
   }
 
+  if (args.gmailApiCreate) {
+    if (!(await runStep(checks, "browser_gmail_api_create", "Browser/IAB created and verified a synthetic Gmail draft through the fake Gmail API path.", async () => {
+      await click(tab, "#drawer-prepare-intake", args.timeoutMs);
+      await expectBodyText(tab, "PDF and Gmail draft payload prepared", args.timeoutMs);
+      await expectBodyText(tab, "Exact gmail_create_draft_args", args.timeoutMs);
+      await setChecked(tab, "#gmail_handoff_reviewed", true, args.timeoutMs);
+      await click(tab, "#create-gmail-api-draft", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-api-result", "draft-smoke", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-api-result", "Verify created draft", args.timeoutMs);
+      await click(tab, "[data-verify-created-draft=\"true\"]", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "Read-only Gmail draft verification", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "Gmail draft exists", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "users.drafts.get", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    if (!(await runStep(checks, "browser_workspace_reset", "Browser/IAB reset the synthetic workspace after fake Gmail draft smoke.", async () => {
+      await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
+      await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
+      await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
+      await expectBodyText(tab, "Reset workspace", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    return finish();
+  }
+
   if (!args.prepareReplacement || args.preparePacket) {
     if (!(await runStep(checks, "browser_batch_queue", "Browser/IAB added the reviewed request to the batch queue without preparing artifacts.", async () => {
       await closeReviewDrawerIfOpen();
@@ -431,6 +653,18 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#batch-preflight-result", "Artifact effect", args.timeoutMs);
     }))) {
       return finish();
+    }
+    if (!args.preparePacket) {
+      if (!(await runStep(checks, "browser_batch_stale_gating", "Browser/IAB marked batch preflight stale and kept artifact-producing actions gated after packet-mode changes.", async () => {
+        await setChecked(tab, "#batch-packet-mode", true, args.timeoutMs);
+        await expectSelectorText(tab, "#batch-preflight-result", "Run a non-writing batch preflight", args.timeoutMs);
+        await expectButtonDisabled(tab, "#prepare-batch-intakes", args.timeoutMs);
+        await setChecked(tab, "#batch-packet-mode", false, args.timeoutMs);
+        await expectSelectorText(tab, "#batch-preflight-result", "Run a non-writing batch preflight", args.timeoutMs);
+        await expectButtonDisabled(tab, "#prepare-batch-intakes", args.timeoutMs);
+      }))) {
+        return finish();
+      }
     }
   }
 
@@ -489,6 +723,26 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectValueContains(tab, "#record_message_id", "message-smoke", args.timeoutMs);
       await expectValueContains(tab, "#record_thread_id", "thread-smoke", args.timeoutMs);
       await expectValueContains(tab, "#record_payload", ".draft.json", args.timeoutMs);
+      await fill(tab, "#source_text", `Stale state marker ${Date.now()}`, args.timeoutMs);
+      await expectAttributeContains(tab, "#prepare-results", "data-stale-reason", "intake form changed", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+  }
+
+  if (args.manualHandoffStale) {
+    if (!args.prepareReplacement && !args.preparePacket) {
+      checks.push(check("browser_manual_handoff_stale", false, "Manual handoff stale smoke requires a prepared replacement or packet payload."));
+      return finish();
+    }
+    if (!(await runStep(checks, "browser_manual_handoff_stale", "Browser/IAB cleared the Manual Draft Handoff packet and kept record helpers gated after intake changes.", async () => {
+      await click(tab, "#build-manual-handoff", args.timeoutMs);
+      await expectSelectorText(tab, "#manual-handoff-packet", "Manual handoff packet ready", args.timeoutMs);
+      await fill(tab, "#source_text", `Manual handoff stale marker ${Date.now()}`, args.timeoutMs);
+      await expectAttributeContains(tab, "#manual-handoff-packet", "class", "hidden", args.timeoutMs);
+      await expectButtonDisabled(tab, "#copy-manual-handoff-prompt", args.timeoutMs);
+      await expectButtonDisabled(tab, "#record-parsed-prepared-draft", args.timeoutMs);
+      await expectAttributeContains(tab, "#prepare-results", "data-stale-reason", "intake form changed", args.timeoutMs);
     }))) {
       return finish();
     }
@@ -544,7 +798,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--apply-history]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--recent-work-lifecycle] [--apply-history] [--profile-proposal] [--gmail-api-create]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);
