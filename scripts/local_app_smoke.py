@@ -284,7 +284,7 @@ _TINY_PNG = (
 )
 
 
-def _synthetic_notification_pdf(case_number: str, service_date: str) -> bytes:
+def _synthetic_notification_pdf(case_number: str, service_date: str, *, recipient_email: str = "court@example.test") -> bytes:
     try:
         from reportlab.pdfgen import canvas
     except Exception as exc:  # pragma: no cover - dependency is part of the app, but keep the smoke readable.
@@ -297,7 +297,7 @@ def _synthetic_notification_pdf(case_number: str, service_date: str) -> bytes:
     document.drawString(72, 720, f"NUIPC {raw_case}")
     document.drawString(72, 700, f"Data/Hora da diligência: {day}/{month}/{year} 10:00")
     document.drawString(72, 680, "Local: Posto Territorial de Serpa")
-    document.drawString(72, 660, "Email: court@example.test")
+    document.drawString(72, 660, f"Email: {recipient_email}")
     document.save()
     return output.getvalue()
 
@@ -743,36 +743,6 @@ def _run_gmail_api_checks(
     return checks
 
 
-def _adapter_contract_seed_intake(*, profile: str, case_number: str, service_date: str) -> dict[str, Any]:
-    synthetic_recipient = "court@" + "tribunais.org.pt"
-    return {
-        "profile": profile,
-        "case_number": case_number,
-        "service_date": service_date,
-        "service_date_source": "user_confirmed",
-        "addressee": "Exmo. Senhor Procurador da Republica\nExample Court",
-        "payment_entity": "Example Court",
-        "service_entity": "Example Police / Example Police Station",
-        "service_entity_type": "police",
-        "entities_differ": True,
-        "service_place": "Example Police Station",
-        "service_place_phrase": "em diligencia realizada no Example Police Station",
-        "claim_transport": True,
-        "transport": {
-            "origin": "Example City",
-            "destination": "Example City",
-            "km_one_way": 12,
-            "round_trip_phrase": "ida_volta",
-        },
-        "closing_city": "Example City",
-        "closing_date": service_date,
-        "recipient_email": synthetic_recipient,
-        "recipient_override_reason": "Synthetic adapter-contract smoke recipient.",
-        "source_filename": "legalpdf-adapter-smoke",
-        "source_text": f"Synthetic in-person interpreting service for adapter contract smoke, case {case_number}, date {service_date}.",
-    }
-
-
 def _prepared_review_request_fields(prepared_review: dict[str, Any]) -> dict[str, str]:
     return {
         "prepared_manifest": str(prepared_review.get("manifest") or "").strip(),
@@ -781,11 +751,56 @@ def _prepared_review_request_fields(prepared_review: dict[str, Any]) -> dict[str
     }
 
 
+def _adapter_answer_for_field(field: str, *, case_number: str, service_date: str) -> str:
+    answers = {
+        "case_number": case_number,
+        "service_date": service_date,
+        "service_date_source": service_date,
+        "payment_entity": "Example Court",
+        "service_place": "Example Police Station",
+        "service_entity": "Example Police / Example Police Station",
+        "claim_transport": "yes",
+        "transport.destination": "Example City",
+        "transport.km_one_way": "12",
+        "closing_city": "Example City",
+        "closing_date": service_date,
+    }
+    return answers.get(field, "Example City")
+
+
+def _adapter_numbered_answers(questions: list[Any], *, case_number: str, service_date: str) -> str:
+    lines: list[str] = []
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        number = question.get("number")
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            continue
+        field = str(question.get("field") or "")
+        lines.append(f"{number}. {_adapter_answer_for_field(field, case_number=case_number, service_date=service_date)}")
+    return "\n".join(lines)
+
+
+def _adapter_questions_are_numbered(questions: list[Any], question_text: str) -> bool:
+    if not questions or not question_text.strip():
+        return False
+    for question in questions:
+        if not isinstance(question, dict):
+            return False
+        number = question.get("number")
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            return False
+        if f"{number}." not in question_text:
+            return False
+    return True
+
+
 def _run_adapter_contract_checks(
     base: str,
     *,
     fetch_json: JsonFetcher,
     post_json: PostJsonFetcher,
+    post_multipart: PostMultipartFetcher,
     profile: str,
     case_number: str,
     service_date: str,
@@ -852,16 +867,60 @@ def _run_adapter_contract_checks(
     if not read_only or missing_endpoints:
         return checks
 
-    seed_intake = _adapter_contract_seed_intake(
-        profile=profile,
-        case_number=case_number,
-        service_date=service_date,
+    synthetic_recipient = "court@" + "tribunais.org.pt"
+    try:
+        upload_response = post_multipart(
+            _url(base, "/api/sources/upload"),
+            {
+                "source_kind": "notification_pdf",
+                "profile": profile,
+                "visible_metadata_text": "",
+                "ai_recovery": "off",
+            },
+            "synthetic-notification.pdf",
+            _synthetic_notification_pdf(case_number, service_date, recipient_email=synthetic_recipient),
+            "application/pdf",
+        )
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        checks.append(_check("adapter_source_upload_evidence", False, f"Could not upload synthetic adapter source: {exc}"))
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_source_upload_send_allowed",
+        upload_response,
+        "Adapter source upload keeps send_allowed false.",
+    ))
+    candidate_intake = upload_response.get("candidate_intake") if isinstance(upload_response, dict) else {}
+    source_ready = (
+        isinstance(upload_response, dict)
+        and upload_response.get("status") == "uploaded"
+        and isinstance(candidate_intake, dict)
+        and candidate_intake.get("case_number") == case_number
+        and candidate_intake.get("service_date") == service_date
+        and _upload_response_has_attention(upload_response)
     )
+    checks.append(_check(
+        "adapter_source_upload_evidence",
+        source_ready,
+        "Adapter source upload recovers candidate intake and Review Attention before review." if source_ready else "Adapter source upload did not return usable candidate evidence.",
+        {
+            "status": upload_response.get("status") if isinstance(upload_response, dict) else None,
+            "case_number": candidate_intake.get("case_number") if isinstance(candidate_intake, dict) else None,
+            "service_date": candidate_intake.get("service_date") if isinstance(candidate_intake, dict) else None,
+            "attention": _attention_summary(upload_response),
+        },
+    ))
+    if not source_ready:
+        return checks
+
+    review_seed_intake = json.loads(json.dumps(candidate_intake))
+    if isinstance(review_seed_intake, dict):
+        review_seed_intake.pop("closing_date", None)
+
     review_response, error_check = _post_workflow_json(
         post_json,
         _url(base, "/api/review"),
-        {"intake": seed_intake},
-        "adapter_review_ready",
+        {"intake": review_seed_intake},
+        "adapter_review_missing_questions",
     )
     if error_check:
         checks.append(error_check)
@@ -871,29 +930,72 @@ def _run_adapter_contract_checks(
         review_response,
         "Adapter review keeps send_allowed false.",
     ))
-    reviewed_intake = {}
+    questions = review_response.get("questions") if isinstance(review_response, dict) and isinstance(review_response.get("questions"), list) else []
+    question_text = str(review_response.get("question_text") or "") if isinstance(review_response, dict) else ""
+    review_intake = {}
     if isinstance(review_response, dict):
-        candidate = review_response.get("intake") or review_response.get("effective_intake") or seed_intake
-        reviewed_intake = candidate if isinstance(candidate, dict) else {}
-    draft_text = str(review_response.get("draft_text") or "") if isinstance(review_response, dict) else ""
-    review_ready = (
+        candidate = review_response.get("intake") or review_response.get("effective_intake") or candidate_intake
+        review_intake = candidate if isinstance(candidate, dict) else {}
+    numbered_questions = _adapter_questions_are_numbered(questions, question_text)
+    review_needs_answers = (
         isinstance(review_response, dict)
-        and review_response.get("status") == "ready"
+        and review_response.get("status") in {"needs_info", "blocked"}
+        and isinstance(review_intake, dict)
+        and bool(review_intake)
+        and numbered_questions
+    )
+    checks.append(_check(
+        "adapter_review_missing_questions",
+        review_needs_answers,
+        "Adapter caller review surfaces numbered missing questions before preparation." if review_needs_answers else "Adapter caller review did not surface numbered missing questions.",
+        {
+            "status": review_response.get("status") if isinstance(review_response, dict) else None,
+            "question_count": len(questions),
+            "fields": [question.get("field") for question in questions if isinstance(question, dict)],
+            "numbered_questions": numbered_questions,
+        },
+    ))
+    if not review_needs_answers:
+        return checks
+
+    answer_text = _adapter_numbered_answers(questions, case_number=case_number, service_date=service_date)
+    apply_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/review/apply-answers"),
+        {"intake": review_intake, "answers": answer_text},
+        "adapter_apply_answers_ready",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_apply_answers_send_allowed",
+        apply_response,
+        "Adapter numbered-answer review keeps send_allowed false.",
+    ))
+    reviewed_intake = {}
+    if isinstance(apply_response, dict):
+        candidate = apply_response.get("intake") or apply_response.get("effective_intake") or review_intake
+        reviewed_intake = candidate if isinstance(candidate, dict) else {}
+    draft_text = str(apply_response.get("draft_text") or "") if isinstance(apply_response, dict) else ""
+    apply_ready = (
+        isinstance(apply_response, dict)
+        and apply_response.get("status") == "ready"
         and isinstance(reviewed_intake, dict)
         and bool(reviewed_intake)
         and bool(draft_text.strip())
     )
     checks.append(_check(
-        "adapter_review_ready",
-        review_ready,
-        "Adapter caller review returns a ready intake and Portuguese draft text." if review_ready else "Adapter caller review did not return a ready intake.",
+        "adapter_apply_answers_ready",
+        apply_ready,
+        "Adapter numbered answers rerun review into a ready intake and Portuguese draft text." if apply_ready else "Adapter numbered answers did not produce a ready review.",
         {
-            "status": review_response.get("status") if isinstance(review_response, dict) else None,
-            "question_count": len(review_response.get("questions") or []) if isinstance(review_response, dict) and isinstance(review_response.get("questions"), list) else None,
+            "status": apply_response.get("status") if isinstance(apply_response, dict) else None,
+            "applied_fields": apply_response.get("applied_fields") if isinstance(apply_response, dict) else None,
             "draft_text_present": bool(draft_text.strip()),
         },
     ))
-    if not review_ready:
+    if not apply_ready:
         return checks
 
     preflight_response, error_check = _post_workflow_json(
@@ -1411,6 +1513,7 @@ def run_smoke(
             base,
             fetch_json=json_fetcher,
             post_json=json_poster,
+            post_multipart=multipart_poster,
             profile=interaction_profile,
             case_number=interaction_case_number,
             service_date=interaction_service_date,
