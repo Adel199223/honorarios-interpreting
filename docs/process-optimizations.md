@@ -49,7 +49,7 @@ For familiar service patterns, create the intake first from a reusable profile:
 python scripts/create_intake.py --profile pj_gnr_ferreira --case-number 86/26.8GAFAL --service-date 2026-02-15
 ```
 
-Profiles live in `data/service-profiles.json` and fill stable defaults such as payment entity, recipient, service place wording, transport destination, kilometers, and closing city. This keeps repeated Ferreira/PJ, Beja/PJ, Beja medical-legal, Beringel/GNR, Ferreira/GNR, Serpa/GNR, labor-court, and Cuba/GNR cases from requiring hand-built JSON every time.
+Profiles live in local `data/service-profiles.json` and fill stable defaults such as payment entity, recipient, service place wording, transport destination, kilometers, and closing city. Public checkouts fall back to the sanitized `data/service-profiles.example.json` fixture until a local overlay exists. This keeps repeated Ferreira/PJ, Beja/PJ, Beja medical-legal, Beringel/GNR, Ferreira/GNR, Serpa/GNR, labor-court, and Cuba/GNR cases from requiring hand-built JSON every time.
 
 ## New Safety Checks
 

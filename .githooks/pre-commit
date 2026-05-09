@@ -1,0 +1,2 @@
+#!/bin/sh
+python scripts/public_repo_gate.py --staged

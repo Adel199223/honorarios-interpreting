@@ -11,10 +11,10 @@ from typing import Any
 
 try:
     from scripts.entity_rules import normalize_text, resolve_entities
-    from scripts.generate_pdf import ROOT, IntakeError, get_service_date_value, load_json
+    from scripts.generate_pdf import ROOT, IntakeError, get_service_date_value, load_json, resolve_json_path
 except ModuleNotFoundError:
     from entity_rules import normalize_text, resolve_entities
-    from generate_pdf import ROOT, IntakeError, get_service_date_value, load_json
+    from generate_pdf import ROOT, IntakeError, get_service_date_value, load_json, resolve_json_path
 
 
 DEFAULT_EMAIL_CONFIG = ROOT / "config" / "email.json"
@@ -309,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         intake = load_json(args.intake)
         email_config = load_json(args.email_config)
-        directory = json.loads(args.court_emails.read_text(encoding="utf-8"))
+        directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
         payload = build_email_payload(intake, args.pdf, email_config, directory)
         output_path = args.output or default_output_path(args.pdf)
         output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -78,7 +78,7 @@ Morada: Example Street 1, 1000-000 Example City
 
 Keep real personal profile data private in ignored `config/profiles.local.json`. The app derives the legacy generator `config/profile.json` shape from the selected main personal profile so older CLI commands still use the same applicant, address, IBAN, IVA/IRS, and signature fields.
 
-Do not confuse personal profiles with service profiles. Personal profiles describe the requester/payment/travel identity; service profiles in `data/service-profiles.json` describe recurring service patterns, payment entities, recipients, service wording, and transport defaults.
+Do not confuse personal profiles with service profiles. Personal profiles describe the requester/payment/travel identity; service profiles in local `data/service-profiles.json` describe recurring service patterns, payment entities, recipients, service wording, and transport defaults. Public checkouts use `data/service-profiles.example.json` as the sanitized fallback.
 
 ## Interpreting Body
 
