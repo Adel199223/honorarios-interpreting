@@ -661,10 +661,49 @@ def _run_gmail_api_checks(
     if not ready or not isinstance(intake, dict):
         return checks
 
+    preflight_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/prepare/preflight"),
+        {"intakes": [intake], "packet_mode": False},
+        "gmail_api_prepare_preflight",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "gmail_api_prepare_preflight_send_allowed",
+        preflight_response,
+        "Synthetic Gmail API prepare preflight keeps send_allowed false.",
+    ))
+    preflight_ready = (
+        isinstance(preflight_response, dict)
+        and preflight_response.get("status") == "ready"
+        and isinstance(preflight_response.get("preflight_review"), dict)
+        and preflight_response.get("artifact_effect") == "none"
+        and preflight_response.get("write_allowed") is False
+    )
+    checks.append(_check(
+        "gmail_api_prepare_preflight",
+        preflight_ready,
+        "Synthetic Gmail API smoke bound prepare to a current non-writing preflight." if preflight_ready else "Synthetic Gmail API prepare preflight did not return the ready non-writing contract.",
+        {
+            "status": preflight_response.get("status") if isinstance(preflight_response, dict) else None,
+            "artifact_effect": preflight_response.get("artifact_effect") if isinstance(preflight_response, dict) else None,
+            "write_allowed": preflight_response.get("write_allowed") if isinstance(preflight_response, dict) else None,
+        },
+    ))
+    if not preflight_ready:
+        return checks
+
     prepare_response, error_check = _post_workflow_json(
         post_json,
         _url(base, "/api/prepare"),
-        {"intakes": [intake], "render_previews": False, "packet_mode": False},
+        {
+            "intakes": [intake],
+            "render_previews": False,
+            "packet_mode": False,
+            "preflight_review": preflight_response.get("preflight_review") if isinstance(preflight_response, dict) else None,
+        },
         "gmail_api_prepare_payload",
     )
     if error_check:

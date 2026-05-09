@@ -255,7 +255,23 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         runtime = tempfile.TemporaryDirectory()
         self.addCleanup(runtime.cleanup)
         root = Path(runtime.name)
+        project_root = Path(__file__).resolve().parents[1]
+        duplicate_index = root / "duplicate-index.json"
+        draft_log = root / "gmail-draft-log.json"
+        profile_change_log = root / "profile-change-log.json"
+        duplicate_index.write_text("[]", encoding="utf-8")
+        draft_log.write_text("[]", encoding="utf-8")
+        profile_change_log.write_text("[]", encoding="utf-8")
         return TestClient(create_app(
+            profile=project_root / "config" / "profile.example.json",
+            personal_profiles=project_root / "config" / "profiles.example.json",
+            email_config=project_root / "config" / "email.example.json",
+            service_profiles=project_root / "data" / "service-profiles.example.json",
+            court_emails=project_root / "data" / "court-emails.example.json",
+            known_destinations=project_root / "data" / "known-destinations.example.json",
+            duplicate_index=duplicate_index,
+            draft_log=draft_log,
+            profile_change_log=profile_change_log,
             output_dir=root / "pdf",
             html_dir=root / "html",
             draft_output_dir=root / "email-drafts",
@@ -267,6 +283,25 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             backup_output_dir=root / "backups",
             integration_report_output_dir=root / "integration-reports",
         ))
+
+    def preflight_prepare(self, client, payload):
+        intakes = payload.get("intakes")
+        if intakes is None and isinstance(payload.get("intake"), dict):
+            intakes = [payload["intake"]]
+        preflight_payload = {
+            "intakes": intakes,
+            "packet_mode": bool(payload.get("packet_mode", False)),
+        }
+        for key in ("correction_mode", "correction_reason"):
+            if key in payload:
+                preflight_payload[key] = payload[key]
+        preflight = client.post("/api/prepare/preflight", json=preflight_payload)
+        self.assertEqual(preflight.status_code, 200, preflight.text)
+        preflight_data = preflight.json()
+        self.assertEqual(preflight_data["status"], "ready", preflight.text)
+        request_payload = dict(payload)
+        request_payload["preflight_review"] = preflight_data["preflight_review"]
+        return client.post("/api/prepare", json=request_payload)
 
     def test_homepage_exposes_browser_flow_landmarks(self):
         client = self.make_client()
@@ -425,6 +460,35 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("_send_email", dumped)
         self.assertNotIn("_send_draft", dumped)
 
+    def test_prepare_requires_current_preflight_review_before_artifacts(self):
+        client = self.make_client()
+        project_root = Path(__file__).resolve().parents[1]
+        intake = json.loads((project_root / "examples" / "intake.synthetic.example.json").read_text(encoding="utf-8"))
+        intake.pop("recipient_email", None)
+
+        missing = client.post("/api/prepare", json={"intakes": [intake], "render_previews": False})
+
+        preflight = client.post("/api/prepare/preflight", json={"intakes": [intake], "packet_mode": False}).json()
+        stale_review = dict(preflight["preflight_review"])
+        stale_review["preflight_review_token"] = "stale-token"
+        stale = client.post("/api/prepare", json={
+            "intakes": [intake],
+            "render_previews": False,
+            "preflight_review": stale_review,
+        })
+        current = client.post("/api/prepare", json={
+            "intakes": [intake],
+            "render_previews": False,
+            "preflight_review": preflight["preflight_review"],
+        })
+
+        self.assertEqual(missing.status_code, 400)
+        self.assertIn("preflight", missing.json()["message"].lower())
+        self.assertEqual(stale.status_code, 400)
+        self.assertIn("stale", stale.json()["message"].lower())
+        self.assertEqual(current.status_code, 200, current.text)
+        self.assertEqual(current.json()["status"], "prepared")
+
     def test_public_readiness_endpoint_reports_tracked_gate(self):
         client = self.make_client()
         response = client.get("/api/public-readiness")
@@ -538,7 +602,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 integration_report_output_dir=root / "integration-reports",
                 gmail_config=root / "gmail.local.json",
             ))
-            prepared = client.post("/api/prepare", json={
+            prepared = self.preflight_prepare(client, {
                 "intakes": [intake],
                 "render_previews": False,
             })
@@ -670,6 +734,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "deadline = time.monotonic()",
             "text.lower() in last_content.lower()",
             "last_content",
+            "elif correction_mode:",
+            "if not prepare_replacement or prepare_packet:",
             'wait_for(state="attached"',
         ]:
             with self.subTest(browser_flow=text):
@@ -689,6 +755,18 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn('driver.click("#record-parsed-prepared-draft")', flow_py)
         self.assertNotIn('driver.click("#record-draft")', flow_py)
         self.assertNotIn('driver.click("#create-gmail-api-draft")', flow_py)
+
+    def test_browser_js_prefights_single_prepare_before_artifacts(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+        prepare_body = app_js.split("async function prepareIntake", 1)[1].split("function renderPrepared", 1)[0]
+
+        preflight_index = prepare_body.index('requestJson("/api/prepare/preflight"')
+        prepare_index = prepare_body.index('requestJson("/api/prepare"')
+        self.assertLess(preflight_index, prepare_index)
+        self.assertIn("requestPayload.preflight_review = preflight.preflight_review", prepare_body)
+        self.assertIn("preflightPayload.correction_reason = requestPayload.correction_reason", prepare_body)
+        self.assertIn('packet_mode: false', prepare_body)
 
     def test_browser_js_routes_one_click_recording_through_strict_prepared_endpoint(self):
         root = Path(__file__).resolve().parents[1]
