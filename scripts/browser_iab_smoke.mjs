@@ -44,6 +44,7 @@ function parseArgs(argv) {
     profileProposal: false,
     gmailApiCreate: false,
     manualHandoffStale: false,
+    supportingAttachmentStale: false,
     recentWorkLifecycle: false,
     timeoutMs: 10000,
   };
@@ -74,6 +75,7 @@ function parseArgs(argv) {
     else if (item === "--profile-proposal") args.profileProposal = true;
     else if (item === "--gmail-api-create") args.gmailApiCreate = true;
     else if (item === "--manual-handoff-stale") args.manualHandoffStale = true;
+    else if (item === "--supporting-attachment-stale") args.supportingAttachmentStale = true;
     else if (item === "--recent-work-lifecycle") args.recentWorkLifecycle = true;
     else if (item === "--help" || item === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${item}`);
@@ -308,11 +310,43 @@ async function expectValueContains(tab, selector, value, timeoutMs) {
   }
 }
 
+async function expectValueEquals(tab, selector, value, timeoutMs) {
+  const locator = await uniqueLocator(tab, selector, timeoutMs);
+  let actual = "";
+  if (typeof locator.inputValue === "function") {
+    actual = await locator.inputValue({ timeout: timeoutMs });
+  } else if (typeof locator.evaluateAll === "function") {
+    actual = await locator.evaluateAll((nodes) => {
+      const first = nodes[0];
+      if (!first) return "";
+      return first.value || first.getAttribute?.("value") || "";
+    });
+  } else {
+    actual = await locator.getAttribute("value", { timeout: timeoutMs });
+  }
+  if (String(actual || "") !== String(value || "")) {
+    throw new Error(`Expected ${selector} value to equal ${JSON.stringify(value)}; got ${JSON.stringify(actual)}.`);
+  }
+}
+
 async function expectAttributeContains(tab, selector, attribute, value, timeoutMs) {
   const locator = await attachedLocator(tab, selector, timeoutMs);
   const actual = await locator.getAttribute(attribute, { timeoutMs });
   if (!String(actual || "").includes(value)) {
     throw new Error(`Expected ${selector} ${attribute} to contain ${JSON.stringify(value)}; got ${JSON.stringify(actual)}.`);
+  }
+}
+
+async function expectChecked(tab, selector, expected, timeoutMs) {
+  const locator = await attachedLocator(tab, selector, timeoutMs);
+  let actual = null;
+  if (typeof locator.isChecked === "function") {
+    actual = await locator.isChecked({ timeout: timeoutMs });
+  } else if (typeof locator.evaluateAll === "function") {
+    actual = await locator.evaluateAll((nodes) => Boolean(nodes[0]?.checked));
+  }
+  if (actual !== expected) {
+    throw new Error(`Expected ${selector} checked state to be ${expected}; got ${actual}.`);
   }
 }
 
@@ -466,7 +500,7 @@ export async function runBrowserIabSmoke(options = {}) {
   }
   await browserSession.nameSession("🧪 honorários iab smoke");
   const tab = await browserSession.tabs.new();
-  uploadFixtures = args.uploadPhoto || args.uploadPdf || args.uploadSupportingAttachment ? createSyntheticUploadFixtures(args) : null;
+  uploadFixtures = args.uploadPhoto || args.uploadPdf || args.uploadSupportingAttachment || args.supportingAttachmentStale ? createSyntheticUploadFixtures(args) : null;
 
   checks.push(check("browser_iab_runtime", true, "Browser/IAB runtime initialized.", { backend: "iab" }));
 
@@ -763,6 +797,34 @@ export async function runBrowserIabSmoke(options = {}) {
     }
   }
 
+  if (args.supportingAttachmentStale) {
+    if (!args.prepareReplacement && !args.preparePacket) {
+      checks.push(check("browser_supporting_attachment_stale", false, "Supporting attachment stale smoke requires a prepared replacement or packet payload."));
+      return finish();
+    }
+    if (!(await runStep(checks, "browser_supporting_attachment_stale", "Browser/IAB cleared prepared Gmail surfaces after a Supporting proof upload changed the attachment set.", async () => {
+      await setChecked(tab, "#gmail_handoff_reviewed", true, args.timeoutMs);
+      await click(tab, "#build-manual-handoff", args.timeoutMs);
+      await expectSelectorText(tab, "#manual-handoff-packet", "Manual handoff packet ready", args.timeoutMs);
+      await setSyntheticInputFile(tab, "#supporting-attachment-file", uploadFixtures.supportingPath, args.timeoutMs);
+      await click(tab, "#supporting-attachment-form button[type=submit]", args.timeoutMs);
+      await expectSelectorText(tab, "#supporting-attachment-list", "synthetic-declaracao.pdf", args.timeoutMs);
+      await expectAttributeContains(tab, "#manual-handoff-packet", "class", "hidden", args.timeoutMs);
+      await expectButtonDisabled(tab, "#copy-manual-handoff-prompt", args.timeoutMs);
+      await expectButtonDisabled(tab, "#record-parsed-prepared-draft", args.timeoutMs);
+      await expectButtonDisabled(tab, "#create-gmail-api-draft", args.timeoutMs);
+      await expectChecked(tab, "#gmail_handoff_reviewed", false, args.timeoutMs);
+      await expectValueEquals(tab, "#record_payload", "", args.timeoutMs);
+      await expectValueEquals(tab, "#record_draft_id", "", args.timeoutMs);
+      await expectValueEquals(tab, "#record_message_id", "", args.timeoutMs);
+      await expectValueEquals(tab, "#record_thread_id", "", args.timeoutMs);
+      await expectValueEquals(tab, "#gmail-response-raw", "", args.timeoutMs);
+      await expectAttributeContains(tab, "#prepare-results", "data-stale-reason", "supporting attachments changed", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+  }
+
   if (args.manualHandoffStale) {
     if (!args.prepareReplacement && !args.preparePacket) {
       checks.push(check("browser_manual_handoff_stale", false, "Manual handoff stale smoke requires a prepared replacement or packet payload."));
@@ -812,12 +874,16 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectAttributeContains(tab, "#copy-isolated-source-upload-smoke-command", "data-copy-diagnostic-command", "isolated_source_upload_smoke", args.timeoutMs);
       await uniqueLocator(tab, "#copy-isolated-adapter-contract-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-isolated-adapter-contract-smoke-command", "data-copy-diagnostic-command", "isolated_adapter_contract_smoke", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-browser-iab-supporting-attachment-stale-smoke-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-browser-iab-supporting-attachment-stale-smoke-command", "data-copy-diagnostic-command", "browser_iab_supporting_attachment_stale_smoke", args.timeoutMs);
       await click(tab, "#refresh-diagnostics", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--source-upload-checks", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "LegalPDF adapter contract smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--adapter-contract-checks", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "Supporting proof stale smoke", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "--browser-supporting-attachment-stale", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "The browser does not run shell commands or contact Gmail.", args.timeoutMs);
       const forbiddenSendActions = forbiddenSendActionTerms();
       await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
@@ -825,8 +891,10 @@ export async function runBrowserIabSmoke(options = {}) {
       const clipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --source-upload-checks --json", args.timeoutMs);
       await click(tab, "#copy-isolated-adapter-contract-smoke-command", args.timeoutMs);
       const adapterClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --adapter-contract-checks --json", args.timeoutMs);
+      await click(tab, "#copy-browser-iab-supporting-attachment-stale-smoke-command", args.timeoutMs);
+      const supportingStaleClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-supporting-attachment-stale --json", args.timeoutMs);
       for (const forbidden of forbiddenSendActions) {
-        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden)) {
+        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden)) {
           throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
         }
       }
@@ -878,7 +946,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--recent-work-lifecycle] [--apply-history] [--profile-proposal] [--gmail-api-create]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--supporting-attachment-stale] [--recent-work-lifecycle] [--apply-history] [--profile-proposal] [--gmail-api-create]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);
