@@ -35,6 +35,45 @@ class AdapterContractValidation:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AdapterSequenceResult:
+    checks: list[dict[str, Any]]
+    prepared_review_bound: bool = False
+    draft_payload_present: bool = False
+    manual_handoff_ready: bool = False
+    stale_manual_handoff_blocked: bool = False
+    stale_record_blocked: bool = False
+    stale_record_no_local_write: bool = False
+    recorded_duplicate_count: int | None = None
+    send_allowed: bool = False
+    write_allowed: bool = False
+    legalpdf_write_allowed: bool = False
+
+    @property
+    def failure_count(self) -> int:
+        return sum(1 for check in self.checks if check.get("status") != "ready")
+
+    @property
+    def status(self) -> str:
+        return "ready" if self.failure_count == 0 else "blocked"
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "failure_count": self.failure_count,
+            "prepared_review_bound": self.prepared_review_bound,
+            "draft_payload_present": self.draft_payload_present,
+            "manual_handoff_ready": self.manual_handoff_ready,
+            "stale_manual_handoff_blocked": self.stale_manual_handoff_blocked,
+            "stale_record_blocked": self.stale_record_blocked,
+            "stale_record_no_local_write": self.stale_record_no_local_write,
+            "recorded_duplicate_count": self.recorded_duplicate_count,
+            "send_allowed": self.send_allowed,
+            "write_allowed": self.write_allowed,
+            "legalpdf_write_allowed": self.legalpdf_write_allowed,
+        }
+
+
 def normalize_base_url(base_url: str) -> str:
     value = str(base_url or "").strip()
     if not value:
@@ -367,6 +406,41 @@ def synthetic_notification_pdf(case_number: str, service_date: str, *, recipient
     document.drawString(72, 660, f"Email: {recipient_email}")
     document.save()
     return output.getvalue()
+
+
+def _check_by_name(checks: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    for check in checks:
+        if check.get("name") == name:
+            return check
+    return {}
+
+
+def _check_is_ready(checks: list[dict[str, Any]], name: str) -> bool:
+    return _check_by_name(checks, name).get("status") == "ready"
+
+
+def _adapter_sequence_result_from_checks(checks: list[dict[str, Any]]) -> AdapterSequenceResult:
+    prepare_details = _check_by_name(checks, "adapter_prepare_ready").get("details")
+    if not isinstance(prepare_details, dict):
+        prepare_details = {}
+    record_details = _check_by_name(checks, "adapter_record_draft").get("details")
+    if not isinstance(record_details, dict):
+        record_details = {}
+    duplicate_count = record_details.get("recorded_duplicate_count")
+    return AdapterSequenceResult(
+        checks=checks,
+        prepared_review_bound=(
+            prepare_details.get("prepared_manifest_present") is True
+            and prepare_details.get("prepared_token_present") is True
+            and prepare_details.get("review_fingerprint_present") is True
+        ),
+        draft_payload_present=prepare_details.get("draft_payload_present") is True,
+        manual_handoff_ready=_check_is_ready(checks, "adapter_manual_handoff_packet"),
+        stale_manual_handoff_blocked=_check_is_ready(checks, "adapter_manual_handoff_rejects_stale_review"),
+        stale_record_blocked=_check_is_ready(checks, "adapter_record_rejects_stale_review"),
+        stale_record_no_local_write=_check_is_ready(checks, "adapter_record_stale_no_local_write"),
+        recorded_duplicate_count=duplicate_count if isinstance(duplicate_count, int) else None,
+    )
 
 
 def run_synthetic_adapter_sequence(
@@ -835,3 +909,25 @@ def run_synthetic_adapter_sequence(
         },
     ))
     return checks
+
+
+def run_synthetic_adapter_sequence_result(
+    base_url: str,
+    *,
+    fetch_json: JsonFetcher,
+    post_json: PostJsonFetcher,
+    post_multipart: PostMultipartFetcher,
+    profile: str,
+    case_number: str,
+    service_date: str,
+) -> AdapterSequenceResult:
+    checks = run_synthetic_adapter_sequence(
+        base_url,
+        fetch_json=fetch_json,
+        post_json=post_json,
+        post_multipart=post_multipart,
+        profile=profile,
+        case_number=case_number,
+        service_date=service_date,
+    )
+    return _adapter_sequence_result_from_checks(checks)

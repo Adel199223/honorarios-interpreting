@@ -1053,7 +1053,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("run_synthetic_adapter_sequence(", smoke_source)
 
     def test_legalpdf_adapter_caller_runs_full_synthetic_sequence(self):
-        from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS, run_synthetic_adapter_sequence
+        from scripts.legalpdf_adapter_caller import (
+            REQUIRED_ADAPTER_ENDPOINTS,
+            AdapterSequenceResult,
+            run_synthetic_adapter_sequence_result,
+        )
 
         seen_posts = []
         seen_uploads = []
@@ -1201,7 +1205,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 },
             }
 
-        checks = run_synthetic_adapter_sequence(
+        result = run_synthetic_adapter_sequence_result(
             "http://public-candidate.test/",
             fetch_json=fetch_json,
             post_json=post_json,
@@ -1211,6 +1215,24 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             service_date="2026-05-04",
         )
 
+        self.assertIsInstance(result, AdapterSequenceResult)
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.failure_count, 0)
+        self.assertFalse(result.send_allowed)
+        self.assertFalse(result.write_allowed)
+        self.assertFalse(result.legalpdf_write_allowed)
+        summary = result.safe_summary()
+        self.assertTrue(summary["prepared_review_bound"])
+        self.assertTrue(summary["manual_handoff_ready"])
+        self.assertTrue(summary["stale_manual_handoff_blocked"])
+        self.assertTrue(summary["stale_record_blocked"])
+        self.assertTrue(summary["stale_record_no_local_write"])
+        self.assertEqual(summary["recorded_duplicate_count"], 1)
+        summary_text = json.dumps(summary, sort_keys=True)
+        self.assertNotIn("copyable_prompt", summary_text)
+        self.assertNotIn("/tmp/adapter-packet.draft.json", summary_text)
+
+        checks = result.checks
         self.assertTrue(checks, checks)
         self.assertTrue(all(check["status"] == "ready" for check in checks), checks)
         names = {check["name"] for check in checks}
