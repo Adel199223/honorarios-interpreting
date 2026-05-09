@@ -394,15 +394,19 @@ def run_browser_flow_smoke(
             )):
                 return _report(base, checks)
 
+        def _prepare_packet() -> None:
+            nonlocal review_drawer_open
+            driver.check("#batch-packet-mode")
+            driver.click("#preflight-batch-intakes")
+            review_drawer_open = True
+            driver.expect_selector_text("#batch-preflight-result", "Batch preflight")
+            _close_review_drawer_if_open()
+            driver.click("#prepare-batch-intakes")
+            driver.expect_selector_text("#prepare-results", "Packet draft recording helper")
+            driver.expect_selector_text("#prepare-results", "Underlying duplicate blockers")
+
         if prepare_packet:
-            if not _safe_step(checks, "browser_packet_prepare", "Browser prepared packet mode and exposed packet draft helpers.", lambda: (
-                driver.check("#batch-packet-mode"),
-                driver.click("#preflight-batch-intakes"),
-                driver.expect_selector_text("#batch-preflight-result", "Batch preflight"),
-                driver.click("#prepare-batch-intakes"),
-                driver.expect_text("Packet draft recording helper"),
-                driver.expect_text("Underlying duplicate blockers"),
-            )):
+            if not _safe_step(checks, "browser_packet_prepare", "Browser prepared packet mode and exposed packet draft helpers.", _prepare_packet):
                 return _report(base, checks)
 
         if record_helper:

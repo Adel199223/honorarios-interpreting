@@ -777,9 +777,11 @@ export async function runBrowserIabSmoke(options = {}) {
       await setChecked(tab, "#batch-packet-mode", true, args.timeoutMs);
       await click(tab, "#preflight-batch-intakes", args.timeoutMs);
       await expectSelectorText(tab, "#batch-preflight-result", "Batch preflight", args.timeoutMs);
+      reviewDrawerOpen = true;
+      await closeReviewDrawerIfOpen();
       await click(tab, "#prepare-batch-intakes", args.timeoutMs);
-      await expectBodyText(tab, "Packet draft recording helper", args.timeoutMs);
-      await expectBodyText(tab, "Underlying duplicate blockers", args.timeoutMs);
+      await expectSelectorText(tab, "#prepare-results", "Packet draft recording helper", args.timeoutMs);
+      await expectSelectorText(tab, "#prepare-results", "Underlying duplicate blockers", args.timeoutMs);
     }))) {
       return finish();
     }
