@@ -359,6 +359,15 @@ async function expectButtonDisabled(tab, selector, timeoutMs) {
   }
 }
 
+async function expectButtonEnabled(tab, selector, timeoutMs) {
+  const locator = await attachedLocator(tab, selector, timeoutMs);
+  const disabled = await locator.getAttribute("disabled", { timeoutMs });
+  const ariaDisabled = await locator.getAttribute("aria-disabled", { timeoutMs });
+  if (disabled !== null || ariaDisabled === "true") {
+    throw new Error(`Expected ${selector} to be enabled.`);
+  }
+}
+
 function portugueseDate(value) {
   const parts = String(value || "").split("-");
   if (parts.length !== 3) return String(value || "");
@@ -785,11 +794,16 @@ export async function runBrowserIabSmoke(options = {}) {
       const fakeResponse = '{"id":"draft-smoke","message":{"id":"message-smoke","threadId":"thread-smoke"}}';
       await fill(tab, "#gmail-response-raw", fakeResponse, args.timeoutMs);
       await click(tab, "#parse-gmail-response", args.timeoutMs);
+      await expectButtonDisabled(tab, "#record-parsed-prepared-draft", args.timeoutMs);
+      await expectAttributeContains(tab, "#record-parsed-prepared-draft", "title", "Review the PDF preview and exact Gmail args before local recording.", args.timeoutMs);
       await click(tab, "#autofill-record-from-prepared", args.timeoutMs);
       await expectValueContains(tab, "#record_draft_id", "draft-smoke", args.timeoutMs);
       await expectValueContains(tab, "#record_message_id", "message-smoke", args.timeoutMs);
       await expectValueContains(tab, "#record_thread_id", "thread-smoke", args.timeoutMs);
       await expectValueContains(tab, "#record_payload", ".draft.json", args.timeoutMs);
+      await expectButtonDisabled(tab, "#record-parsed-prepared-draft", args.timeoutMs);
+      await setChecked(tab, "#gmail_handoff_reviewed", true, args.timeoutMs);
+      await expectButtonEnabled(tab, "#record-parsed-prepared-draft", args.timeoutMs);
       await fill(tab, "#source_text", `Stale state marker ${Date.now()}`, args.timeoutMs);
       await expectAttributeContains(tab, "#prepare-results", "data-stale-reason", "intake form changed", args.timeoutMs);
     }))) {

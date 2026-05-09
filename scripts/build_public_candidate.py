@@ -572,6 +572,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "#gmail-response-raw",
             "#autofill-record-from-prepared",
             "#record_draft_id",
+            'expectButtonDisabled(tab, "#record-parsed-prepared-draft"',
+            'expectButtonEnabled(tab, "#record-parsed-prepared-draft"',
+            "Review the PDF preview and exact Gmail args before local recording.",
             "Source Evidence",
             "Filename",
             "synthetic-declaracao.pdf",
@@ -581,6 +584,23 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
+
+    def test_browser_js_routes_one_click_recording_through_strict_prepared_endpoint(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("async function recordPreparedDraftFromForm", app_js)
+        one_click_body = app_js.split("async function recordFromParsedResponseAndPreparedPayload", 1)[1].split("function ", 1)[0]
+        self.assertIn("await recordPreparedDraftFromForm()", one_click_body)
+        self.assertNotIn("await recordDraft()", one_click_body)
+        prepared_record_body = app_js.split("async function recordPreparedDraftFromForm", 1)[1].split("async function ", 1)[0]
+        self.assertIn('requestJson("/api/drafts/record"', prepared_record_body)
+        self.assertIn("gmail_handoff_reviewed: true", prepared_record_body)
+        self.assertIn("...currentPreparedReviewFields(payloadPath)", prepared_record_body)
+        manual_record_body = app_js.split("async function recordDraft()", 1)[1].split("function ", 1)[0]
+        self.assertIn('requestJson("/api/drafts/status"', manual_record_body)
+        self.assertNotIn("_send_email", app_js)
+        self.assertNotIn("_send_draft", app_js)
 
     def test_browser_js_invalidates_stale_prepared_payloads(self):
         root = Path(__file__).resolve().parents[1]
