@@ -235,6 +235,7 @@ def _write_smoke_tests(target_root: Path) -> None:
     (tests_dir / "test_public_candidate_smoke.py").write_text(
         """import json
 import os
+import inspect
 import tempfile
 import unittest
 import urllib.error
@@ -1326,6 +1327,20 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("http://public-candidate.test/api/gmail/manual-handoff", seen_posts)
         self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
         self.assertNotIn("http://public-candidate.test/api/gmail/drafts/create", seen_posts)
+
+    def test_local_app_smoke_adapter_contract_wrapper_is_thin(self):
+        import scripts.local_app_smoke as smoke
+
+        source = inspect.getsource(smoke._run_adapter_contract_checks)
+        self.assertIn("return run_synthetic_adapter_sequence(", source)
+        for duplicated_sequence_detail in [
+            "LegalPdfAdapterCaller(",
+            "_prepared_review_request_fields",
+            "stale_prepared_review_fields",
+            "adapter_manual_handoff_rejects_stale_review",
+            "adapter_record_rejects_stale_review",
+        ]:
+            self.assertNotIn(duplicated_sequence_detail, source)
 
     def test_local_app_smoke_expected_blocked_helper_parses_http_400_json(self):
         def post_json(url, payload):
