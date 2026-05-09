@@ -160,20 +160,20 @@ def _write_synthetic_runtime_files(target_root: Path) -> None:
         "token_path": "config/gmail-token.local.json",
         "notes": "Copy to config/gmail.local.json for private local use. Do not commit real credentials or OAuth tokens.",
     })
-    _write_json(target_root / "data" / "court-emails.json", [{
+    _write_json(target_root / "data" / "court-emails.example.json", [{
         "key": "example-court",
         "name": "Example Court",
         "email": "court@example.test",
         "payment_entity_aliases": ["Example Court", "Example Ministério Público"],
         "source": "Synthetic public fixture.",
     }])
-    _write_json(target_root / "data" / "known-destinations.json", [{
+    _write_json(target_root / "data" / "known-destinations.example.json", [{
         "destination": "Example City",
         "institution_examples": ["Example Police Station"],
         "km_one_way": 12,
         "notes": "Synthetic public fixture.",
     }])
-    _write_json(target_root / "data" / "service-profiles.json", {
+    _write_json(target_root / "data" / "service-profiles.example.json", {
         "example_interpreting": {
             "description": "Synthetic in-person interpreting service profile.",
             "defaults": {
@@ -461,9 +461,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 profile=project_root / "config" / "profile.example.json",
                 personal_profiles=project_root / "config" / "profiles.example.json",
                 email_config=project_root / "config" / "email.example.json",
-                service_profiles=project_root / "data" / "service-profiles.json",
-                court_emails=project_root / "data" / "court-emails.json",
-                known_destinations=project_root / "data" / "known-destinations.json",
+                service_profiles=project_root / "data" / "service-profiles.example.json",
+                court_emails=project_root / "data" / "court-emails.example.json",
+                known_destinations=project_root / "data" / "known-destinations.example.json",
                 duplicate_index=duplicate_index,
                 draft_log=draft_log,
                 profile_change_log=profile_change_log,
@@ -705,10 +705,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
     def test_legalpdf_integration_preview_report_and_checklist_are_read_only(self):
         root = Path(__file__).resolve().parents[1]
-        profiles_path = root / "data" / "service-profiles.json"
-        court_path = root / "data" / "court-emails.json"
-        profiles_before = profiles_path.read_text(encoding="utf-8")
-        courts_before = court_path.read_text(encoding="utf-8")
+        profiles_example_path = root / "data" / "service-profiles.example.json"
+        court_example_path = root / "data" / "court-emails.example.json"
+        profiles_overlay_path = root / "data" / "service-profiles.json"
+        court_overlay_path = root / "data" / "court-emails.json"
+        profiles_before = profiles_example_path.read_text(encoding="utf-8")
+        courts_before = court_example_path.read_text(encoding="utf-8")
+        profiles_overlay_before = profiles_overlay_path.read_text(encoding="utf-8") if profiles_overlay_path.exists() else None
+        court_overlay_before = court_overlay_path.read_text(encoding="utf-8") if court_overlay_path.exists() else None
         client = self.make_client()
         backup = {
             "kind": "honorarios_local_backup",
@@ -815,8 +819,16 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("Integration Checklist", checklist.json()["checklist_markdown"])
         self.assertIn("legalpdf_synthetic -> example_interpreting", checklist.json()["checklist_markdown"])
         self.assertIn("Adapter Import Plan", plan.json()["plan_markdown"])
-        self.assertEqual(profiles_path.read_text(encoding="utf-8"), profiles_before)
-        self.assertEqual(court_path.read_text(encoding="utf-8"), courts_before)
+        self.assertEqual(profiles_example_path.read_text(encoding="utf-8"), profiles_before)
+        self.assertEqual(court_example_path.read_text(encoding="utf-8"), courts_before)
+        self.assertEqual(
+            profiles_overlay_path.read_text(encoding="utf-8") if profiles_overlay_path.exists() else None,
+            profiles_overlay_before,
+        )
+        self.assertEqual(
+            court_overlay_path.read_text(encoding="utf-8") if court_overlay_path.exists() else None,
+            court_overlay_before,
+        )
 
     def test_local_app_smoke_runner_can_check_public_candidate_contract(self):
         client = self.make_client()
