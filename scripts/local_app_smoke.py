@@ -22,6 +22,7 @@ from scripts.legalpdf_adapter_caller import (
     adapter_numbered_answers as _adapter_numbered_answers,
     adapter_questions_are_numbered as _adapter_questions_are_numbered,
     prepared_review_request_fields as _prepared_review_request_fields,
+    run_synthetic_adapter_sequence,
     stale_prepared_review_fields,
 )
 
@@ -816,6 +817,16 @@ def _run_adapter_contract_checks(
     case_number: str,
     service_date: str,
 ) -> list[dict[str, Any]]:
+    return run_synthetic_adapter_sequence(
+        base,
+        fetch_json=fetch_json,
+        post_json=post_json,
+        post_multipart=post_multipart,
+        profile=profile,
+        case_number=case_number,
+        service_date=service_date,
+    )
+
     checks: list[dict[str, Any]] = []
     caller = LegalPdfAdapterCaller(
         base,
