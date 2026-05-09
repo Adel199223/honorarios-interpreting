@@ -740,6 +740,335 @@ def _run_gmail_api_checks(
     return checks
 
 
+def _adapter_contract_seed_intake(*, profile: str, case_number: str, service_date: str) -> dict[str, Any]:
+    synthetic_recipient = "court@" + "tribunais.org.pt"
+    return {
+        "profile": profile,
+        "case_number": case_number,
+        "service_date": service_date,
+        "service_date_source": "user_confirmed",
+        "addressee": "Exmo. Senhor Procurador da Republica\nExample Court",
+        "payment_entity": "Example Court",
+        "service_entity": "Example Police / Example Police Station",
+        "service_entity_type": "police",
+        "entities_differ": True,
+        "service_place": "Example Police Station",
+        "service_place_phrase": "em diligencia realizada no Example Police Station",
+        "claim_transport": True,
+        "transport": {
+            "origin": "Example City",
+            "destination": "Example City",
+            "km_one_way": 12,
+            "round_trip_phrase": "ida_volta",
+        },
+        "closing_city": "Example City",
+        "closing_date": service_date,
+        "recipient_email": synthetic_recipient,
+        "recipient_override_reason": "Synthetic adapter-contract smoke recipient.",
+        "source_filename": "legalpdf-adapter-smoke",
+        "source_text": f"Synthetic in-person interpreting service for adapter contract smoke, case {case_number}, date {service_date}.",
+    }
+
+
+def _prepared_review_request_fields(prepared_review: dict[str, Any]) -> dict[str, str]:
+    return {
+        "prepared_manifest": str(prepared_review.get("manifest") or "").strip(),
+        "prepared_review_token": str(prepared_review.get("prepared_review_token") or "").strip(),
+        "review_fingerprint": str(prepared_review.get("review_fingerprint") or "").strip(),
+    }
+
+
+def _run_adapter_contract_checks(
+    base: str,
+    *,
+    fetch_json: JsonFetcher,
+    post_json: PostJsonFetcher,
+    profile: str,
+    case_number: str,
+    service_date: str,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    try:
+        contract = fetch_json(_url(base, "/api/integration/adapter-contract"))
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        return [_check("adapter_contract_fetch", False, f"Could not load LegalPDF adapter contract: {exc}")]
+
+    checks.append(_send_allowed_check(
+        "adapter_contract_send_allowed",
+        contract,
+        "LegalPDF adapter contract keeps send_allowed false.",
+    ))
+    gmail_boundary = contract.get("gmail_boundary") if isinstance(contract, dict) and isinstance(contract.get("gmail_boundary"), dict) else {}
+    read_only = (
+        isinstance(contract, dict)
+        and contract.get("status") == "ready"
+        and contract.get("recommended_gmail_mode") == "manual_handoff"
+        and contract.get("draft_only") is True
+        and contract.get("send_allowed") is False
+        and contract.get("write_allowed") is False
+        and contract.get("legalpdf_write_allowed") is False
+        and contract.get("managed_data_changed") is False
+        and gmail_boundary.get("required_tool") == "_create_draft"
+    )
+    checks.append(_check(
+        "adapter_contract_read_only",
+        read_only,
+        "Adapter contract is read-only, draft-only, and Manual Draft Handoff first." if read_only else "Adapter contract does not expose the expected read-only manual-handoff boundary.",
+        {
+            "status": contract.get("status") if isinstance(contract, dict) else None,
+            "recommended_gmail_mode": contract.get("recommended_gmail_mode") if isinstance(contract, dict) else None,
+            "write_allowed": contract.get("write_allowed") if isinstance(contract, dict) else None,
+            "legalpdf_write_allowed": contract.get("legalpdf_write_allowed") if isinstance(contract, dict) else None,
+            "managed_data_changed": contract.get("managed_data_changed") if isinstance(contract, dict) else None,
+            "required_tool": gmail_boundary.get("required_tool"),
+        },
+    ))
+
+    sequence = contract.get("sequence") if isinstance(contract, dict) and isinstance(contract.get("sequence"), list) else []
+    endpoints = {
+        str(step.get("endpoint") or "")
+        for step in sequence
+        if isinstance(step, dict)
+    }
+    required_endpoints = {
+        "/api/sources/upload",
+        "/api/review",
+        "/api/review/apply-answers",
+        "/api/prepare/preflight",
+        "/api/prepare",
+        "/api/gmail/manual-handoff",
+        "/api/drafts/record",
+    }
+    missing_endpoints = sorted(required_endpoints.difference(endpoints))
+    checks.append(_check(
+        "adapter_contract_sequence",
+        not missing_endpoints,
+        "Adapter contract advertises the safe review, preflight, prepare, handoff, and record sequence." if not missing_endpoints else "Adapter contract is missing expected workflow endpoints.",
+        {"missing": missing_endpoints, "endpoints": sorted(endpoints)},
+    ))
+    if not read_only or missing_endpoints:
+        return checks
+
+    seed_intake = _adapter_contract_seed_intake(
+        profile=profile,
+        case_number=case_number,
+        service_date=service_date,
+    )
+    review_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/review"),
+        {"intake": seed_intake},
+        "adapter_review_ready",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_review_send_allowed",
+        review_response,
+        "Adapter review keeps send_allowed false.",
+    ))
+    reviewed_intake = {}
+    if isinstance(review_response, dict):
+        candidate = review_response.get("intake") or review_response.get("effective_intake") or seed_intake
+        reviewed_intake = candidate if isinstance(candidate, dict) else {}
+    draft_text = str(review_response.get("draft_text") or "") if isinstance(review_response, dict) else ""
+    review_ready = (
+        isinstance(review_response, dict)
+        and review_response.get("status") == "ready"
+        and isinstance(reviewed_intake, dict)
+        and bool(reviewed_intake)
+        and bool(draft_text.strip())
+    )
+    checks.append(_check(
+        "adapter_review_ready",
+        review_ready,
+        "Adapter caller review returns a ready intake and Portuguese draft text." if review_ready else "Adapter caller review did not return a ready intake.",
+        {
+            "status": review_response.get("status") if isinstance(review_response, dict) else None,
+            "question_count": len(review_response.get("questions") or []) if isinstance(review_response, dict) and isinstance(review_response.get("questions"), list) else None,
+            "draft_text_present": bool(draft_text.strip()),
+        },
+    ))
+    if not review_ready:
+        return checks
+
+    preflight_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/prepare/preflight"),
+        {"intakes": [reviewed_intake], "packet_mode": True},
+        "adapter_preflight_ready",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_preflight_send_allowed",
+        preflight_response,
+        "Adapter preflight keeps send_allowed false.",
+    ))
+    preflight_review = preflight_response.get("preflight_review") if isinstance(preflight_response, dict) else {}
+    preflight_ready = (
+        isinstance(preflight_response, dict)
+        and preflight_response.get("status") == "ready"
+        and preflight_response.get("artifact_effect") == "none"
+        and preflight_response.get("write_allowed") is False
+        and isinstance(preflight_review, dict)
+        and bool(preflight_review.get("review_fingerprint"))
+        and bool(preflight_review.get("preflight_review_token"))
+    )
+    checks.append(_check(
+        "adapter_preflight_ready",
+        preflight_ready,
+        "Adapter preflight validates the current request without writing artifacts." if preflight_ready else "Adapter preflight did not return a ready signed review.",
+        {
+            "status": preflight_response.get("status") if isinstance(preflight_response, dict) else None,
+            "artifact_effect": preflight_response.get("artifact_effect") if isinstance(preflight_response, dict) else None,
+            "write_allowed": preflight_response.get("write_allowed") if isinstance(preflight_response, dict) else None,
+            "preflight_token_present": bool(preflight_review.get("preflight_review_token")) if isinstance(preflight_review, dict) else False,
+        },
+    ))
+    if not preflight_ready:
+        return checks
+
+    prepare_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/prepare"),
+        {
+            "intakes": [reviewed_intake],
+            "render_previews": False,
+            "packet_mode": True,
+            "preflight_review": preflight_review,
+        },
+        "adapter_prepare_ready",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_prepare_send_allowed",
+        prepare_response,
+        "Adapter prepare keeps send_allowed false.",
+    ))
+    prepared_review = prepare_response.get("prepared_review") if isinstance(prepare_response, dict) else {}
+    items = prepare_response.get("items") if isinstance(prepare_response, dict) else []
+    first_item = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+    packet = prepare_response.get("packet") if isinstance(prepare_response, dict) and isinstance(prepare_response.get("packet"), dict) else {}
+    target = packet or first_item
+    draft_payload = str(target.get("draft_payload") or "")
+    gmail_args = target.get("gmail_create_draft_args") if isinstance(target.get("gmail_create_draft_args"), dict) else {}
+    attachment_files = gmail_args.get("attachment_files") if isinstance(gmail_args, dict) else None
+    underlying = target.get("underlying_requests") if isinstance(target.get("underlying_requests"), list) else []
+    prepared_fields = _prepared_review_request_fields(prepared_review if isinstance(prepared_review, dict) else {})
+    prepare_ready = (
+        isinstance(prepare_response, dict)
+        and prepare_response.get("status") == "prepared"
+        and bool(packet)
+        and bool(draft_payload)
+        and isinstance(attachment_files, list)
+        and bool(attachment_files)
+        and isinstance(underlying, list)
+        and bool(underlying)
+        and all(prepared_fields.values())
+    )
+    checks.append(_check(
+        "adapter_prepare_ready",
+        prepare_ready,
+        "Adapter prepare produced a draft payload bound to a prepared-review token." if prepare_ready else "Adapter prepare did not produce a token-bound draft payload.",
+        {
+            "status": prepare_response.get("status") if isinstance(prepare_response, dict) else None,
+            "packet_present": bool(packet),
+            "draft_payload_present": bool(draft_payload),
+            "attachment_count": len(attachment_files) if isinstance(attachment_files, list) else None,
+            "underlying_request_count": len(underlying) if isinstance(underlying, list) else None,
+            "prepared_manifest_present": bool(prepared_fields["prepared_manifest"]),
+            "prepared_token_present": bool(prepared_fields["prepared_review_token"]),
+            "review_fingerprint_present": bool(prepared_fields["review_fingerprint"]),
+        },
+    ))
+    if not prepare_ready:
+        return checks
+
+    handoff_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/gmail/manual-handoff"),
+        {"payload": draft_payload, **prepared_fields},
+        "adapter_manual_handoff_packet",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_manual_handoff_send_allowed",
+        handoff_response,
+        "Adapter Manual Draft Handoff keeps send_allowed false.",
+    ))
+    handoff_ready = (
+        isinstance(handoff_response, dict)
+        and handoff_response.get("status") == "ready"
+        and handoff_response.get("mode") == "manual_handoff"
+        and handoff_response.get("gmail_tool") == "_create_draft"
+        and bool(handoff_response.get("copyable_prompt"))
+        and isinstance(handoff_response.get("attachment_files"), list)
+    )
+    checks.append(_check(
+        "adapter_manual_handoff_packet",
+        handoff_ready,
+        "Adapter Manual Draft Handoff returns copy-ready draft-only args." if handoff_ready else "Adapter Manual Draft Handoff did not return the expected draft-only packet.",
+        {
+            "status": handoff_response.get("status") if isinstance(handoff_response, dict) else None,
+            "mode": handoff_response.get("mode") if isinstance(handoff_response, dict) else None,
+            "gmail_tool": handoff_response.get("gmail_tool") if isinstance(handoff_response, dict) else None,
+            "attachment_count": len(handoff_response.get("attachment_files") or []) if isinstance(handoff_response, dict) and isinstance(handoff_response.get("attachment_files"), list) else None,
+        },
+    ))
+    if not handoff_ready:
+        return checks
+
+    record_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/drafts/record"),
+        {
+            "payload": draft_payload,
+            "draft_id": "draft-adapter-smoke",
+            "message_id": "message-adapter-smoke",
+            "thread_id": "thread-adapter-smoke",
+            "status": "active",
+            "notes": "Synthetic LegalPDF adapter contract smoke record.",
+            "gmail_handoff_reviewed": True,
+            **prepared_fields,
+        },
+        "adapter_record_draft",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "adapter_record_send_allowed",
+        record_response,
+        "Adapter draft recording keeps send_allowed false.",
+    ))
+    recorded_duplicate_count = record_response.get("recorded_duplicate_count") if isinstance(record_response, dict) else None
+    record_ready = (
+        isinstance(record_response, dict)
+        and record_response.get("status") == "recorded"
+        and record_response.get("draft_id") == "draft-adapter-smoke"
+        and bool(record_response.get("message_id"))
+        and recorded_duplicate_count == 1
+    )
+    checks.append(_check(
+        "adapter_record_draft",
+        record_ready,
+        "Adapter smoke recorded the manually-created draft and duplicate blocker in isolated state." if record_ready else "Adapter smoke did not record the draft/duplicate result as expected.",
+        {
+            "status": record_response.get("status") if isinstance(record_response, dict) else None,
+            "draft_id": record_response.get("draft_id") if isinstance(record_response, dict) else None,
+            "recorded_duplicate_count": recorded_duplicate_count,
+        },
+    ))
+    return checks
+
+
 def _attention_summary(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -909,6 +1238,7 @@ def run_smoke(
     post_json: PostJsonFetcher | None = None,
     post_multipart: PostMultipartFetcher | None = None,
     interaction_checks: bool = False,
+    adapter_contract_checks: bool = False,
     source_upload_checks: bool = False,
     supporting_attachment_checks: bool = False,
     gmail_api_checks: bool = False,
@@ -1045,6 +1375,7 @@ def run_smoke(
             "source_upload_smoke",
             "supporting_attachment_smoke",
             "isolated_supporting_attachment_smoke",
+            "isolated_adapter_contract_smoke",
             "isolated_gmail_api_smoke",
             "browser_iab_upload_smoke",
             "browser_iab_supporting_attachment_smoke",
@@ -1064,6 +1395,16 @@ def run_smoke(
     if interaction_checks:
         checks.extend(_run_interaction_checks(
             base,
+            post_json=json_poster,
+            profile=interaction_profile,
+            case_number=interaction_case_number,
+            service_date=interaction_service_date,
+        ))
+
+    if adapter_contract_checks:
+        checks.extend(_run_adapter_contract_checks(
+            base,
+            fetch_json=json_fetcher,
             post_json=json_poster,
             profile=interaction_profile,
             case_number=interaction_case_number,
@@ -1231,6 +1572,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--interaction-checks", action="store_true", help="Also exercise the opt-in profile/review/packet-prepare contract. This may create local draft payload/PDF artifacts on a real app.")
+    parser.add_argument("--adapter-contract-checks", action="store_true", help="Exercise the LegalPDF adapter contract sequence through review, packet preflight, prepare, Manual Draft Handoff, and local draft recording. Use the isolated launcher for normal runs.")
     parser.add_argument("--source-upload-checks", action="store_true", help="Upload disposable synthetic photo/PDF sources through the API and verify Source Evidence/Review Attention without preparing PDFs or drafts.")
     parser.add_argument("--supporting-attachment-checks", action="store_true", help="Upload a disposable synthetic declaration/proof PDF through the attachment API and verify it cannot prepare PDFs, record drafts, or call Gmail.")
     parser.add_argument("--gmail-api-checks", action="store_true", help="Run isolated synthetic Gmail Draft API create checks. Requires fake Gmail API mode and can write synthetic draft-log/duplicate records.")
@@ -1260,6 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
         args.base_url,
         timeout=args.timeout,
         interaction_checks=args.interaction_checks,
+        adapter_contract_checks=args.adapter_contract_checks,
         source_upload_checks=args.source_upload_checks,
         supporting_attachment_checks=args.supporting_attachment_checks,
         gmail_api_checks=args.gmail_api_checks,

@@ -113,6 +113,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("source_upload_smoke", keys)
         self.assertIn("supporting_attachment_smoke", keys)
         self.assertIn("isolated_supporting_attachment_smoke", keys)
+        self.assertIn("isolated_adapter_contract_smoke", keys)
         self.assertIn("isolated_gmail_api_smoke", keys)
         self.assertIn("browser_iab_upload_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_smoke", keys)
@@ -124,6 +125,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("scripts/isolated_app_smoke.py", isolated_attachment["command_template"])
         self.assertIn("--supporting-attachment-checks", isolated_attachment["command_template"])
         self.assertEqual(isolated_attachment["writes"], "temporary synthetic runtime only")
+        isolated_adapter = next(check for check in data["checks"] if check["key"] == "isolated_adapter_contract_smoke")
+        self.assertIn("--adapter-contract-checks", isolated_adapter["command_template"])
+        self.assertIn("Manual Draft Handoff", isolated_adapter["description"])
+        self.assertEqual(isolated_adapter["writes"], "temporary synthetic runtime only")
         isolated_gmail = next(check for check in data["checks"] if check["key"] == "isolated_gmail_api_smoke")
         self.assertIn("--gmail-api-checks", isolated_gmail["command_template"])
         self.assertIn("fake Gmail", isolated_gmail["description"])
@@ -694,6 +699,113 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertEqual(report["status"], "ready", report)
         self.assertIn("workflow_batch_preflight", {check["name"] for check in report["checks"]})
         self.assertIn("workflow_prepare_packet_payload", {check["name"] for check in report["checks"]})
+
+    def test_local_app_smoke_runner_adapter_contract_sequence_is_injectable(self):
+        client = self.make_client()
+        seen_posts = []
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        def post_json(url, payload):
+            seen_posts.append(url)
+            if url.endswith("/api/review"):
+                intake = payload["intake"]
+                return {
+                    "status": "ready",
+                    "intake": intake,
+                    "effective_intake": intake,
+                    "draft_text": "Número de processo: 999/26.0SMOKE\n\nPede deferimento,",
+                    "recipient": "court@example.test",
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/prepare/preflight"):
+                self.assertTrue(payload["packet_mode"])
+                return {
+                    "status": "ready",
+                    "artifact_effect": "none",
+                    "write_allowed": False,
+                    "send_allowed": False,
+                    "packet_mode": True,
+                    "preflight_review": {
+                        "review_fingerprint": "preflight-fingerprint",
+                        "preflight_review_token": "preflight-token",
+                    },
+                }
+            if url.endswith("/api/prepare"):
+                self.assertTrue(payload["packet_mode"])
+                self.assertEqual(payload["preflight_review"]["preflight_review_token"], "preflight-token")
+                return {
+                    "status": "prepared",
+                    "packet_mode": True,
+                    "send_allowed": False,
+                    "prepared_review": {
+                        "manifest": "/tmp/adapter-manifest.json",
+                        "prepared_review_token": "prepared-token",
+                        "review_fingerprint": "prepared-fingerprint",
+                        "payload_paths": ["/tmp/adapter-packet.draft.json"],
+                    },
+                    "items": [{
+                        "draft_payload": "/tmp/adapter.draft.json",
+                        "gmail_create_draft_ready": True,
+                        "gmail_create_draft_args": {"attachment_files": ["/tmp/adapter.pdf"]},
+                        "send_allowed": False,
+                    }],
+                    "packet": {
+                        "draft_payload": "/tmp/adapter-packet.draft.json",
+                        "gmail_create_draft_ready": True,
+                        "gmail_create_draft_args": {"attachment_files": ["/tmp/adapter-packet.pdf"]},
+                        "underlying_requests": [{"case_number": "999/26.0SMOKE", "service_date": "2026-05-04"}],
+                        "send_allowed": False,
+                    },
+                }
+            if url.endswith("/api/gmail/manual-handoff"):
+                self.assertEqual(payload["payload"], "/tmp/adapter-packet.draft.json")
+                self.assertEqual(payload["prepared_review_token"], "prepared-token")
+                return {
+                    "status": "ready",
+                    "mode": "manual_handoff",
+                    "gmail_tool": "_create_draft",
+                    "copyable_prompt": "Create a Gmail draft only using `_create_draft`.",
+                    "attachment_files": ["/tmp/adapter-packet.pdf"],
+                    "send_allowed": False,
+                    "write_allowed": False,
+                }
+            if url.endswith("/api/drafts/record"):
+                self.assertTrue(payload["gmail_handoff_reviewed"])
+                self.assertEqual(payload["prepared_review_token"], "prepared-token")
+                return {
+                    "status": "recorded",
+                    "draft_id": "draft-adapter-smoke",
+                    "message_id": "message-adapter-smoke",
+                    "thread_id": "thread-adapter-smoke",
+                    "recorded_duplicate_count": 1,
+                    "send_allowed": False,
+                }
+            raise AssertionError(url)
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+            post_json=post_json,
+            adapter_contract_checks=True,
+        )
+
+        self.assertEqual(report["status"], "ready", report)
+        names = {check["name"] for check in report["checks"]}
+        self.assertIn("adapter_contract_sequence", names)
+        self.assertIn("adapter_manual_handoff_packet", names)
+        self.assertIn("adapter_record_draft", names)
+        self.assertIn("http://public-candidate.test/api/gmail/manual-handoff", seen_posts)
+        self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
 
     def test_local_app_smoke_runner_source_upload_contract_is_injectable(self):
         client = self.make_client()

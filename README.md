@@ -171,7 +171,7 @@ To exercise the connected-Gmail browser UI without touching real Gmail, use the 
 python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-gmail-api-create --json
 ```
 
-The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, isolated fake-Gmail API smoke, Browser/IAB review smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB handoff stale smoke, and Browser/IAB fake Gmail API smoke commands for PowerShell. The browser only copies commands; it does not run shell commands or call Gmail.
+The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, isolated LegalPDF adapter contract smoke, isolated fake-Gmail API smoke, Browser/IAB review smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB handoff stale smoke, and Browser/IAB fake Gmail API smoke commands for PowerShell. The browser only copies commands; it does not run shell commands or call Gmail.
 
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 

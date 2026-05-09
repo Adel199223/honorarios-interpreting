@@ -68,6 +68,7 @@ def run_isolated_app_smoke(
     start_server: bool = True,
     smoke_runner: SmokeRunner = run_smoke,
     interaction_checks: bool = False,
+    adapter_contract_checks: bool = False,
     source_upload_checks: bool = False,
     supporting_attachment_checks: bool = False,
     gmail_api_checks: bool = False,
@@ -109,6 +110,7 @@ def run_isolated_app_smoke(
         report = smoke_runner(
             base_url,
             interaction_checks=interaction_checks,
+            adapter_contract_checks=adapter_contract_checks,
             source_upload_checks=source_upload_checks,
             supporting_attachment_checks=supporting_attachment_checks,
             gmail_api_checks=gmail_api_checks,
@@ -160,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--interaction-checks", action="store_true", help="Run API interaction checks against the isolated app. May create isolated PDF/payload artifacts.")
+    parser.add_argument("--adapter-contract-checks", action="store_true", help="Run the LegalPDF adapter contract sequence in the isolated runtime. Creates isolated PDF/payload artifacts and synthetic local draft records only.")
     parser.add_argument("--source-upload-checks", action="store_true", help="Run synthetic source upload evidence checks against the isolated app. Creates isolated source-preview artifacts only.")
     parser.add_argument("--supporting-attachment-checks", action="store_true", help="Run synthetic declaration/proof attachment evidence checks against the isolated app. Creates isolated attachment artifacts only.")
     parser.add_argument("--gmail-api-checks", action="store_true", help="Run synthetic Gmail Draft API create smoke with fake Gmail mode in the isolated runtime.")
@@ -185,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         interaction_checks=args.interaction_checks,
+        adapter_contract_checks=args.adapter_contract_checks,
         source_upload_checks=args.source_upload_checks,
         supporting_attachment_checks=args.supporting_attachment_checks,
         gmail_api_checks=args.gmail_api_checks,
