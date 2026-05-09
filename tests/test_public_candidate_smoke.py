@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from honorarios_app.web import create_app
 from scripts.local_app_smoke import run_smoke
-from scripts.public_release_gate import analyze_public_readiness
+from scripts.public_repo_gate import analyze_tracked
 
 
 class PublicCandidateSmokeTests(unittest.TestCase):
@@ -16,7 +16,23 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         runtime = tempfile.TemporaryDirectory()
         self.addCleanup(runtime.cleanup)
         root = Path(runtime.name)
+        project_root = Path(__file__).resolve().parents[1]
+        duplicate_index = root / "duplicate-index.json"
+        draft_log = root / "gmail-draft-log.json"
+        profile_change_log = root / "profile-change-log.json"
+        duplicate_index.write_text("[]", encoding="utf-8")
+        draft_log.write_text("[]", encoding="utf-8")
+        profile_change_log.write_text("[]", encoding="utf-8")
         return TestClient(create_app(
+            profile=project_root / "config" / "profile.example.json",
+            personal_profiles=project_root / "config" / "profiles.example.json",
+            email_config=project_root / "config" / "email.example.json",
+            service_profiles=project_root / "data" / "service-profiles.example.json",
+            court_emails=project_root / "data" / "court-emails.example.json",
+            known_destinations=project_root / "data" / "known-destinations.example.json",
+            duplicate_index=duplicate_index,
+            draft_log=draft_log,
+            profile_change_log=profile_change_log,
             output_dir=root / "pdf",
             html_dir=root / "html",
             draft_output_dir=root / "email-drafts",
@@ -202,9 +218,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 profile=project_root / "config" / "profile.example.json",
                 personal_profiles=project_root / "config" / "profiles.example.json",
                 email_config=project_root / "config" / "email.example.json",
-                service_profiles=project_root / "data" / "service-profiles.json",
-                court_emails=project_root / "data" / "court-emails.json",
-                known_destinations=project_root / "data" / "known-destinations.json",
+                service_profiles=project_root / "data" / "service-profiles.example.json",
+                court_emails=project_root / "data" / "court-emails.example.json",
+                known_destinations=project_root / "data" / "known-destinations.example.json",
                 duplicate_index=duplicate_index,
                 draft_log=draft_log,
                 profile_change_log=profile_change_log,
@@ -396,6 +412,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         court_overlay_path = root / "data" / "court-emails.json"
         profiles_before = profiles_example_path.read_text(encoding="utf-8")
         courts_before = court_example_path.read_text(encoding="utf-8")
+        profiles_overlay_before = profiles_overlay_path.read_text(encoding="utf-8") if profiles_overlay_path.exists() else None
+        court_overlay_before = court_overlay_path.read_text(encoding="utf-8") if court_overlay_path.exists() else None
         client = self.make_client()
         backup = {
             "kind": "honorarios_local_backup",
@@ -476,8 +494,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("Adapter Import Plan", plan.json()["plan_markdown"])
         self.assertEqual(profiles_example_path.read_text(encoding="utf-8"), profiles_before)
         self.assertEqual(court_example_path.read_text(encoding="utf-8"), courts_before)
-        self.assertFalse(profiles_overlay_path.exists())
-        self.assertFalse(court_overlay_path.exists())
+        if profiles_overlay_before is None:
+            self.assertFalse(profiles_overlay_path.exists())
+        else:
+            self.assertEqual(profiles_overlay_path.read_text(encoding="utf-8"), profiles_overlay_before)
+        if court_overlay_before is None:
+            self.assertFalse(court_overlay_path.exists())
+        else:
+            self.assertEqual(court_overlay_path.read_text(encoding="utf-8"), court_overlay_before)
 
     def test_local_app_smoke_runner_can_check_public_candidate_contract(self):
         client = self.make_client()
@@ -753,8 +777,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(seen_kwargs["apply_history"])
 
     def test_candidate_privacy_gate_passes(self):
-        report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)
-        self.assertTrue(report["public_ready"], report)
+        report = analyze_tracked(Path(__file__).resolve().parents[1])
+        self.assertTrue(report["public_repo_ready"], report)
 
 
 if __name__ == "__main__":
