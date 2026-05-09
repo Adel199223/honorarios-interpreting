@@ -138,6 +138,16 @@ async function expectSelectorText(tab, selector, text, timeoutMs) {
   throw new Error(`Expected ${selector} to include ${JSON.stringify(text)}; got ${JSON.stringify(last)}.`);
 }
 
+async function expectSelectorTextExcludes(tab, selector, texts, timeoutMs) {
+  const locator = await uniqueLocator(tab, selector, timeoutMs);
+  const actual = await locator.innerText({ timeoutMs });
+  for (const text of texts) {
+    if (actual.includes(text)) {
+      throw new Error(`Expected ${selector} to redact ${JSON.stringify(text)}.`);
+    }
+  }
+}
+
 async function expectAnyBodyText(tab, texts, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   const expected = texts.map((item) => String(item).toLocaleLowerCase());
@@ -749,12 +759,31 @@ export async function runBrowserIabSmoke(options = {}) {
   }
 
   if (args.applyHistory) {
-    if (!(await runStep(checks, "browser_apply_history", "Browser/IAB checked LegalPDF Apply History, detail, restore-plan, and guarded restore controls without writing.", async () => {
+    if (!(await runStep(checks, "browser_public_readiness_gate", "Browser/IAB checked the Public GitHub Readiness panel and confirmed redacted gate output.", async () => {
       // The References surface is independent from the intake drawer/batch flow.
       // Reload before checking it so prior drawer state cannot mask sidebar controls.
       await tab.goto(`${baseUrl}/`);
       await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
       await openReferencesPanel(tab, args.timeoutMs);
+      await expectBodyText(tab, "Public GitHub Readiness", args.timeoutMs);
+      await click(tab, "#run-public-readiness", args.timeoutMs);
+      await expectSelectorText(tab, "#public-readiness-result", "Tracked Git content is ready for the public repo.", args.timeoutMs);
+      await expectSelectorText(tab, "#public-readiness-result", "Local overlays", args.timeoutMs);
+      await expectSelectorText(tab, "#public-readiness-result", "Full workspace gate", args.timeoutMs);
+      await expectSelectorTextExcludes(tab, "#public-readiness-result", [
+        "GOCSPX",
+        "ya29.",
+        "sk-",
+        "gho_",
+        "ghp_",
+        ["C:", "Users"].join("\\"),
+        ["C:", "Users"].join("/"),
+      ], args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    if (!(await runStep(checks, "browser_apply_history", "Browser/IAB checked LegalPDF Apply History, detail, restore-plan, and guarded restore controls without writing.", async () => {
       await expectBodyText(tab, "LegalPDF Apply History", args.timeoutMs);
       await expectBodyText(tab, "LegalPDF Restore Plan", args.timeoutMs);
       await click(tab, "#refresh-legalpdf-apply-history", args.timeoutMs);
