@@ -107,6 +107,12 @@ Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --browser-iab-click-through --browser-answer-questions --browser-apply-history --json
 ```
 
+For the same numbered-answer and Apply History UI coverage without touching the live runtime, prefer the isolated launcher:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-answer-questions --browser-apply-history --json
+```
+
 The shell command returns a Node REPL handoff cell because raw subprocesses should not drive the in-app Browser directly.
 
 Add `--browser-upload-photo --browser-upload-pdf` to the same command when you want Browser/IAB to try the source upload-evidence path with disposable synthetic files. Add `--browser-upload-supporting-attachment` when you want it to verify the `Supporting proof / declarations` UI path as well. If the in-app Browser adapter cannot set local file inputs, the smoke reports a clean tooling blocker instead of touching real private files.

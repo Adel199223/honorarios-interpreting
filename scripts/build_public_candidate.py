@@ -340,6 +340,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("isolated_gmail_api_smoke", keys)
         self.assertIn("browser_iab_upload_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_smoke", keys)
+        self.assertIn("browser_iab_answer_apply_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_stale_smoke", keys)
         self.assertIn("browser_iab_profile_proposal_smoke", keys)
         self.assertIn("browser_iab_recent_work_lifecycle_smoke", keys)
@@ -371,6 +372,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         browser_supporting = next(check for check in data["checks"] if check["key"] == "browser_iab_supporting_attachment_smoke")
         self.assertIn("--browser-upload-supporting-attachment", browser_supporting["command_template"])
         self.assertEqual(browser_supporting["writes"], "synthetic supporting-attachment artifact only")
+        browser_answer_apply = next(check for check in data["checks"] if check["key"] == "browser_iab_answer_apply_smoke")
+        self.assertIn("scripts/isolated_app_smoke.py", browser_answer_apply["command_template"])
+        self.assertIn("--browser-iab-click-through", browser_answer_apply["command_template"])
+        self.assertIn("--browser-answer-questions", browser_answer_apply["command_template"])
+        self.assertIn("--browser-apply-history", browser_answer_apply["command_template"])
+        self.assertIn("numbered", browser_answer_apply["description"].lower())
+        self.assertIn("Apply History", browser_answer_apply["description"])
+        self.assertEqual(browser_answer_apply["writes"], "temporary synthetic runtime only")
         browser_supporting_stale = next(check for check in data["checks"] if check["key"] == "browser_iab_supporting_attachment_stale_smoke")
         self.assertIn("--browser-supporting-attachment-stale", browser_supporting_stale["command_template"])
         self.assertIn("Supporting proof", browser_supporting_stale["description"])
@@ -561,12 +570,16 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "#diagnostics-result",
             "#copy-isolated-source-upload-smoke-command",
             "#copy-isolated-adapter-contract-smoke-command",
+            "#copy-browser-iab-answer-apply-smoke-command",
             "#copy-browser-iab-supporting-attachment-stale-smoke-command",
             "isolated_source_upload_smoke",
             "isolated_adapter_contract_smoke",
+            "browser_iab_answer_apply_smoke",
             "browser_iab_supporting_attachment_stale_smoke",
             "--source-upload-checks",
             "--adapter-contract-checks",
+            "--browser-answer-questions",
+            "--browser-apply-history",
             "--supporting-attachment-stale",
             "supportingAttachmentStale",
             "supporting attachments changed",
@@ -1805,6 +1818,21 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         self.assertIn("supporting_attachment_stale=browser_supporting_attachment_stale", python_runner_block)
         self.assertNotIn("--browser-supporting-attachment-stale requires --browser-iab-click-through", smoke_source)
+
+    def test_isolated_app_smoke_forwards_browser_iab_answer_and_apply_flags(self):
+        root = Path(__file__).resolve().parents[1]
+        smoke_source = (root / "scripts" / "isolated_app_smoke.py").read_text(encoding="utf-8")
+        smoke_call_block = smoke_source.split("report = smoke_runner(", 1)[1].split(")", 1)[0]
+        main_call_block = smoke_source.split("report = run_isolated_app_smoke(", 1)[1].split(")", 1)[0]
+
+        self.assertIn("browser_answer_questions: bool = False", smoke_source)
+        self.assertIn("browser_apply_history: bool = False", smoke_source)
+        self.assertIn("browser_answer_questions=browser_answer_questions", smoke_call_block)
+        self.assertIn("browser_apply_history=browser_apply_history", smoke_call_block)
+        self.assertIn('parser.add_argument("--browser-answer-questions"', smoke_source)
+        self.assertIn('parser.add_argument("--browser-apply-history"', smoke_source)
+        self.assertIn("browser_answer_questions=args.browser_answer_questions", main_call_block)
+        self.assertIn("browser_apply_history=args.browser_apply_history", main_call_block)
 
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)

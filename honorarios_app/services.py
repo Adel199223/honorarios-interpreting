@@ -2352,6 +2352,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "synthetic supporting-attachment artifact only",
         },
         {
+            "key": "browser_iab_answer_apply_smoke",
+            "label": "Browser/IAB answers and apply history smoke",
+            "description": "Runs the Codex in-app Browser runner against an isolated runtime, applies compact numbered answers, and checks LegalPDF Apply History, Detail, and read-only Restore Plan surfaces without preparing PDFs or writing local records.",
+            "command_template": "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-answer-questions --browser-apply-history --json",
+            "effect": "temporary_isolated_runtime_browser_ui",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
             "key": "browser_iab_supporting_attachment_stale_smoke",
             "label": "Browser/IAB Supporting proof stale smoke",
             "description": "Runs the Codex in-app Browser runner against an isolated runtime, prepares a synthetic replacement, builds the Manual Draft Handoff packet, then uploads a Supporting proof and verifies prepared Gmail surfaces go stale.",
