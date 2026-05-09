@@ -1127,6 +1127,7 @@ def run_smoke(
             "browser_iab_supporting_attachment_smoke",
             "browser_iab_answer_apply_smoke",
             "browser_iab_supporting_attachment_stale_smoke",
+            "browser_iab_record_helper_smoke",
             "browser_iab_profile_proposal_smoke",
             "browser_iab_recent_work_lifecycle_smoke",
             "browser_iab_manual_handoff_stale_smoke",

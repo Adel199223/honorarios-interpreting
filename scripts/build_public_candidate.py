@@ -344,6 +344,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Copy Browser/IAB attachment smoke command",
             "Copy Browser/IAB answers/apply smoke command",
             "Copy Browser/IAB attachment stale smoke command",
+            "Copy Browser/IAB record helper smoke command",
             "Copy Browser/IAB Recent Work smoke command",
             "Public GitHub Readiness",
             "Run tracked Git gate",
@@ -395,6 +396,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("browser_iab_supporting_attachment_smoke", keys)
         self.assertIn("browser_iab_answer_apply_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_stale_smoke", keys)
+        self.assertIn("browser_iab_record_helper_smoke", keys)
         self.assertIn("browser_iab_profile_proposal_smoke", keys)
         self.assertIn("browser_iab_recent_work_lifecycle_smoke", keys)
         self.assertIn("browser_iab_manual_handoff_stale_smoke", keys)
@@ -440,6 +442,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("--browser-supporting-attachment-stale", browser_supporting_stale["command_template"])
         self.assertIn("Supporting proof", browser_supporting_stale["description"])
         self.assertEqual(browser_supporting_stale["writes"], "temporary synthetic runtime only")
+        browser_record_helper = next(check for check in data["checks"] if check["key"] == "browser_iab_record_helper_smoke")
+        self.assertIn("--browser-record-helper", browser_record_helper["command_template"])
+        self.assertIn("--browser-prepare-replacement", browser_record_helper["command_template"])
+        self.assertIn("checklist", browser_record_helper["description"].lower())
+        self.assertEqual(browser_record_helper["writes"], "temporary synthetic runtime only")
         browser_profile_proposal = next(check for check in data["checks"] if check["key"] == "browser_iab_profile_proposal_smoke")
         self.assertIn("--browser-profile-proposal", browser_profile_proposal["command_template"])
         self.assertEqual(browser_profile_proposal["writes"], "none")
@@ -687,16 +694,19 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "#copy-browser-iab-review-smoke-command",
             "#copy-browser-iab-answer-apply-smoke-command",
             "#copy-browser-iab-supporting-attachment-stale-smoke-command",
+            "#copy-browser-iab-record-helper-smoke-command",
             "isolated_source_upload_smoke",
             "isolated_adapter_contract_smoke",
             "browser_iab_smoke",
             "browser_iab_answer_apply_smoke",
             "browser_iab_supporting_attachment_stale_smoke",
+            "browser_iab_record_helper_smoke",
             "--source-upload-checks",
             "--adapter-contract-checks",
             "--browser-answer-questions",
             "--browser-apply-history",
             "--supporting-attachment-stale",
+            "--browser-record-helper",
             "supportingAttachmentStale",
             "supporting attachments changed",
             "data-use-profile-proposal",
@@ -1957,6 +1967,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "isolated_source_upload_smoke",
             "browser_iab_smoke",
             "browser_iab_answer_apply_smoke",
+            "browser_iab_record_helper_smoke",
         ]:
             with self.subTest(key=key):
                 self.assertIn(key, required_block)

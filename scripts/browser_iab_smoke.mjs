@@ -899,6 +899,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectAttributeContains(tab, "#copy-browser-iab-answer-apply-smoke-command", "data-copy-diagnostic-command", "browser_iab_answer_apply_smoke", args.timeoutMs);
       await uniqueLocator(tab, "#copy-browser-iab-supporting-attachment-stale-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-browser-iab-supporting-attachment-stale-smoke-command", "data-copy-diagnostic-command", "browser_iab_supporting_attachment_stale_smoke", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-browser-iab-record-helper-smoke-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-browser-iab-record-helper-smoke-command", "data-copy-diagnostic-command", "browser_iab_record_helper_smoke", args.timeoutMs);
       await click(tab, "#refresh-diagnostics", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
@@ -912,6 +914,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#diagnostics-result", "--browser-apply-history", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Supporting proof stale smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--browser-supporting-attachment-stale", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "record helper smoke", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "--browser-record-helper", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "The browser does not run shell commands or contact Gmail.", args.timeoutMs);
       const forbiddenSendActions = forbiddenSendActionTerms();
       await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
@@ -925,8 +929,10 @@ export async function runBrowserIabSmoke(options = {}) {
       const answerApplyClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-answer-questions --browser-apply-history --json", args.timeoutMs);
       await click(tab, "#copy-browser-iab-supporting-attachment-stale-smoke-command", args.timeoutMs);
       const supportingStaleClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-supporting-attachment-stale --json", args.timeoutMs);
+      await click(tab, "#copy-browser-iab-record-helper-smoke-command", args.timeoutMs);
+      const recordHelperClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json", args.timeoutMs);
       for (const forbidden of forbiddenSendActions) {
-        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden)) {
+        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden)) {
           throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
         }
       }
