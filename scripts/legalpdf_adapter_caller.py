@@ -25,6 +25,36 @@ REQUIRED_ADAPTER_ENDPOINTS = (
     "/api/drafts/record",
 )
 STALE_PREPARED_REVIEW_TOKEN = "stale-prepared-token"
+EXPECTED_PREPARED_REVIEW_BINDING_FIELDS = {
+    "handoff_required_fields": (
+        "payload",
+        "prepared_manifest",
+        "prepared_review_token",
+        "review_fingerprint",
+    ),
+    "record_required_fields": (
+        "payload",
+        "prepared_manifest",
+        "prepared_review_token",
+        "review_fingerprint",
+        "gmail_handoff_reviewed",
+        "draft_id",
+        "message_id",
+        "thread_id",
+    ),
+    "gmail_api_create_required_fields": (
+        "payload",
+        "prepared_manifest",
+        "prepared_review_token",
+        "review_fingerprint",
+        "gmail_handoff_reviewed",
+    ),
+}
+EXPECTED_PREPARED_REVIEW_BINDING_VALUES = {
+    "preflight_response_field": "preflight_review",
+    "prepare_request_field": "preflight_review",
+    "prepare_response_field": "prepared_review",
+}
 
 
 @dataclass(frozen=True)
@@ -266,6 +296,30 @@ class LegalPdfAdapterCaller:
         }
         missing = sorted(set(REQUIRED_ADAPTER_ENDPOINTS).difference(endpoints))
         gmail_boundary = contract.get("gmail_boundary") if isinstance(contract, dict) and isinstance(contract.get("gmail_boundary"), dict) else {}
+        prepared_binding = contract.get("prepared_review_binding") if isinstance(contract, dict) and isinstance(contract.get("prepared_review_binding"), dict) else {}
+        missing_prepared_fields: dict[str, list[str]] = {}
+        for key, expected_fields in EXPECTED_PREPARED_REVIEW_BINDING_FIELDS.items():
+            actual = prepared_binding.get(key) if isinstance(prepared_binding.get(key), list) else []
+            actual_values = {str(item) for item in actual}
+            missing_values = [field for field in expected_fields if field not in actual_values]
+            if missing_values:
+                missing_prepared_fields[key] = missing_values
+        mismatched_prepared_values = {
+            key: {
+                "expected": expected,
+                "actual": prepared_binding.get(key),
+            }
+            for key, expected in EXPECTED_PREPARED_REVIEW_BINDING_VALUES.items()
+            if prepared_binding.get(key) != expected
+        }
+        prepared_binding_ready = (
+            isinstance(prepared_binding, dict)
+            and prepared_binding.get("send_allowed") is False
+            and prepared_binding.get("stale_after_payload_or_manifest_change") is True
+            and prepared_binding.get("local_workflow_guard_only") is True
+            and not missing_prepared_fields
+            and not mismatched_prepared_values
+        )
         send_allowed = bool(contract.get("send_allowed")) if isinstance(contract, dict) else False
         write_allowed = bool(contract.get("write_allowed")) if isinstance(contract, dict) else False
         legalpdf_write_allowed = bool(contract.get("legalpdf_write_allowed")) if isinstance(contract, dict) else False
@@ -279,6 +333,7 @@ class LegalPdfAdapterCaller:
             and contract.get("legalpdf_write_allowed") is False
             and contract.get("managed_data_changed") is False
             and gmail_boundary.get("required_tool") == "_create_draft"
+            and prepared_binding_ready
         )
         return AdapterContractValidation(
             ready=ready,
@@ -292,6 +347,9 @@ class LegalPdfAdapterCaller:
                 "draft_only": contract.get("draft_only") if isinstance(contract, dict) else None,
                 "managed_data_changed": contract.get("managed_data_changed") if isinstance(contract, dict) else None,
                 "required_tool": gmail_boundary.get("required_tool"),
+                "prepared_review_binding_ready": prepared_binding_ready,
+                "missing_prepared_review_fields": missing_prepared_fields,
+                "mismatched_prepared_review_values": mismatched_prepared_values,
                 "endpoints": sorted(endpoints),
             },
         )
@@ -570,6 +628,17 @@ def run_synthetic_adapter_sequence(
             "legalpdf_write_allowed": validation.legalpdf_write_allowed,
             "managed_data_changed": validation.details.get("managed_data_changed"),
             "required_tool": validation.details.get("required_tool"),
+        },
+    ))
+    checks.append(_check(
+        "adapter_contract_prepared_review_binding",
+        validation.details.get("prepared_review_binding_ready") is True,
+        "Adapter contract advertises the prepared-review fields required for handoff, Gmail API create, and local recording."
+        if validation.details.get("prepared_review_binding_ready") is True
+        else "Adapter contract is missing prepared-review binding fields required by the caller.",
+        {
+            "missing_prepared_review_fields": validation.details.get("missing_prepared_review_fields"),
+            "mismatched_prepared_review_values": validation.details.get("mismatched_prepared_review_values"),
         },
     ))
 

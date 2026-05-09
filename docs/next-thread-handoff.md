@@ -35,7 +35,7 @@ Current date: 2026-05-09
 - LegalPDF-style browser app shell and review drawer.
 - Local PDF/photo upload, source evidence, OpenAI OCR evidence, automatic service-profile detection, numbered questions, duplicate/active-draft blocking, PDF preview, draft payload display, Manual Draft Handoff, optional guarded Gmail draft creation, Recent Work lifecycle controls, personal profiles, service profiles, reference editing, LegalPDF import preview/apply guards, public Git safety tooling, and Browser/IAB smoke coverage.
 - Public repo safety boundary: `.gitignore` keeps real runtime overlays local, `.githooks/pre-commit` runs `python scripts/public_repo_gate.py --staged`, and the browser Public GitHub Readiness panel reports tracked Git safety separately from the stricter full-workspace privacy gate.
-- LegalPDF adapter caller shim: `scripts/legalpdf_adapter_caller.py` now centralizes the safe endpoint list, reusable HTTP JSON/multipart transport, prepared-review request fields, stale-token helper, read-only/draft-only contract validation, injected synthetic sequence used by the isolated adapter smoke, and a secret-free readiness summary.
+- LegalPDF adapter caller shim: `scripts/legalpdf_adapter_caller.py` now centralizes the safe endpoint list, reusable HTTP JSON/multipart transport, prepared-review request fields, stale-token helper, read-only/draft-only contract validation including the exact prepared-review binding fields, injected synthetic sequence used by the isolated adapter smoke, and a secret-free readiness summary.
 
 ## Validation Commands
 

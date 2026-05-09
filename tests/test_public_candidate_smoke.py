@@ -1017,6 +1017,17 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "legalpdf_write_allowed": False,
             "managed_data_changed": False,
             "gmail_boundary": {"required_tool": "_create_draft"},
+            "prepared_review_binding": {
+                "preflight_response_field": "preflight_review",
+                "prepare_request_field": "preflight_review",
+                "prepare_response_field": "prepared_review",
+                "handoff_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint"],
+                "record_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed", "draft_id", "message_id", "thread_id"],
+                "gmail_api_create_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed"],
+                "stale_after_payload_or_manifest_change": True,
+                "local_workflow_guard_only": True,
+                "send_allowed": False,
+            },
             "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
         }
         caller = LegalPdfAdapterCaller(
@@ -1052,6 +1063,46 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         smoke_source = (Path(__file__).resolve().parents[1] / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
         self.assertIn("from scripts.legalpdf_adapter_caller import", smoke_source)
         self.assertIn("run_synthetic_adapter_sequence(", smoke_source)
+
+    def test_legalpdf_adapter_caller_rejects_contract_without_prepared_review_fields(self):
+        from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS, LegalPdfAdapterCaller
+
+        contract = {
+            "status": "ready",
+            "recommended_gmail_mode": "manual_handoff",
+            "draft_only": True,
+            "send_allowed": False,
+            "write_allowed": False,
+            "legalpdf_write_allowed": False,
+            "managed_data_changed": False,
+            "gmail_boundary": {"required_tool": "_create_draft"},
+            "prepared_review_binding": {
+                "preflight_response_field": "preflight_review",
+                "prepare_request_field": "preflight_review",
+                "prepare_response_field": "prepared_review",
+                "handoff_required_fields": ["payload", "prepared_manifest", "prepared_review_token"],
+                "record_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "gmail_handoff_reviewed", "draft_id", "message_id", "thread_id"],
+                "gmail_api_create_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "gmail_handoff_reviewed"],
+                "stale_after_payload_or_manifest_change": True,
+                "local_workflow_guard_only": True,
+                "send_allowed": False,
+            },
+            "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
+        }
+        caller = LegalPdfAdapterCaller(
+            "http://public-candidate.test/",
+            fetch_json=lambda _url: contract,
+            post_json=lambda _url, _payload: {},
+            post_multipart=lambda _url, _fields, _filename, _content, _content_type: {},
+        )
+
+        validation = caller.validate_contract(caller.fetch_contract())
+
+        self.assertFalse(validation.ready)
+        self.assertEqual(validation.missing_endpoints, [])
+        self.assertIn("review_fingerprint", validation.details["missing_prepared_review_fields"]["handoff_required_fields"])
+        self.assertIn("review_fingerprint", validation.details["missing_prepared_review_fields"]["record_required_fields"])
+        self.assertIn("review_fingerprint", validation.details["missing_prepared_review_fields"]["gmail_api_create_required_fields"])
 
     def test_legalpdf_adapter_caller_builds_reusable_http_transport(self):
         from scripts.legalpdf_adapter_caller import build_http_adapter_caller
@@ -1120,7 +1171,17 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     "legalpdf_write_allowed": False,
                     "managed_data_changed": False,
                     "gmail_boundary": {"required_tool": "_create_draft", "send_allowed": False},
-                    "prepared_review_binding": {"send_allowed": False},
+                    "prepared_review_binding": {
+                        "preflight_response_field": "preflight_review",
+                        "prepare_request_field": "preflight_review",
+                        "prepare_response_field": "prepared_review",
+                        "handoff_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint"],
+                        "record_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed", "draft_id", "message_id", "thread_id"],
+                        "gmail_api_create_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed"],
+                        "stale_after_payload_or_manifest_change": True,
+                        "local_workflow_guard_only": True,
+                        "send_allowed": False,
+                    },
                     "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
                 }
             if url.endswith("/api/history"):
@@ -1283,6 +1344,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(checks, checks)
         self.assertTrue(all(check["status"] == "ready" for check in checks), checks)
         names = {check["name"] for check in checks}
+        self.assertIn("adapter_contract_prepared_review_binding", names)
         self.assertIn("adapter_prepare_ready", names)
         self.assertIn("adapter_manual_handoff_rejects_stale_review", names)
         self.assertIn("adapter_record_stale_no_local_write", names)
