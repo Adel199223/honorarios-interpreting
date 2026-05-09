@@ -49,6 +49,7 @@ from .services import (
     personal_profiles_summary,
     preflight_intakes,
     prepare_intakes,
+    require_current_preflight_review,
     apply_legalpdf_personal_profile_import,
     record_draft,
     recover_source_upload,
@@ -569,14 +570,20 @@ def create_app(**path_overrides: Any) -> FastAPI:
             intakes = [payload["intake"]]
         if not isinstance(intakes, list) or not all(isinstance(item, dict) for item in intakes):
             raise HTTPException(status_code=400, detail="Request must include intakes as a list of objects.")
-        correction_mode = bool(payload.get("correction_mode", False))
-        correction_reason = str(payload.get("correction_reason") or "").strip()
-        if bool(payload.get("allow_existing_draft", False)) and not correction_reason:
+        if "allow_duplicate" in payload:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",
-                "message": "Correction mode requires a reason before preparing over an existing Gmail draft.",
+                "message": "allow_duplicate is not accepted by the browser app. Use correction mode only for intentional draft replacements.",
                 "send_allowed": False,
             })
+        if "allow_existing_draft" in payload:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": "allow_existing_draft is not accepted by the browser app. Use correction_mode=true with a short correction_reason.",
+                "send_allowed": False,
+            })
+        correction_mode = bool(payload.get("correction_mode", False))
+        correction_reason = str(payload.get("correction_reason") or "").strip()
         if correction_mode and not correction_reason:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",
@@ -584,14 +591,23 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 "send_allowed": False,
             })
         try:
+            packet_mode = bool(payload.get("packet_mode", False))
+            if packet_mode or len(intakes) > 1:
+                require_current_preflight_review(
+                    payload,
+                    intakes,
+                    paths,
+                    packet_mode=packet_mode,
+                    correction_reason=correction_reason if correction_mode else "",
+                )
             return prepare_intakes(
                 intakes,
                 paths,
                 render_previews=bool(payload.get("render_previews", False)),
-                allow_duplicate=bool(payload.get("allow_duplicate", False)),
-                allow_existing_draft=bool(payload.get("allow_existing_draft", False)),
-                correction_reason=correction_reason if correction_mode or payload.get("allow_existing_draft") else "",
-                packet_mode=bool(payload.get("packet_mode", False)),
+                allow_duplicate=False,
+                allow_existing_draft=False,
+                correction_reason=correction_reason if correction_mode else "",
+                packet_mode=packet_mode,
             )
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
@@ -607,15 +623,29 @@ def create_app(**path_overrides: Any) -> FastAPI:
             intakes = [payload["intake"]]
         if not isinstance(intakes, list) or not all(isinstance(item, dict) for item in intakes):
             raise HTTPException(status_code=400, detail="Request must include intakes as a list of objects.")
+        if "allow_duplicate" in payload:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": "allow_duplicate is not accepted by the browser app. Use correction mode only for intentional draft replacements.",
+                "send_allowed": False,
+                "write_allowed": False,
+            })
+        if "allow_existing_draft" in payload:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": "allow_existing_draft is not accepted by the browser app. Use correction_mode=true with a short correction_reason.",
+                "send_allowed": False,
+                "write_allowed": False,
+            })
         correction_mode = bool(payload.get("correction_mode", False))
         correction_reason = str(payload.get("correction_reason") or "").strip()
         try:
             return preflight_intakes(
                 intakes,
                 paths,
-                allow_duplicate=bool(payload.get("allow_duplicate", False)),
-                allow_existing_draft=bool(payload.get("allow_existing_draft", False)),
-                correction_reason=correction_reason if correction_mode or payload.get("allow_existing_draft") else "",
+                allow_duplicate=False,
+                allow_existing_draft=False,
+                correction_reason=correction_reason if correction_mode else "",
                 packet_mode=bool(payload.get("packet_mode", False)),
             )
         except (IntakeError, OSError, ValueError) as exc:

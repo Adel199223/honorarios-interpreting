@@ -796,6 +796,21 @@ function preparedRecordTarget() {
   return state.lastPrepared?.packet || state.lastPrepared?.items?.[0] || null;
 }
 
+function currentPreparedReviewFields(payloadPath = "") {
+  const review = state.lastPrepared?.prepared_review || null;
+  if (!review) return {};
+  const normalizedPayload = String(payloadPath || "").trim();
+  const payloadPaths = Array.isArray(review.payload_paths) ? review.payload_paths : [];
+  if (normalizedPayload && payloadPaths.length && !payloadPaths.includes(normalizedPayload)) {
+    return {};
+  }
+  return removeEmpty({
+    prepared_manifest: review.manifest,
+    prepared_review_token: review.prepared_review_token,
+    review_fingerprint: review.review_fingerprint,
+  });
+}
+
 function renderManualHandoffPacket(packet) {
   const box = $("#manual-handoff-packet");
   if (!box) return;
@@ -848,7 +863,10 @@ async function buildManualHandoffPacket() {
   }
   const data = await requestJson("/api/gmail/manual-handoff", {
     method: "POST",
-    body: JSON.stringify({ payload: target.draft_payload }),
+    body: JSON.stringify({
+      payload: target.draft_payload,
+      ...currentPreparedReviewFields(target.draft_payload),
+    }),
   });
   state.lastManualHandoff = data;
   renderManualHandoffPacket(data);
@@ -2021,6 +2039,7 @@ async function createGmailApiDraft() {
         supersedes,
         correction_reason: correctionReason,
         notes: correctionReason || $("#record_notes").value.trim() || preparedRecordNote(target),
+        ...currentPreparedReviewFields(target.draft_payload),
       })),
     });
     $("#record_payload").value = target.draft_payload;
@@ -3687,7 +3706,12 @@ async function prepareBatchIntakes() {
   const intakes = state.batchIntakes.map(cloneIntake);
   const data = await requestJson("/api/prepare", {
     method: "POST",
-    body: JSON.stringify({ intakes, render_previews: true, packet_mode: packetMode }),
+    body: JSON.stringify({
+      intakes,
+      render_previews: true,
+      packet_mode: packetMode,
+      preflight_review: state.batchPreflight?.preflight_review || null,
+    }),
   });
   state.lastPrepared = data;
   const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
@@ -3913,8 +3937,9 @@ async function recordDraft() {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+  const payloadPath = $("#record_payload").value.trim();
   const payload = {
-    payload: $("#record_payload").value.trim(),
+    payload: payloadPath,
     draft_id: $("#record_draft_id").value.trim(),
     message_id: $("#record_message_id").value.trim(),
     thread_id: $("#record_thread_id").value.trim(),
@@ -3922,6 +3947,7 @@ async function recordDraft() {
     sent_date: $("#record_sent_date").value,
     notes: $("#record_notes").value.trim(),
     supersedes,
+    ...currentPreparedReviewFields(payloadPath),
   };
   const data = await requestJson("/api/drafts/status", {
     method: "POST",
