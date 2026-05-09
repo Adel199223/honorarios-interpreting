@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import sys
-import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +18,9 @@ if __package__ in (None, ""):
 
 from scripts.legalpdf_adapter_caller import (
     adapter_questions_are_numbered as _adapter_questions_are_numbered,
+    fetch_json_http,
+    post_json_http,
+    post_multipart_http,
     run_synthetic_adapter_sequence,
 )
 
@@ -83,68 +85,6 @@ def _http_text(url: str, timeout: float) -> str:
     request = urllib.request.Request(url, headers={"Accept": "text/html,application/xhtml+xml"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read().decode("utf-8", errors="replace")
-
-
-def _http_json(url: str, timeout: float) -> Any:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
-
-
-def _http_post_json(url: str, payload: dict[str, Any], timeout: float) -> Any:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
-
-
-def _http_post_multipart(
-    url: str,
-    fields: dict[str, str],
-    filename: str,
-    content: bytes,
-    content_type: str,
-    timeout: float,
-) -> Any:
-    boundary = f"----honorarios-smoke-{uuid.uuid4().hex}"
-    chunks: list[bytes] = []
-    for name, value in fields.items():
-        chunks.extend([
-            f"--{boundary}\r\n".encode("ascii"),
-            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"),
-            str(value).encode("utf-8"),
-            b"\r\n",
-        ])
-    safe_filename = Path(filename).name.replace('"', "")
-    chunks.extend([
-        f"--{boundary}\r\n".encode("ascii"),
-        f'Content-Disposition: form-data; name="file"; filename="{safe_filename}"\r\n'.encode("ascii"),
-        f"Content-Type: {content_type}\r\n\r\n".encode("ascii"),
-        content,
-        b"\r\n",
-        f"--{boundary}--\r\n".encode("ascii"),
-    ])
-    body = b"".join(chunks)
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Content-Length": str(len(body)),
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
 def _check(name: str, passed: bool, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1021,9 +961,18 @@ def run_smoke(
 ) -> dict[str, Any]:
     base = _normalize_base_url(base_url)
     text_fetcher = fetch_text or (lambda url: _http_text(url, timeout))
-    json_fetcher = fetch_json or (lambda url: _http_json(url, timeout))
-    json_poster = post_json or (lambda url, payload: _http_post_json(url, payload, timeout))
-    multipart_poster = post_multipart or (lambda url, fields, filename, content, content_type: _http_post_multipart(url, fields, filename, content, content_type, timeout))
+    json_fetcher = fetch_json or (lambda url: fetch_json_http(url, timeout=timeout))
+    json_poster = post_json or (lambda url, payload: post_json_http(url, payload, timeout=timeout))
+    multipart_poster = post_multipart or (
+        lambda url, fields, filename, content, content_type: post_multipart_http(
+            url,
+            fields,
+            filename,
+            content,
+            content_type,
+            timeout=timeout,
+        )
+    )
     checks: list[dict[str, Any]] = []
     endpoint_payloads: dict[str, Any] = {}
 

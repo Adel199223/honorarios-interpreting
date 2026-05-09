@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import uuid
 import urllib.parse
 import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -85,6 +87,92 @@ def normalize_base_url(base_url: str) -> str:
 
 def adapter_url(base_url: str, path: str) -> str:
     return f"{normalize_base_url(base_url)}{path}"
+
+
+def _read_json_response(response: Any) -> Any:
+    return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def fetch_json_http(url: str, *, timeout: float = 5.0) -> Any:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return _read_json_response(response)
+
+
+def post_json_http(url: str, payload: dict[str, Any], *, timeout: float = 5.0) -> Any:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return _read_json_response(response)
+
+
+def _safe_multipart_filename(filename: str) -> str:
+    return str(filename or "upload.bin").replace("\\", "/").rsplit("/", 1)[-1].replace('"', "")
+
+
+def post_multipart_http(
+    url: str,
+    fields: dict[str, str],
+    filename: str,
+    content: bytes,
+    content_type: str,
+    *,
+    timeout: float = 5.0,
+) -> Any:
+    boundary = f"----honorarios-adapter-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend([
+            f"--{boundary}\r\n".encode("ascii"),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ])
+    chunks.extend([
+        f"--{boundary}\r\n".encode("ascii"),
+        f'Content-Disposition: form-data; name="file"; filename="{_safe_multipart_filename(filename)}"\r\n'.encode("ascii"),
+        f"Content-Type: {content_type}\r\n\r\n".encode("ascii"),
+        content,
+        b"\r\n",
+        f"--{boundary}--\r\n".encode("ascii"),
+    ])
+    body = b"".join(chunks)
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return _read_json_response(response)
+
+
+def build_http_adapter_caller(base_url: str, *, timeout: float = 5.0) -> "LegalPdfAdapterCaller":
+    return LegalPdfAdapterCaller(
+        base_url,
+        fetch_json=lambda url: fetch_json_http(url, timeout=timeout),
+        post_json=lambda url, payload: post_json_http(url, payload, timeout=timeout),
+        post_multipart=lambda url, fields, filename, content, content_type: post_multipart_http(
+            url,
+            fields,
+            filename,
+            content,
+            content_type,
+            timeout=timeout,
+        ),
+    )
 
 
 def prepared_review_request_fields(prepared_review: dict[str, Any]) -> dict[str, str]:

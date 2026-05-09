@@ -241,6 +241,7 @@ import unittest
 import urllib.error
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -1157,6 +1158,52 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("from scripts.legalpdf_adapter_caller import", smoke_source)
         self.assertIn("run_synthetic_adapter_sequence(", smoke_source)
 
+    def test_legalpdf_adapter_caller_builds_reusable_http_transport(self):
+        from scripts.legalpdf_adapter_caller import build_http_adapter_caller
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        seen_requests = []
+
+        def fake_urlopen(request, timeout):
+            seen_requests.append(request)
+            return FakeResponse({"status": "ok", "method": request.get_method(), "timeout": timeout})
+
+        with patch("scripts.legalpdf_adapter_caller.urllib.request.urlopen", side_effect=fake_urlopen):
+            caller = build_http_adapter_caller("public-candidate.test/", timeout=7.5)
+            contract = caller.fetch_contract()
+            review = caller.review_intake({"case_number": "999/26.0SMOKE"})
+            upload = caller.upload_source(
+                {"source_kind": "notification_pdf", "profile": "example_interpreting"},
+                "../synthetic-notification.pdf",
+                b"%PDF synthetic",
+                "application/pdf",
+            )
+
+        self.assertEqual(caller.base_url, "http://public-candidate.test")
+        self.assertEqual(contract["method"], "GET")
+        self.assertEqual(review["method"], "POST")
+        self.assertEqual(upload["timeout"], 7.5)
+        self.assertEqual(seen_requests[0].full_url, "http://public-candidate.test/api/integration/adapter-contract")
+        json_body = seen_requests[1].data.decode("utf-8")
+        self.assertIn('"case_number": "999/26.0SMOKE"', json_body)
+        self.assertIn("application/json", seen_requests[1].headers["Content-type"])
+        multipart_body = seen_requests[2].data
+        self.assertIn(b'filename="synthetic-notification.pdf"', multipart_body)
+        self.assertNotIn(b"../synthetic-notification.pdf", multipart_body)
+        self.assertIn(b"%PDF synthetic", multipart_body)
+
     def test_legalpdf_adapter_caller_runs_full_synthetic_sequence(self):
         from scripts.legalpdf_adapter_caller import (
             REQUIRED_ADAPTER_ENDPOINTS,
@@ -1363,6 +1410,17 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "adapter_record_rejects_stale_review",
         ]:
             self.assertNotIn(duplicated_sequence_detail, source)
+
+    def test_local_app_smoke_reuses_adapter_http_transport(self):
+        import scripts.local_app_smoke as smoke
+
+        source = inspect.getsource(smoke)
+        for helper in ["fetch_json_http", "post_json_http", "post_multipart_http"]:
+            with self.subTest(helper=helper):
+                self.assertIn(helper, source)
+        self.assertNotIn("def _http_json(", source)
+        self.assertNotIn("def _http_post_json(", source)
+        self.assertNotIn("def _http_post_multipart(", source)
 
     def test_local_app_smoke_expected_blocked_helper_parses_http_400_json(self):
         def post_json(url, payload):
