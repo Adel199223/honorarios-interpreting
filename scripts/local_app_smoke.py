@@ -1190,17 +1190,6 @@ def run_smoke(
                     "failure_count": 1,
                     "send_allowed": False,
                 }
-            elif browser_supporting_attachment_stale and not browser_iab_click_through:
-                browser_report = {
-                    "status": "blocked",
-                    "checks": [_check(
-                        "browser_supporting_attachment_stale",
-                        False,
-                        "--browser-supporting-attachment-stale requires --browser-iab-click-through and is intended for an isolated prepared-payload runtime.",
-                    )],
-                    "failure_count": 1,
-                    "send_allowed": False,
-                }
             elif browser_iab_click_through:
                 browser_report = _run_browser_iab_smoke_subprocess(
                     base,
@@ -1247,6 +1236,7 @@ def run_smoke(
                         prepare_packet=browser_prepare_packet,
                         record_helper=browser_record_helper,
                         manual_handoff_stale=browser_manual_handoff_stale,
+                        supporting_attachment_stale=browser_supporting_attachment_stale,
                     )
         else:
             browser_report = browser_runner(
@@ -1311,7 +1301,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-profile-proposal", action="store_true", help="With --browser-iab-click-through, preview a synthetic unknown recurring pattern as a proposed Service profile without saving or writing artifacts.")
     parser.add_argument("--browser-gmail-api-create", action="store_true", help="With --browser-iab-click-through against an isolated fake-Gmail runtime, prepare a synthetic PDF payload, create a fake Gmail draft, and verify it read-only.")
     parser.add_argument("--browser-manual-handoff-stale", action="store_true", help="With --browser-click-through and a prepared payload, build the Manual Draft Handoff packet, then change intake text and verify stale gates clear it.")
-    parser.add_argument("--browser-supporting-attachment-stale", action="store_true", help="With --browser-iab-click-through and a prepared payload, build the Manual Draft Handoff packet, then upload a synthetic Supporting proof and verify stale gates clear it.")
+    parser.add_argument("--browser-supporting-attachment-stale", action="store_true", help="With browser click-through and a prepared payload, build the Manual Draft Handoff packet, then upload a synthetic Supporting proof and verify stale gates clear it.")
     parser.add_argument("--browser-recent-work-lifecycle", action="store_true", help="With --browser-iab-click-through against seeded history, verify Recent Work lifecycle controls without clicking Gmail verify or local status writes.")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With --browser-click-through and --browser-correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still never records drafts or calls Gmail.")
     parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")

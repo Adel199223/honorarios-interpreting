@@ -1768,6 +1768,14 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(seen_kwargs["record_helper"])
         self.assertTrue(seen_kwargs["apply_history"])
 
+    def test_local_app_smoke_forwards_supporting_attachment_stale_to_python_runner(self):
+        root = Path(__file__).resolve().parents[1]
+        smoke_source = (root / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
+        python_runner_block = smoke_source.split("browser_report = run_browser_flow_smoke(", 1)[1].split(")", 1)[0]
+
+        self.assertIn("supporting_attachment_stale=browser_supporting_attachment_stale", python_runner_block)
+        self.assertNotIn("--browser-supporting-attachment-stale requires --browser-iab-click-through", smoke_source)
+
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)
         self.assertTrue(report["public_ready"], report)
