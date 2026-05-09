@@ -997,6 +997,59 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("http://public-candidate.test/api/gmail/manual-handoff", seen_posts)
         self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
 
+    def test_legalpdf_adapter_caller_shim_exports_safe_contract_helpers(self):
+        from scripts.legalpdf_adapter_caller import (
+            REQUIRED_ADAPTER_ENDPOINTS,
+            LegalPdfAdapterCaller,
+            adapter_questions_are_numbered,
+            prepared_review_request_fields,
+            stale_prepared_review_fields,
+        )
+
+        contract = {
+            "status": "ready",
+            "recommended_gmail_mode": "manual_handoff",
+            "draft_only": True,
+            "send_allowed": False,
+            "write_allowed": False,
+            "legalpdf_write_allowed": False,
+            "managed_data_changed": False,
+            "gmail_boundary": {"required_tool": "_create_draft"},
+            "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
+        }
+        caller = LegalPdfAdapterCaller(
+            "http://public-candidate.test/",
+            fetch_json=lambda url: contract,
+            post_json=lambda _url, _payload: {},
+            post_multipart=lambda _url, _fields, _filename, _content, _content_type: {},
+        )
+
+        validation = caller.validate_contract(caller.fetch_contract())
+        self.assertTrue(validation.ready, validation)
+        self.assertFalse(validation.send_allowed)
+        self.assertFalse(validation.write_allowed)
+        self.assertFalse(validation.legalpdf_write_allowed)
+        self.assertEqual(validation.missing_endpoints, [])
+        self.assertTrue(adapter_questions_are_numbered(
+            [{"number": 1, "field": "closing_date"}],
+            "Please answer by number:\n1. Closing date?",
+        ))
+
+        prepared_fields = prepared_review_request_fields({
+            "manifest": "/tmp/adapter-manifest.json",
+            "prepared_review_token": "prepared-token",
+            "review_fingerprint": "fingerprint",
+        })
+        self.assertEqual(prepared_fields["prepared_manifest"], "/tmp/adapter-manifest.json")
+        self.assertEqual(prepared_fields["prepared_review_token"], "prepared-token")
+        self.assertEqual(prepared_fields["review_fingerprint"], "fingerprint")
+        stale_fields = stale_prepared_review_fields(prepared_fields)
+        self.assertEqual(stale_fields["prepared_review_token"], "stale-prepared-token")
+        self.assertEqual(stale_fields["prepared_manifest"], prepared_fields["prepared_manifest"])
+
+        smoke_source = (Path(__file__).resolve().parents[1] / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
+        self.assertIn("from scripts.legalpdf_adapter_caller import", smoke_source)
+
     def test_local_app_smoke_expected_blocked_helper_parses_http_400_json(self):
         def post_json(url, payload):
             body = json.dumps({
