@@ -2,15 +2,26 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+.env.*
+!.env.example
 .playwright-mcp/
+.tmp-test/
+.worktrees/
+worktrees/
+AGENTS.md
 
 # Local personal/payment data and real case history.
+config/email.json
 config/profile.json
 config/*.local.json
+config/*token*.json
 data/gmail-draft-log.json
 data/duplicate-index.json
 data/profile-change-log.json
 data/precedents.json
+data/court-emails.json
+data/known-destinations.json
+data/service-profiles.json
 data/*.local.json
 
 # Generated PDFs, draft payloads, manifests, intake snapshots, and previews.

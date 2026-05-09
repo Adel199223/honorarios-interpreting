@@ -24,7 +24,7 @@ Set it aside if it looks like translation:
 
 First choose the personal profile to use, or leave the browser app on the main personal profile. Personal profiles supply the applicant name, postal address, IBAN, IVA/IRS wording, travel origin, and saved city distances. They are separate from service profiles.
 
-For recurring service patterns, create the first draft of the intake from `data/service-profiles.json`:
+For recurring service patterns, create the first draft of the intake from local `data/service-profiles.json`. Public checkouts fall back to the sanitized `data/service-profiles.example.json` fixture until a local overlay exists:
 
 ```powershell
 python scripts/create_intake.py --profile pj_gnr_ferreira --case-number 86/26.8GAFAL --service-date 2026-02-15

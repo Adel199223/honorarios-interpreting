@@ -11,9 +11,9 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
-    from scripts.generate_pdf import ROOT, IntakeError, sanitize_filename
+    from scripts.generate_pdf import ROOT, IntakeError, resolve_json_path, sanitize_filename
 except ModuleNotFoundError:
-    from generate_pdf import ROOT, IntakeError, sanitize_filename
+    from generate_pdf import ROOT, IntakeError, resolve_json_path, sanitize_filename
 
 
 DEFAULT_SERVICE_PROFILES = ROOT / "data" / "service-profiles.json"
@@ -22,9 +22,10 @@ DEFAULT_TIMEZONE = "Europe/Lisbon"
 
 
 def load_profiles(path: Path = DEFAULT_SERVICE_PROFILES) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    resolved_path = resolve_json_path(path)
+    data = json.loads(resolved_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise IntakeError(f"Service profiles must be a JSON object: {path}")
+        raise IntakeError(f"Service profiles must be a JSON object: {resolved_path}")
     return data
 
 

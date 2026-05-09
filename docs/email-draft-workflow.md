@@ -12,7 +12,7 @@ Every completed interpreting honorários PDF should lead to a Gmail draft, not a
 court@example.test
 ```
 
-Known recurring addresses are listed in `data/court-emails.json`.
+Known recurring addresses are listed in local `data/court-emails.json`. Public checkouts fall back to the sanitized `data/court-emails.example.json` fixture until a local overlay exists.
 Unknown `court_email_key` values must fail instead of falling back. Generic `Tribunal de Beja` maps to the normal Beja Ministério Público address; the labor-court address is reserved for explicit `Tribunal do Trabalho de Beja` / `Juízo do Trabalho de Beja` cases.
 
 The recipient is the payment entity/court/Ministério Público address. It may be different from the service entity when the interpreting happened at GNR, PSP, police, or another non-court location.

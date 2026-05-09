@@ -71,8 +71,21 @@ class RenderedRequest:
     signature_name: str
 
 
+def example_json_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.example{path.suffix}")
+
+
+def resolve_json_path(path: Path) -> Path:
+    if path.exists():
+        return path
+    example_path = example_json_path(path)
+    if example_path.exists():
+        return example_path
+    return path
+
+
 def load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
+    with resolve_json_path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 

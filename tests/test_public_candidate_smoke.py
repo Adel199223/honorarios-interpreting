@@ -396,10 +396,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
     def test_legalpdf_integration_preview_report_and_checklist_are_read_only(self):
         root = Path(__file__).resolve().parents[1]
-        profiles_path = root / "data" / "service-profiles.json"
-        court_path = root / "data" / "court-emails.json"
-        profiles_before = profiles_path.read_text(encoding="utf-8")
-        courts_before = court_path.read_text(encoding="utf-8")
+        profiles_example_path = root / "data" / "service-profiles.example.json"
+        court_example_path = root / "data" / "court-emails.example.json"
+        profiles_overlay_path = root / "data" / "service-profiles.json"
+        court_overlay_path = root / "data" / "court-emails.json"
+        profiles_before = profiles_example_path.read_text(encoding="utf-8")
+        courts_before = court_example_path.read_text(encoding="utf-8")
         client = self.make_client()
         backup = {
             "kind": "honorarios_local_backup",
@@ -478,8 +480,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("Integration Checklist", checklist.json()["checklist_markdown"])
         self.assertIn("legalpdf_synthetic -> example_interpreting", checklist.json()["checklist_markdown"])
         self.assertIn("Adapter Import Plan", plan.json()["plan_markdown"])
-        self.assertEqual(profiles_path.read_text(encoding="utf-8"), profiles_before)
-        self.assertEqual(court_path.read_text(encoding="utf-8"), courts_before)
+        self.assertEqual(profiles_example_path.read_text(encoding="utf-8"), profiles_before)
+        self.assertEqual(court_example_path.read_text(encoding="utf-8"), courts_before)
+        self.assertFalse(profiles_overlay_path.exists())
+        self.assertFalse(court_overlay_path.exists())
 
     def test_local_app_smoke_runner_can_check_public_candidate_contract(self):
         client = self.make_client()

@@ -37,6 +37,7 @@ try:
         load_json,
         parse_iso_date,
         render_html,
+        resolve_json_path,
         service_date_conflict,
     )
     from scripts.intake_questions import format_numbered_questions, missing_questions
@@ -68,6 +69,7 @@ except ModuleNotFoundError:
         load_json,
         parse_iso_date,
         render_html,
+        resolve_json_path,
         service_date_conflict,
     )
     from intake_questions import format_numbered_questions, missing_questions
@@ -385,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             raise IntakeError("Correction reason required with --allow-existing-draft. Add --correction-reason with a short audit reason.")
         profile = load_json(args.profile)
         email_config = load_json(args.email_config)
-        court_directory = json.loads(args.court_emails.read_text(encoding="utf-8"))
+        court_directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
         draft_log = load_draft_log(args.draft_log)
         loaded: list[tuple[Path, dict[str, Any]]] = [(intake_path, load_json(intake_path)) for intake_path in args.intakes]
         seen_keys: dict[tuple[str, str, str], Path] = {}

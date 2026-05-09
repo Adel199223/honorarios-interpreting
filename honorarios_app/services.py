@@ -55,6 +55,7 @@ from scripts.generate_pdf import (
     format_duplicate_message,
     get_service_date_value,
     load_json,
+    resolve_json_path,
 )
 from scripts.intake_questions import format_numbered_questions, missing_questions, parse_numbered_answers
 from scripts.prepare_honorarios import (
@@ -182,10 +183,11 @@ def safe_upload_filename(filename: str) -> str:
 
 
 def _read_json_object_if_exists(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    resolved_path = resolve_json_path(path)
+    if not resolved_path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(resolved_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -590,7 +592,7 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
     if email_match:
         fields["recipient_email"] = email_match.group(0).lower()
 
-    if paths.known_destinations.exists():
+    if resolve_json_path(paths.known_destinations).exists():
         try:
             destinations = load_known_destinations(paths)
         except (IntakeError, json.JSONDecodeError):
@@ -1952,11 +1954,12 @@ def recover_source_upload(
 
 
 def read_json_list(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+    resolved_path = resolve_json_path(path)
+    if not resolved_path.exists():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(resolved_path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
-        raise IntakeError(f"Expected a JSON list at {path}")
+        raise IntakeError(f"Expected a JSON list at {resolved_path}")
     return data
 
 
