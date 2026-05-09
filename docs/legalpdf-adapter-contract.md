@@ -78,6 +78,16 @@ The response is secret-free and includes:
 - caller responsibilities
 - safety flags
 - `send_allowed: false`
+
+## Executable Smoke
+
+Use the isolated smoke before changing this boundary:
+
+```powershell
+python scripts\isolated_app_smoke.py --adapter-contract-checks --json
+```
+
+It drives the future caller sequence through review, packet preflight, prepare, Manual Draft Handoff, and synthetic local draft recording in a temporary runtime. It must not contact Gmail or write to LegalPDF Translate.
 - `write_allowed: false`
 - `legalpdf_write_allowed: false`
 - `managed_data_changed: false`

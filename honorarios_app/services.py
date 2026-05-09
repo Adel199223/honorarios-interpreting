@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import hashlib
 import hmac
 import json
@@ -14,7 +15,7 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -2308,6 +2309,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "description": "Runs declaration/proof attachment evidence checks in a temporary synthetic runtime so private source-upload folders stay untouched.",
             "command_template": "python scripts/isolated_app_smoke.py --supporting-attachment-checks --json",
             "effect": "temporary_isolated_runtime",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
+            "key": "isolated_adapter_contract_smoke",
+            "label": "LegalPDF adapter contract smoke",
+            "description": "Runs the future LegalPDF caller sequence in a temporary synthetic runtime: review, packet preflight, prepare, Manual Draft Handoff, and local draft recording with no Gmail network call.",
+            "command_template": "python scripts/isolated_app_smoke.py --adapter-contract-checks --json",
+            "effect": "temporary_isolated_runtime_adapter_contract",
             "writes": "temporary synthetic runtime only",
         },
         {
@@ -6409,9 +6418,16 @@ def _record_draft_once(payload: dict[str, Any], paths: AppPaths) -> None:
     if notes:
         args.extend(["--notes", notes])
 
-    code = record_gmail_draft_main(args)
+    stdout = StringIO()
+    stderr = StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = record_gmail_draft_main(args)
     if code != 0:
-        raise IntakeError("Could not record Gmail draft. Check payload path and draft/message IDs.")
+        detail = stderr.getvalue().strip()
+        message = "Could not record Gmail draft. Check payload path and draft/message IDs."
+        if detail:
+            message = f"{message} {detail}"
+        raise IntakeError(message)
 
 
 def _payload_from_existing_draft(record: dict[str, Any], *, status: str, superseded_by: str = "", notes: str = "") -> dict[str, Any]:

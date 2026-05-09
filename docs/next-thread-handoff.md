@@ -73,7 +73,7 @@ python scripts\public_release_gate.py --root output\public-candidate --json
 ## Next Recommended Work
 
 1. Keep hardening Browser/IAB smoke around real daily UI paths.
-2. Use the LegalPDF adapter contract to design a future caller shim, without writing to LegalPDF Translate yet.
+2. Build from the isolated LegalPDF adapter contract smoke toward a future caller shim, without writing to LegalPDF Translate yet.
 3. Continue testing real Gmail draft creation cautiously, keeping verification read-only and send actions forbidden.
 4. Improve UX explanations for `Suggested Next Step` and duplicate/correction states if they confuse daily use.
 
