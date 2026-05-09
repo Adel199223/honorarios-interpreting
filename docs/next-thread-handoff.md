@@ -4,12 +4,12 @@ Current date: 2026-05-09
 
 ## Project State
 
-- Private working folder: `%USERPROFILE%/example-path`
-- Publishable Git repo: `output/public-candidate`
+- Workspace and live public Git repo: `%USERPROFILE%/example-path`
 - Public remote: `https://github.com/Adel199223/honorarios-interpreting`
 - Public branch: `main`
-- The private working folder is intentionally not a Git repository because it contains local runtime data, generated documents, draft logs, and private configuration.
-- Publish only from the sanitized public candidate after its privacy gate passes.
+- Public updates are committed from the root repo after the tracked Git safety gate passes.
+- Real runtime data stays on this machine as ignored local overlays.
+- `output/public-candidate` is now an optional sanitized audit/export candidate, not the primary publish checkout.
 
 ## App Status
 
@@ -33,44 +33,42 @@ Current date: 2026-05-09
 ## What Is Implemented
 
 - LegalPDF-style browser app shell and review drawer.
-- Local PDF/photo upload, source evidence, OpenAI OCR evidence, automatic service-profile detection, numbered questions, duplicate/active-draft blocking, PDF preview, draft payload display, Manual Draft Handoff, optional guarded Gmail draft creation, Recent Work lifecycle controls, personal profiles, service profiles, reference editing, LegalPDF import preview/apply guards, public-candidate privacy tooling, and Browser/IAB smoke coverage.
+- Local PDF/photo upload, source evidence, OpenAI OCR evidence, automatic service-profile detection, numbered questions, duplicate/active-draft blocking, PDF preview, draft payload display, Manual Draft Handoff, optional guarded Gmail draft creation, Recent Work lifecycle controls, personal profiles, service profiles, reference editing, LegalPDF import preview/apply guards, public Git safety tooling, and Browser/IAB smoke coverage.
+- Public repo safety boundary: `.gitignore` keeps real runtime overlays local, `.githooks/pre-commit` runs `python scripts/public_repo_gate.py --staged`, and the browser Public GitHub Readiness panel reports tracked Git safety separately from the stricter full-workspace privacy gate.
 
 ## Validation Commands
 
-Run from the private working folder:
+Run from the root repo:
 
 ```powershell
 python -m unittest discover tests
 node --check honorarios_app\static\app.js
 node --check scripts\browser_iab_smoke.mjs
+python scripts\public_repo_gate.py --tracked --json
 python scripts\local_app_smoke.py --base-url http://127.0.0.1:8766 --json
-python scripts\public_release_gate.py --root output\public-candidate --json
 ```
 
-Run from `output/public-candidate`:
+Optional sanitized candidate audit:
 
 ```powershell
-python -m unittest discover tests
-git diff --check
-git status -sb
-git rev-list --left-right --count origin/main...HEAD
+python scripts\build_public_candidate.py --target output\public-candidate --json
+python scripts\public_release_gate.py --root output\public-candidate --json
 ```
 
 ## Public Release Workflow
 
-1. Rebuild the candidate:
+1. Keep real local overlays ignored and untracked.
+2. Stage files explicitly.
+3. Run the tracked public repo gate:
 
    ```powershell
-   python scripts\build_public_candidate.py --target output\public-candidate --json
+   python scripts\public_repo_gate.py --staged --json
+   python scripts\public_repo_gate.py --tracked --json
    ```
 
-2. Run the privacy gate against the exact candidate:
-
-   ```powershell
-   python scripts\public_release_gate.py --root output\public-candidate --json
-   ```
-
-3. Commit and push only from `output/public-candidate`.
+4. Commit normally. The pre-commit hook reruns the staged gate.
+5. Push to the public repo only when tests and the tracked gate pass.
+6. Use `output/public-candidate` only when a separate sanitized export/audit tree is useful.
 
 ## Next Recommended Work
 
@@ -81,5 +79,5 @@ git rev-list --left-right --count origin/main...HEAD
 
 ## Private Data Rules
 
-- Keep local private files ignored: `config/*.local.json`, `config/profile.json`, `config/profiles.local.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, generated PDFs, source uploads, tokens, and logs.
+- Keep local private files ignored: `config/*.local.json`, `config/profile.json`, `config/profiles.local.json`, `config/*token*.json`, real `data/court-emails.json`, real `data/known-destinations.json`, real `data/service-profiles.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, generated PDFs, source uploads, tokens, and logs.
 - Do not publish root screenshots, generated files, real case numbers, court emails, personal profile/payment data, OAuth secrets, OpenAI keys, Gmail tokens, or Gmail draft IDs.

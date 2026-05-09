@@ -62,8 +62,8 @@ The web app is a standalone local-first app for in-person interpreting honorári
 - Read-only LegalPDF adapter contract at `/api/integration/adapter-contract`, documented in `docs/legalpdf-adapter-contract.md`, defining the future caller sequence from source/review through preflight, prepare, Manual Draft Handoff, and local draft recording without writing to LegalPDF Translate or adding Gmail send behavior.
 - Write-confirmed LegalPDF adapter apply prototype at `/api/integration/apply-import-plan`, limited to reviewed, non-blocked local Honorários reference changes, requiring `confirm_apply=true`, the exact phrase `APPLY LEGALPDF IMPORT PLAN`, an apply reason, a pre-apply backup, and a private apply report; it never writes to LegalPDF Translate and never invokes Gmail.
 - LegalPDF Apply History panel plus `/api/integration/apply-history`, `/api/integration/apply-detail`, `/api/integration/apply-restore-plan`, and guarded `/api/integration/apply-restore`, which list summary-only guarded apply reports, load redacted hash/status comparisons, preview hash-only restore actions, and, with the exact phrase `RESTORE LEGALPDF APPLY BACKUP`, restore only touched local profile/email records from the pre-apply backup after writing a pre-restore backup and private restore report. These paths never expose the full import plan, source backup payload, or raw before/after reference values, and never touch LegalPDF Translate or Gmail.
-- Public GitHub Readiness privacy gate in the app and CLI (`scripts/public_release_gate.py`) to block publishing while private paths, generated artifacts, real court emails, personal payment details, or secret-like values remain.
-- Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the privacy gate against the candidate tree.
+- Public GitHub Readiness safety gates in the app and CLI: `scripts/public_repo_gate.py` checks staged/tracked Git content for blocked runtime paths and sensitive patterns, while `scripts/public_release_gate.py` remains available for stricter full-tree sanitized-candidate audits.
+- Sanitized public-candidate builder in the app and CLI (`scripts/build_public_candidate.py`) that copies only publishable source/doc files, replaces real local data with synthetic fixtures, and reruns the full privacy gate against the candidate tree.
 - Generated public-candidate smoke tests for LegalPDF-style workflow landmarks, draft-only reference status, secret-free Google Photos status, read-only LegalPDF preview/report/checklist/import-plan APIs, and the privacy gate.
 - Optional local live-app smoke runner (`scripts/local_app_smoke.py`) for checking the running private app's LegalPDF-style landmarks, `Suggested Next Step` surface, draft-only endpoints, secret-free Google Photos status, and public-readiness endpoint without creating PDFs or Gmail drafts by default.
 - Local Diagnostics panel in the browser app, listing the safe live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, advanced/future isolated fake-Gmail Draft API smoke, Browser/IAB review smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB Manual Draft Handoff stale smoke, and Browser/IAB fake Gmail API smoke commands without running shell commands or touching real Gmail.
@@ -101,22 +101,27 @@ Project-specific behavior must remain here until a later integration adapter exi
 
 ## Public Repository
 
-The sanitized public repository is live at:
+The public repository is live at:
 
 <https://github.com/Adel199223/honorarios-interpreting>
 
-It was published from `output/public-candidate` after the privacy and repository metadata gate passed, not from the private working folder.
+The root workspace is now the public Git checkout. Real runtime data, personal profiles, draft logs, duplicate history, generated artifacts, and tokens stay in ignored local overlays. Public commits are protected by `.githooks/pre-commit`, which runs `python scripts/public_repo_gate.py --staged`.
 
 ## Next Stages
 
 1. Keep hardening the Browser/IAB and isolated smoke runners around any new UI surface, with capability blockers for optional browser features rather than unsafe fallbacks.
 2. Use the adapter contract to design a later LegalPDF caller shim, keeping LegalPDF read-only until the standalone workflow is stable in daily use.
 3. Keep read-only Gmail draft reconciliation hardened around real app-created draft IDs as daily use reveals mismatch cases; verification must remain `users.drafts.get` only and must never mutate Gmail, duplicate records, or draft logs.
-4. For future public updates, rebuild the sanitized candidate, rerun the gate, and push from that candidate repository only.
+4. For future public updates, stage files explicitly, run `scripts/public_repo_gate.py --staged` and `--tracked`, and push from the root repo only after tests pass. Rebuild `output/public-candidate` when a separate sanitized audit/export tree is useful.
 
 ## Public GitHub Readiness
 
-Public GitHub is deliberately blocked for the current working folder. It contains private local configuration, real generated PDFs, draft logs, duplicate records, and workflow history. Use `scripts/build_public_candidate.py` or the app's Build sanitized candidate button to create `output/public-candidate`, then publish updates only after reviewing that candidate and confirming its privacy gate passes.
+Public GitHub is enabled for tracked source files in the current root repo. The safety boundary is two-layered:
+
+- `scripts/public_repo_gate.py --staged` and `--tracked` inspect Git content that can be committed or pushed. They block private paths such as local configs, draft logs, duplicate indexes, generated artifacts, real court emails, personal data, tokens, and local-machine paths.
+- `scripts/public_release_gate.py --root output/public-candidate --json` scans a full sanitized candidate tree. It may be blocked on the live root because ignored private overlays are intentionally still present on disk.
+
+Use the browser Public GitHub Readiness panel to check tracked Git safety and to build an optional sanitized candidate. A blocked full-workspace privacy result in the live checkout is expected unless all private overlays are absent.
 
 ## Non-Negotiable Safety Rules
 

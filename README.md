@@ -64,7 +64,7 @@ The app supports the main workflow:
 - maintain known destinations/kilometers and court email aliases from the References screen
 - maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
 - export and restore private local backups for reference data, duplicate records, and draft lifecycle logs
-- run a local Public GitHub Readiness privacy gate before any public publishing attempt
+- run the tracked Git public repo safety gate before any public commit or push
 - build a read-only LegalPDF adapter import plan that flags destructive profile or recipient changes
 - apply a reviewed, non-blocked LegalPDF import plan only after explicit confirmation, with a pre-apply backup and private apply report
 
@@ -437,29 +437,29 @@ Reusable personal and payment details live in:
 
 Keep that file local. It contains payment details that should not be shared publicly.
 
-For future public GitHub publishing, keep real runtime files local and ignored: `config/profile.json`, `config/profiles.local.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, `data/profile-change-log.json`, `data/precedents.json`, `output/`, and `tmp/`. Publish only sanitized seed examples and synthetic tests.
+For public GitHub publishing, keep real runtime files local and ignored: `config/profile.json`, `config/profiles.local.json`, `config/*.local.json`, `config/*token*.json`, `data/gmail-draft-log.json`, `data/duplicate-index.json`, `data/profile-change-log.json`, `data/precedents.json`, real `data/court-emails.json`, real `data/known-destinations.json`, real `data/service-profiles.json`, `output/`, and `tmp/`. Track only source code, docs, sanitized `.example.json` fixtures, and synthetic tests.
 
 Public sanitized repository:
 
 <https://github.com/Adel199223/honorarios-interpreting>
 
-That repository was created from a sanitized candidate, not from this private working folder.
+This workspace is now the live public Git repository, with private operational overlays kept untracked by `.gitignore` and protected by `.githooks/pre-commit`.
 
-Run the executable privacy/readiness gate before creating a public repository:
+Run the tracked-content gate before committing or pushing public changes:
 
 ```powershell
-python scripts/public_release_gate.py --json
+python scripts/public_repo_gate.py --tracked --json
 ```
 
-The same check is available in the browser app under References -> Public GitHub Readiness. A blocked result is expected in this working folder because it contains real local profile/payment data, generated artifacts, draft logs, and case history. Publish only from a separate sanitized candidate after the gate passes.
+The same tracked-content check is wired into the local pre-commit hook through `.githooks/pre-commit`, and the browser app shows it under References -> Public GitHub Readiness. The stricter full-workspace privacy gate may still report blockers in this checkout because ignored private overlays remain on disk; that is expected and does not mean tracked Git content is unsafe.
 
-To build that separate sanitized candidate, use:
+To build a separate sanitized audit/export candidate, use:
 
 ```powershell
 python scripts/build_public_candidate.py --target output/public-candidate --json
 ```
 
-The browser app exposes the same step under References -> Public GitHub Readiness -> Build sanitized candidate. The generated candidate uses synthetic profile, email, court, destination, service-profile, and intake examples, then runs the same privacy gate against the candidate tree. Review that candidate before initializing or pushing a public GitHub repository.
+The browser app exposes the same step under References -> Public GitHub Readiness -> Build sanitized candidate. The generated candidate uses synthetic profile, email, court, destination, service-profile, and intake examples, then runs the full privacy gate against the candidate tree. Treat that candidate as an audit/export artifact; normal public updates are committed from this root only after the tracked gate passes.
 
 ## Improving The Project
 
