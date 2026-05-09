@@ -389,6 +389,36 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
 
+    def test_packet_browser_smoke_closes_drawer_before_preparing_artifacts(self):
+        root = Path(__file__).resolve().parents[1]
+        smoke_js = (root / "scripts" / "browser_iab_smoke.mjs").read_text(encoding="utf-8")
+        flow_py = (root / "scripts" / "browser_flow_smoke.py").read_text(encoding="utf-8")
+        packet_block = smoke_js.split("if (args.preparePacket)", 1)[1].split("if (args.recordHelper)", 1)[0]
+        record_helper_block = smoke_js.split("if (args.recordHelper)", 1)[1].split("if (args.supportingAttachmentStale)", 1)[0]
+        flow_packet_block = flow_py.split("def _prepare_packet()", 1)[1].split("if prepare_packet:", 1)[0]
+
+        preflight_index = packet_block.index('click(tab, "#preflight-batch-intakes"')
+        close_index = packet_block.index("closeReviewDrawerIfOpen()")
+        prepare_index = packet_block.index('click(tab, "#prepare-batch-intakes"')
+
+        self.assertIn("reviewDrawerOpen = true", packet_block[preflight_index:prepare_index])
+        self.assertLess(preflight_index, close_index)
+        self.assertLess(close_index, prepare_index)
+        self.assertIn('expectSelectorText(tab, "#prepare-results", "Packet draft recording helper"', packet_block)
+        self.assertIn('expectSelectorText(tab, "#prepare-results", "Underlying duplicate blockers"', packet_block)
+        self.assertNotIn('expectBodyText(tab, "Packet draft recording helper"', packet_block)
+
+        self.assertIn("review_drawer_open = True", flow_packet_block)
+        self.assertIn("_close_review_drawer_if_open()", flow_packet_block)
+        self.assertIn('driver.expect_selector_text("#prepare-results", "Packet draft recording helper")', flow_packet_block)
+        self.assertIn('driver.expect_selector_text("#prepare-results", "Underlying duplicate blockers")', flow_packet_block)
+        self.assertNotIn('driver.expect_text("Packet draft recording helper")', flow_packet_block)
+        self.assertIn('click(tab, "#parse-gmail-response"', record_helper_block)
+        self.assertIn('click(tab, "#autofill-record-from-prepared"', record_helper_block)
+        self.assertNotIn('click(tab, "#record-parsed-prepared-draft"', record_helper_block)
+        self.assertNotIn('click(tab, "#record-draft"', record_helper_block)
+        self.assertNotIn('click(tab, "#create-gmail-api-draft"', record_helper_block)
+
     def test_browser_js_routes_one_click_recording_through_strict_prepared_endpoint(self):
         root = Path(__file__).resolve().parents[1]
         app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
