@@ -87,6 +87,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Preview guarded destination",
             "Preview court-email diff",
             "Preview guarded court email",
+            "Public GitHub Readiness",
+            "Run tracked Git gate",
             "Gmail Draft API",
             "Draft-only Gmail",
         ]:
@@ -151,6 +153,24 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("C:\\Users\\FA507", dumped)
         self.assertNotIn("_send_email", dumped)
         self.assertNotIn("_send_draft", dumped)
+
+    def test_public_readiness_endpoint_reports_tracked_gate(self):
+        client = self.make_client()
+        response = client.get("/api/public-readiness")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["public_repo_ready"], data)
+        self.assertTrue(data["tracked_gate"]["public_repo_ready"], data)
+        self.assertIn("workspace_gate", data)
+        self.assertFalse(data["send_allowed"])
+        dumped = json.dumps(data, sort_keys=True)
+        self.assertNotIn("C:\\Users", dumped)
+        self.assertNotIn("GOCSPX", dumped)
+        self.assertNotIn("ya29.", dumped)
+        for gate in [data["tracked_gate"], data["workspace_gate"]]:
+            self.assertEqual(gate["root"], "project-root")
+            for finding in gate.get("content_findings", []):
+                self.assertEqual(finding.get("match_preview"), "[redacted]")
 
     def test_reference_endpoint_keeps_draft_only_contract(self):
         client = self.make_client()

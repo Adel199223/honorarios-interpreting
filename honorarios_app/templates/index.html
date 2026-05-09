@@ -384,15 +384,15 @@
               <div>
                 <p class="eyebrow">Publishing</p>
                 <h3>Public GitHub Readiness</h3>
-                <p class="panel-copy">Run the local privacy gate before creating any public repository. It checks private files, generated artifacts, real court emails, personal payment details, and secret-like values.</p>
+                <p class="panel-copy">Check tracked Git content before public commits. The full-workspace privacy gate remains separate because ignored local profiles, draft logs, and generated artifacts stay on this machine.</p>
               </div>
               <span class="status-chip blocked" id="public-readiness-chip">blocked</span>
             </div>
             <div class="button-row">
-              <button type="button" id="run-public-readiness">Run privacy gate</button>
+              <button type="button" id="run-public-readiness">Run tracked Git gate</button>
               <button type="button" id="build-public-candidate">Build sanitized candidate</button>
             </div>
-            <div class="result-card" id="public-readiness-result">Public publishing is blocked until this gate passes on a sanitized candidate.</div>
+            <div class="result-card" id="public-readiness-result">Public commits are allowed only when tracked Git content passes the public repo gate. Ignored private overlays should remain local.</div>
           </div>
           <div class="panel diagnostics-panel">
             <div class="panel-header">

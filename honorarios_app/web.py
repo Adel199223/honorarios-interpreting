@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +11,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from scripts.generate_pdf import IntakeError
+from scripts.generate_pdf import ROOT as PROJECT_ROOT, IntakeError
 from scripts.build_public_candidate import build_public_candidate
 from scripts.public_release_gate import analyze_public_readiness
+from scripts.public_repo_gate import analyze_tracked
 
 from .services import (
     AppPaths,
@@ -90,6 +92,16 @@ def static_asset_version() -> str:
     asset_paths = [static_dir / "app.js", static_dir / "style.css"]
     mtimes = [path.stat().st_mtime_ns for path in asset_paths if path.exists()]
     return str(max(mtimes)) if mtimes else "dev"
+
+
+def redacted_public_gate(report: dict[str, Any]) -> dict[str, Any]:
+    safe = copy.deepcopy(report)
+    if "root" in safe:
+        safe["root"] = "project-root"
+    for finding in safe.get("content_findings", []):
+        if isinstance(finding, dict) and "match_preview" in finding:
+            finding["match_preview"] = "[redacted]"
+    return safe
 
 
 def create_app(**path_overrides: Any) -> FastAPI:
@@ -338,12 +350,37 @@ def create_app(**path_overrides: Any) -> FastAPI:
 
     @app.get("/api/public-readiness")
     async def api_public_readiness() -> dict[str, Any]:
-        return analyze_public_readiness(paths.profile.parents[1])
+        root = PROJECT_ROOT
+        tracked_gate = redacted_public_gate(analyze_tracked(root))
+        workspace_gate = redacted_public_gate(analyze_public_readiness(root))
+        ready = bool(tracked_gate.get("public_repo_ready"))
+        workspace_ready = bool(workspace_gate.get("public_ready"))
+        return {
+            "status": "ready" if ready else "blocked",
+            "public_ready": ready,
+            "public_repo_ready": ready,
+            "mode": "tracked_git_public_repo",
+            "message": (
+                "Tracked Git content is ready for the public repo."
+                if ready
+                else "Tracked Git content is blocked by the public repo gate."
+            ),
+            "blocker_count": tracked_gate.get("blocker_count", 0),
+            "tracked_gate": tracked_gate,
+            "workspace_gate": workspace_gate,
+            "workspace_privacy_ready": workspace_ready,
+            "workspace_privacy_note": (
+                "Full-workspace privacy gate passed."
+                if workspace_ready
+                else "Full-workspace privacy gate is expected to stay blocked in this live local checkout because ignored private overlays remain on disk."
+            ),
+            "send_allowed": False,
+        }
 
     @app.post("/api/public-candidate/build")
     async def api_public_candidate_build() -> dict[str, Any]:
         try:
-            return build_public_candidate(paths.profile.parents[1])
+            return build_public_candidate(PROJECT_ROOT)
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

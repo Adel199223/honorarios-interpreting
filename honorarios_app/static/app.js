@@ -2129,22 +2129,31 @@ function renderPublicReadiness(data) {
   const chip = $("#public-readiness-chip");
   const body = $("#public-readiness-result");
   if (!chip || !body) return;
-  const ready = Boolean(data?.public_ready);
+  const gate = data?.tracked_gate || data || {};
+  const ready = Boolean(data?.tracked_gate ? gate.public_repo_ready : (gate.public_ready ?? gate.public_repo_ready));
   chip.textContent = ready ? "ready" : "blocked";
   chip.className = `status-chip ${ready ? "ready" : "blocked"}`;
-  const blockedPaths = (data?.blocked_paths || []).slice(0, 8);
-  const metadataBlockers = (data?.metadata_blockers || []).slice(0, 8);
-  const findings = (data?.content_findings || []).slice(0, 8);
-  const gitBlockers = data?.git_blockers || [];
+  const pathBlockers = (gate.path_blockers || []).map((item) => item.path || item);
+  const blockedPaths = [...pathBlockers, ...(gate.blocked_paths || [])].slice(0, 8);
+  const metadataBlockers = (gate.metadata_blockers || []).slice(0, 8);
+  const findings = (gate.content_findings || []).slice(0, 8);
+  const gitBlockers = gate.git_blockers || [];
+  const workspaceGate = data?.workspace_gate || null;
+  const workspaceBlockedCount = Number(workspaceGate?.blocker_count || 0);
+  const workspaceNote = workspaceGate
+    ? `<div class="data-item"><strong>Local overlays</strong><span>${escapeHtml(data.workspace_privacy_note || "Full-workspace privacy gate is separate from tracked Git publishing.")}</span></div>
+       <div class="data-item"><strong>Full workspace gate</strong><span>${escapeHtml(workspaceGate.public_ready ? "ready" : `blocked (${workspaceBlockedCount} blocker${workspaceBlockedCount === 1 ? "" : "s"})`)}</span></div>`
+    : "";
   body.className = `result-card ${ready ? "ready" : "blocked"}`;
   body.innerHTML = `
     <div class="result-header">
       <div>
         <strong>${escapeHtml(data?.message || "Run the privacy gate before publishing.")}</strong>
-        <p>${escapeHtml(data?.blocker_count ?? 0)} blocker${Number(data?.blocker_count || 0) === 1 ? "" : "s"} found.</p>
+        <p>${escapeHtml(gate?.blocker_count ?? data?.blocker_count ?? 0)} tracked blocker${Number(gate?.blocker_count || data?.blocker_count || 0) === 1 ? "" : "s"} found.</p>
       </div>
       <span class="status-chip ${ready ? "ready" : "blocked"}">${ready ? "ready" : "blocked"}</span>
     </div>
+    ${workspaceNote}
     ${gitBlockers.map((item) => `<div class="data-item"><strong>Git</strong><span>${escapeHtml(item)}</span></div>`).join("")}
     ${blockedPaths.map((item) => `<div class="data-item"><strong>Private path</strong><code>${escapeHtml(item)}</code></div>`).join("")}
     ${metadataBlockers.map((item) => `<div class="data-item"><strong>Missing metadata</strong><code>${escapeHtml(item)}</code></div>`).join("")}
