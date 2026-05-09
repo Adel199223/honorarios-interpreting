@@ -3,12 +3,25 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.build_public_candidate import build_public_candidate
 from scripts.create_intake import load_profiles
 from scripts.generate_pdf import load_json, resolve_json_path
+from scripts.public_release_gate import analyze_public_readiness
 from scripts.public_repo_gate import CandidateFile, analyze_candidates
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class PublicRepoGateTests(unittest.TestCase):
+    def write_public_metadata(self, root: Path) -> None:
+        (root / ".github" / "workflows").mkdir(parents=True)
+        (root / "README.md").write_text("Synthetic public candidate.", encoding="utf-8")
+        (root / "LICENSE").write_text("MIT License\n", encoding="utf-8")
+        (root / "SECURITY.md").write_text("Report security issues privately.", encoding="utf-8")
+        (root / "CONTRIBUTING.md").write_text("Use synthetic fixtures only.", encoding="utf-8")
+        (root / ".github" / "workflows" / "python-package.yml").write_text("name: test\n", encoding="utf-8")
+
     def test_blocks_local_runtime_paths(self):
         report = analyze_candidates([
             CandidateFile("config/gmail.local.json", b"{}"),
@@ -42,6 +55,46 @@ class PublicRepoGateTests(unittest.TestCase):
         self.assertEqual(report["status"], "ready")
         self.assertFalse(report["path_blockers"])
         self.assertFalse(report["content_findings"])
+
+    def test_public_release_gate_blocks_real_reference_overlay_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_public_metadata(root)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            for relative in [
+                "data/court-emails.json",
+                "data/known-destinations.json",
+                "data/service-profiles.json",
+            ]:
+                (root / relative).write_text("{}", encoding="utf-8")
+
+            report = analyze_public_readiness(root, require_git=False)
+
+        self.assertFalse(report["public_ready"])
+        for relative in [
+            "data/court-emails.json",
+            "data/known-destinations.json",
+            "data/service-profiles.json",
+        ]:
+            with self.subTest(relative=relative):
+                self.assertIn(relative, report["blocked_paths"])
+
+    def test_public_candidate_writes_reference_examples_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "candidate"
+
+            result = build_public_candidate(ROOT, target)
+
+            self.assertTrue(result["gate"]["public_ready"], result["gate"])
+            for name in [
+                "court-emails",
+                "known-destinations",
+                "service-profiles",
+            ]:
+                with self.subTest(name=name):
+                    self.assertTrue((target / "data" / f"{name}.example.json").exists())
+                    self.assertFalse((target / "data" / f"{name}.json").exists())
 
     def test_default_json_reads_fall_back_to_example_fixtures(self):
         with tempfile.TemporaryDirectory() as tmp:
