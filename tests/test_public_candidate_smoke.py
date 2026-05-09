@@ -398,6 +398,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         packet_block = smoke_js.split("if (args.preparePacket)", 1)[1].split("if (args.recordHelper)", 1)[0]
         record_helper_block = smoke_js.split("if (args.recordHelper)", 1)[1].split("if (args.supportingAttachmentStale)", 1)[0]
         flow_packet_block = flow_py.split("def _prepare_packet()", 1)[1].split("if prepare_packet:", 1)[0]
+        flow_record_helper_block = flow_py.split("if record_helper:", 1)[1].split("if manual_handoff_stale:", 1)[0]
 
         preflight_index = packet_block.index('click(tab, "#preflight-batch-intakes"')
         close_index = packet_block.index("closeReviewDrawerIfOpen()")
@@ -420,6 +421,15 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn('click(tab, "#record-parsed-prepared-draft"', record_helper_block)
         self.assertNotIn('click(tab, "#record-draft"', record_helper_block)
         self.assertNotIn('click(tab, "#create-gmail-api-draft"', record_helper_block)
+        self.assertIn('driver.expect_button_disabled("#record-parsed-prepared-draft")', flow_record_helper_block)
+        self.assertIn('"Review the PDF preview and exact Gmail args before local recording."', flow_record_helper_block)
+        self.assertIn('_expect_record_value("#record_payload", ".draft.json")', flow_record_helper_block)
+        self.assertIn('driver.check("#gmail_handoff_reviewed")', flow_record_helper_block)
+        self.assertIn('driver.expect_button_enabled("#record-parsed-prepared-draft")', flow_record_helper_block)
+        self.assertIn('driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed")', flow_record_helper_block)
+        self.assertNotIn('driver.click("#record-parsed-prepared-draft")', flow_record_helper_block)
+        self.assertNotIn('driver.click("#record-draft")', flow_record_helper_block)
+        self.assertNotIn('driver.click("#create-gmail-api-draft")', flow_record_helper_block)
 
     def test_browser_js_routes_one_click_recording_through_strict_prepared_endpoint(self):
         root = Path(__file__).resolve().parents[1]
