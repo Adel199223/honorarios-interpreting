@@ -591,6 +591,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             'driver.check("#gmail_handoff_reviewed")',
             'driver.expect_button_enabled("#record-parsed-prepared-draft")',
             'driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "intake form changed")',
+            "record_helper_should_mutate_prepared_state = not (manual_handoff_stale or supporting_attachment_stale)",
+            "browser_supporting_attachment_stale",
+            'driver.set_input_file("#supporting-attachment-file", supporting_upload_path)',
+            'driver.expect_button_disabled("#copy-manual-handoff-prompt")',
+            'driver.expect_selector_value_equals("#record_payload", "")',
+            'driver.expect_selector_attribute_contains("#prepare-results", "data-stale-reason", "supporting attachments changed")',
         ]:
             with self.subTest(browser_flow=text):
                 self.assertIn(text, flow_py)

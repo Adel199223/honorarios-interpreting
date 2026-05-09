@@ -792,6 +792,7 @@ export async function runBrowserIabSmoke(options = {}) {
       checks.push(check("browser_record_helper", false, "Record-helper smoke requires a prepared replacement or packet payload."));
       return finish();
     }
+    const recordHelperShouldMutatePreparedState = !args.manualHandoffStale && !args.supportingAttachmentStale;
     if (!(await runStep(checks, "browser_record_helper", "Browser/IAB parsed Gmail IDs and autofilled the local record form without recording a draft.", async () => {
       const fakeResponse = '{"id":"draft-smoke","message":{"id":"message-smoke","threadId":"thread-smoke"}}';
       await fill(tab, "#gmail-response-raw", fakeResponse, args.timeoutMs);
@@ -806,8 +807,10 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectButtonDisabled(tab, "#record-parsed-prepared-draft", args.timeoutMs);
       await setChecked(tab, "#gmail_handoff_reviewed", true, args.timeoutMs);
       await expectButtonEnabled(tab, "#record-parsed-prepared-draft", args.timeoutMs);
-      await fill(tab, "#source_text", `Stale state marker ${Date.now()}`, args.timeoutMs);
-      await expectAttributeContains(tab, "#prepare-results", "data-stale-reason", "intake form changed", args.timeoutMs);
+      if (recordHelperShouldMutatePreparedState) {
+        await fill(tab, "#source_text", `Stale state marker ${Date.now()}`, args.timeoutMs);
+        await expectAttributeContains(tab, "#prepare-results", "data-stale-reason", "intake form changed", args.timeoutMs);
+      }
     }))) {
       return finish();
     }
