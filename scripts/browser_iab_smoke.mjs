@@ -806,21 +806,27 @@ export async function runBrowserIabSmoke(options = {}) {
       return finish();
     }
 
-    if (!(await runStep(checks, "browser_local_diagnostics", "Browser/IAB refreshed Local Diagnostics and copied an isolated smoke command without running it.", async () => {
+    if (!(await runStep(checks, "browser_local_diagnostics", "Browser/IAB refreshed Local Diagnostics and copied isolated smoke commands without running them.", async () => {
       await expectBodyText(tab, "Local Diagnostics", args.timeoutMs);
       await uniqueLocator(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-isolated-source-upload-smoke-command", "data-copy-diagnostic-command", "isolated_source_upload_smoke", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-isolated-adapter-contract-smoke-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-isolated-adapter-contract-smoke-command", "data-copy-diagnostic-command", "isolated_adapter_contract_smoke", args.timeoutMs);
       await click(tab, "#refresh-diagnostics", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--source-upload-checks", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "LegalPDF adapter contract smoke", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "--adapter-contract-checks", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "The browser does not run shell commands or contact Gmail.", args.timeoutMs);
       const forbiddenSendActions = forbiddenSendActionTerms();
       await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
       await click(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
       const clipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --source-upload-checks --json", args.timeoutMs);
+      await click(tab, "#copy-isolated-adapter-contract-smoke-command", args.timeoutMs);
+      const adapterClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --adapter-contract-checks --json", args.timeoutMs);
       for (const forbidden of forbiddenSendActions) {
-        if (clipboardText.includes(forbidden)) {
+        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden)) {
           throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
         }
       }
