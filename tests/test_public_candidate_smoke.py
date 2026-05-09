@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from honorarios_app.web import create_app
-from scripts.local_app_smoke import run_smoke
+from scripts.local_app_smoke import _adapter_questions_are_numbered, run_smoke
 from scripts.public_repo_gate import analyze_tracked
 
 
@@ -719,6 +719,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
     def test_local_app_smoke_runner_adapter_contract_sequence_is_injectable(self):
         client = self.make_client()
         seen_posts = []
+        seen_uploads = []
 
         def fetch_text(url):
             path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
@@ -734,6 +735,26 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             seen_posts.append(url)
             if url.endswith("/api/review"):
                 intake = payload["intake"]
+                self.assertEqual(intake["source_filename"], "synthetic-notification.pdf")
+                self.assertNotIn("closing_date", intake)
+                return {
+                    "status": "needs_info",
+                    "intake": intake,
+                    "effective_intake": intake,
+                    "questions": [{
+                        "number": 1,
+                        "field": "closing_date",
+                        "question": "What date should appear in the closing line of the request?",
+                        "answer_hint": "Use YYYY-MM-DD.",
+                    }],
+                    "question_text": "1. What date should appear in the closing line?",
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/review/apply-answers"):
+                intake = dict(payload["intake"])
+                self.assertEqual(intake["source_filename"], "synthetic-notification.pdf")
+                self.assertIn("1. 2026-05-04", payload["answers"])
+                intake["closing_date"] = "2026-05-04"
                 return {
                     "status": "ready",
                     "intake": intake,
@@ -744,6 +765,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 }
             if url.endswith("/api/prepare/preflight"):
                 self.assertTrue(payload["packet_mode"])
+                self.assertEqual(payload["intakes"][0]["closing_date"], "2026-05-04")
                 return {
                     "status": "ready",
                     "artifact_effect": "none",
@@ -758,6 +780,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             if url.endswith("/api/prepare"):
                 self.assertTrue(payload["packet_mode"])
                 self.assertEqual(payload["preflight_review"]["preflight_review_token"], "preflight-token")
+                self.assertEqual(payload["intakes"][0]["closing_date"], "2026-05-04")
                 return {
                     "status": "prepared",
                     "packet_mode": True,
@@ -807,21 +830,85 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 }
             raise AssertionError(url)
 
+        def post_multipart(url, fields, filename, content, content_type):
+            seen_uploads.append((url, dict(fields), filename, content_type, len(content)))
+            self.assertTrue(url.endswith("/api/sources/upload"))
+            self.assertEqual(fields["source_kind"], "notification_pdf")
+            self.assertEqual(fields["profile"], "example_interpreting")
+            self.assertEqual(filename, "synthetic-notification.pdf")
+            self.assertEqual(content_type, "application/pdf")
+            return {
+                "status": "uploaded",
+                "send_allowed": False,
+                "candidate_intake": {
+                    "profile": "example_interpreting",
+                    "case_number": "999/26.0SMOKE",
+                    "service_date": "2026-05-04",
+                    "service_date_source": "user_confirmed",
+                    "addressee": "Exmo. Senhor Procurador da República\nExample Court",
+                    "payment_entity": "Example Court",
+                    "service_entity": "Example Police / Example Police Station",
+                    "service_entity_type": "police",
+                    "entities_differ": True,
+                    "service_place": "Example Police Station",
+                    "service_place_phrase": "em diligência realizada no Example Police Station",
+                    "claim_transport": True,
+                    "transport": {
+                        "origin": "Example City",
+                        "destination": "Example City",
+                        "km_one_way": 12,
+                        "round_trip_phrase": "ida_volta",
+                    },
+                    "closing_city": "Example City",
+                    "recipient_email": "court@example.test",
+                    "source_filename": "synthetic-notification.pdf",
+                },
+                "source_evidence": {
+                    "filename": "synthetic-notification.pdf",
+                    "question_count": 1,
+                    "attention": {
+                        "status": "blocked",
+                        "flag_count": 1,
+                        "flags": [{"code": "missing_required_info", "severity": "blocked"}],
+                    },
+                },
+            }
+
         report = run_smoke(
             "http://public-candidate.test/",
             fetch_text=fetch_text,
             fetch_json=fetch_json,
             post_json=post_json,
+            post_multipart=post_multipart,
             adapter_contract_checks=True,
         )
 
         self.assertEqual(report["status"], "ready", report)
         names = {check["name"] for check in report["checks"]}
         self.assertIn("adapter_contract_sequence", names)
+        self.assertIn("adapter_source_upload_evidence", names)
+        self.assertIn("adapter_review_missing_questions", names)
+        self.assertIn("adapter_apply_answers_ready", names)
         self.assertIn("adapter_manual_handoff_packet", names)
         self.assertIn("adapter_record_draft", names)
+        self.assertIn("http://public-candidate.test/api/sources/upload", [item[0] for item in seen_uploads])
+        self.assertIn("http://public-candidate.test/api/review/apply-answers", seen_posts)
         self.assertIn("http://public-candidate.test/api/gmail/manual-handoff", seen_posts)
         self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
+
+    def test_adapter_contract_smoke_requires_numbered_review_questions(self):
+        self.assertTrue(_adapter_questions_are_numbered(
+            [{"number": 1, "field": "closing_date"}],
+            "Please answer by number:\n1. Closing date?",
+        ))
+        self.assertFalse(_adapter_questions_are_numbered(
+            [{"field": "closing_date"}],
+            "Please answer by number:\n1. Closing date?",
+        ))
+        self.assertFalse(_adapter_questions_are_numbered(
+            [{"number": 1, "field": "closing_date"}],
+            "Closing date?",
+        ))
 
     def test_local_app_smoke_runner_source_upload_contract_is_injectable(self):
         client = self.make_client()
