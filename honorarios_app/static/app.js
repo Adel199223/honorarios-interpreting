@@ -3812,6 +3812,27 @@ async function prepareIntake(options = {}) {
       throw new Error("Correction mode requires a reason before preparing a replacement draft.");
     }
   }
+  const preflightPayload = {
+    intakes: [cloneIntake(state.currentIntake)],
+    packet_mode: false,
+  };
+  if (requestPayload.correction_mode) {
+    preflightPayload.correction_mode = true;
+    preflightPayload.correction_reason = requestPayload.correction_reason;
+  }
+  const preflight = await requestJson("/api/prepare/preflight", {
+    method: "POST",
+    body: JSON.stringify(preflightPayload),
+  });
+  renderNextSafeAction(preflight.next_safe_action || null);
+  if (preflight.status !== "ready" || !preflight.preflight_review) {
+    const message = preflight.message || "Run a current ready preflight before preparing artifacts.";
+    setStatus(preflight.status || "blocked", message);
+    showAlert(message, "blocked");
+    openReviewDrawer();
+    throw new Error(message);
+  }
+  requestPayload.preflight_review = preflight.preflight_review;
   const data = await requestJson("/api/prepare", {
     method: "POST",
     body: JSON.stringify(requestPayload),

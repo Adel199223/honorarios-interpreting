@@ -629,14 +629,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
             })
         try:
             packet_mode = bool(payload.get("packet_mode", False))
-            if packet_mode or len(intakes) > 1:
-                require_current_preflight_review(
-                    payload,
-                    intakes,
-                    paths,
-                    packet_mode=packet_mode,
-                    correction_reason=correction_reason if correction_mode else "",
-                )
+            require_current_preflight_review(
+                payload,
+                intakes,
+                paths,
+                packet_mode=packet_mode,
+                correction_reason=correction_reason if correction_mode else "",
+            )
             return prepare_intakes(
                 intakes,
                 paths,

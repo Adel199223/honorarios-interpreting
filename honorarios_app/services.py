@@ -4404,7 +4404,7 @@ def require_current_preflight_review(
 ) -> dict[str, Any]:
     requested = _extract_preflight_review_request(request_payload)
     if not requested["review_fingerprint"] or not requested["preflight_review_token"]:
-        raise IntakeError("Run a current ready batch preflight before preparing artifacts.")
+        raise IntakeError("Run a current ready preflight before preparing artifacts.")
 
     effective_records = [effective_intake_for_profile(intake, paths) for intake in intakes]
     effective_intakes = [record[0] for record in effective_records]
@@ -4422,9 +4422,9 @@ def require_current_preflight_review(
         correction_reason=correction_reason,
     )
     if not hmac.compare_digest(requested["review_fingerprint"], current["review_fingerprint"]):
-        raise IntakeError("Batch preflight is stale for the current queue snapshot. Run preflight again before preparing artifacts.")
+        raise IntakeError("Preflight is stale for the current request snapshot. Run preflight again before preparing artifacts.")
     if not hmac.compare_digest(requested["preflight_review_token"], current["preflight_review_token"]):
-        raise IntakeError("Batch preflight token is stale. Run preflight again before preparing artifacts.")
+        raise IntakeError("Preflight token is stale. Run preflight again before preparing artifacts.")
     return current
 
 

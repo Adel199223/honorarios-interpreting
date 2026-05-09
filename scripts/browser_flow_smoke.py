@@ -320,6 +320,8 @@ def run_browser_flow_smoke(
                 driver.expect_text("Answer the numbered questions")
                 driver.expect_selector_visible("#numbered-answers")
                 driver.expect_text("Apply numbered answers")
+            elif correction_mode:
+                driver.expect_text("Correction mode")
             else:
                 driver.expect_selector_text("#draft-text", "Número de processo")
                 driver.expect_selector_text("#recipient-summary", "To:")
@@ -394,15 +396,16 @@ def run_browser_flow_smoke(
             driver.expect_text("Packet item inspector")
             review_drawer_open = True
 
-        if not _safe_step(checks, "browser_batch_queue", "Browser added the reviewed request to the batch queue without preparing artifacts.", _batch_queue):
-            return _report(base, checks)
+        if not prepare_replacement or prepare_packet:
+            if not _safe_step(checks, "browser_batch_queue", "Browser added the reviewed request to the batch queue without preparing artifacts.", _batch_queue):
+                return _report(base, checks)
 
-        if not _safe_step(checks, "browser_batch_preflight", "Browser ran non-writing batch preflight before artifact preparation.", lambda: (
-            driver.expect_selector_visible("#batch-preflight-result"),
-            driver.expect_text("Batch preflight"),
-            driver.expect_text("no PDFs or draft payloads were created"),
-        )):
-            return _report(base, checks)
+            if not _safe_step(checks, "browser_batch_preflight", "Browser ran non-writing batch preflight before artifact preparation.", lambda: (
+                driver.expect_selector_visible("#batch-preflight-result"),
+                driver.expect_text("Batch preflight"),
+                driver.expect_text("no PDFs or draft payloads were created"),
+            )):
+                return _report(base, checks)
 
         if correction_mode:
             if not _safe_step(checks, "browser_correction_mode", "Browser checked draft lifecycle and filled a correction reason without preparing a replacement.", lambda: (
