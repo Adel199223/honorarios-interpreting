@@ -127,7 +127,7 @@ python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recen
 
 That check seeds a disposable active draft, opens Recent Work, verifies the status filters, sent-date field, `Verify draft exists`, and `Mark manually sent` controls, and does not click Gmail verification or local status-write actions.
 
-When a prepared payload already exists in the smoke flow, add `--browser-record-helper` to verify the safe post-Gmail handoff: the browser parses fake `_create_draft` IDs and autofills the local record form, but it does not click `Record parsed response + prepared payload`, `Record draft`, or any Gmail action.
+When a prepared payload already exists in the smoke flow, add `--browser-record-helper` to verify the safe post-Gmail handoff: the browser parses fake `_create_draft` IDs, confirms the one-click local recorder stays disabled until the Gmail handoff checklist is ticked, and autofills the local record form, but it does not click `Record parsed response + prepared payload`, `Record draft`, or any Gmail action.
 
 To verify the Manual Draft Handoff stale-state guard after a prepared replacement payload, use the isolated Browser/IAB handoff smoke:
 

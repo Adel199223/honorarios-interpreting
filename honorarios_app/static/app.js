@@ -920,7 +920,7 @@ async function recordFromParsedResponseAndPreparedPayload() {
   if (!ids.draft_id || !ids.message_id) {
     throw new Error("Parsed Gmail response must include draft_id and message_id before recording locally.");
   }
-  const data = await recordDraft();
+  const data = await recordPreparedDraftFromForm();
   return { ids, target, record: data };
 }
 
@@ -3941,13 +3941,13 @@ function renderPreparedPacketContents(items) {
   }).join("");
 }
 
-async function recordDraft() {
+function draftRecordPayloadFromForm() {
   const supersedes = $("#record_supersedes").value
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
   const payloadPath = $("#record_payload").value.trim();
-  const payload = {
+  return {
     payload: payloadPath,
     draft_id: $("#record_draft_id").value.trim(),
     message_id: $("#record_message_id").value.trim(),
@@ -3958,10 +3958,9 @@ async function recordDraft() {
     supersedes,
     ...currentPreparedReviewFields(payloadPath),
   };
-  const data = await requestJson("/api/drafts/status", {
-    method: "POST",
-    body: JSON.stringify(removeEmpty(payload)),
-  });
+}
+
+async function finishDraftRecord(data) {
   setStatus(data.status, `Recorded Gmail draft ${data.draft_id}.`);
   const superseded = data.superseded_drafts?.length ? ` Superseded: ${data.superseded_drafts.join(", ")}.` : "";
   const blockerCount = Number(data.recorded_duplicate_count || 0);
@@ -3974,6 +3973,29 @@ async function recordDraft() {
   showAlert(`Draft recorded locally.${blockerText}${superseded}`, "recorded");
   await loadReference();
   return data;
+}
+
+async function recordPreparedDraftFromForm() {
+  const payloadPath = $("#record_payload").value.trim();
+  const payload = {
+    ...draftRecordPayloadFromForm(),
+    gmail_handoff_reviewed: true,
+    ...currentPreparedReviewFields(payloadPath),
+  };
+  const data = await requestJson("/api/drafts/record", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(payload)),
+  });
+  return finishDraftRecord(data);
+}
+
+async function recordDraft() {
+  const payload = draftRecordPayloadFromForm();
+  const data = await requestJson("/api/drafts/status", {
+    method: "POST",
+    body: JSON.stringify(removeEmpty(payload)),
+  });
+  return finishDraftRecord(data);
 }
 
 function resetReview({ closeDrawer = true } = {}) {
