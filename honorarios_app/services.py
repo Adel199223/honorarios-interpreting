@@ -2341,7 +2341,7 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "description": "Uses the Codex in-app Browser runner to try disposable local photo/PDF upload evidence; reports a clean tooling blocker when safe file-input support is unavailable.",
             "command_template": "python scripts/local_app_smoke.py --base-url {base_url} --browser-click-through --browser-iab-click-through --browser-upload-photo --browser-upload-pdf --json",
             "effect": "browser_ui_only",
-            "writes": "none",
+            "writes": "synthetic source-preview artifacts only",
         },
         {
             "key": "browser_iab_supporting_attachment_smoke",
