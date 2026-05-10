@@ -90,6 +90,26 @@ function normalizeBaseUrl(baseUrl) {
   return withScheme.replace(/\/+$/, "");
 }
 
+async function fetchJson(baseUrl, path, timeoutMs) {
+  if (typeof fetch !== "function") {
+    throw new Error("Fetch API is unavailable; cannot confirm Browser/IAB safety status.");
+  }
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      headers: { Accept: "application/json" },
+      signal: controller?.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function check(name, passed, message, details = {}) {
   return {
     name,
@@ -686,6 +706,17 @@ export async function runBrowserIabSmoke(options = {}) {
   }
 
   if (args.gmailApiCreate) {
+    if (!(await runStep(checks, "browser_gmail_api_fake_mode_required", "Browser/IAB confirmed fake Gmail mode before clicking Gmail draft creation.", async () => {
+      const gmailStatus = await fetchJson(baseUrl, "/api/gmail/status", args.timeoutMs);
+      if (gmailStatus.fake_mode !== true) {
+        throw new Error("Browser/IAB Gmail draft-create smoke requires fake Gmail mode before clicking Create Gmail Draft.");
+      }
+      if (gmailStatus.gmail_api_action !== "users.drafts.create" || gmailStatus.send_allowed !== false) {
+        throw new Error("Browser/IAB Gmail draft-create smoke requires draft-only users.drafts.create status.");
+      }
+    }))) {
+      return finish();
+    }
     if (!(await runStep(checks, "browser_gmail_api_create", "Browser/IAB created and verified a synthetic Gmail draft through the fake Gmail API path.", async () => {
       await click(tab, "#drawer-prepare-intake", args.timeoutMs);
       await expectBodyText(tab, "PDF and Gmail draft payload prepared", args.timeoutMs);
@@ -901,6 +932,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectAttributeContains(tab, "#copy-browser-iab-supporting-attachment-stale-smoke-command", "data-copy-diagnostic-command", "browser_iab_supporting_attachment_stale_smoke", args.timeoutMs);
       await uniqueLocator(tab, "#copy-browser-iab-record-helper-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-browser-iab-record-helper-smoke-command", "data-copy-diagnostic-command", "browser_iab_record_helper_smoke", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-python-browser-record-helper-smoke-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-python-browser-record-helper-smoke-command", "data-copy-diagnostic-command", "python_browser_record_helper_smoke", args.timeoutMs);
       await click(tab, "#refresh-diagnostics", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
@@ -916,6 +949,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#diagnostics-result", "--browser-supporting-attachment-stale", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "record helper smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--browser-record-helper", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "Python browser record helper smoke", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "--browser-click-through", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "The browser does not run shell commands or contact Gmail.", args.timeoutMs);
       const forbiddenSendActions = forbiddenSendActionTerms();
       await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
@@ -931,8 +966,10 @@ export async function runBrowserIabSmoke(options = {}) {
       const supportingStaleClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-supporting-attachment-stale --json", args.timeoutMs);
       await click(tab, "#copy-browser-iab-record-helper-smoke-command", args.timeoutMs);
       const recordHelperClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json", args.timeoutMs);
+      await click(tab, "#copy-python-browser-record-helper-smoke-command", args.timeoutMs);
+      const pythonRecordHelperClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json", args.timeoutMs);
       for (const forbidden of forbiddenSendActions) {
-        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden)) {
+        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden) || pythonRecordHelperClipboardText.includes(forbidden)) {
           throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
         }
       }

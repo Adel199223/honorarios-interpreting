@@ -2376,6 +2376,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "temporary synthetic runtime only",
         },
         {
+            "key": "python_browser_record_helper_smoke",
+            "label": "Python browser record helper smoke",
+            "description": "Runs the optional Python Playwright browser runner against an isolated runtime, prepares a synthetic replacement, parses fake Gmail _create_draft IDs, proves the handoff checklist gates one-click recording, and autofills local record fields without recording or calling Gmail.",
+            "command_template": "python scripts/isolated_app_smoke.py --browser-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json",
+            "effect": "temporary_isolated_runtime_python_browser_artifacts",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
             "key": "browser_iab_profile_proposal_smoke",
             "label": "Browser/IAB profile proposal smoke",
             "description": "Uses the Codex in-app Browser runner to recover an unknown recurring pattern, preview the proposed Service profile in the guarded editor, and verify LegalPDF import gates without saving.",
