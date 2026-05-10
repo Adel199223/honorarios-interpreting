@@ -933,6 +933,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(contract.json()["legalpdf_write_allowed"])
         self.assertFalse(contract.json()["managed_data_changed"])
         contract_data = contract.json()
+        self.assertEqual(contract_data["contract_version"], "2026-05-10.gmail-boundary.v3")
+        self.assertEqual(contract_data["gmail_boundary"]["required_tool"], "_create_draft")
+        self.assertTrue(contract_data["gmail_boundary"]["draft_only"])
+        self.assertFalse(contract_data["gmail_boundary"]["send_allowed"])
         binding = contract_data["prepared_review_binding"]
         self.assertEqual(binding["preflight_response_field"], "preflight_review")
         self.assertEqual(binding["prepare_request_field"], "preflight_review")
@@ -1589,7 +1593,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "write_allowed": False,
             "legalpdf_write_allowed": False,
             "managed_data_changed": False,
-            "gmail_boundary": {"required_tool": "_create_draft"},
+            "gmail_boundary": {"required_tool": "_create_draft", "draft_only": True, "send_allowed": False},
             "prepared_review_binding": {
                 "preflight_response_field": "preflight_review",
                 "prepare_request_field": "preflight_review",
@@ -1616,6 +1620,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(validation.write_allowed)
         self.assertFalse(validation.legalpdf_write_allowed)
         self.assertEqual(validation.missing_endpoints, [])
+        self.assertTrue(validation.details["gmail_boundary_ready"])
+        self.assertFalse(validation.details["gmail_boundary_send_allowed"])
+        self.assertTrue(validation.details["gmail_boundary_draft_only"])
         self.assertTrue(adapter_questions_are_numbered(
             [{"number": 1, "field": "closing_date"}],
             "Please answer by number:\n1. Closing date?",
@@ -1648,7 +1655,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "write_allowed": False,
             "legalpdf_write_allowed": False,
             "managed_data_changed": False,
-            "gmail_boundary": {"required_tool": "_create_draft"},
+            "gmail_boundary": {"required_tool": "_create_draft", "draft_only": True, "send_allowed": False},
             "prepared_review_binding": {
                 "preflight_response_field": "preflight_review",
                 "prepare_request_field": "preflight_review",
@@ -1676,6 +1683,49 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("review_fingerprint", validation.details["missing_prepared_review_fields"]["handoff_required_fields"])
         self.assertIn("review_fingerprint", validation.details["missing_prepared_review_fields"]["record_required_fields"])
         self.assertIn("review_fingerprint", validation.details["missing_prepared_review_fields"]["gmail_api_create_required_fields"])
+
+    def test_legalpdf_adapter_caller_rejects_send_capable_gmail_boundary(self):
+        from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS, LegalPdfAdapterCaller
+
+        base_contract = {
+            "status": "ready",
+            "recommended_gmail_mode": "manual_handoff",
+            "draft_only": True,
+            "send_allowed": False,
+            "write_allowed": False,
+            "legalpdf_write_allowed": False,
+            "managed_data_changed": False,
+            "prepared_review_binding": {
+                "preflight_response_field": "preflight_review",
+                "prepare_request_field": "preflight_review",
+                "prepare_response_field": "prepared_review",
+                "handoff_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint"],
+                "record_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed", "draft_id", "message_id", "thread_id"],
+                "gmail_api_create_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed"],
+                "stale_after_payload_or_manifest_change": True,
+                "local_workflow_guard_only": True,
+                "send_allowed": False,
+            },
+            "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
+        }
+
+        for gmail_boundary in [
+            {"required_tool": "_create_draft", "send_allowed": True, "draft_only": True},
+            {"required_tool": "_create_draft", "send_allowed": False},
+            {"required_tool": "_create_draft", "send_allowed": False, "draft_only": False},
+        ]:
+            contract = {**base_contract, "gmail_boundary": gmail_boundary}
+            caller = LegalPdfAdapterCaller(
+                "http://public-candidate.test/",
+                fetch_json=lambda _url, contract=contract: contract,
+                post_json=lambda _url, _payload: {},
+                post_multipart=lambda _url, _fields, _filename, _content, _content_type: {},
+            )
+
+            validation = caller.validate_contract(caller.fetch_contract())
+
+            self.assertFalse(validation.ready, gmail_boundary)
+            self.assertFalse(validation.details.get("gmail_boundary_ready", True), validation.details)
 
     def test_legalpdf_adapter_caller_builds_reusable_http_transport(self):
         from scripts.legalpdf_adapter_caller import build_http_adapter_caller
@@ -1743,7 +1793,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                     "write_allowed": False,
                     "legalpdf_write_allowed": False,
                     "managed_data_changed": False,
-                    "gmail_boundary": {"required_tool": "_create_draft", "send_allowed": False},
+                    "gmail_boundary": {"required_tool": "_create_draft", "draft_only": True, "send_allowed": False},
                     "prepared_review_binding": {
                         "preflight_response_field": "preflight_review",
                         "prepare_request_field": "preflight_review",

@@ -137,7 +137,7 @@ EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
 LEGALPDF_APPLY_REPORT_ID_RE = re.compile(r"^legalpdf-import-apply-[A-Za-z0-9_.-]+$")
 AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
-LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-09.prepared-review.v2"
+LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-10.gmail-boundary.v3"
 _GMAIL_CREATE_LOCKS_GUARD = threading.Lock()
 _GMAIL_CREATE_LOCKS: dict[str, Any] = {}
 
@@ -2705,6 +2705,7 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
             "required_tool": "_create_draft",
             "attachment_files_shape": "array_of_absolute_existing_paths",
             "local_recording_requires_reviewed_handoff": True,
+            "draft_only": True,
             "send_allowed": False,
         },
         "prepared_review_binding": {

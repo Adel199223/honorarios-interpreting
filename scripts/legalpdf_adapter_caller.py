@@ -321,6 +321,12 @@ class LegalPdfAdapterCaller:
             and not missing_prepared_fields
             and not mismatched_prepared_values
         )
+        gmail_boundary_ready = (
+            isinstance(gmail_boundary, dict)
+            and gmail_boundary.get("required_tool") == "_create_draft"
+            and gmail_boundary.get("send_allowed") is False
+            and gmail_boundary.get("draft_only") is True
+        )
         send_allowed = bool(contract.get("send_allowed")) if isinstance(contract, dict) else False
         write_allowed = bool(contract.get("write_allowed")) if isinstance(contract, dict) else False
         legalpdf_write_allowed = bool(contract.get("legalpdf_write_allowed")) if isinstance(contract, dict) else False
@@ -333,7 +339,7 @@ class LegalPdfAdapterCaller:
             and contract.get("write_allowed") is False
             and contract.get("legalpdf_write_allowed") is False
             and contract.get("managed_data_changed") is False
-            and gmail_boundary.get("required_tool") == "_create_draft"
+            and gmail_boundary_ready
             and prepared_binding_ready
         )
         return AdapterContractValidation(
@@ -348,6 +354,9 @@ class LegalPdfAdapterCaller:
                 "draft_only": contract.get("draft_only") if isinstance(contract, dict) else None,
                 "managed_data_changed": contract.get("managed_data_changed") if isinstance(contract, dict) else None,
                 "required_tool": gmail_boundary.get("required_tool"),
+                "gmail_boundary_ready": gmail_boundary_ready,
+                "gmail_boundary_send_allowed": gmail_boundary.get("send_allowed"),
+                "gmail_boundary_draft_only": gmail_boundary.get("draft_only"),
                 "prepared_review_binding_ready": prepared_binding_ready,
                 "missing_prepared_review_fields": missing_prepared_fields,
                 "mismatched_prepared_review_values": mismatched_prepared_values,
@@ -629,6 +638,9 @@ def run_synthetic_adapter_sequence(
             "legalpdf_write_allowed": validation.legalpdf_write_allowed,
             "managed_data_changed": validation.details.get("managed_data_changed"),
             "required_tool": validation.details.get("required_tool"),
+            "gmail_boundary_ready": validation.details.get("gmail_boundary_ready"),
+            "gmail_boundary_send_allowed": validation.details.get("gmail_boundary_send_allowed"),
+            "gmail_boundary_draft_only": validation.details.get("gmail_boundary_draft_only"),
         },
     ))
     checks.append(_check(
