@@ -137,7 +137,7 @@ EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
 LEGALPDF_APPLY_REPORT_ID_RE = re.compile(r"^legalpdf-import-apply-[A-Za-z0-9_.-]+$")
 AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
-LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-10.gmail-boundary.v3"
+LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-10.optional-gmail-boundary.v4"
 _GMAIL_CREATE_LOCKS_GUARD = threading.Lock()
 _GMAIL_CREATE_LOCKS: dict[str, Any] = {}
 
@@ -2707,6 +2707,31 @@ def legalpdf_adapter_contract(paths: AppPaths) -> dict[str, Any]:
             "local_recording_requires_reviewed_handoff": True,
             "draft_only": True,
             "send_allowed": False,
+        },
+        "optional_gmail_draft_api_boundary": {
+            "status": "optional",
+            "purpose": "Describe the in-app OAuth path for callers that intentionally choose this app's guarded Gmail Draft API helper instead of Manual Draft Handoff.",
+            "create_endpoint": "/api/gmail/drafts/create",
+            "verify_endpoint": "/api/gmail/drafts/verify",
+            "create_action": "users.drafts.create",
+            "verify_action": "users.drafts.get",
+            "required_fields_source": "prepared_review_binding.gmail_api_create_required_fields",
+            "requires_current_prepared_review": True,
+            "requires_gmail_handoff_reviewed": True,
+            "records_local_draft_after_create": True,
+            "blocks_duplicates_before_gmail_call": True,
+            "verify_read_only": True,
+            "verify_local_records_changed": False,
+            "draft_only": True,
+            "send_allowed": False,
+            "forbidden_actions": [
+                "users.messages.send",
+                "users.drafts.send",
+                "users.messages.trash",
+                "users.messages.delete",
+                "users.messages.list",
+                "users.drafts.delete",
+            ],
         },
         "prepared_review_binding": {
             "purpose": "Bind preflight, prepared artifacts, Manual Draft Handoff, Gmail Draft API creation, and fast local recording to the same reviewed payload/manifest fingerprint.",
