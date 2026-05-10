@@ -2297,6 +2297,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "synthetic supporting-attachment artifact only",
         },
         {
+            "key": "runtime_doctor",
+            "label": "Python runtime doctor",
+            "description": "Read-only dependencies check for the active Python runtime before running browser, adapter, or Gmail smoke commands.",
+            "command_template": "python scripts/runtime_doctor.py --json",
+            "effect": "read_only_runtime_dependencies",
+            "writes": "none",
+        },
+        {
             "key": "isolated_source_upload_smoke",
             "label": "Isolated source upload smoke",
             "description": "Runs the same upload evidence checks in a temporary synthetic runtime so private local data and output folders are untouched.",
