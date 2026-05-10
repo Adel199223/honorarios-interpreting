@@ -59,6 +59,7 @@ LANDMARKS = [
 ]
 FORBIDDEN_HOMEPAGE_COPY = ["_send_email", "_send_draft", "messages.send", "drafts.send", "Send email", "Send draft"]
 JSON_ENDPOINTS = [
+    "/api/health",
     "/api/reference",
     "/api/gmail/status",
     "/api/google-photos/status",

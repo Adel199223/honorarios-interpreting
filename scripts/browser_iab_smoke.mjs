@@ -539,6 +539,21 @@ export async function runBrowserIabSmoke(options = {}) {
     reviewDrawerOpen = false;
   };
 
+  if (!(await runStep(checks, "browser_health_check", "Browser/IAB confirmed the local app health endpoint before UI interaction.", async () => {
+    const health = await fetchJson(baseUrl, "/api/health", args.timeoutMs);
+    if (
+      health?.status !== "ready"
+      || health?.app !== "LegalPDF Honorários"
+      || health?.send_allowed !== false
+      || health?.write_allowed !== false
+      || health?.managed_data_changed !== false
+    ) {
+      throw new Error("Browser/IAB health check returned an unsafe or unexpected response.");
+    }
+  }))) {
+    return finish();
+  }
+
   if (!existsSync(args.browserClient)) {
     checks.push(check("browser_iab_runtime", false, `Browser client not found at ${args.browserClient}`));
     return finish();

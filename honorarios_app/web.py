@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,17 @@ def create_app(**path_overrides: Any) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(request, "index.html", {"asset_version": static_asset_version()})
+
+    @app.get("/api/health")
+    async def api_health() -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "app": "LegalPDF Honorários",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "send_allowed": False,
+            "write_allowed": False,
+            "managed_data_changed": False,
+        }
 
     @app.get("/api/reference")
     async def api_reference() -> dict[str, Any]:

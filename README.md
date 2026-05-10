@@ -89,7 +89,7 @@ To smoke-check the running local app without creating PDFs or Gmail drafts:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
-The smoke runner checks the LegalPDF-style workflow landmarks, the `Suggested Next Step` guidance surface, draft-only Gmail contract, Manual Draft Handoff status, Gmail Draft API status, Google Photos/AI status endpoints, local diagnostics status, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email`, `_send_draft`, `messages.send`, or `drafts.send` appears on the homepage.
+The smoke runner checks `/api/health` first, then the LegalPDF-style workflow landmarks, the `Suggested Next Step` guidance surface, draft-only Gmail contract, Manual Draft Handoff status, Gmail Draft API status, Google Photos/AI status endpoints, local diagnostics status, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email`, `_send_draft`, `messages.send`, or `drafts.send` appears on the homepage.
 
 For a real browser review-flow click-through, use the opt-in browser smoke:
 
@@ -99,7 +99,7 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-cli
 
 This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Suggested Next Step` safety card, adds it to the batch queue, and runs the non-writing `Check batch preflight` action. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
 
-Browser smoke checks now reset the workspace at the end of a successful run, so synthetic values such as `999/26.0SMOKE` and queued test requests do not linger in the open app tab. Python browser smoke clicks `Reset workspace`; the Browser/IAB smoke verifies that control and then reloads the local app as a safer adapter-compatible reset. You can also click `Reset workspace` yourself in the left sidebar when you want a clean New Job surface without changing any real duplicate records, draft logs, generated PDFs, or Gmail state.
+Browser smoke checks now reset the workspace at the end of a successful run, so synthetic values such as `999/26.0SMOKE` and queued test requests do not linger in the open app tab. Python browser smoke clicks `Reset workspace`; the Browser/IAB smoke verifies that control and then reloads the local app as a safer adapter-compatible reset. You can also click `Reset workspace` yourself in the left sidebar when you want a clean New Job surface without changing any real duplicate records, draft logs, generated PDFs, or Gmail state. If a stale tab remains after the local server stops, the app shows a disconnected-server banner and blocks server-writing actions until you restart the app and reload; `Reset workspace` stays available because it only clears client-side state.
 
 Inside Codex, prefer the Browser/IAB path for the live LegalPDF-style UI. It can also verify disposable local photo/PDF upload evidence and supporting proof/declaration upload evidence when the Browser runtime exposes safe file-input support, the numbered missing-info answer loop, and the References -> LegalPDF Apply History, redacted Details, read-only Restore Plan surface, and guarded restore confirmation controls without preparing PDFs, writing reference files, recording drafts, or calling Gmail:
 

@@ -130,6 +130,32 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("messages.send", page)
         self.assertNotIn("drafts.send", page)
 
+    def test_health_endpoint_is_read_only_and_secret_free(self):
+        client = self.make_client()
+        project_root = Path(__file__).resolve().parents[1]
+
+        response = client.get("/api/health")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        dumped = json.dumps(data, sort_keys=True)
+        self.assertEqual(data["status"], "ready")
+        self.assertEqual(data["app"], "LegalPDF Honorários")
+        self.assertFalse(data["send_allowed"])
+        self.assertFalse(data["write_allowed"])
+        self.assertFalse(data["managed_data_changed"])
+        self.assertIn("timestamp", data)
+        for forbidden in [
+            "client_secret",
+            "access_token",
+            "refresh_token",
+            "draft-",
+            "C:\\",
+            str(project_root),
+        ]:
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, dumped)
+
     def test_public_docs_list_browser_iab_answers_apply_diagnostics(self):
         root = Path(__file__).resolve().parents[1]
         docs = {
@@ -553,6 +579,15 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
         smoke_js = (root / "scripts" / "browser_iab_smoke.mjs").read_text(encoding="utf-8")
         for text in [
+            "/api/health",
+            "serverConnection",
+            "renderServerConnectionStatus",
+            "setServerDisconnected",
+            "syncServerConnectionGates",
+        ]:
+            with self.subTest(stale_guard=text):
+                self.assertIn(text, app_js)
+        for text in [
             "Apply this restore locally",
             "Restore local references from backup",
             "RESTORE LEGALPDF APPLY BACKUP",
@@ -581,6 +616,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         smoke_js = (root / "scripts" / "browser_iab_smoke.mjs").read_text(encoding="utf-8")
         for text in [
             "createSyntheticUploadFixtures",
+            "/api/health",
+            "browser_health_check",
             "setSyntheticInputFile",
             "setInputFiles",
             "#photo-file",
