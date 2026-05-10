@@ -11,6 +11,8 @@ from typing import Any, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_HOOKS_PATH = ".githooks"
+EXPECTED_PRE_COMMIT_COMMAND = "python scripts/public_repo_gate.py --staged"
 
 TEXT_SUFFIXES = {
     ".cfg",
@@ -98,6 +100,15 @@ def _run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def _safe_hooks_path_label(value: str) -> str:
+    normalized = value.strip().replace("\\", "/").rstrip("/")
+    if not normalized:
+        return ""
+    if normalized == EXPECTED_HOOKS_PATH:
+        return EXPECTED_HOOKS_PATH
+    return "[custom]"
 
 
 def _path_blocker(path: str) -> dict[str, str] | None:
@@ -240,9 +251,66 @@ def analyze_tracked(root: str | Path = ROOT, *, max_findings: int = 100) -> dict
     return report
 
 
+def analyze_hook_config(root: str | Path = ROOT) -> dict[str, Any]:
+    root_path = Path(root).resolve()
+    config = _run_git(root_path, ["config", "--get", "core.hooksPath"])
+    errors: list[str] = []
+    if config.returncode not in {0, 1}:
+        errors.append(config.stderr.strip() or "Unable to read core.hooksPath.")
+
+    hooks_path = _safe_hooks_path_label(config.stdout)
+    hooks_path_ready = hooks_path == EXPECTED_HOOKS_PATH
+    pre_commit_hook = root_path / EXPECTED_HOOKS_PATH / "pre-commit"
+    pre_commit_hook_present = pre_commit_hook.is_file()
+    staged_gate_wired = False
+    if pre_commit_hook_present:
+        try:
+            hook_text = pre_commit_hook.read_text(encoding="utf-8", errors="replace")
+            staged_gate_wired = EXPECTED_PRE_COMMIT_COMMAND in hook_text
+        except OSError as exc:
+            errors.append(f".githooks/pre-commit: {exc}")
+
+    blockers = []
+    if not hooks_path_ready:
+        blockers.append("core.hooksPath is not configured for .githooks.")
+    if not pre_commit_hook_present:
+        blockers.append(".githooks/pre-commit is missing.")
+    if pre_commit_hook_present and not staged_gate_wired:
+        blockers.append(".githooks/pre-commit does not run the staged public repo gate.")
+    blockers.extend(errors)
+
+    ready = not blockers
+    return {
+        "status": "ready" if ready else "blocked",
+        "hook_configured": ready,
+        "mode": "hook_config",
+        "hooks_path": hooks_path,
+        "expected_hooks_path": EXPECTED_HOOKS_PATH,
+        "pre_commit_hook_present": pre_commit_hook_present,
+        "staged_gate_wired": staged_gate_wired,
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+        "message": (
+            "Git pre-commit hook is configured to run the staged public repo gate."
+            if ready
+            else "Git pre-commit hook is not fully configured for the staged public repo gate."
+        ),
+        "send_allowed": False,
+    }
+
+
 def _print_text_report(report: dict[str, Any]) -> None:
     print(report["message"])
     print(f"Mode: {report.get('mode', 'candidates')}")
+    if report.get("mode") == "hook_config":
+        print(f"Hooks path: {report.get('hooks_path') or '(not configured)'}")
+        print(f"Expected hooks path: {report.get('expected_hooks_path')}")
+        print(f"Pre-commit hook present: {report.get('pre_commit_hook_present')}")
+        print(f"Staged gate wired: {report.get('staged_gate_wired')}")
+        print(f"Blockers: {report.get('blocker_count', 0)}")
+        for blocker in report.get("blockers", [])[:10]:
+            print(f" - blocker: {blocker}")
+        return
     print(f"Scanned files: {report['scanned_count']}")
     print(f"Blockers: {report['blocker_count']}")
     for blocker in report["path_blockers"][:30]:
@@ -258,17 +326,26 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--staged", action="store_true", help="Scan staged Git blobs.")
     mode.add_argument("--tracked", action="store_true", help="Scan tracked files.")
+    mode.add_argument("--hook-configured", action="store_true", help="Check that core.hooksPath points at .githooks and the pre-commit hook runs the staged gate.")
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--max-findings", type=int, default=100)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    report = analyze_tracked(args.root, max_findings=args.max_findings) if args.tracked else analyze_staged(args.root, max_findings=args.max_findings)
+    if args.hook_configured:
+        report = analyze_hook_config(args.root)
+    elif args.tracked:
+        report = analyze_tracked(args.root, max_findings=args.max_findings)
+    else:
+        report = analyze_staged(args.root, max_findings=args.max_findings)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         _print_text_report(report)
-    return 0 if report["public_repo_ready"] else 1
+    ready = report.get("public_repo_ready")
+    if ready is None:
+        ready = report.get("hook_configured", False)
+    return 0 if ready else 1
 
 
 if __name__ == "__main__":
