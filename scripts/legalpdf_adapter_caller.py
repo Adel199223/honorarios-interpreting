@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 JsonFetcher = Callable[[str], Any]
@@ -1432,6 +1433,22 @@ def run_synthetic_adapter_sequence_http(
     )
 
 
+def run_adapter_sequence_http(
+    base_url: str,
+    *,
+    timeout: float = 5.0,
+    source: AdapterSourceInput,
+) -> AdapterSequenceResult:
+    caller = build_http_adapter_caller(base_url, timeout=timeout)
+    return run_adapter_sequence_result(
+        caller.base_url,
+        fetch_json=caller.fetch_json,
+        post_json=caller.post_json,
+        post_multipart=caller.post_multipart,
+        source=source,
+    )
+
+
 def run_adapter_readiness_http(
     base_url: str,
     *,
@@ -1441,11 +1458,44 @@ def run_adapter_readiness_http(
     return run_adapter_readiness_result(caller.base_url, fetch_json=caller.fetch_json)
 
 
+def _source_field(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("--source-field values must use key=value form.")
+    key, field_value = value.split("=", 1)
+    key = key.strip()
+    if not key:
+        raise argparse.ArgumentTypeError("--source-field key must not be empty.")
+    return key, field_value
+
+
+def _source_input_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> AdapterSourceInput:
+    source_path = Path(str(args.source_file or "")).expanduser()
+    if not source_path.exists() or not source_path.is_file():
+        parser.error(f"--source-file must point to an existing file: {source_path}")
+    try:
+        content = source_path.read_bytes()
+    except OSError as exc:
+        parser.error(f"Could not read --source-file {source_path}: {exc}")
+    return AdapterSourceInput(
+        profile=args.profile,
+        source_kind=args.source_kind,
+        filename=args.source_filename or source_path.name,
+        content=content,
+        expected_case_number=args.case_number,
+        expected_service_date=args.service_date,
+        content_type=args.content_type,
+        visible_metadata_text=args.visible_metadata_text,
+        ai_recovery=args.ai_recovery,
+        extra_fields=dict(args.source_field or []),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the synthetic LegalPDF adapter sequence against a live app and "
-            "print a secret-free JSON summary. Use an isolated synthetic runtime."
+            "Run the LegalPDF adapter readiness probe or guarded adapter sequence "
+            "against a live app and print a secret-free JSON summary. Use an "
+            "isolated synthetic runtime for any full sequence."
         ),
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
@@ -1453,6 +1503,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default="example_interpreting")
     parser.add_argument("--case-number", default="999/26.0SMOKE")
     parser.add_argument("--service-date", default="2026-05-04")
+    parser.add_argument(
+        "--source-file",
+        help=(
+            "Optional sanitized source file to upload through the generic adapter "
+            "sequence instead of the built-in synthetic PDF fixture."
+        ),
+    )
+    parser.add_argument("--source-kind", default="notification_pdf")
+    parser.add_argument("--source-filename", help="Optional safe upload filename override.")
+    parser.add_argument("--content-type", default="application/pdf")
+    parser.add_argument("--visible-metadata-text", default="")
+    parser.add_argument("--ai-recovery", default="off")
+    parser.add_argument(
+        "--source-field",
+        action="append",
+        type=_source_field,
+        default=[],
+        metavar="KEY=VALUE",
+        help="Additional sanitized upload form field for future adapter callers. Repeatable.",
+    )
     parser.add_argument(
         "--readiness-only",
         action="store_true",
@@ -1483,13 +1553,20 @@ def main(argv: list[str] | None = None) -> int:
             "artifacts and records synthetic draft IDs; use an isolated synthetic runtime"
         )
 
-    result = run_synthetic_adapter_sequence_http(
-        args.base_url,
-        timeout=args.timeout,
-        profile=args.profile,
-        case_number=args.case_number,
-        service_date=args.service_date,
-    )
+    if args.source_file:
+        result = run_adapter_sequence_http(
+            base_url=args.base_url,
+            timeout=args.timeout,
+            source=_source_input_from_args(args, parser),
+        )
+    else:
+        result = run_synthetic_adapter_sequence_http(
+            args.base_url,
+            timeout=args.timeout,
+            profile=args.profile,
+            case_number=args.case_number,
+            service_date=args.service_date,
+        )
     print(json.dumps(result.safe_summary(), ensure_ascii=False, indent=2))
     return 0 if result.status == "ready" else 1
 
