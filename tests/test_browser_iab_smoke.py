@@ -50,6 +50,22 @@ class BrowserIabSmokeSourceTests(unittest.TestCase):
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
 
+    def test_local_diagnostics_smoke_covers_runtime_doctor_command(self):
+        smoke_js = self.smoke_source()
+
+        for text in [
+            "#copy-runtime-doctor-command",
+            '"data-copy-diagnostic-command", "runtime_doctor"',
+            "Python runtime doctor",
+            "python scripts/runtime_doctor.py --json",
+            "runtimeDoctorClipboardText",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, smoke_js)
+
+        forbidden_scan = smoke_js.split("for (const forbidden of forbiddenSendActions)", 1)[1].split("throw new Error", 1)[0]
+        self.assertIn("runtimeDoctorClipboardText.includes(forbidden)", forbidden_scan)
+
     def test_recent_work_reconciliation_smoke_is_fake_gmail_read_only(self):
         smoke_js = self.smoke_source()
 
