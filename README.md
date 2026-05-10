@@ -59,7 +59,7 @@ The app supports the main workflow:
 - record the parsed Gmail response and latest prepared payload in one local-only step after the draft is created externally
 - handle corrections by checking active drafts, preparing replacement drafts only with a reason, and marking older draft records as superseded/trashed without deleting history
 - filter Recent Work by lifecycle state (`active`, `drafted`, `sent`, `superseded`, `trashed`, `not_found`) to separate current duplicate blockers from audit history
-- use Recent Work row actions to verify a Gmail draft read-only or mark a draft as manually sent after you send it yourself in Gmail
+- use Recent Work row actions to verify a Gmail draft read-only, mark a draft as manually sent after you send it yourself in Gmail, or mark a verified-missing draft as `not_found` locally after the server re-checks Gmail
 - reset the current browser workspace when a test or old review leaves synthetic fields, prepared payloads, or queued requests on screen
 - maintain known destinations/kilometers and court email aliases from the References screen
 - maintain guarded service profiles with recipient validation, profile diffs, local change history, safe rollback, and a sample Portuguese draft preview
@@ -81,7 +81,7 @@ The optional direct Gmail API path is available when you want in-app draft creat
 
 Before the app calls Gmail, it reloads the prepared draft payload, validates attachment arrays and draft-only flags, and checks `data/duplicate-index.json` plus `data/gmail-draft-log.json` for every request represented in the payload. A drafted or sent blocker stops draft creation before any Gmail network call. Replacement drafts are allowed only with correction mode, `supersedes`, and a short correction reason.
 
-After a draft is created or manually recorded, the drawer and Recent Work rows can verify that draft ID with Gmail `users.drafts.get`. This is read-only confirmation: it reports whether Gmail still has the draft and, when available, the message/thread IDs plus To/Subject metadata. It never writes duplicate records, draft logs, Gmail messages, or local reference data. Recent Work can also mark a draft as `sent` after you manually send it in Gmail; that is local bookkeeping only and updates the duplicate index with `sent_date`.
+After a draft is created or manually recorded, the drawer and Recent Work rows can verify that draft ID with Gmail `users.drafts.get`. This is read-only confirmation: it reports whether Gmail still has the draft and, when available, the message/thread IDs plus To/Subject metadata. It never writes duplicate records, draft logs, Gmail messages, or local reference data. Recent Work can also mark a draft as `sent` after you manually send it in Gmail; that is local bookkeeping only and updates the duplicate index with `sent_date`. If a read-only check reports `not_found`, Recent Work can mark the local lifecycle row as `not_found` only after an explicit confirmation/reason and a server-side Gmail re-check.
 
 To smoke-check the running local app without creating PDFs or Gmail drafts:
 

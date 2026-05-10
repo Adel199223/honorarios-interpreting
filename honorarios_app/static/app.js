@@ -23,6 +23,7 @@ const state = {
   gmailCreateCompletedPayload: "",
   lastGmailCreateConfirmation: null,
   lastManualHandoff: null,
+  lastHistoryDraftVerification: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -45,7 +46,7 @@ function setStatus(status, message) {
   pill.className = "status-chip";
   if (["ready", "prepared", "recorded", "verified"].includes(normalized)) {
     pill.classList.add("ready");
-  } else if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "reconciliation_mismatch"].includes(normalized)) {
+  } else if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "not_found", "reconciliation_mismatch"].includes(normalized)) {
     pill.classList.add("blocked");
   } else if (normalized === "error") {
     pill.classList.add("error");
@@ -2878,15 +2879,28 @@ function isActiveDraftHistoryRecord(record, defaultStatus = "") {
   return ["active", "drafted"].includes(historyRecordStatus(record, defaultStatus));
 }
 
+function lastNotFoundVerificationMatches(record, index, source) {
+  const verification = state.lastHistoryDraftVerification || {};
+  const draftId = String(record?.draft_id || "").trim();
+  const messageId = String(record?.message_id || "").trim();
+  return verification.status === "not_found"
+    && verification.source === source
+    && String(verification.index) === String(index)
+    && verification.draft_id === draftId
+    && (!verification.message_id || verification.message_id === messageId);
+}
+
 function renderHistoryDraftActions(record, index, source, defaultStatus = "") {
   const draftId = String(record?.draft_id || "").trim();
   if (!draftId) return "";
   const messageId = String(record?.message_id || "").trim();
   const canMarkSent = isActiveDraftHistoryRecord(record, defaultStatus) && messageId;
+  const canMarkNotFound = isActiveDraftHistoryRecord(record, defaultStatus) && messageId && lastNotFoundVerificationMatches(record, index, source);
   return `
     <div class="button-row compact-button-row history-row-actions">
       <button type="button" class="mini-button" data-history-verify-draft="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Verify draft exists</button>
       ${canMarkSent ? `<button type="button" class="mini-button" data-history-mark-sent="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Mark manually sent</button>` : ""}
+      ${canMarkNotFound ? `<button type="button" class="mini-button" data-history-mark-not-found="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Mark not_found locally</button>` : ""}
     </div>
   `;
 }
@@ -2920,7 +2934,7 @@ function renderHistoryDraftActionResult(data, kind = "") {
   `;
 }
 
-function historyDraftStatusPayload(record, sentDate) {
+function historyDraftStatusPayload(record, { status = "sent", sentDate = "", notes = "" } = {}) {
   const payloadPath = String(record.payload || record.draft_payload || "").trim();
   return removeEmpty({
     payload: payloadPath,
@@ -2935,9 +2949,16 @@ function historyDraftStatusPayload(record, sentDate) {
     draft_id: record.draft_id,
     message_id: record.message_id,
     thread_id: record.thread_id,
-    status: "sent",
+    status,
     sent_date: sentDate,
-    notes: `Marked manually sent from Recent Work on ${sentDate}.`,
+    notes: notes || `Marked manually sent from Recent Work on ${sentDate}.`,
+  });
+}
+
+function historyDraftNotFoundPayload(record) {
+  return historyDraftStatusPayload(record, {
+    status: "not_found",
+    notes: "Marked not_found from Recent Work after Gmail draft verification returned not_found.",
   });
 }
 
@@ -2953,7 +2974,19 @@ async function verifyHistoryDraft(index, source = "draft_log") {
       thread_id: record.thread_id,
     })),
   });
+  if (data.status === "not_found") {
+    state.lastHistoryDraftVerification = {
+      status: "not_found",
+      source,
+      index: String(index),
+      draft_id: draftId,
+      message_id: String(record.message_id || "").trim(),
+    };
+  } else if (lastNotFoundVerificationMatches(record, index, source)) {
+    state.lastHistoryDraftVerification = null;
+  }
   renderHistoryDraftActionResult(data, data.status || "verified");
+  renderReference();
   setStatus(data.status || "verified", data.message || "Gmail draft verification completed.");
   return data;
 }
@@ -2973,11 +3006,46 @@ async function markHistoryDraftSent(index, source = "draft_log") {
   if (!confirmed) return null;
   const data = await requestJson("/api/drafts/status", {
     method: "POST",
-    body: JSON.stringify(historyDraftStatusPayload(record, sentDate)),
+    body: JSON.stringify(historyDraftStatusPayload(record, { status: "sent", sentDate })),
   });
   renderHistoryDraftActionResult({ ...data, sent_date: sentDate, message: `Marked ${draftId} as manually sent.` }, "recorded");
   setStatus("recorded", `Marked Gmail draft ${draftId} as manually sent locally.`);
   showAlert("Marked draft as sent locally. Duplicate protection now keeps the sent status.", "recorded");
+  await loadReference();
+  return data;
+}
+
+async function markHistoryDraftNotFound(index, source = "draft_log") {
+  const record = historyRecordByIndex(source, index);
+  const draftId = String(record.draft_id || "").trim();
+  const messageId = String(record.message_id || "").trim();
+  if (!draftId || !messageId) {
+    throw new Error("This history row needs both draft ID and message ID before it can be marked not_found.");
+  }
+  if (!lastNotFoundVerificationMatches(record, index, source)) {
+    throw new Error("Verify this draft as not_found before marking it locally.");
+  }
+  const reason = (window.prompt(
+    "Short reason for marking this Gmail draft not_found locally:",
+    "Read-only Gmail verification returned not_found.",
+  ) || "").trim();
+  if (!reason) {
+    throw new Error("Add a short reconciliation reason before marking this draft not_found locally.");
+  }
+  const confirmed = window.confirm(`Mark Gmail draft ${draftId} as not_found locally? This is local bookkeeping only; it does not contact Gmail.`);
+  if (!confirmed) return null;
+  const data = await requestJson("/api/gmail/drafts/reconcile-not-found", {
+    method: "POST",
+    body: JSON.stringify({
+      ...historyDraftNotFoundPayload(record),
+      confirm_not_found: true,
+      reconciliation_reason: reason,
+    }),
+  });
+  state.lastHistoryDraftVerification = null;
+  renderHistoryDraftActionResult({ ...data, message: `Marked ${draftId} as not_found locally.` }, "recorded");
+  setStatus("recorded", `Marked Gmail draft ${draftId} as not_found locally.`);
+  showAlert("Marked draft as not_found locally. Duplicate protection no longer treats it as active.", "recorded");
   await loadReference();
   return data;
 }
@@ -4522,7 +4590,8 @@ function bindActions() {
   const handleHistoryDraftAction = async (event) => {
     const verifyButton = event.target.closest("[data-history-verify-draft]");
     const markSentButton = event.target.closest("[data-history-mark-sent]");
-    const button = verifyButton || markSentButton;
+    const markNotFoundButton = event.target.closest("[data-history-mark-not-found]");
+    const button = verifyButton || markSentButton || markNotFoundButton;
     if (!button) return;
     event.preventDefault();
     try {
@@ -4530,8 +4599,10 @@ function bindActions() {
       const source = button.dataset.historySource || "draft_log";
       if (verifyButton) {
         await verifyHistoryDraft(button.dataset.historyVerifyDraft, source);
-      } else {
+      } else if (markSentButton) {
         await markHistoryDraftSent(button.dataset.historyMarkSent, source);
+      } else {
+        await markHistoryDraftNotFound(button.dataset.historyMarkNotFound, source);
       }
     } catch (error) {
       renderHistoryDraftActionResult({ status: "blocked", message: error.message }, "blocked");

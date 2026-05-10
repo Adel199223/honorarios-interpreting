@@ -54,6 +54,7 @@ from .services import (
     require_current_preflight_review,
     apply_legalpdf_personal_profile_import,
     record_draft,
+    reconcile_gmail_draft_not_found,
     recover_source_upload,
     review_intake,
     review_intake_with_profile_evidence,
@@ -326,6 +327,22 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 "message": str(exc),
                 "gmail_api_action": "users.drafts.get",
                 "read_only": True,
+                "draft_only": True,
+                "send_allowed": False,
+                "write_allowed": False,
+                "managed_data_changed": False,
+                "local_records_changed": False,
+            })
+
+    @app.post("/api/gmail/drafts/reconcile-not-found")
+    async def api_gmail_drafts_reconcile_not_found(payload: dict[str, Any]) -> Any:
+        try:
+            return reconcile_gmail_draft_not_found(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                "status": "blocked",
+                "message": str(exc),
+                "gmail_api_action": "users.drafts.get",
                 "draft_only": True,
                 "send_allowed": False,
                 "write_allowed": False,
