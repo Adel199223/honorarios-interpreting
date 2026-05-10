@@ -13,13 +13,18 @@ class BrowserIabSmokeSourceTests(unittest.TestCase):
         for text in [
             "keepOpen: false",
             'else if (item === "--keep-open") args.keepOpen = true',
+            "let existingTabIds = new Set()",
             "let runnerCreatedTab = false",
+            "let runnerTabCleanupMode = \"close\"",
             "runnerCreatedTab = true",
+            "Browser/IAB did not allocate a disposable smoke tab; refusing to drive an existing tab.",
             "browser_tab_cleanup",
             "await setupAtlasRuntime({ globals: globalThis });",
             "await tab.close()",
+            "await tab.goto(\"about:blank\")",
             "if (!args.keepOpen && runnerCreatedTab && tab)",
             "Browser/IAB closed the disposable smoke tab.",
+            "Browser/IAB reset the sole disposable smoke tab to about:blank.",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, smoke_js)

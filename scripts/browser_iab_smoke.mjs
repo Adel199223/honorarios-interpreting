@@ -532,14 +532,21 @@ export async function runBrowserIabSmoke(options = {}) {
   let uploadFixtures = null;
   let reviewDrawerOpen = false;
   let tab = null;
+  let existingTabIds = new Set();
   let runnerCreatedTab = false;
+  let runnerTabCleanupMode = "close";
   const finish = async () => {
     cleanupSyntheticUploadFixtures(uploadFixtures);
     uploadFixtures = null;
     if (!args.keepOpen && runnerCreatedTab && tab) {
       try {
-        await tab.close();
-        checks.push(check("browser_tab_cleanup", true, "Browser/IAB closed the disposable smoke tab.", { keep_open: false }));
+        if (runnerTabCleanupMode === "blank") {
+          await tab.goto("about:blank");
+          checks.push(check("browser_tab_cleanup", true, "Browser/IAB reset the sole disposable smoke tab to about:blank.", { keep_open: false, cleanup_mode: "blank" }));
+        } else {
+          await tab.close();
+          checks.push(check("browser_tab_cleanup", true, "Browser/IAB closed the disposable smoke tab.", { keep_open: false, cleanup_mode: "close" }));
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         checks.push(check("browser_tab_cleanup", false, `Browser/IAB could not close the disposable smoke tab: ${message}`, { keep_open: false }));
@@ -587,8 +594,27 @@ export async function runBrowserIabSmoke(options = {}) {
   }
   await browserSession.nameSession("🧪 honorários iab smoke");
   try {
+    existingTabIds = new Set((await browserSession.tabs.list()).map((item) => String(item.id)));
+  } catch (error) {
+    checks.push(check("browser_iab_runtime", false, error instanceof Error ? error.message : String(error)));
+    return finish();
+  }
+  try {
     tab = await browserSession.tabs.new();
+    if (existingTabIds.has(String(tab.id))) {
+      checks.push(check(
+        "browser_iab_runtime",
+        false,
+        "Browser/IAB did not allocate a disposable smoke tab; refusing to drive an existing tab.",
+        { existing_tab_count: existingTabIds.size, tab_id: String(tab.id) },
+      ));
+      return finish();
+    }
     runnerCreatedTab = true;
+    const tabsAfterCreate = await browserSession.tabs.list();
+    if (tabsAfterCreate.length <= 1) {
+      runnerTabCleanupMode = "blank";
+    }
   } catch (error) {
     checks.push(check("browser_iab_runtime", false, error instanceof Error ? error.message : String(error)));
     return finish();
