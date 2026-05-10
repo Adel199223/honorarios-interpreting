@@ -837,6 +837,55 @@ def _run_gmail_api_checks(
             "draft_id_present": bool(create_response.get("draft_id")) if isinstance(create_response, dict) else False,
         },
     ))
+    if not created:
+        return checks
+
+    verify_response, error_check = _post_workflow_json(
+        post_json,
+        _url(base, "/api/gmail/drafts/verify"),
+        {
+            "draft_id": "draft-mismatch-smoke",
+            "message_id": "local-message-smoke",
+            "thread_id": "local-thread-smoke",
+        },
+        "gmail_api_verify_mismatch",
+    )
+    if error_check:
+        checks.append(error_check)
+        return checks
+    checks.append(_send_allowed_check(
+        "gmail_api_verify_mismatch_send_allowed",
+        verify_response,
+        "Synthetic Gmail API mismatch verification keeps send_allowed false.",
+    ))
+    mismatch_read_only = (
+        isinstance(verify_response, dict)
+        and verify_response.get("status") == "reconciliation_mismatch"
+        and verify_response.get("exists") is True
+        and verify_response.get("read_only") is True
+        and verify_response.get("draft_only") is True
+        and verify_response.get("gmail_api_action") == "users.drafts.get"
+        and verify_response.get("write_allowed") is False
+        and verify_response.get("managed_data_changed") is False
+        and verify_response.get("local_records_changed") is False
+        and verify_response.get("message_id_matches") is False
+        and verify_response.get("thread_id_matches") is False
+    )
+    checks.append(_check(
+        "gmail_api_verify_mismatch_read_only",
+        mismatch_read_only,
+        "Synthetic Gmail API mismatch verification stayed read-only without local record changes." if mismatch_read_only else "Synthetic Gmail API mismatch verification did not return the read-only reconciliation contract.",
+        {
+            "status": verify_response.get("status") if isinstance(verify_response, dict) else None,
+            "gmail_api_action": verify_response.get("gmail_api_action") if isinstance(verify_response, dict) else None,
+            "read_only": verify_response.get("read_only") if isinstance(verify_response, dict) else None,
+            "write_allowed": verify_response.get("write_allowed") if isinstance(verify_response, dict) else None,
+            "managed_data_changed": verify_response.get("managed_data_changed") if isinstance(verify_response, dict) else None,
+            "local_records_changed": verify_response.get("local_records_changed") if isinstance(verify_response, dict) else None,
+            "message_id_matches": verify_response.get("message_id_matches") if isinstance(verify_response, dict) else None,
+            "thread_id_matches": verify_response.get("thread_id_matches") if isinstance(verify_response, dict) else None,
+        },
+    ))
     return checks
 
 

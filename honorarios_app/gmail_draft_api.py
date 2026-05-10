@@ -703,8 +703,9 @@ def verify_gmail_draft_exists(payload: dict[str, Any], config_path: Path) -> dic
                 fake_mode=True,
             )
         digest = hashlib.sha256(draft_id.encode("utf-8")).hexdigest()[:16]
-        message_id = expected_message_id or f"message-smoke-{digest}"
-        thread_id = expected_thread_id or f"thread-smoke-{digest}"
+        force_mismatch = "mismatch" in lowered or "drift" in lowered
+        message_id = f"message-smoke-{digest}" if force_mismatch else expected_message_id or f"message-smoke-{digest}"
+        thread_id = f"thread-smoke-{digest}" if force_mismatch else expected_thread_id or f"thread-smoke-{digest}"
         return _found_verification(
             draft_id=draft_id,
             message_id=message_id,
