@@ -167,6 +167,7 @@ class AppPaths:
     google_photos_config: Path = ROOT / "config" / "google-photos.local.json"
     gmail_config: Path = ROOT / "config" / "gmail.local.json"
     personal_profiles: Path = ROOT / "config" / "profiles.local.json"
+    synthetic_runtime_marker: Path = ROOT / "config" / "synthetic-runtime.local.json"
 
 
 def timestamp_slug() -> str:

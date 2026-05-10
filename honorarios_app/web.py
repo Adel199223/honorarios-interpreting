@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,7 +79,7 @@ from .services import (
     upsert_known_destination,
     upsert_service_profile,
 )
-from .runtime import create_synthetic_runtime, runtime_path_overrides
+from .runtime import SYNTHETIC_RUNTIME_ATTESTATION, create_synthetic_runtime, runtime_path_overrides
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -106,6 +107,27 @@ def redacted_public_gate(report: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
+def runtime_health_attestation(paths: AppPaths) -> dict[str, Any]:
+    marker: dict[str, Any] = {}
+    try:
+        if paths.synthetic_runtime_marker.is_file():
+            loaded = json.loads(paths.synthetic_runtime_marker.read_text(encoding="utf-8"))
+            marker = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError, TypeError):
+        marker = {}
+    synthetic = (
+        marker.get("attestation") == SYNTHETIC_RUNTIME_ATTESTATION
+        and marker.get("isolated_runtime") is True
+        and marker.get("synthetic_runtime") is True
+    )
+    return {
+        "mode": "synthetic_isolated" if synthetic else "local",
+        "attestation": SYNTHETIC_RUNTIME_ATTESTATION if synthetic else "",
+        "isolated": synthetic,
+        "synthetic": synthetic,
+    }
+
+
 def create_app(**path_overrides: Any) -> FastAPI:
     paths = build_paths(**path_overrides)
     app = FastAPI(
@@ -124,10 +146,14 @@ def create_app(**path_overrides: Any) -> FastAPI:
 
     @app.get("/api/health")
     async def api_health() -> dict[str, Any]:
+        runtime = runtime_health_attestation(paths)
         return {
             "status": "ready",
             "app": "LegalPDF Honorários",
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "runtime": runtime,
+            "isolated_runtime": bool(runtime["isolated"]),
+            "synthetic_runtime": bool(runtime["synthetic"]),
             "send_allowed": False,
             "write_allowed": False,
             "managed_data_changed": False,

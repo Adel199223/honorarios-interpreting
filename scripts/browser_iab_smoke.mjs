@@ -171,6 +171,30 @@ function browserRecentWorkReconciliationStatusRequiredCheck(gmailStatus) {
   );
 }
 
+function requiresIsolatedSyntheticRuntime(args) {
+  return Boolean(
+    args.prepareReplacement
+    || args.preparePacket
+    || args.gmailApiCreate
+    || args.recentWorkLifecycle
+    || args.recentWorkReconciliation
+    || args.manualHandoffStale
+    || args.supportingAttachmentStale
+  );
+}
+
+function healthAttestsIsolatedSyntheticRuntime(health) {
+  return Boolean(
+    health?.isolated_runtime === true
+    && health?.synthetic_runtime === true
+    && health?.runtime?.mode === "synthetic_isolated"
+    && health?.runtime?.attestation === "honorarios_synthetic_runtime_v1"
+    && health?.send_allowed === false
+    && health?.write_allowed === false
+    && health?.managed_data_changed === false
+  );
+}
+
 function report(baseUrl, checks) {
   const failureCount = checks.filter((item) => item.status !== "ready").length;
   return {
@@ -554,6 +578,7 @@ export async function runBrowserIabSmoke(options = {}) {
   const args = { ...parseArgs([]), ...options };
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const checks = [];
+  let health = null;
   let uploadFixtures = null;
   let reviewDrawerOpen = false;
   let tab = null;
@@ -590,7 +615,7 @@ export async function runBrowserIabSmoke(options = {}) {
   };
 
   if (!(await runStep(checks, "browser_health_check", "Browser/IAB confirmed the local app health endpoint before UI interaction.", async () => {
-    const health = await fetchJson(baseUrl, "/api/health", args.timeoutMs);
+    health = await fetchJson(baseUrl, "/api/health", args.timeoutMs);
     if (
       health?.status !== "ready"
       || health?.app !== "LegalPDF Honorários"
@@ -602,6 +627,25 @@ export async function runBrowserIabSmoke(options = {}) {
     }
   }))) {
     return finish();
+  }
+
+  if (requiresIsolatedSyntheticRuntime(args)) {
+    const isolatedRuntimeReady = healthAttestsIsolatedSyntheticRuntime(health);
+    checks.push(check(
+      "browser_isolated_runtime_required",
+      isolatedRuntimeReady,
+      isolatedRuntimeReady
+        ? "Browser/IAB confirmed isolated synthetic runtime before advanced smoke actions."
+        : "Browser/IAB advanced smoke requires an isolated synthetic runtime before artifact-writing or fake Gmail paths.",
+      {
+        runtime_mode: health?.runtime?.mode || "unknown",
+        isolated_runtime: health?.isolated_runtime === true,
+        synthetic_runtime: health?.synthetic_runtime === true,
+      },
+    ));
+    if (!isolatedRuntimeReady) {
+      return finish();
+    }
   }
 
   if (!existsSync(args.browserClient)) {
