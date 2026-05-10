@@ -2,7 +2,7 @@
 
 This contract describes how a future LegalPDF Translate integration should call the standalone LegalPDF Honorários workflow without copying its internals or bypassing its safety rules.
 
-Current contract version: `2026-05-09.prepared-review.v2`
+Current contract version: `2026-05-10.gmail-boundary.v3`
 
 ## Boundary
 
@@ -72,6 +72,8 @@ The future LegalPDF adapter may call the Honorários app endpoints, but it must 
 - Packet drafts must keep `underlying_requests` so every case/date/period receives duplicate protection.
 - Prepared PDFs, previews, draft payloads, manual handoff packets, and record-helper values are stale after source, review, profile, queue, packet-mode, or intake changes.
 - Gmail OAuth is optional. Manual Draft Handoff is the always-available Gmail boundary for this contract.
+- The nested `gmail_boundary` must remain explicit: `required_tool: "_create_draft"`, `draft_only: true`, and `send_allowed: false`.
+- Future callers should reject the contract if that nested Gmail boundary is missing or advertises any send-capable behavior, even when the top-level contract remains `send_allowed: false`.
 
 ## Forbidden Capabilities
 
