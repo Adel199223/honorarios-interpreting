@@ -110,6 +110,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Copy Browser/IAB answers/apply smoke command",
             "Copy Browser/IAB attachment stale smoke command",
             "Copy Browser/IAB record helper smoke command",
+            "Copy Python browser record helper smoke command",
             "Copy Browser/IAB Recent Work smoke command",
             "Preview destination diff",
             "Preview guarded destination",
@@ -162,6 +163,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("browser_iab_answer_apply_smoke", keys)
         self.assertIn("browser_iab_supporting_attachment_stale_smoke", keys)
         self.assertIn("browser_iab_record_helper_smoke", keys)
+        self.assertIn("python_browser_record_helper_smoke", keys)
         self.assertIn("browser_iab_profile_proposal_smoke", keys)
         self.assertIn("browser_iab_recent_work_lifecycle_smoke", keys)
         self.assertIn("browser_iab_manual_handoff_stale_smoke", keys)
@@ -208,6 +210,13 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("--browser-prepare-replacement", browser_record_helper["command_template"])
         self.assertIn("checklist", browser_record_helper["description"].lower())
         self.assertEqual(browser_record_helper["writes"], "temporary synthetic runtime only")
+        python_record_helper = next(check for check in data["checks"] if check["key"] == "python_browser_record_helper_smoke")
+        self.assertIn("--browser-click-through", python_record_helper["command_template"])
+        self.assertNotIn("--browser-iab-click-through", python_record_helper["command_template"])
+        self.assertIn("--browser-prepare-replacement", python_record_helper["command_template"])
+        self.assertIn("--browser-record-helper", python_record_helper["command_template"])
+        self.assertIn("Python Playwright", python_record_helper["description"])
+        self.assertEqual(python_record_helper["writes"], "temporary synthetic runtime only")
         browser_profile_proposal = next(check for check in data["checks"] if check["key"] == "browser_iab_profile_proposal_smoke")
         self.assertIn("--browser-profile-proposal", browser_profile_proposal["command_template"])
         self.assertEqual(browser_profile_proposal["writes"], "none")
@@ -443,6 +452,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Full workspace gate",
             "GOCSPX",
             "ya29.",
+            "/api/gmail/status",
+            "fake_mode",
+            "browser_gmail_api_fake_mode_required",
             "browser_local_diagnostics",
             "#refresh-diagnostics",
             "#diagnostics-result",
@@ -475,11 +487,17 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "supporting attachments changed",
             "#copy-browser-iab-supporting-attachment-stale-smoke-command",
             "#copy-browser-iab-record-helper-smoke-command",
+            "#copy-python-browser-record-helper-smoke-command",
             "browser_iab_supporting_attachment_stale_smoke",
             "browser_iab_record_helper_smoke",
+            "python_browser_record_helper_smoke",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, smoke_js)
+        self.assertLess(
+            smoke_js.index("browser_gmail_api_fake_mode_required"),
+            smoke_js.index('click(tab, "#create-gmail-api-draft"'),
+        )
         self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
@@ -1809,6 +1827,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_iab_smoke",
             "browser_iab_answer_apply_smoke",
             "browser_iab_record_helper_smoke",
+            "python_browser_record_helper_smoke",
         ]:
             with self.subTest(key=key):
                 self.assertIn(key, required_block)
