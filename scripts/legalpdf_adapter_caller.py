@@ -165,6 +165,33 @@ class AdapterReadinessResult:
         }
 
 
+@dataclass(frozen=True)
+class AdapterSourceInput:
+    profile: str
+    source_kind: str
+    filename: str
+    content: bytes
+    expected_case_number: str
+    expected_service_date: str
+    content_type: str = "application/pdf"
+    visible_metadata_text: str = ""
+    ai_recovery: str = "off"
+    extra_fields: dict[str, str] = field(default_factory=dict)
+
+    def upload_fields(self) -> dict[str, str]:
+        fields = {
+            "source_kind": str(self.source_kind),
+            "profile": str(self.profile),
+            "visible_metadata_text": str(self.visible_metadata_text),
+            "ai_recovery": str(self.ai_recovery),
+        }
+        fields.update({str(key): str(value) for key, value in self.extra_fields.items()})
+        return fields
+
+    def safe_filename(self) -> str:
+        return _safe_multipart_filename(self.filename)
+
+
 def normalize_base_url(base_url: str) -> str:
     value = str(base_url or "").strip()
     if not value:
@@ -879,15 +906,13 @@ def run_adapter_readiness_result(
     )
 
 
-def run_synthetic_adapter_sequence(
+def run_adapter_sequence(
     base_url: str,
     *,
     fetch_json: JsonFetcher,
     post_json: PostJsonFetcher,
     post_multipart: PostMultipartFetcher,
-    profile: str,
-    case_number: str,
-    service_date: str,
+    source: AdapterSourceInput,
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     caller = LegalPdfAdapterCaller(
@@ -901,21 +926,15 @@ def run_synthetic_adapter_sequence(
     if readiness.status != "ready":
         return checks
 
-    synthetic_recipient = "court@" + "tribunais.org.pt"
     try:
         upload_response = caller.upload_source(
-            {
-                "source_kind": "notification_pdf",
-                "profile": profile,
-                "visible_metadata_text": "",
-                "ai_recovery": "off",
-            },
-            "synthetic-notification.pdf",
-            synthetic_notification_pdf(case_number, service_date, recipient_email=synthetic_recipient),
-            "application/pdf",
+            source.upload_fields(),
+            source.safe_filename(),
+            source.content,
+            source.content_type,
         )
     except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
-        checks.append(_check("adapter_source_upload_evidence", False, f"Could not upload synthetic adapter source: {exc}"))
+        checks.append(_check("adapter_source_upload_evidence", False, f"Could not upload adapter source: {exc}"))
         return checks
     checks.append(_send_allowed_check(
         "adapter_source_upload_send_allowed",
@@ -927,8 +946,8 @@ def run_synthetic_adapter_sequence(
         isinstance(upload_response, dict)
         and upload_response.get("status") == "uploaded"
         and isinstance(candidate_intake, dict)
-        and candidate_intake.get("case_number") == case_number
-        and candidate_intake.get("service_date") == service_date
+        and candidate_intake.get("case_number") == source.expected_case_number
+        and candidate_intake.get("service_date") == source.expected_service_date
         and _upload_response_has_attention(upload_response)
     )
     checks.append(_check(
@@ -991,7 +1010,11 @@ def run_synthetic_adapter_sequence(
     if not review_needs_answers:
         return checks
 
-    answer_text = adapter_numbered_answers(questions, case_number=case_number, service_date=service_date)
+    answer_text = adapter_numbered_answers(
+        questions,
+        case_number=source.expected_case_number,
+        service_date=source.expected_service_date,
+    )
     apply_response, error_check = _post_workflow_json(
         caller.post_json,
         caller.url("/api/review/apply-answers"),
@@ -1214,7 +1237,7 @@ def run_synthetic_adapter_sequence(
             "message_id": "message-stale-adapter-smoke",
             "thread_id": "thread-stale-adapter-smoke",
             "status": "active",
-            "notes": "Synthetic stale LegalPDF adapter contract smoke record.",
+            "notes": "Stale LegalPDF adapter contract smoke record.",
             "gmail_handoff_reviewed": True,
             **stale_prepared_fields,
         },
@@ -1282,7 +1305,7 @@ def run_synthetic_adapter_sequence(
             "message_id": "message-adapter-smoke",
             "thread_id": "thread-adapter-smoke",
             "status": "active",
-            "notes": "Synthetic LegalPDF adapter contract smoke record.",
+            "notes": "LegalPDF adapter contract smoke record.",
             "gmail_handoff_reviewed": True,
             **prepared_fields,
         },
@@ -1315,6 +1338,56 @@ def run_synthetic_adapter_sequence(
         },
     ))
     return checks
+
+
+def synthetic_adapter_source(profile: str, case_number: str, service_date: str) -> AdapterSourceInput:
+    synthetic_recipient = "court@" + "tribunais.org.pt"
+    return AdapterSourceInput(
+        profile=profile,
+        source_kind="notification_pdf",
+        filename="synthetic-notification.pdf",
+        content=synthetic_notification_pdf(case_number, service_date, recipient_email=synthetic_recipient),
+        content_type="application/pdf",
+        expected_case_number=case_number,
+        expected_service_date=service_date,
+    )
+
+
+def run_synthetic_adapter_sequence(
+    base_url: str,
+    *,
+    fetch_json: JsonFetcher,
+    post_json: PostJsonFetcher,
+    post_multipart: PostMultipartFetcher,
+    profile: str,
+    case_number: str,
+    service_date: str,
+) -> list[dict[str, Any]]:
+    return run_adapter_sequence(
+        base_url,
+        fetch_json=fetch_json,
+        post_json=post_json,
+        post_multipart=post_multipart,
+        source=synthetic_adapter_source(profile, case_number, service_date),
+    )
+
+
+def run_adapter_sequence_result(
+    base_url: str,
+    *,
+    fetch_json: JsonFetcher,
+    post_json: PostJsonFetcher,
+    post_multipart: PostMultipartFetcher,
+    source: AdapterSourceInput,
+) -> AdapterSequenceResult:
+    checks = run_adapter_sequence(
+        base_url,
+        fetch_json=fetch_json,
+        post_json=post_json,
+        post_multipart=post_multipart,
+        source=source,
+    )
+    return _adapter_sequence_result_from_checks(checks)
 
 
 def run_synthetic_adapter_sequence_result(

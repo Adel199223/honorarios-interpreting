@@ -2488,6 +2488,160 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
         self.assertNotIn("http://public-candidate.test/api/gmail/drafts/create", seen_posts)
 
+    def test_legalpdf_adapter_caller_runs_sequence_with_caller_supplied_source(self):
+        from scripts.legalpdf_adapter_caller import (
+            AdapterSourceInput,
+            run_adapter_sequence_result,
+        )
+
+        seen_posts = []
+        seen_uploads = []
+        case_number = "321/26.0CALLER"
+        service_date = "2026-05-06"
+
+        def fetch_json(url):
+            if url.endswith("/api/health"):
+                return self.adapter_health_payload()
+            if url.endswith("/api/integration/adapter-contract"):
+                return self.adapter_contract_payload()
+            if url.endswith("/api/history"):
+                return {"draft_log": [], "duplicates": []}
+            raise AssertionError(url)
+
+        def post_json(url, payload):
+            seen_posts.append(url)
+            if url.endswith("/api/review"):
+                intake = dict(payload["intake"])
+                self.assertNotIn("closing_date", intake)
+                return {
+                    "status": "needs_info",
+                    "intake": intake,
+                    "effective_intake": intake,
+                    "questions": [{"number": 1, "field": "closing_date", "question": "Closing date?"}],
+                    "question_text": "1. Closing date?",
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/review/apply-answers"):
+                intake = dict(payload["intake"])
+                self.assertIn(f"1. {service_date}", payload["answers"])
+                intake["closing_date"] = service_date
+                return {
+                    "status": "ready",
+                    "intake": intake,
+                    "effective_intake": intake,
+                    "draft_text": f"Número de processo: {case_number}\\n\\nPede deferimento,",
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/prepare/preflight"):
+                return {
+                    "status": "ready",
+                    "artifact_effect": "none",
+                    "write_allowed": False,
+                    "send_allowed": False,
+                    "preflight_review": {
+                        "review_fingerprint": "caller-preflight-fingerprint",
+                        "preflight_review_token": "caller-preflight-token",
+                        "send_allowed": False,
+                    },
+                }
+            if url.endswith("/api/prepare"):
+                self.assertEqual(payload["preflight_review"]["preflight_review_token"], "caller-preflight-token")
+                return {
+                    "status": "prepared",
+                    "send_allowed": False,
+                    "prepared_review": {
+                        "manifest": "/tmp/caller-adapter-manifest.json",
+                        "prepared_review_token": "caller-prepared-token",
+                        "review_fingerprint": "caller-prepared-fingerprint",
+                        "payload_paths": ["/tmp/caller-adapter-packet.draft.json"],
+                        "send_allowed": False,
+                    },
+                    "items": [],
+                    "packet": {
+                        "draft_payload": "/tmp/caller-adapter-packet.draft.json",
+                        "gmail_create_draft_ready": True,
+                        "gmail_create_draft_args": {"attachment_files": ["/tmp/caller-adapter-packet.pdf"]},
+                        "underlying_requests": [{"case_number": case_number, "service_date": service_date}],
+                        "send_allowed": False,
+                    },
+                }
+            if url.endswith("/api/gmail/manual-handoff"):
+                if payload["prepared_review_token"] == "stale-prepared-token":
+                    return {"status": "blocked", "message": "Prepared review token is stale.", "send_allowed": False}
+                return {
+                    "status": "ready",
+                    "mode": "manual_handoff",
+                    "gmail_tool": "_create_draft",
+                    "copyable_prompt": "Create a Gmail draft only using `_create_draft`.",
+                    "attachment_files": ["/tmp/caller-adapter-packet.pdf"],
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/drafts/record"):
+                if payload["prepared_review_token"] == "stale-prepared-token":
+                    return {"status": "blocked", "message": "Prepared review token is stale.", "send_allowed": False}
+                return {
+                    "status": "recorded",
+                    "draft_id": "draft-adapter-smoke",
+                    "message_id": "message-adapter-smoke",
+                    "thread_id": "thread-adapter-smoke",
+                    "recorded_duplicate_count": 1,
+                    "send_allowed": False,
+                }
+            raise AssertionError(url)
+
+        def post_multipart(url, fields, filename, content, content_type):
+            seen_uploads.append((url, dict(fields), filename, content, content_type))
+            self.assertEqual(filename, "legalpdf-caller-source.pdf")
+            self.assertEqual(content, b"%PDF caller-provided sanitized fixture")
+            self.assertEqual(fields["adapter_trace_id"], "caller-smoke")
+            return {
+                "status": "uploaded",
+                "send_allowed": False,
+                "candidate_intake": {
+                    "profile": "example_interpreting",
+                    "case_number": case_number,
+                    "service_date": service_date,
+                    "addressee": "Exmo. Senhor Procurador da República\\nExample Court",
+                    "payment_entity": "Example Court",
+                    "service_entity": "Example Police / Example Police Station",
+                    "service_entity_type": "police",
+                    "entities_differ": True,
+                    "service_place": "Example Police Station",
+                    "claim_transport": True,
+                    "transport": {"origin": "Example City", "destination": "Example City", "km_one_way": 12},
+                    "closing_city": "Example City",
+                    "closing_date": "2026-05-09",
+                    "recipient_email": "court@example.test",
+                    "source_filename": filename,
+                },
+                "source_evidence": {"attention": {"status": "ready", "flag_count": 0, "flags": []}},
+            }
+
+        result = run_adapter_sequence_result(
+            "http://public-candidate.test/",
+            fetch_json=fetch_json,
+            post_json=post_json,
+            post_multipart=post_multipart,
+            source=AdapterSourceInput(
+                profile="example_interpreting",
+                source_kind="notification_pdf",
+                filename="../legalpdf-caller-source.pdf",
+                content=b"%PDF caller-provided sanitized fixture",
+                content_type="application/pdf",
+                expected_case_number=case_number,
+                expected_service_date=service_date,
+                visible_metadata_text="sanitized caller metadata",
+                extra_fields={"adapter_trace_id": "caller-smoke"},
+            ),
+        )
+
+        self.assertEqual(result.status, "ready", result.checks)
+        self.assertIn("http://public-candidate.test/api/sources/upload", [item[0] for item in seen_uploads])
+        self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
+        summary_text = json.dumps(result.safe_summary(), sort_keys=True)
+        self.assertNotIn("caller-provided sanitized fixture", summary_text)
+        self.assertNotIn("legalpdf-caller-source.pdf", summary_text)
+
     def test_legalpdf_adapter_synthetic_sequence_stops_before_upload_when_readiness_blocks(self):
         from scripts.legalpdf_adapter_caller import run_synthetic_adapter_sequence
 
