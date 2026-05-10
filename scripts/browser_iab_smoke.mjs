@@ -46,6 +46,7 @@ function parseArgs(argv) {
     manualHandoffStale: false,
     supportingAttachmentStale: false,
     recentWorkLifecycle: false,
+    keepOpen: false,
     timeoutMs: 10000,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -77,6 +78,7 @@ function parseArgs(argv) {
     else if (item === "--manual-handoff-stale") args.manualHandoffStale = true;
     else if (item === "--supporting-attachment-stale") args.supportingAttachmentStale = true;
     else if (item === "--recent-work-lifecycle") args.recentWorkLifecycle = true;
+    else if (item === "--keep-open") args.keepOpen = true;
     else if (item === "--help" || item === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${item}`);
   }
@@ -529,8 +531,24 @@ export async function runBrowserIabSmoke(options = {}) {
   const checks = [];
   let uploadFixtures = null;
   let reviewDrawerOpen = false;
-  const finish = () => {
+  let tab = null;
+  let runnerCreatedTab = false;
+  const finish = async () => {
     cleanupSyntheticUploadFixtures(uploadFixtures);
+    uploadFixtures = null;
+    if (!args.keepOpen && runnerCreatedTab && tab) {
+      try {
+        await tab.close();
+        checks.push(check("browser_tab_cleanup", true, "Browser/IAB closed the disposable smoke tab.", { keep_open: false }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        checks.push(check("browser_tab_cleanup", false, `Browser/IAB could not close the disposable smoke tab: ${message}`, { keep_open: false }));
+      }
+    } else if (args.keepOpen && runnerCreatedTab && tab) {
+      checks.push(check("browser_tab_cleanup", true, "Browser/IAB kept the disposable smoke tab open for debugging.", { keep_open: true }));
+    } else {
+      checks.push(check("browser_tab_cleanup", true, "Browser/IAB did not create a disposable tab before stopping.", { keep_open: Boolean(args.keepOpen) }));
+    }
     return report(baseUrl, checks);
   };
   const closeReviewDrawerIfOpen = async () => {
@@ -561,14 +579,20 @@ export async function runBrowserIabSmoke(options = {}) {
 
   const { setupAtlasRuntime } = await import(pathToFileURL(args.browserClient).href);
   const backend = "iab";
-  await setupAtlasRuntime({ globals: globalThis, backend });
+  await setupAtlasRuntime({ globals: globalThis });
   const browserSession = agent.browser || (agent.browsers ? await agent.browsers.get("iab") : null);
   if (!browserSession) {
     checks.push(check("browser_iab_runtime", false, "Browser/IAB runtime did not expose an in-app browser session."));
     return finish();
   }
   await browserSession.nameSession("🧪 honorários iab smoke");
-  const tab = await browserSession.tabs.new();
+  try {
+    tab = await browserSession.tabs.new();
+    runnerCreatedTab = true;
+  } catch (error) {
+    checks.push(check("browser_iab_runtime", false, error instanceof Error ? error.message : String(error)));
+    return finish();
+  }
   uploadFixtures = args.uploadPhoto || args.uploadPdf || args.uploadSupportingAttachment || args.supportingAttachmentStale ? createSyntheticUploadFixtures(args) : null;
 
   checks.push(check("browser_iab_runtime", true, "Browser/IAB runtime initialized.", { backend: "iab" }));
@@ -1079,7 +1103,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--supporting-attachment-stale] [--recent-work-lifecycle] [--apply-history] [--profile-proposal] [--gmail-api-create]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--supporting-attachment-stale] [--recent-work-lifecycle] [--apply-history] [--profile-proposal] [--gmail-api-create] [--keep-open]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);

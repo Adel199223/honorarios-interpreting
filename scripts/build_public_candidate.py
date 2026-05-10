@@ -1006,6 +1006,19 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_record_helper",
             "browser_profile_proposal",
             "browser_recent_work_lifecycle",
+            "keepOpen: false",
+            'else if (item === "--keep-open") args.keepOpen = true',
+            "let runnerCreatedTab = false",
+            "runnerCreatedTab = true",
+            "browser_tab_cleanup",
+            "await setupAtlasRuntime({ globals: globalThis });",
+            "await tab.close()",
+            "if (!args.keepOpen && runnerCreatedTab && tab)",
+            "Browser/IAB closed the disposable smoke tab.",
+            "Browser/IAB kept the disposable smoke tab open for debugging.",
+            "keep_open: true",
+            "keep_open: false",
+            "--keep-open",
             "browser_batch_stale_gating",
             "browser_legalpdf_import_gates",
             "/api/gmail/status",
@@ -1126,6 +1139,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         flow_reset_block = flow_py.split('if not _safe_step(checks, "browser_workspace_reset"', 1)[1].split("finally:", 1)[0]
         self.assertLess(flow_reset_block.index("_close_review_drawer_if_open()"), flow_reset_block.index('driver.click("#reset-workspace")'))
         self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
+        self.assertNotIn("setupAtlasRuntime({ globals: globalThis, backend })", smoke_js)
         self.assertNotIn('click(tab, "[data-history-mark-not-found', smoke_js)
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
