@@ -757,6 +757,15 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#gmail-verify-result", "Read-only Gmail draft verification", args.timeoutMs);
       await expectSelectorText(tab, "#gmail-verify-result", "Gmail draft exists", args.timeoutMs);
       await expectSelectorText(tab, "#gmail-verify-result", "users.drafts.get", args.timeoutMs);
+      await fill(tab, "#record_draft_id", "draft-mismatch-smoke", args.timeoutMs);
+      await fill(tab, "#record_message_id", "local-message-smoke", args.timeoutMs);
+      await fill(tab, "#record_thread_id", "local-thread-smoke", args.timeoutMs);
+      await click(tab, "#verify-gmail-draft", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "reconciliation mismatch", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "Message ID differs", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "Thread ID differs", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "No local records were changed", args.timeoutMs);
+      await expectSelectorText(tab, "#gmail-verify-result", "users.drafts.get", args.timeoutMs);
     }))) {
       return finish();
     }
