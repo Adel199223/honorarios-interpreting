@@ -307,6 +307,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
 from honorarios_app.web import create_app
 from scripts.local_app_smoke import _adapter_questions_are_numbered, _post_expected_blocked_json, run_smoke
 from scripts.build_public_candidate import build_public_candidate
@@ -507,6 +508,30 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         ]:
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, dumped)
+        self.assertFalse(data["isolated_runtime"])
+        self.assertFalse(data["synthetic_runtime"])
+        self.assertEqual(data["runtime"]["mode"], "local")
+
+    def test_health_endpoint_attests_synthetic_isolated_runtime_without_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp)
+            create_synthetic_runtime(runtime_root, seed_active_draft=True)
+            client = TestClient(create_app(**runtime_path_overrides(runtime_root)))
+
+            response = client.get("/api/health")
+
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            dumped = json.dumps(data, sort_keys=True)
+            self.assertTrue(data["isolated_runtime"])
+            self.assertTrue(data["synthetic_runtime"])
+            self.assertEqual(data["runtime"]["mode"], "synthetic_isolated")
+            self.assertEqual(data["runtime"]["attestation"], "honorarios_synthetic_runtime_v1")
+            self.assertFalse(data["send_allowed"])
+            self.assertFalse(data["write_allowed"])
+            self.assertFalse(data["managed_data_changed"])
+            self.assertNotIn(str(runtime_root), dumped)
+            self.assertNotIn("C:\\\\", dumped)
 
     def test_public_docs_list_browser_iab_answers_apply_diagnostics(self):
         root = Path(__file__).resolve().parents[1]
@@ -1077,6 +1102,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "--browser-record-helper",
             "--browser-recent-work-reconciliation",
             "recentWorkReconciliationClipboardText",
+            "requiresIsolatedSyntheticRuntime(args)",
+            "healthAttestsIsolatedSyntheticRuntime(health)",
+            "browser_isolated_runtime_required",
+            "requires an isolated synthetic runtime",
             "supportingAttachmentStale",
             "supporting attachments changed",
             "data-use-profile-proposal",
@@ -1093,6 +1122,17 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, smoke_js)
+        for flag in [
+            "args.prepareReplacement",
+            "args.preparePacket",
+            "args.gmailApiCreate",
+            "args.recentWorkLifecycle",
+            "args.recentWorkReconciliation",
+            "args.manualHandoffStale",
+            "args.supportingAttachmentStale",
+        ]:
+            with self.subTest(isolation_flag=flag):
+                self.assertIn(flag, smoke_js)
         self.assertLess(
             smoke_js.index("browser_gmail_api_fake_mode_required"),
             smoke_js.index('click(tab, "#create-gmail-api-draft"'),

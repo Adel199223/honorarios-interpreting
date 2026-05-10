@@ -11,6 +11,7 @@ SYNTHETIC_DEFAULT_CASE = "999/26.0SMOKE"
 SYNTHETIC_REPLACEMENT_CASE = "999/26.0REPL"
 SYNTHETIC_SERVICE_DATE = "2026-05-04"
 SYNTHETIC_COURT_EMAIL = "court@" + "tribunais.org.pt"
+SYNTHETIC_RUNTIME_ATTESTATION = "honorarios_synthetic_runtime_v1"
 
 
 def runtime_path_overrides(runtime_root: str | Path) -> dict[str, Path]:
@@ -39,6 +40,7 @@ def runtime_path_overrides(runtime_root: str | Path) -> dict[str, Path]:
         "google_photos_config": root / "config" / "google-photos.local.json",
         "gmail_config": root / "config" / "gmail.local.json",
         "personal_profiles": root / "config" / "profiles.local.json",
+        "synthetic_runtime_marker": root / "config" / "synthetic-runtime.local.json",
     }
 
 
@@ -202,6 +204,15 @@ def create_synthetic_runtime(
         "notes": "Synthetic isolated runtime. Configure real Gmail OAuth credentials only in private local files.",
         "redirect_uri": "http://127.0.0.1:8765/api/gmail/oauth/callback",
         "token_path": str(root / "config" / "gmail-token.local.json"),
+    })
+    _write_json(paths["synthetic_runtime_marker"], {
+        "attestation": SYNTHETIC_RUNTIME_ATTESTATION,
+        "runtime": "synthetic_isolated",
+        "isolated_runtime": True,
+        "synthetic_runtime": True,
+        "send_allowed": False,
+        "write_allowed": False,
+        "managed_data_changed": False,
     })
 
     duplicate_records: list[dict[str, Any]] = []
