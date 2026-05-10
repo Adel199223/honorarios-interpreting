@@ -18,6 +18,8 @@ PostMultipartFetcher = Callable[[str, dict[str, str], str, bytes, str], Any]
 
 ADAPTER_HEALTH_ENDPOINT = "/api/health"
 ADAPTER_CONTRACT_ENDPOINT = "/api/integration/adapter-contract"
+EXPECTED_SYNTHETIC_RUNTIME_MODE = "synthetic_isolated"
+EXPECTED_SYNTHETIC_RUNTIME_ATTESTATION = "honorarios_synthetic_runtime_v1"
 REQUIRED_ADAPTER_ENDPOINTS = (
     "/api/sources/upload",
     "/api/review",
@@ -92,6 +94,7 @@ class AdapterContractValidation:
 @dataclass(frozen=True)
 class AdapterSequenceResult:
     checks: list[dict[str, Any]]
+    isolated_synthetic_runtime: bool = False
     prepared_review_bound: bool = False
     draft_payload_present: bool = False
     manual_handoff_ready: bool = False
@@ -115,6 +118,7 @@ class AdapterSequenceResult:
         return {
             "status": self.status,
             "failure_count": self.failure_count,
+            "isolated_synthetic_runtime": self.isolated_synthetic_runtime,
             "prepared_review_bound": self.prepared_review_bound,
             "draft_payload_present": self.draft_payload_present,
             "manual_handoff_ready": self.manual_handoff_ready,
@@ -133,6 +137,7 @@ class AdapterReadinessResult:
     checks: list[dict[str, Any]]
     health_ready: bool = False
     contract_ready: bool = False
+    isolated_synthetic_runtime: bool = False
     send_allowed: bool = False
     write_allowed: bool = False
     legalpdf_write_allowed: bool = False
@@ -152,6 +157,7 @@ class AdapterReadinessResult:
             "failure_count": self.failure_count,
             "health_ready": self.health_ready,
             "contract_ready": self.contract_ready,
+            "isolated_synthetic_runtime": self.isolated_synthetic_runtime,
             "send_allowed": self.send_allowed,
             "write_allowed": self.write_allowed,
             "legalpdf_write_allowed": self.legalpdf_write_allowed,
@@ -204,6 +210,21 @@ def normalize_base_url(base_url: str) -> str:
 
 def adapter_url(base_url: str, path: str) -> str:
     return f"{normalize_base_url(base_url)}{path}"
+
+
+def adapter_health_attests_isolated_synthetic_runtime(health: Any) -> bool:
+    if not isinstance(health, dict):
+        return False
+    runtime = health.get("runtime") if isinstance(health.get("runtime"), dict) else {}
+    return (
+        health.get("isolated_runtime") is True
+        and health.get("synthetic_runtime") is True
+        and runtime.get("mode") == EXPECTED_SYNTHETIC_RUNTIME_MODE
+        and runtime.get("attestation") == EXPECTED_SYNTHETIC_RUNTIME_ATTESTATION
+        and health.get("send_allowed") is False
+        and health.get("write_allowed") is False
+        and health.get("managed_data_changed") is False
+    )
 
 
 def _read_json_response(response: Any) -> Any:
@@ -802,6 +823,7 @@ def _adapter_sequence_result_from_checks(checks: list[dict[str, Any]]) -> Adapte
     duplicate_count = record_details.get("recorded_duplicate_count")
     return AdapterSequenceResult(
         checks=checks,
+        isolated_synthetic_runtime=_check_is_ready(checks, "adapter_isolated_synthetic_runtime_required"),
         prepared_review_bound=(
             prepare_details.get("prepared_manifest_present") is True
             and prepare_details.get("prepared_token_present") is True
@@ -863,11 +885,13 @@ def run_adapter_readiness_result(
     health_write_allowed = _payload_flag_true(health, "write_allowed")
     health_managed_changed = _payload_flag_true(health, "managed_data_changed")
     health_legalpdf_write_allowed = _payload_flag_true(health, "legalpdf_write_allowed")
+    isolated_synthetic_runtime = adapter_health_attests_isolated_synthetic_runtime(health)
     if not health_ready:
         return AdapterReadinessResult(
             checks=checks,
             health_ready=False,
             contract_ready=False,
+            isolated_synthetic_runtime=isolated_synthetic_runtime,
             send_allowed=health_send_allowed,
             write_allowed=health_write_allowed,
             legalpdf_write_allowed=health_legalpdf_write_allowed,
@@ -882,6 +906,7 @@ def run_adapter_readiness_result(
             checks=checks,
             health_ready=True,
             contract_ready=False,
+            isolated_synthetic_runtime=isolated_synthetic_runtime,
             send_allowed=health_send_allowed,
             write_allowed=health_write_allowed,
             legalpdf_write_allowed=health_legalpdf_write_allowed,
@@ -900,6 +925,7 @@ def run_adapter_readiness_result(
         checks=checks,
         health_ready=True,
         contract_ready=contract_ready,
+        isolated_synthetic_runtime=isolated_synthetic_runtime,
         send_allowed=health_send_allowed or validation.send_allowed,
         write_allowed=health_write_allowed or validation.write_allowed,
         legalpdf_write_allowed=health_legalpdf_write_allowed or validation.legalpdf_write_allowed,
@@ -925,6 +951,18 @@ def run_adapter_sequence(
     readiness = run_adapter_readiness_result(base_url, fetch_json=fetch_json)
     checks.extend(readiness.checks)
     if readiness.status != "ready":
+        return checks
+    checks.append(_check(
+        "adapter_isolated_synthetic_runtime_required",
+        readiness.isolated_synthetic_runtime,
+        (
+            "Full LegalPDF adapter sequence is running against an isolated synthetic runtime."
+            if readiness.isolated_synthetic_runtime
+            else "Full LegalPDF adapter sequence requires isolated synthetic runtime attestation before source upload, PDF preparation, or local draft recording."
+        ),
+        {"isolated_synthetic_runtime": readiness.isolated_synthetic_runtime},
+    ))
+    if not readiness.isolated_synthetic_runtime:
         return checks
 
     try:
