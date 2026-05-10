@@ -10,7 +10,7 @@ The root workspace is the live public Git repository. Sensitive runtime data rem
 - Run the tracked gate before pushing:
   `python scripts/public_repo_gate.py --tracked --json`
 - Confirm `.githooks/pre-commit` is active with:
-  `git config --get core.hooksPath`
+  `python scripts/public_repo_gate.py --hook-configured --json`
 - Confirm `git ls-files` contains no blocked runtime paths such as real local configs, draft logs, duplicate indexes, generated artifacts, real court/email directories, or source uploads.
 - Confirm the gate reports no IBANs, personal names/addresses, real `@tribunais.org.pt` emails, OpenAI keys, Google OAuth secrets, Gmail tokens, Gmail draft IDs, or local-machine paths.
 

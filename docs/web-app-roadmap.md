@@ -121,7 +121,7 @@ The root workspace is now the public Git checkout. Real runtime data, personal p
 
 Public GitHub is enabled for tracked source files in the current root repo. The safety boundary is two-layered:
 
-- `scripts/public_repo_gate.py --staged` and `--tracked` inspect Git content that can be committed or pushed. They block private paths such as local configs, draft logs, duplicate indexes, generated artifacts, real court emails, personal data, tokens, and local-machine paths.
+- `python scripts/public_repo_gate.py --hook-configured --json` confirms the local `.githooks/pre-commit` safety hook is active, while `--staged` and `--tracked` inspect Git content that can be committed or pushed. They block private paths such as local configs, draft logs, duplicate indexes, generated artifacts, real court emails, personal data, tokens, and local-machine paths.
 - `scripts/public_release_gate.py --root output/public-candidate --json` scans a full sanitized candidate tree. It may be blocked on the live root because ignored private overlays are intentionally still present on disk.
 
 Use the browser Public GitHub Readiness panel to check tracked Git safety and to build an optional sanitized candidate. A blocked full-workspace privacy result in the live checkout is expected unless all private overlays are absent.

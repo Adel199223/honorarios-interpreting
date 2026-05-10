@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,7 @@ from scripts.build_public_candidate import build_public_candidate
 from scripts.create_intake import load_profiles
 from scripts.generate_pdf import load_json, resolve_json_path
 from scripts.public_release_gate import analyze_public_readiness
-from scripts.public_repo_gate import CandidateFile, analyze_candidates
+from scripts.public_repo_gate import CandidateFile, analyze_candidates, analyze_hook_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,42 @@ class PublicRepoGateTests(unittest.TestCase):
         self.assertEqual(report["status"], "ready")
         self.assertFalse(report["path_blockers"])
         self.assertFalse(report["content_findings"])
+
+    def test_hook_config_gate_passes_when_precommit_runs_staged_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, capture_output=True, text=True, check=True)
+            hook_dir = root / ".githooks"
+            hook_dir.mkdir()
+            (hook_dir / "pre-commit").write_text("#!/bin/sh\npython scripts/public_repo_gate.py --staged\n", encoding="utf-8")
+            subprocess.run(["git", "config", "core.hooksPath", ".githooks"], cwd=root, capture_output=True, text=True, check=True)
+
+            report = analyze_hook_config(root)
+
+        self.assertEqual(report["status"], "ready", report)
+        self.assertTrue(report["hook_configured"], report)
+        self.assertEqual(report["hooks_path"], ".githooks")
+        self.assertTrue(report["pre_commit_hook_present"])
+        self.assertTrue(report["staged_gate_wired"])
+        self.assertFalse(report["send_allowed"])
+
+    def test_hook_config_gate_blocks_missing_or_custom_hooks_without_leaking_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, capture_output=True, text=True, check=True)
+            private_hook_path = root / "private-hooks"
+            subprocess.run(["git", "config", "core.hooksPath", str(private_hook_path)], cwd=root, capture_output=True, text=True, check=True)
+
+            report = analyze_hook_config(root)
+
+        dumped = json.dumps(report, sort_keys=True)
+        self.assertEqual(report["status"], "blocked", report)
+        self.assertFalse(report["hook_configured"], report)
+        self.assertEqual(report["hooks_path"], "[custom]")
+        self.assertFalse(report["pre_commit_hook_present"])
+        self.assertNotIn(str(private_hook_path), dumped)
+        self.assertNotIn("C:\\Users", dumped)
+        self.assertFalse(report["send_allowed"])
 
     def test_public_release_gate_blocks_real_reference_overlay_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

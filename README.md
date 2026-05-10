@@ -464,10 +464,11 @@ This workspace is now the live public Git repository, with private operational o
 Run the tracked-content gate before committing or pushing public changes:
 
 ```powershell
+python scripts/public_repo_gate.py --hook-configured --json
 python scripts/public_repo_gate.py --tracked --json
 ```
 
-The same tracked-content check is wired into the local pre-commit hook through `.githooks/pre-commit`, and the browser app shows it under References -> Public GitHub Readiness. The stricter full-workspace privacy gate may still report blockers in this checkout because ignored private overlays remain on disk; that is expected and does not mean tracked Git content is unsafe.
+The hook-configured check confirms `core.hooksPath` points at `.githooks` and that `.githooks/pre-commit` runs the staged public repo gate. The same tracked-content check is wired into the local pre-commit hook through `.githooks/pre-commit`, and the browser app shows it under References -> Public GitHub Readiness. The stricter full-workspace privacy gate may still report blockers in this checkout because ignored private overlays remain on disk; that is expected and does not mean tracked Git content is unsafe.
 
 To build a separate sanitized audit/export candidate, use:
 

@@ -45,6 +45,7 @@ Run from the root repo:
 python -m unittest discover tests
 node --check honorarios_app\static\app.js
 node --check scripts\browser_iab_smoke.mjs
+python scripts/public_repo_gate.py --hook-configured --json
 python scripts\public_repo_gate.py --tracked --json
 python scripts\local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
@@ -71,6 +72,7 @@ python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --sou
 3. Run the tracked public repo gate:
 
    ```powershell
+   python scripts/public_repo_gate.py --hook-configured --json
    python scripts\public_repo_gate.py --staged --json
    python scripts\public_repo_gate.py --tracked --json
    ```

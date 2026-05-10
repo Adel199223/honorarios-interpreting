@@ -3191,6 +3191,22 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 for fragment in expected_fragments:
                     self.assertIn(fragment, text)
 
+    def test_public_repo_hook_readiness_command_is_documented(self):
+        root = Path(__file__).resolve().parents[1]
+        gate_source = (root / "scripts" / "public_repo_gate.py").read_text(encoding="utf-8")
+        self.assertIn("analyze_hook_config", gate_source)
+        self.assertIn("--hook-configured", gate_source)
+
+        for relative_path in [
+            "README.md",
+            "docs/public-release-checklist.md",
+            "docs/web-app-roadmap.md",
+            "docs/next-thread-handoff.md",
+        ]:
+            with self.subTest(path=relative_path):
+                text = (root / relative_path).read_text(encoding="utf-8")
+                self.assertIn("python scripts/public_repo_gate.py --hook-configured --json", text)
+
     def test_isolated_app_smoke_forwards_browser_iab_answer_and_apply_flags(self):
         root = Path(__file__).resolve().parents[1]
         smoke_source = (root / "scripts" / "isolated_app_smoke.py").read_text(encoding="utf-8")
