@@ -970,10 +970,12 @@ export async function runBrowserIabSmoke(options = {}) {
       return finish();
     }
 
-    if (!(await runStep(checks, "browser_local_diagnostics", "Browser/IAB refreshed Local Diagnostics and copied isolated smoke commands without running them.", async () => {
+    if (!(await runStep(checks, "browser_local_diagnostics", "Browser/IAB refreshed Local Diagnostics and copied readiness/isolated smoke commands without running them.", async () => {
       await expectBodyText(tab, "Local Diagnostics", args.timeoutMs);
       await uniqueLocator(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-isolated-source-upload-smoke-command", "data-copy-diagnostic-command", "isolated_source_upload_smoke", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-legalpdf-adapter-readiness-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-legalpdf-adapter-readiness-command", "data-copy-diagnostic-command", "legalpdf_adapter_readiness", args.timeoutMs);
       await uniqueLocator(tab, "#copy-isolated-adapter-contract-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-isolated-adapter-contract-smoke-command", "data-copy-diagnostic-command", "isolated_adapter_contract_smoke", args.timeoutMs);
       await uniqueLocator(tab, "#copy-browser-iab-review-smoke-command", args.timeoutMs);
@@ -990,6 +992,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--source-upload-checks", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "LegalPDF adapter readiness", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "--readiness-only", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "LegalPDF adapter contract smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--adapter-contract-checks", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Browser/IAB review smoke", args.timeoutMs);
@@ -1008,6 +1012,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
       await click(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
       const clipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --source-upload-checks --json", args.timeoutMs);
+      await click(tab, "#copy-legalpdf-adapter-readiness-command", args.timeoutMs);
+      const adapterReadinessClipboardText = await expectClipboardText(tab, `python scripts/legalpdf_adapter_caller.py --base-url ${baseUrl} --readiness-only --json`, args.timeoutMs);
       await click(tab, "#copy-isolated-adapter-contract-smoke-command", args.timeoutMs);
       const adapterClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --adapter-contract-checks --json", args.timeoutMs);
       await click(tab, "#copy-browser-iab-review-smoke-command", args.timeoutMs);
@@ -1021,7 +1027,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await click(tab, "#copy-python-browser-record-helper-smoke-command", args.timeoutMs);
       const pythonRecordHelperClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json", args.timeoutMs);
       for (const forbidden of forbiddenSendActions) {
-        if (clipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden) || pythonRecordHelperClipboardText.includes(forbidden)) {
+        if (clipboardText.includes(forbidden) || adapterReadinessClipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden) || pythonRecordHelperClipboardText.includes(forbidden)) {
           throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
         }
       }
