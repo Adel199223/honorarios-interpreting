@@ -1,6 +1,8 @@
 import json
 import os
 import inspect
+import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -366,6 +368,30 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("C:\\Users\\FA507", dumped)
         self.assertNotIn("_send_email", dumped)
         self.assertNotIn("_send_draft", dumped)
+        self.assert_diagnostic_command_templates_are_parseable(data)
+
+    def assert_diagnostic_command_templates_are_parseable(self, data):
+        root = Path(__file__).resolve().parents[1]
+        supported_scripts = {
+            "scripts/local_app_smoke.py",
+            "scripts/isolated_app_smoke.py",
+            "scripts/legalpdf_adapter_caller.py",
+        }
+        supported_flags = {}
+        for script in supported_scripts:
+            script_text = (root / script).read_text(encoding="utf-8")
+            supported_flags[script] = set(re.findall(r'parser\.add_argument\(\s*"([^"]+)"', script_text, re.MULTILINE))
+        for check in data["checks"]:
+            with self.subTest(key=check["key"]):
+                tokens = shlex.split(check["command_template"].format(base_url="http://127.0.0.1:8765"))
+                self.assertGreaterEqual(len(tokens), 2)
+                self.assertEqual(tokens[0], "python")
+                self.assertIn(tokens[1], supported_scripts)
+                self.assertTrue((root / tokens[1]).is_file())
+                flags = [token.split("=", 1)[0] for token in tokens[2:] if token.startswith("--")]
+                self.assertEqual([flag for flag in flags if flag not in supported_flags[tokens[1]]], [])
+                self.assertNotIn("_send_email", " ".join(tokens))
+                self.assertNotIn("_send_draft", " ".join(tokens))
 
     def test_prepare_requires_current_preflight_review_before_artifacts(self):
         client = self.make_client()

@@ -4,6 +4,8 @@ import argparse
 from io import BytesIO
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -67,6 +69,12 @@ JSON_ENDPOINTS = [
     "/api/public-readiness",
     "/api/diagnostics/status",
 ]
+DIAGNOSTIC_COMMAND_SCRIPTS = {
+    "scripts/local_app_smoke.py",
+    "scripts/isolated_app_smoke.py",
+    "scripts/legalpdf_adapter_caller.py",
+}
+ARGPARSE_FLAG_RE = re.compile(r'parser\.add_argument\(\s*"([^"]+)"', re.MULTILINE)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -80,6 +88,60 @@ def _normalize_base_url(base_url: str) -> str:
 
 def _url(base_url: str, path: str) -> str:
     return f"{base_url}{path}"
+
+
+def _diagnostic_supported_flags(script: str) -> tuple[set[str], str]:
+    if script not in DIAGNOSTIC_COMMAND_SCRIPTS:
+        return set(), "unsupported_script"
+    script_path = Path(__file__).resolve().parents[1] / script
+    if not script_path.is_file():
+        return set(), "script_missing"
+    source = script_path.read_text(encoding="utf-8")
+    return set(ARGPARSE_FLAG_RE.findall(source)), ""
+
+
+def _diagnostic_command_template_issues(diagnostic_checks: list[Any], base_url: str) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    flag_cache: dict[str, set[str]] = {}
+    script_error_cache: dict[str, str] = {}
+    for item in diagnostic_checks:
+        if not isinstance(item, dict):
+            continue
+        command_template = item.get("command_template")
+        if not isinstance(command_template, str) or not command_template.strip():
+            continue
+        key = str(item.get("key") or "")
+        try:
+            rendered = command_template.format(base_url=base_url)
+            tokens = shlex.split(rendered)
+        except (KeyError, ValueError) as exc:
+            issues.append({"key": key, "reason": "parse_error", "message": str(exc)})
+            continue
+        if len(tokens) < 2:
+            issues.append({"key": key, "reason": "too_short"})
+            continue
+        if tokens[0] != "python":
+            issues.append({"key": key, "reason": "unsupported_executable", "executable": tokens[0]})
+        script = tokens[1]
+        if script not in flag_cache:
+            flags, script_error = _diagnostic_supported_flags(script)
+            flag_cache[script] = flags
+            script_error_cache[script] = script_error
+        script_error = script_error_cache.get(script, "")
+        if script_error:
+            issues.append({"key": key, "reason": script_error, "script": script})
+            continue
+        unknown_flags = sorted({
+            token.split("=", 1)[0]
+            for token in tokens[2:]
+            if token.startswith("--") and token.split("=", 1)[0] not in flag_cache[script]
+        })
+        if unknown_flags:
+            issues.append({"key": key, "reason": "unsupported_flags", "script": script, "flags": unknown_flags})
+        forbidden_terms = [term for term in FORBIDDEN_HOMEPAGE_COPY if term in rendered]
+        if forbidden_terms:
+            issues.append({"key": key, "reason": "forbidden_terms", "terms": forbidden_terms})
+    return issues
 
 
 def _http_text(url: str, timeout: float) -> str:
@@ -1308,6 +1370,13 @@ def run_smoke(
             not missing and diagnostics.get("write_allowed") is False,
             "/api/diagnostics/status lists safe local smoke commands without enabling writes." if not missing else "Diagnostics status is missing expected smoke commands.",
             {"missing": missing, "write_allowed": diagnostics.get("write_allowed")},
+        ))
+        command_issues = _diagnostic_command_template_issues(diagnostic_checks, base)
+        checks.append(_check(
+            "diagnostics_command_templates_parse",
+            not command_issues,
+            "Diagnostics command templates point at supported local smoke scripts and flags." if not command_issues else "Diagnostics command templates include unsupported scripts, flags, or send-capable terms.",
+            {"issue_count": len(command_issues), "issues": command_issues[:10]},
         ))
 
     if interaction_checks:
