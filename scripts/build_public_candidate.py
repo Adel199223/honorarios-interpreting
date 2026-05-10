@@ -300,6 +300,7 @@ import inspect
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -570,6 +571,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("default_live_smoke", keys)
         self.assertIn("source_upload_smoke", keys)
         self.assertIn("supporting_attachment_smoke", keys)
+        self.assertIn("runtime_doctor", keys)
         self.assertIn("isolated_source_upload_smoke", keys)
         self.assertIn("isolated_supporting_attachment_smoke", keys)
         self.assertIn("legalpdf_adapter_readiness", keys)
@@ -595,6 +597,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("scripts/isolated_app_smoke.py", isolated_source["command_template"])
         self.assertIn("--source-upload-checks", isolated_source["command_template"])
         self.assertEqual(isolated_source["writes"], "temporary synthetic runtime only")
+        runtime_doctor = next(check for check in data["checks"] if check["key"] == "runtime_doctor")
+        self.assertIn("Python runtime doctor", runtime_doctor["label"])
+        self.assertIn("scripts/runtime_doctor.py", runtime_doctor["command_template"])
+        self.assertIn("--json", runtime_doctor["command_template"])
+        self.assertEqual(runtime_doctor["writes"], "none")
         adapter_readiness = next(check for check in data["checks"] if check["key"] == "legalpdf_adapter_readiness")
         self.assertIn("scripts/legalpdf_adapter_caller.py", adapter_readiness["command_template"])
         self.assertIn("--readiness-only", adapter_readiness["command_template"])
@@ -676,6 +683,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "scripts/local_app_smoke.py",
             "scripts/isolated_app_smoke.py",
             "scripts/legalpdf_adapter_caller.py",
+            "scripts/runtime_doctor.py",
         }
         supported_flags = {}
         for script in supported_scripts:
@@ -692,6 +700,85 @@ class PublicCandidateSmokeTests(unittest.TestCase):
                 self.assertEqual([flag for flag in flags if flag not in supported_flags[tokens[1]]], [])
                 self.assertNotIn("_send_email", " ".join(tokens))
                 self.assertNotIn("_send_draft", " ".join(tokens))
+
+    def test_runtime_doctor_reports_python_and_dependencies_without_paths(self):
+        from scripts.runtime_doctor import REQUIRED_RUNTIME_MODULES, run_runtime_doctor
+
+        module_names = {item["module"] for item in REQUIRED_RUNTIME_MODULES}
+
+        def fake_find_spec(module_name):
+            return object() if module_name in module_names else None
+
+        private_root = "C:" + "\\\\Users\\\\FA507"
+        result = run_runtime_doctor(
+            find_spec=fake_find_spec,
+            version_info=(3, 11, 5),
+            executable=private_root + "\\\\secret-project\\\\.venv\\\\Scripts\\\\python.exe",
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertTrue(result.python_ready)
+        self.assertFalse(result.send_allowed)
+        self.assertFalse(result.write_allowed)
+        self.assertFalse(result.managed_data_changed)
+        summary = result.safe_summary()
+        self.assertEqual(summary["status"], "ready")
+        self.assertEqual(summary["python_executable"], "python.exe")
+        self.assertEqual(summary["missing_modules"], [])
+        summary_text = json.dumps(summary, sort_keys=True)
+        for secretish in [
+            private_root,
+            "secret-project",
+            "access_token",
+            "refresh_token",
+            "client_secret",
+            "sk-",
+            "draft-",
+            "gmail",
+            "source_text",
+        ]:
+            with self.subTest(secretish=secretish):
+                self.assertNotIn(secretish, summary_text)
+
+    def test_runtime_doctor_blocks_missing_dependency(self):
+        from scripts.runtime_doctor import run_runtime_doctor
+
+        def fake_find_spec(module_name):
+            return None if module_name == "fastapi" else object()
+
+        result = run_runtime_doctor(
+            find_spec=fake_find_spec,
+            version_info=(3, 11, 5),
+            executable="python.exe",
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertFalse(result.modules_ready)
+        self.assertIn("fastapi", result.missing_modules)
+        self.assertIn("runtime_module_fastapi", {check["name"] for check in result.checks})
+        self.assertFalse(result.safe_summary()["module_ready"])
+
+    def test_runtime_doctor_cli_outputs_secret_free_json(self):
+        root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [sys.executable, str(root / "scripts" / "runtime_doctor.py"), "--json"],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        data = json.loads(completed.stdout)
+        self.assertIn(data["status"], {"ready", "blocked"})
+        self.assertFalse(data["send_allowed"])
+        self.assertFalse(data["write_allowed"])
+        self.assertFalse(data["managed_data_changed"])
+        dumped = json.dumps(data, sort_keys=True)
+        self.assertNotIn("C:\\\\Users\\\\FA507", dumped)
+        self.assertNotIn("_send_email", dumped)
+        self.assertNotIn("_send_draft", dumped)
 
     def test_prepare_requires_current_preflight_review_before_artifacts(self):
         client = self.make_client()
@@ -1202,7 +1289,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         reconciliation_block = smoke_js.split("if (args.recentWorkReconciliation)", 1)[1].split("if (args.profileProposal)", 1)[0]
         self.assertLess(
             reconciliation_block.index("browser_recent_work_reconciliation_fake_mode_required"),
-            reconciliation_block.index('click(tab, "button[data-history-source=\\"draft_log\\"][data-history-verify-draft]"'),
+            reconciliation_block.index('click(tab, "button[data-history-source=\\\\"draft_log\\\\"][data-history-verify-draft]"'),
         )
         for text in [
             'expectSelectorText(tab, "#history-draft-action-result", "Read-only Gmail draft verification"',
@@ -3273,6 +3360,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         required_block = smoke_source.split("required_keys = {", 1)[1].split("}", 1)[0]
         for key in [
             "isolated_source_upload_smoke",
+            "runtime_doctor",
             "browser_iab_smoke",
             "browser_iab_answer_apply_smoke",
             "browser_iab_record_helper_smoke",
@@ -3285,7 +3373,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
     def test_local_app_default_port_is_consistent_across_public_guidance(self):
         root = Path(__file__).resolve().parents[1]
         default_base = "http://127.0.0.1:8765"
-        stale_base = "http://127.0.0.1:" + "8765"
+        stale_base = "http://127.0.0.1:" + "8766"
         checks = {
             "README.md": ["--port 8765", default_base],
             "config/gmail.example.json": [f"{default_base}/api/gmail/oauth/callback"],

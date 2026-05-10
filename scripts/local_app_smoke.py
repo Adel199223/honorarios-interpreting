@@ -73,6 +73,7 @@ DIAGNOSTIC_COMMAND_SCRIPTS = {
     "scripts/local_app_smoke.py",
     "scripts/isolated_app_smoke.py",
     "scripts/legalpdf_adapter_caller.py",
+    "scripts/runtime_doctor.py",
 }
 ARGPARSE_FLAG_RE = re.compile(r'parser\.add_argument\(\s*"([^"]+)"', re.MULTILINE)
 
@@ -1346,6 +1347,7 @@ def run_smoke(
             "default_live_smoke",
             "source_upload_smoke",
             "supporting_attachment_smoke",
+            "runtime_doctor",
             "isolated_source_upload_smoke",
             "isolated_supporting_attachment_smoke",
             "legalpdf_adapter_readiness",
