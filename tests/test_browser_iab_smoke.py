@@ -50,6 +50,39 @@ class BrowserIabSmokeSourceTests(unittest.TestCase):
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
 
+    def test_recent_work_reconciliation_smoke_is_fake_gmail_read_only(self):
+        smoke_js = self.smoke_source()
+
+        for text in [
+            "recentWorkReconciliation: false",
+            'else if (item === "--recent-work-reconciliation") args.recentWorkReconciliation = true',
+            "browser_recent_work_reconciliation_fake_mode_required",
+            "browser_recent_work_reconciliation_status_required",
+            "browser_recent_work_reconciliation",
+            'click(tab, "button[data-history-source=\\"draft_log\\"][data-history-verify-draft]"',
+            'expectSelectorText(tab, "#history-draft-action-result", "Read-only Gmail draft verification"',
+            'expectSelectorText(tab, "#history-draft-action-result", "not_found"',
+            'expectSelectorText(tab, "#history-draft-action-result", "users.drafts.get"',
+            'expectSelectorText(tab, "#history-draft-action-result", "No local records were changed"',
+            "--recent-work-reconciliation",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, smoke_js)
+
+        marker = "if (args.recentWorkReconciliation)"
+        self.assertIn(marker, smoke_js)
+        reconciliation_block = smoke_js.split(marker, 1)[1].split("if (args.profileProposal)", 1)[0]
+        self.assertLess(
+            reconciliation_block.index("browser_recent_work_reconciliation_fake_mode_required"),
+            reconciliation_block.index('click(tab, "button[data-history-source=\\"draft_log\\"][data-history-verify-draft]"'),
+        )
+        self.assertNotIn('click(tab, "[data-history-mark-sent', reconciliation_block)
+        self.assertNotIn('click(tab, "[data-history-mark-not-found', reconciliation_block)
+        self.assertNotIn("/api/drafts/status", reconciliation_block)
+        self.assertNotIn("/api/gmail/drafts/reconcile-not-found", reconciliation_block)
+        self.assertNotIn('click(tab, "#create-gmail-api-draft"', reconciliation_block)
+        self.assertNotIn('click(tab, "#record-parsed-prepared-draft"', reconciliation_block)
+
 
 if __name__ == "__main__":
     unittest.main()

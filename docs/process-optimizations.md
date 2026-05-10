@@ -144,7 +144,7 @@ python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 
 The default smoke checks `/api/health` before treating a rendered page as usable. If the local server has stopped but the in-app browser still shows an old tab, the smoke reports a clean `endpoint_api_health` blocker instead of clicking prepare, record, upload, or Gmail controls.
 
-The same commands are visible in the app under References -> Local Diagnostics. That panel is read-only: it explains the safest smoke check for the current kind of change and copies commands for PowerShell, including the read-only LegalPDF adapter readiness command, the isolated supporting-attachment smoke command, the isolated LegalPDF adapter contract smoke command, the advanced/future isolated fake-Gmail Draft API smoke command, the Browser/IAB upload smoke command with disposable photo/PDF flags, the Browser/IAB attachment smoke command for the Supporting proof UI, the Browser/IAB answers/apply smoke command (`--browser-answer-questions --browser-apply-history`), the isolated Browser/IAB record-helper smoke command, the isolated Python Playwright record-helper smoke command, the Browser/IAB profile proposal smoke command, the isolated Browser/IAB Recent Work lifecycle smoke command, the isolated Browser/IAB Manual Draft Handoff stale smoke command, and the isolated Browser/IAB fake Gmail API smoke command, but it does not run shell commands, prepare PDFs, record drafts, or call real Gmail. Run adapter readiness before the isolated adapter smoke; the full adapter smoke then validates the nested Gmail boundary as draft-only and send-disabled before running the synthetic caller sequence.
+The same commands are visible in the app under References -> Local Diagnostics. That panel is read-only: it explains the safest smoke check for the current kind of change and copies commands for PowerShell, including the read-only LegalPDF adapter readiness command, the isolated supporting-attachment smoke command, the isolated LegalPDF adapter contract smoke command, the advanced/future isolated fake-Gmail Draft API smoke command, the Browser/IAB upload smoke command with disposable photo/PDF flags, the Browser/IAB attachment smoke command for the Supporting proof UI, the Browser/IAB answers/apply smoke command (`--browser-answer-questions --browser-apply-history`), the isolated Browser/IAB record-helper smoke command, the isolated Python Playwright record-helper smoke command, the Browser/IAB profile proposal smoke command, the isolated Browser/IAB Recent Work lifecycle smoke command, the isolated Browser/IAB Recent Work reconciliation smoke command, the isolated Browser/IAB Manual Draft Handoff stale smoke command, and the isolated Browser/IAB fake Gmail API smoke command, but it does not run shell commands, prepare PDFs, record drafts, or call real Gmail. Run adapter readiness before the isolated adapter smoke; the full adapter smoke then validates the nested Gmail boundary as draft-only and send-disabled before running the synthetic caller sequence.
 
 Use `--browser-click-through` when you want a real browser to verify the profile-to-review-drawer path and batch queue without preparing artifacts:
 
@@ -246,6 +246,14 @@ python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recen
 ```
 
 The isolated launcher seeds a synthetic active draft, opens Recent Work, checks lifecycle filters plus `Verify draft exists` and `Mark manually sent` controls, and deliberately does not click those row actions.
+
+To cover Recent Work read-only Gmail reconciliation, use the isolated fake-Gmail Browser/IAB smoke:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recent-work-reconciliation --json
+```
+
+That path seeds a synthetic draft ID that fake Gmail reports as missing, clicks only `Verify draft exists`, confirms the `users.drafts.get` `not_found` result, and does not click `Mark not_found locally` or any local status-write action.
 
 If the Browser/IAB smoke has prepared a disposable replacement or packet payload, add `--browser-record-helper` to check the final local handoff surface. This parses fake `_create_draft` IDs and clicks `Autofill from prepared payload`, then verifies the record form values; it must not click `Record parsed response + prepared payload`, `Record draft`, `/api/drafts/record`, `/api/drafts/status`, or Gmail.
 

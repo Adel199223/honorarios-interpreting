@@ -46,6 +46,7 @@ function parseArgs(argv) {
     manualHandoffStale: false,
     supportingAttachmentStale: false,
     recentWorkLifecycle: false,
+    recentWorkReconciliation: false,
     keepOpen: false,
     timeoutMs: 10000,
   };
@@ -78,6 +79,7 @@ function parseArgs(argv) {
     else if (item === "--manual-handoff-stale") args.manualHandoffStale = true;
     else if (item === "--supporting-attachment-stale") args.supportingAttachmentStale = true;
     else if (item === "--recent-work-lifecycle") args.recentWorkLifecycle = true;
+    else if (item === "--recent-work-reconciliation") args.recentWorkReconciliation = true;
     else if (item === "--keep-open") args.keepOpen = true;
     else if (item === "--help" || item === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${item}`);
@@ -142,6 +144,29 @@ function browserGmailApiStatusRequiredCheck(gmailStatus) {
     passed
       ? "Browser/IAB confirmed fake, draft-only, create-ready users.drafts.create status before clicking Gmail draft creation."
       : "Browser/IAB Gmail draft-create smoke requires fake, draft-only, create-ready users.drafts.create status before clicking Create Gmail Draft.",
+    details,
+  );
+}
+
+function browserRecentWorkReconciliationStatusRequiredCheck(gmailStatus) {
+  const details = {
+    fake_mode: gmailStatus?.fake_mode === true,
+    draft_only: gmailStatus?.draft_only === true,
+    gmail_readonly_verify_action: gmailStatus?.gmail_readonly_verify_action,
+    send_allowed: gmailStatus?.send_allowed,
+  };
+  const passed = (
+    details.fake_mode
+    && details.draft_only
+    && details.gmail_readonly_verify_action === "users.drafts.get"
+    && details.send_allowed === false
+  );
+  return check(
+    "browser_recent_work_reconciliation_status_required",
+    passed,
+    passed
+      ? "Browser/IAB confirmed fake, draft-only users.drafts.get status before Recent Work reconciliation."
+      : "Browser/IAB Recent Work reconciliation smoke requires fake, draft-only users.drafts.get status.",
     details,
   );
 }
@@ -666,6 +691,48 @@ export async function runBrowserIabSmoke(options = {}) {
     return finish();
   }
 
+  if (args.recentWorkReconciliation) {
+    let gmailStatus = null;
+    if (!(await runStep(checks, "browser_recent_work_reconciliation_fake_mode_required", "Browser/IAB confirmed fake Gmail mode before Recent Work reconciliation.", async () => {
+      gmailStatus = await fetchJson(baseUrl, "/api/gmail/status", args.timeoutMs);
+      if (gmailStatus.fake_mode !== true) {
+        throw new Error("Browser/IAB Recent Work reconciliation smoke requires fake Gmail mode before clicking Verify draft exists.");
+      }
+    }))) {
+      return finish();
+    }
+    const statusGate = browserRecentWorkReconciliationStatusRequiredCheck(gmailStatus);
+    checks.push(statusGate);
+    if (statusGate.status !== "ready") {
+      return finish();
+    }
+    if (!(await runStep(checks, "browser_recent_work_reconciliation", "Browser/IAB verified Recent Work Gmail reconciliation through read-only users.drafts.get without local status writes.", async () => {
+      await openHistoryPanel(tab, args.timeoutMs);
+      await expectBodyText(tab, "Duplicate And Draft History", args.timeoutMs);
+      await expectBodyText(tab, "draft-missing-active", args.timeoutMs);
+      await click(tab, "button[data-history-source=\"draft_log\"][data-history-verify-draft]", args.timeoutMs);
+      await expectSelectorText(tab, "#history-draft-action-result", "Read-only Gmail draft verification", args.timeoutMs);
+      await expectSelectorText(tab, "#history-draft-action-result", "not_found", args.timeoutMs);
+      await expectSelectorText(tab, "#history-draft-action-result", "users.drafts.get", args.timeoutMs);
+      await expectSelectorText(tab, "#history-draft-action-result", "No local records were changed", args.timeoutMs);
+      await expectBodyText(tab, "Mark not_found locally", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    if (!(await runStep(checks, "browser_workspace_reset", "Browser/IAB reset the synthetic workspace after Recent Work reconciliation smoke.", async () => {
+      await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
+      await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
+      await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
+      await expectBodyText(tab, "Reset workspace", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+
+    return finish();
+  }
+
   if (args.profileProposal) {
     if (!(await runStep(checks, "browser_profile_proposal", "Browser/IAB previewed a proposed service profile in the guarded editor without saving.", async () => {
       await select(tab, "#profile", "court_mp_generic", args.timeoutMs);
@@ -1038,6 +1105,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectAttributeContains(tab, "#copy-browser-iab-record-helper-smoke-command", "data-copy-diagnostic-command", "browser_iab_record_helper_smoke", args.timeoutMs);
       await uniqueLocator(tab, "#copy-python-browser-record-helper-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-python-browser-record-helper-smoke-command", "data-copy-diagnostic-command", "python_browser_record_helper_smoke", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-browser-iab-recent-work-reconciliation-smoke-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-browser-iab-recent-work-reconciliation-smoke-command", "data-copy-diagnostic-command", "browser_iab_recent_work_reconciliation_smoke", args.timeoutMs);
       await click(tab, "#refresh-diagnostics", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
@@ -1057,6 +1126,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#diagnostics-result", "--browser-record-helper", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Python browser record helper smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--browser-click-through", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "Recent Work reconciliation smoke", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "--browser-recent-work-reconciliation", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "The browser does not run shell commands or contact Gmail.", args.timeoutMs);
       const forbiddenSendActions = forbiddenSendActionTerms();
       await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
@@ -1076,8 +1147,10 @@ export async function runBrowserIabSmoke(options = {}) {
       const recordHelperClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json", args.timeoutMs);
       await click(tab, "#copy-python-browser-record-helper-smoke-command", args.timeoutMs);
       const pythonRecordHelperClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-click-through --browser-correction-mode --browser-prepare-replacement --browser-record-helper --json", args.timeoutMs);
+      await click(tab, "#copy-browser-iab-recent-work-reconciliation-smoke-command", args.timeoutMs);
+      const recentWorkReconciliationClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recent-work-reconciliation --json", args.timeoutMs);
       for (const forbidden of forbiddenSendActions) {
-        if (clipboardText.includes(forbidden) || adapterReadinessClipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden) || pythonRecordHelperClipboardText.includes(forbidden)) {
+        if (clipboardText.includes(forbidden) || adapterReadinessClipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden) || pythonRecordHelperClipboardText.includes(forbidden) || recentWorkReconciliationClipboardText.includes(forbidden)) {
           throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
         }
       }
@@ -1129,7 +1202,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--supporting-attachment-stale] [--recent-work-lifecycle] [--apply-history] [--profile-proposal] [--gmail-api-create] [--keep-open]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--supporting-attachment-stale] [--recent-work-lifecycle] [--recent-work-reconciliation] [--apply-history] [--profile-proposal] [--gmail-api-create] [--keep-open]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);

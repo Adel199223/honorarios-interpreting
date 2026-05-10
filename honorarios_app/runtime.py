@@ -151,19 +151,19 @@ def synthetic_known_destinations() -> list[dict[str, Any]]:
     }]
 
 
-def active_draft_records() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def active_draft_records(*, draft_id: str = "draft-synthetic-active") -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     duplicate_records = [{
         "case_number": SYNTHETIC_REPLACEMENT_CASE,
         "service_date": SYNTHETIC_SERVICE_DATE,
         "status": "drafted",
-        "draft_id": "draft-synthetic-active",
+        "draft_id": draft_id,
         "recipient": SYNTHETIC_COURT_EMAIL,
         "pdf": "synthetic-existing.pdf",
         "source_filename": "synthetic-existing.pdf",
         "notes": "Synthetic active draft used only by isolated replacement smoke.",
     }]
     draft_log_records = [{
-        "draft_id": "draft-synthetic-active",
+        "draft_id": draft_id,
         "message_id": "message-synthetic-active",
         "thread_id": "thread-synthetic-active",
         "status": "active",
@@ -177,7 +177,12 @@ def active_draft_records() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return duplicate_records, draft_log_records
 
 
-def create_synthetic_runtime(runtime_root: str | Path, *, seed_active_draft: bool = False) -> dict[str, Any]:
+def create_synthetic_runtime(
+    runtime_root: str | Path,
+    *,
+    seed_active_draft: bool = False,
+    seed_missing_active_draft: bool = False,
+) -> dict[str, Any]:
     root = Path(runtime_root).resolve()
     paths = runtime_path_overrides(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -201,8 +206,9 @@ def create_synthetic_runtime(runtime_root: str | Path, *, seed_active_draft: boo
 
     duplicate_records: list[dict[str, Any]] = []
     draft_log_records: list[dict[str, Any]] = []
+    active_draft_id = "draft-missing-active" if seed_missing_active_draft else "draft-synthetic-active"
     if seed_active_draft:
-        duplicate_records, draft_log_records = active_draft_records()
+        duplicate_records, draft_log_records = active_draft_records(draft_id=active_draft_id)
     _write_json(paths["duplicate_index"], duplicate_records)
     _write_json(paths["draft_log"], draft_log_records)
 
@@ -229,4 +235,5 @@ def create_synthetic_runtime(runtime_root: str | Path, *, seed_active_draft: boo
         "service_date": SYNTHETIC_SERVICE_DATE,
         "project_root": str(ROOT),
         "send_allowed": False,
+        "seed_active_draft_id": active_draft_id if seed_active_draft else "",
     }

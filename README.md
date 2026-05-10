@@ -133,6 +133,14 @@ python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recen
 
 That check seeds a disposable active draft, opens Recent Work, verifies the status filters, sent-date field, `Verify draft exists`, and `Mark manually sent` controls, and does not click Gmail verification or local status-write actions.
 
+To verify the Recent Work read-only Gmail reconciliation path without touching real Gmail, use the isolated fake-Gmail smoke:
+
+```powershell
+python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recent-work-reconciliation --json
+```
+
+That check seeds a disposable missing draft, clicks only `Verify draft exists`, confirms the `users.drafts.get` `not_found` panel, and leaves local lifecycle status unchanged.
+
 When a prepared payload already exists in the smoke flow, add `--browser-record-helper` to verify the safe post-Gmail handoff: the browser parses fake `_create_draft` IDs, confirms the one-click local recorder stays disabled until the Gmail handoff checklist is ticked, and autofills the local record form, but it does not click `Record parsed response + prepared payload`, `Record draft`, or any Gmail action.
 
 To verify the Manual Draft Handoff stale-state guard after a prepared replacement payload, use the isolated Browser/IAB handoff smoke:
@@ -177,7 +185,7 @@ To exercise the connected-Gmail browser UI without touching real Gmail, use the 
 python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-gmail-api-create --json
 ```
 
-The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, read-only LegalPDF adapter readiness, isolated LegalPDF adapter contract smoke, isolated fake-Gmail API smoke, Browser/IAB review smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB answers/apply smoke (`--browser-answer-questions --browser-apply-history`), Browser/IAB record helper smoke, Python browser record helper smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB handoff stale smoke, and Browser/IAB fake Gmail API smoke commands for PowerShell. Run adapter readiness before the isolated adapter contract smoke; the full isolated adapter smoke covers source upload, numbered-answer review recovery, prepared-review token binding, stale-token rejection, nested draft-only Gmail boundary validation, Manual Draft Handoff, and synthetic local recording. The browser only copies commands; it does not run shell commands or call Gmail.
+The browser app also exposes References -> Local Diagnostics. That panel lists the same safe smoke commands and lets you copy the default live smoke, source-upload smoke, supporting-attachment smoke, isolated source-upload smoke, isolated supporting-attachment smoke, read-only LegalPDF adapter readiness, isolated LegalPDF adapter contract smoke, isolated fake-Gmail API smoke, Browser/IAB review smoke, Browser/IAB upload smoke, Browser/IAB attachment smoke, Browser/IAB answers/apply smoke (`--browser-answer-questions --browser-apply-history`), Browser/IAB record helper smoke, Python browser record helper smoke, Browser/IAB profile proposal smoke, Browser/IAB Recent Work lifecycle smoke, Browser/IAB Recent Work reconciliation smoke, Browser/IAB handoff stale smoke, and Browser/IAB fake Gmail API smoke commands for PowerShell. Run adapter readiness before the isolated adapter contract smoke; the full isolated adapter smoke covers source upload, numbered-answer review recovery, prepared-review token binding, stale-token rejection, nested draft-only Gmail boundary validation, Manual Draft Handoff, and synthetic local recording. The browser only copies commands; it does not run shell commands or call Gmail.
 
 To include the local upload evidence and correction UI without creating PDFs or recording drafts, add the browser UI smoke flags:
 
