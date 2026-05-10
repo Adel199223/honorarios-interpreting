@@ -56,6 +56,25 @@ EXPECTED_PREPARED_REVIEW_BINDING_VALUES = {
     "prepare_request_field": "preflight_review",
     "prepare_response_field": "prepared_review",
 }
+EXPECTED_OPTIONAL_GMAIL_DRAFT_API_BOUNDARY_VALUES = {
+    "status": "optional",
+    "create_endpoint": "/api/gmail/drafts/create",
+    "verify_endpoint": "/api/gmail/drafts/verify",
+    "create_action": "users.drafts.create",
+    "verify_action": "users.drafts.get",
+    "draft_only": True,
+    "send_allowed": False,
+    "verify_read_only": True,
+    "verify_local_records_changed": False,
+}
+EXPECTED_OPTIONAL_GMAIL_DRAFT_API_FORBIDDEN_ACTIONS = (
+    "users.messages.send",
+    "users.drafts.send",
+    "users.messages.trash",
+    "users.messages.delete",
+    "users.messages.list",
+    "users.drafts.delete",
+)
 
 
 @dataclass(frozen=True)
@@ -298,6 +317,8 @@ class LegalPdfAdapterCaller:
         missing = sorted(set(REQUIRED_ADAPTER_ENDPOINTS).difference(endpoints))
         gmail_boundary = contract.get("gmail_boundary") if isinstance(contract, dict) and isinstance(contract.get("gmail_boundary"), dict) else {}
         prepared_binding = contract.get("prepared_review_binding") if isinstance(contract, dict) and isinstance(contract.get("prepared_review_binding"), dict) else {}
+        optional_gmail_boundary = contract.get("optional_gmail_draft_api_boundary") if isinstance(contract, dict) and isinstance(contract.get("optional_gmail_draft_api_boundary"), dict) else {}
+        optional_gmail_boundary_present = bool(optional_gmail_boundary)
         missing_prepared_fields: dict[str, list[str]] = {}
         for key, expected_fields in EXPECTED_PREPARED_REVIEW_BINDING_FIELDS.items():
             actual = prepared_binding.get(key) if isinstance(prepared_binding.get(key), list) else []
@@ -327,6 +348,31 @@ class LegalPdfAdapterCaller:
             and gmail_boundary.get("send_allowed") is False
             and gmail_boundary.get("draft_only") is True
         )
+        mismatched_optional_gmail_boundary_values = {
+            key: {
+                "expected": expected,
+                "actual": optional_gmail_boundary.get(key),
+            }
+            for key, expected in EXPECTED_OPTIONAL_GMAIL_DRAFT_API_BOUNDARY_VALUES.items()
+            if optional_gmail_boundary_present and optional_gmail_boundary.get(key) != expected
+        }
+        optional_forbidden_actions = (
+            {str(item) for item in optional_gmail_boundary.get("forbidden_actions", [])}
+            if isinstance(optional_gmail_boundary.get("forbidden_actions"), list)
+            else set()
+        )
+        missing_optional_forbidden_actions = [
+            action
+            for action in EXPECTED_OPTIONAL_GMAIL_DRAFT_API_FORBIDDEN_ACTIONS
+            if action not in optional_forbidden_actions
+        ] if optional_gmail_boundary_present else []
+        optional_gmail_boundary_ready = (
+            not optional_gmail_boundary_present
+            or (
+                not mismatched_optional_gmail_boundary_values
+                and not missing_optional_forbidden_actions
+            )
+        )
         send_allowed = bool(contract.get("send_allowed")) if isinstance(contract, dict) else False
         write_allowed = bool(contract.get("write_allowed")) if isinstance(contract, dict) else False
         legalpdf_write_allowed = bool(contract.get("legalpdf_write_allowed")) if isinstance(contract, dict) else False
@@ -341,6 +387,7 @@ class LegalPdfAdapterCaller:
             and contract.get("managed_data_changed") is False
             and gmail_boundary_ready
             and prepared_binding_ready
+            and optional_gmail_boundary_ready
         )
         return AdapterContractValidation(
             ready=ready,
@@ -357,6 +404,18 @@ class LegalPdfAdapterCaller:
                 "gmail_boundary_ready": gmail_boundary_ready,
                 "gmail_boundary_send_allowed": gmail_boundary.get("send_allowed"),
                 "gmail_boundary_draft_only": gmail_boundary.get("draft_only"),
+                "optional_gmail_draft_api_boundary_ready": optional_gmail_boundary_ready,
+                "optional_gmail_draft_api_boundary_present": optional_gmail_boundary_present,
+                "optional_gmail_create_endpoint": optional_gmail_boundary.get("create_endpoint"),
+                "optional_gmail_verify_endpoint": optional_gmail_boundary.get("verify_endpoint"),
+                "optional_gmail_create_action": optional_gmail_boundary.get("create_action"),
+                "optional_gmail_verify_action": optional_gmail_boundary.get("verify_action"),
+                "optional_gmail_send_allowed": optional_gmail_boundary.get("send_allowed"),
+                "optional_gmail_draft_only": optional_gmail_boundary.get("draft_only"),
+                "optional_gmail_verify_read_only": optional_gmail_boundary.get("verify_read_only"),
+                "optional_gmail_verify_local_records_changed": optional_gmail_boundary.get("verify_local_records_changed"),
+                "missing_optional_gmail_forbidden_actions": missing_optional_forbidden_actions,
+                "mismatched_optional_gmail_boundary_values": mismatched_optional_gmail_boundary_values,
                 "prepared_review_binding_ready": prepared_binding_ready,
                 "missing_prepared_review_fields": missing_prepared_fields,
                 "mismatched_prepared_review_values": mismatched_prepared_values,
@@ -641,6 +700,43 @@ def run_synthetic_adapter_sequence(
             "gmail_boundary_ready": validation.details.get("gmail_boundary_ready"),
             "gmail_boundary_send_allowed": validation.details.get("gmail_boundary_send_allowed"),
             "gmail_boundary_draft_only": validation.details.get("gmail_boundary_draft_only"),
+        },
+    ))
+    checks.append(_check(
+        "adapter_contract_gmail_boundary",
+        validation.details.get("gmail_boundary_ready") is True,
+        "Adapter contract keeps the nested Gmail boundary draft-only and send-disabled."
+        if validation.details.get("gmail_boundary_ready") is True
+        else "Adapter contract Gmail boundary is missing draft-only or send-disabled fields.",
+        {
+            "required_tool": validation.details.get("required_tool"),
+            "gmail_boundary_send_allowed": validation.details.get("gmail_boundary_send_allowed"),
+            "gmail_boundary_draft_only": validation.details.get("gmail_boundary_draft_only"),
+        },
+    ))
+    optional_gmail_boundary_present = validation.details.get("optional_gmail_draft_api_boundary_present") is True
+    checks.append(_check(
+        "adapter_contract_optional_gmail_draft_api_boundary",
+        validation.details.get("optional_gmail_draft_api_boundary_ready") is True,
+        "Adapter contract keeps optional Gmail Draft API create/verify draft-only and verify read-only."
+        if optional_gmail_boundary_present and validation.details.get("optional_gmail_draft_api_boundary_ready") is True
+        else (
+            "Adapter contract omits optional Gmail Draft API metadata; Manual Draft Handoff remains the required path."
+            if validation.details.get("optional_gmail_draft_api_boundary_ready") is True
+            else "Adapter contract optional Gmail Draft API boundary is send-capable or verify is not read-only."
+        ),
+        {
+            "present": optional_gmail_boundary_present,
+            "create_endpoint": validation.details.get("optional_gmail_create_endpoint"),
+            "verify_endpoint": validation.details.get("optional_gmail_verify_endpoint"),
+            "create_action": validation.details.get("optional_gmail_create_action"),
+            "verify_action": validation.details.get("optional_gmail_verify_action"),
+            "send_allowed": validation.details.get("optional_gmail_send_allowed"),
+            "draft_only": validation.details.get("optional_gmail_draft_only"),
+            "verify_read_only": validation.details.get("optional_gmail_verify_read_only"),
+            "verify_local_records_changed": validation.details.get("optional_gmail_verify_local_records_changed"),
+            "missing_forbidden_actions": validation.details.get("missing_optional_gmail_forbidden_actions"),
+            "mismatched_values": validation.details.get("mismatched_optional_gmail_boundary_values"),
         },
     ))
     checks.append(_check(

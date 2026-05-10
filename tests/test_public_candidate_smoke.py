@@ -933,10 +933,22 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(contract.json()["legalpdf_write_allowed"])
         self.assertFalse(contract.json()["managed_data_changed"])
         contract_data = contract.json()
-        self.assertEqual(contract_data["contract_version"], "2026-05-10.gmail-boundary.v3")
+        self.assertEqual(contract_data["contract_version"], "2026-05-10.optional-gmail-boundary.v4")
         self.assertEqual(contract_data["gmail_boundary"]["required_tool"], "_create_draft")
         self.assertTrue(contract_data["gmail_boundary"]["draft_only"])
         self.assertFalse(contract_data["gmail_boundary"]["send_allowed"])
+        optional_boundary = contract_data["optional_gmail_draft_api_boundary"]
+        self.assertEqual(optional_boundary["status"], "optional")
+        self.assertEqual(optional_boundary["create_endpoint"], "/api/gmail/drafts/create")
+        self.assertEqual(optional_boundary["verify_endpoint"], "/api/gmail/drafts/verify")
+        self.assertEqual(optional_boundary["create_action"], "users.drafts.create")
+        self.assertEqual(optional_boundary["verify_action"], "users.drafts.get")
+        self.assertTrue(optional_boundary["draft_only"])
+        self.assertFalse(optional_boundary["send_allowed"])
+        self.assertTrue(optional_boundary["verify_read_only"])
+        self.assertFalse(optional_boundary["verify_local_records_changed"])
+        self.assertIn("users.drafts.send", optional_boundary["forbidden_actions"])
+        self.assertIn("users.messages.send", optional_boundary["forbidden_actions"])
         binding = contract_data["prepared_review_binding"]
         self.assertEqual(binding["preflight_response_field"], "preflight_review")
         self.assertEqual(binding["prepare_request_field"], "preflight_review")
@@ -1562,6 +1574,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "ready", report)
         names = {check["name"] for check in report["checks"]}
+        self.assertIn("adapter_contract_gmail_boundary", names)
+        self.assertIn("adapter_contract_optional_gmail_draft_api_boundary", names)
         self.assertIn("adapter_contract_sequence", names)
         self.assertIn("adapter_source_upload_evidence", names)
         self.assertIn("adapter_review_missing_questions", names)
@@ -1594,6 +1608,25 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "legalpdf_write_allowed": False,
             "managed_data_changed": False,
             "gmail_boundary": {"required_tool": "_create_draft", "draft_only": True, "send_allowed": False},
+            "optional_gmail_draft_api_boundary": {
+                "status": "optional",
+                "create_endpoint": "/api/gmail/drafts/create",
+                "verify_endpoint": "/api/gmail/drafts/verify",
+                "create_action": "users.drafts.create",
+                "verify_action": "users.drafts.get",
+                "draft_only": True,
+                "send_allowed": False,
+                "verify_read_only": True,
+                "verify_local_records_changed": False,
+                "forbidden_actions": [
+                    "users.messages.send",
+                    "users.drafts.send",
+                    "users.messages.trash",
+                    "users.messages.delete",
+                    "users.messages.list",
+                    "users.drafts.delete",
+                ],
+            },
             "prepared_review_binding": {
                 "preflight_response_field": "preflight_review",
                 "prepare_request_field": "preflight_review",
@@ -1623,6 +1656,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(validation.details["gmail_boundary_ready"])
         self.assertFalse(validation.details["gmail_boundary_send_allowed"])
         self.assertTrue(validation.details["gmail_boundary_draft_only"])
+        self.assertTrue(validation.details["optional_gmail_draft_api_boundary_ready"])
+        self.assertTrue(validation.details["optional_gmail_draft_api_boundary_present"])
+        self.assertNotIn("/api/gmail/drafts/create", REQUIRED_ADAPTER_ENDPOINTS)
+        self.assertNotIn("/api/gmail/drafts/verify", REQUIRED_ADAPTER_ENDPOINTS)
         self.assertTrue(adapter_questions_are_numbered(
             [{"number": 1, "field": "closing_date"}],
             "Please answer by number:\n1. Closing date?",
@@ -1726,6 +1763,74 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
             self.assertFalse(validation.ready, gmail_boundary)
             self.assertFalse(validation.details.get("gmail_boundary_ready", True), validation.details)
+
+    def test_legalpdf_adapter_caller_rejects_unsafe_optional_gmail_draft_api_boundary(self):
+        from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS, LegalPdfAdapterCaller
+
+        valid_optional_boundary = {
+            "status": "optional",
+            "create_endpoint": "/api/gmail/drafts/create",
+            "verify_endpoint": "/api/gmail/drafts/verify",
+            "create_action": "users.drafts.create",
+            "verify_action": "users.drafts.get",
+            "draft_only": True,
+            "send_allowed": False,
+            "verify_read_only": True,
+            "verify_local_records_changed": False,
+            "forbidden_actions": [
+                "users.messages.send",
+                "users.drafts.send",
+                "users.messages.trash",
+                "users.messages.delete",
+                "users.messages.list",
+                "users.drafts.delete",
+            ],
+        }
+        base_contract = {
+            "status": "ready",
+            "recommended_gmail_mode": "manual_handoff",
+            "draft_only": True,
+            "send_allowed": False,
+            "write_allowed": False,
+            "legalpdf_write_allowed": False,
+            "managed_data_changed": False,
+            "gmail_boundary": {"required_tool": "_create_draft", "draft_only": True, "send_allowed": False},
+            "prepared_review_binding": {
+                "preflight_response_field": "preflight_review",
+                "prepare_request_field": "preflight_review",
+                "prepare_response_field": "prepared_review",
+                "handoff_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint"],
+                "record_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed", "draft_id", "message_id", "thread_id"],
+                "gmail_api_create_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed"],
+                "stale_after_payload_or_manifest_change": True,
+                "local_workflow_guard_only": True,
+                "send_allowed": False,
+            },
+            "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
+        }
+
+        unsafe_boundaries = [
+            {**valid_optional_boundary, "send_allowed": True},
+            {**valid_optional_boundary, "draft_only": False},
+            {**valid_optional_boundary, "create_action": "users.messages.send"},
+            {**valid_optional_boundary, "verify_action": "users.messages.list"},
+            {**valid_optional_boundary, "verify_read_only": False},
+            {**valid_optional_boundary, "verify_local_records_changed": True},
+            {**valid_optional_boundary, "forbidden_actions": ["users.messages.send"]},
+        ]
+        for optional_boundary in unsafe_boundaries:
+            contract = {**base_contract, "optional_gmail_draft_api_boundary": optional_boundary}
+            caller = LegalPdfAdapterCaller(
+                "http://public-candidate.test/",
+                fetch_json=lambda _url, contract=contract: contract,
+                post_json=lambda _url, _payload: {},
+                post_multipart=lambda _url, _fields, _filename, _content, _content_type: {},
+            )
+
+            validation = caller.validate_contract(caller.fetch_contract())
+
+            self.assertFalse(validation.ready, optional_boundary)
+            self.assertFalse(validation.details.get("optional_gmail_draft_api_boundary_ready", True), validation.details)
 
     def test_legalpdf_adapter_caller_builds_reusable_http_transport(self):
         from scripts.legalpdf_adapter_caller import build_http_adapter_caller

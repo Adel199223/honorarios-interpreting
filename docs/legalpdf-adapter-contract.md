@@ -2,7 +2,7 @@
 
 This contract describes how a future LegalPDF Translate integration should call the standalone LegalPDF Honorários workflow without copying its internals or bypassing its safety rules.
 
-Current contract version: `2026-05-10.gmail-boundary.v3`
+Current contract version: `2026-05-10.optional-gmail-boundary.v4`
 
 ## Boundary
 
@@ -74,6 +74,21 @@ The future LegalPDF adapter may call the Honorários app endpoints, but it must 
 - Gmail OAuth is optional. Manual Draft Handoff is the always-available Gmail boundary for this contract.
 - The nested `gmail_boundary` must remain explicit: `required_tool: "_create_draft"`, `draft_only: true`, and `send_allowed: false`.
 - Future callers should reject the contract if that nested Gmail boundary is missing or advertises any send-capable behavior, even when the top-level contract remains `send_allowed: false`.
+
+## Optional Gmail Draft API Boundary
+
+Manual Draft Handoff remains the required and always-available sequence for LegalPDF callers. The app may also expose an optional OAuth-backed helper for local users, but callers must treat it as a separate, guarded draft-only path rather than as a replacement for the required sequence.
+
+The machine-readable `optional_gmail_draft_api_boundary` describes that optional path:
+
+- `create_endpoint: "/api/gmail/drafts/create"` may call only Gmail `users.drafts.create`.
+- `verify_endpoint: "/api/gmail/drafts/verify"` may call only Gmail `users.drafts.get` and must stay read-only.
+- `draft_only: true`, `send_allowed: false`, and `verify_read_only: true` are required.
+- `verify_local_records_changed: false` is required because verification must not write duplicate records, draft logs, reference data, or Gmail state.
+- `forbidden_actions` must include Gmail send, draft-send, message trash/delete/list, and draft delete actions.
+- Draft creation still requires the current `prepared_review` fields from `/api/prepare`, including the reviewed handoff acknowledgement. Duplicate and active-draft blockers must run before any Gmail network call.
+
+The reusable caller shim validates this optional boundary when the contract advertises it. Absence of this optional object does not make the Manual Draft Handoff contract invalid, and `/api/gmail/drafts/create` plus `/api/gmail/drafts/verify` must not be added to the required endpoint sequence.
 
 ## Forbidden Capabilities
 
