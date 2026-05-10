@@ -249,6 +249,33 @@ def _browser_gmail_api_status_required_check(gmail_status: dict[str, Any]) -> di
     )
 
 
+def _gmail_api_status_required_check(gmail_status: dict[str, Any]) -> dict[str, Any]:
+    details = {
+        "fake_mode": gmail_status.get("fake_mode") is True,
+        "draft_only": gmail_status.get("draft_only") is True,
+        "draft_create_ready": gmail_status.get("draft_create_ready") is True,
+        "gmail_api_action": gmail_status.get("gmail_api_action"),
+        "send_allowed": gmail_status.get("send_allowed"),
+    }
+    passed = (
+        details["fake_mode"]
+        and details["draft_only"]
+        and details["draft_create_ready"]
+        and details["gmail_api_action"] == "users.drafts.create"
+        and details["send_allowed"] is False
+    )
+    return _check(
+        "gmail_api_status_required",
+        passed,
+        (
+            "Gmail API smoke is limited to fake, draft-only, create-ready users.drafts.create status."
+            if passed
+            else "--gmail-api-checks requires fake, draft-only, create-ready users.drafts.create status before preparing or creating a draft."
+        ),
+        details,
+    )
+
+
 _TINY_PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
     b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?"
@@ -656,6 +683,10 @@ def _run_gmail_api_checks(
             "Gmail Draft API smoke requires HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1 in an isolated synthetic runtime.",
             {"fake_mode": gmail_status.get("fake_mode"), "connected": gmail_status.get("connected")},
         )]
+    status_gate = _gmail_api_status_required_check(gmail_status)
+    checks.append(status_gate)
+    if status_gate["status"] != "ready":
+        return checks
 
     intake_response, error_check = _post_workflow_json(
         post_json,

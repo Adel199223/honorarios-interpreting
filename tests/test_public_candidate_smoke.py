@@ -929,6 +929,106 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertEqual(report["status"], "ready", report)
         self.assertFalse(report["send_allowed"])
 
+    def test_local_app_smoke_gmail_api_checks_require_draft_only_status_before_posts(self):
+        client = self.make_client()
+        seen_post_urls = []
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            if path == "/api/gmail/status":
+                return {
+                    "provider": "gmail_api",
+                    "configured": True,
+                    "connected": True,
+                    "draft_create_ready": True,
+                    "manual_handoff_ready": True,
+                    "recommended_mode": "gmail_api",
+                    "fake_mode": True,
+                    "gmail_api_action": "users.drafts.create",
+                    "draft_only": False,
+                    "send_allowed": False,
+                    "message": "Fake Gmail status is missing the draft-only contract. Manual Draft Handoff remains available as a safe fallback.",
+                    "setup": {
+                        "status": "connected",
+                        "next_step": "Manual Draft Handoff remains available as a safe fallback.",
+                    },
+                }
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        def post_json(url, payload):
+            seen_post_urls.append(url)
+            if url.endswith("/api/intake/from-profile"):
+                intake = {
+                    "case_number": payload["case_number"],
+                    "service_date": payload["service_date"],
+                    "recipient_email": "court@example.test",
+                    "payment_entity": "Example Court",
+                    "service_place": "Example Police Station",
+                }
+                return {
+                    "status": "created",
+                    "intake": intake,
+                    "review": {"status": "ready", "draft_text": "Número de processo: 999/26.0SMOKE"},
+                    "send_allowed": False,
+                }
+            if url.endswith("/api/prepare/preflight"):
+                return {
+                    "status": "ready",
+                    "artifact_effect": "none",
+                    "write_allowed": False,
+                    "send_allowed": False,
+                    "preflight_review": {
+                        "review_fingerprint": "preflight-fingerprint",
+                        "preflight_review_token": "preflight-token",
+                    },
+                }
+            if url.endswith("/api/prepare"):
+                return {
+                    "status": "prepared",
+                    "send_allowed": False,
+                    "prepared_review": {
+                        "manifest": "/tmp/synthetic-manifest.json",
+                        "prepared_review_token": "prepared-token",
+                        "review_fingerprint": "prepared-fingerprint",
+                        "payload_paths": ["/tmp/synthetic.draft.json"],
+                    },
+                    "items": [{
+                        "draft_payload": "/tmp/synthetic.draft.json",
+                        "gmail_create_draft_ready": True,
+                        "gmail_create_draft_args": {"attachment_files": ["/tmp/synthetic.pdf"]},
+                    }],
+                }
+            if url.endswith("/api/gmail/drafts/create"):
+                return {
+                    "status": "created",
+                    "draft_id": "draft-smoke",
+                    "message_id": "message-smoke",
+                    "send_allowed": False,
+                    "confirmation": {"fake_mode": True, "recorded_duplicate_count": 1},
+                }
+            raise AssertionError(url)
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+            post_json=post_json,
+            gmail_api_checks=True,
+        )
+
+        self.assertEqual(report["status"], "blocked", report)
+        self.assertFalse(report["send_allowed"])
+        self.assertEqual(seen_post_urls, [])
+        gate = next(check for check in report["checks"] if check["name"] == "gmail_api_status_required")
+        self.assertTrue(gate["details"]["fake_mode"])
+        self.assertFalse(gate["details"]["draft_only"])
+
     def test_local_app_smoke_blocks_public_readiness_secret_previews(self):
         client = self.make_client()
 
