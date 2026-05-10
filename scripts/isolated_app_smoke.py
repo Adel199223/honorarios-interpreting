@@ -85,6 +85,7 @@ def run_isolated_app_smoke(
     browser_manual_handoff_stale: bool = False,
     browser_supporting_attachment_stale: bool = False,
     browser_recent_work_lifecycle: bool = False,
+    browser_recent_work_reconciliation: bool = False,
     browser_prepare_replacement: bool = False,
     browser_prepare_packet: bool = False,
     browser_record_helper: bool = False,
@@ -102,9 +103,18 @@ def run_isolated_app_smoke(
     thread: threading.Thread | None = None
     previous_fake_gmail = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
     try:
-        seed_active_draft = bool(browser_prepare_replacement or browser_recent_work_lifecycle or browser_supporting_attachment_stale)
-        manifest = create_synthetic_runtime(root, seed_active_draft=seed_active_draft)
-        if gmail_api_checks or browser_gmail_api_create:
+        seed_active_draft = bool(
+            browser_prepare_replacement
+            or browser_recent_work_lifecycle
+            or browser_recent_work_reconciliation
+            or browser_supporting_attachment_stale
+        )
+        manifest = create_synthetic_runtime(
+            root,
+            seed_active_draft=seed_active_draft,
+            seed_missing_active_draft=browser_recent_work_reconciliation,
+        )
+        if gmail_api_checks or browser_gmail_api_create or browser_recent_work_reconciliation:
             os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
         if start_server:
             server, thread = _start_server(root, host, selected_port)
@@ -134,6 +144,7 @@ def run_isolated_app_smoke(
             browser_manual_handoff_stale=browser_manual_handoff_stale,
             browser_supporting_attachment_stale=browser_supporting_attachment_stale,
             browser_recent_work_lifecycle=browser_recent_work_lifecycle,
+            browser_recent_work_reconciliation=browser_recent_work_reconciliation,
             browser_prepare_replacement=browser_prepare_replacement,
             browser_prepare_packet=browser_prepare_packet,
             browser_record_helper=browser_record_helper,
@@ -143,6 +154,7 @@ def run_isolated_app_smoke(
             "base_url": base_url,
             "seed_active_draft": seed_active_draft,
             "seed_active_draft_case": manifest["seed_active_draft_case"],
+            "seed_active_draft_id": manifest.get("seed_active_draft_id", ""),
             "kept": bool(runtime_root is not None or keep_runtime),
             "send_allowed": False,
         }
@@ -185,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-manual-handoff-stale", action="store_true", help="With Browser/IAB click-through and replacement/packet prepare, verify Manual Draft Handoff stale gates without recording drafts or calling Gmail.")
     parser.add_argument("--browser-supporting-attachment-stale", action="store_true", help="With Browser/IAB click-through and replacement/packet prepare, upload a synthetic Supporting proof after handoff review and verify prepared Gmail surfaces go stale.")
     parser.add_argument("--browser-recent-work-lifecycle", action="store_true", help="With Browser/IAB click-through, verify seeded Recent Work lifecycle controls without Gmail verify or local status writes.")
+    parser.add_argument("--browser-recent-work-reconciliation", action="store_true", help="With Browser/IAB click-through and fake Gmail, verify seeded Recent Work users.drafts.get reconciliation without local status writes.")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With browser correction mode, prepare a replacement against a seeded synthetic active draft.")
     parser.add_argument("--browser-prepare-packet", action="store_true")
     parser.add_argument("--browser-record-helper", action="store_true")
@@ -214,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_manual_handoff_stale=args.browser_manual_handoff_stale,
         browser_supporting_attachment_stale=args.browser_supporting_attachment_stale,
         browser_recent_work_lifecycle=args.browser_recent_work_lifecycle,
+        browser_recent_work_reconciliation=args.browser_recent_work_reconciliation,
         browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,
         browser_record_helper=args.browser_record_helper,

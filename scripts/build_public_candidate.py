@@ -547,6 +547,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("python_browser_record_helper_smoke", keys)
         self.assertIn("browser_iab_profile_proposal_smoke", keys)
         self.assertIn("browser_iab_recent_work_lifecycle_smoke", keys)
+        self.assertIn("browser_iab_recent_work_reconciliation_smoke", keys)
         self.assertIn("browser_iab_manual_handoff_stale_smoke", keys)
         self.assertIn("browser_iab_gmail_api_smoke", keys)
         isolated_attachment = next(check for check in data["checks"] if check["key"] == "isolated_supporting_attachment_smoke")
@@ -613,6 +614,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("--browser-recent-work-lifecycle", browser_recent_work["command_template"])
         self.assertIn("Recent Work", browser_recent_work["description"])
         self.assertEqual(browser_recent_work["writes"], "temporary synthetic runtime only")
+        browser_recent_work_reconciliation = next(check for check in data["checks"] if check["key"] == "browser_iab_recent_work_reconciliation_smoke")
+        self.assertIn("--browser-recent-work-reconciliation", browser_recent_work_reconciliation["command_template"])
+        self.assertIn("users.drafts.get", browser_recent_work_reconciliation["description"])
+        self.assertIn("not_found", browser_recent_work_reconciliation["description"])
+        self.assertEqual(browser_recent_work_reconciliation["writes"], "temporary synthetic runtime only")
         browser_manual_handoff_stale = next(check for check in data["checks"] if check["key"] == "browser_iab_manual_handoff_stale_smoke")
         self.assertIn("--browser-manual-handoff-stale", browser_manual_handoff_stale["command_template"])
         self.assertIn("Manual Draft Handoff", browser_manual_handoff_stale["description"])
@@ -1006,6 +1012,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_record_helper",
             "browser_profile_proposal",
             "browser_recent_work_lifecycle",
+            "browser_recent_work_reconciliation",
+            "recentWorkReconciliation: false",
+            'else if (item === "--recent-work-reconciliation") args.recentWorkReconciliation = true',
+            "browser_recent_work_reconciliation_fake_mode_required",
+            "browser_recent_work_reconciliation_status_required",
+            "draft-missing-active",
             "keepOpen: false",
             'else if (item === "--keep-open") args.keepOpen = true',
             "let existingTabIds = new Set()",
@@ -1043,6 +1055,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "#copy-browser-iab-supporting-attachment-stale-smoke-command",
             "#copy-browser-iab-record-helper-smoke-command",
             "#copy-python-browser-record-helper-smoke-command",
+            "#copy-browser-iab-recent-work-reconciliation-smoke-command",
             "isolated_source_upload_smoke",
             "legalpdf_adapter_readiness",
             "isolated_adapter_contract_smoke",
@@ -1055,12 +1068,15 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_iab_supporting_attachment_stale_smoke",
             "browser_iab_record_helper_smoke",
             "python_browser_record_helper_smoke",
+            "browser_iab_recent_work_reconciliation_smoke",
             "--source-upload-checks",
             "--adapter-contract-checks",
             "--browser-answer-questions",
             "--browser-apply-history",
             "--supporting-attachment-stale",
             "--browser-record-helper",
+            "--browser-recent-work-reconciliation",
+            "recentWorkReconciliationClipboardText",
             "supportingAttachmentStale",
             "supporting attachments changed",
             "data-use-profile-proposal",
@@ -1107,6 +1123,24 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn('click(tab, "#record-parsed-prepared-draft"', gmail_block)
         self.assertNotIn('click(tab, "#record-draft"', gmail_block)
         self.assertNotIn('click(tab, "[data-history-mark-sent', gmail_block)
+        reconciliation_block = smoke_js.split("if (args.recentWorkReconciliation)", 1)[1].split("if (args.profileProposal)", 1)[0]
+        self.assertLess(
+            reconciliation_block.index("browser_recent_work_reconciliation_fake_mode_required"),
+            reconciliation_block.index('click(tab, "button[data-history-source=\\"draft_log\\"][data-history-verify-draft]"'),
+        )
+        for text in [
+            'expectSelectorText(tab, "#history-draft-action-result", "Read-only Gmail draft verification"',
+            'expectSelectorText(tab, "#history-draft-action-result", "not_found"',
+            'expectSelectorText(tab, "#history-draft-action-result", "users.drafts.get"',
+            'expectSelectorText(tab, "#history-draft-action-result", "No local records were changed"',
+        ]:
+            with self.subTest(recent_work_reconciliation=text):
+                self.assertIn(text, reconciliation_block)
+        self.assertNotIn('click(tab, "[data-history-mark-sent', reconciliation_block)
+        self.assertNotIn('click(tab, "[data-history-mark-not-found', reconciliation_block)
+        self.assertNotIn("/api/drafts/status", reconciliation_block)
+        self.assertNotIn("/api/gmail/drafts/reconcile-not-found", reconciliation_block)
+        self.assertNotIn('click(tab, "#create-gmail-api-draft"', reconciliation_block)
         for text in [
             'driver.expect_button_disabled("#record-parsed-prepared-draft")',
             "Review the PDF preview and exact Gmail args before local recording.",
@@ -3109,6 +3143,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_iab_answer_apply_smoke",
             "browser_iab_record_helper_smoke",
             "python_browser_record_helper_smoke",
+            "browser_iab_recent_work_reconciliation_smoke",
         ]:
             with self.subTest(key=key):
                 self.assertIn(key, required_block)
@@ -3121,12 +3156,16 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         self.assertIn("browser_answer_questions: bool = False", smoke_source)
         self.assertIn("browser_apply_history: bool = False", smoke_source)
+        self.assertIn("browser_recent_work_reconciliation: bool = False", smoke_source)
         self.assertIn("browser_answer_questions=browser_answer_questions", smoke_call_block)
         self.assertIn("browser_apply_history=browser_apply_history", smoke_call_block)
+        self.assertIn("browser_recent_work_reconciliation=browser_recent_work_reconciliation", smoke_call_block)
         self.assertIn('parser.add_argument("--browser-answer-questions"', smoke_source)
         self.assertIn('parser.add_argument("--browser-apply-history"', smoke_source)
+        self.assertIn('parser.add_argument("--browser-recent-work-reconciliation"', smoke_source)
         self.assertIn("browser_answer_questions=args.browser_answer_questions", main_call_block)
         self.assertIn("browser_apply_history=args.browser_apply_history", main_call_block)
+        self.assertIn("browser_recent_work_reconciliation=args.browser_recent_work_reconciliation", main_call_block)
 
     def test_candidate_privacy_gate_passes(self):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)

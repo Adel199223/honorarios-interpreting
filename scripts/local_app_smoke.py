@@ -270,6 +270,29 @@ def _browser_gmail_api_status_required_check(gmail_status: dict[str, Any]) -> di
     )
 
 
+def _browser_recent_work_reconciliation_status_required_check(gmail_status: dict[str, Any]) -> dict[str, Any]:
+    details = {
+        "fake_mode": gmail_status.get("fake_mode") is True,
+        "draft_only": gmail_status.get("draft_only") is True,
+        "gmail_readonly_verify_action": gmail_status.get("gmail_readonly_verify_action"),
+        "send_allowed": gmail_status.get("send_allowed"),
+    }
+    passed = (
+        details["fake_mode"]
+        and details["draft_only"]
+        and details["gmail_readonly_verify_action"] == "users.drafts.get"
+        and details["send_allowed"] is False
+    )
+    return _check(
+        "browser_recent_work_reconciliation_status_required",
+        passed,
+        "Browser/IAB confirmed fake, draft-only users.drafts.get status before Recent Work reconciliation."
+        if passed
+        else "Browser/IAB Recent Work reconciliation smoke requires fake, draft-only users.drafts.get status.",
+        details,
+    )
+
+
 def _gmail_api_status_required_check(gmail_status: dict[str, Any]) -> dict[str, Any]:
     details = {
         "fake_mode": gmail_status.get("fake_mode") is True,
@@ -346,6 +369,7 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         f"  manualHandoffStale: {str(bool(kwargs.get('manual_handoff_stale'))).lower()},\n"
         f"  supportingAttachmentStale: {str(bool(kwargs.get('supporting_attachment_stale'))).lower()},\n"
         f"  recentWorkLifecycle: {str(bool(kwargs.get('recent_work_lifecycle'))).lower()},\n"
+        f"  recentWorkReconciliation: {str(bool(kwargs.get('recent_work_reconciliation'))).lower()},\n"
         "  timeoutMs: 15000,\n"
         "});\n"
         "nodeRepl.write(JSON.stringify(result, null, 2));"
@@ -403,6 +427,8 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
         cmd.append("--supporting-attachment-stale")
     if kwargs.get("recent_work_lifecycle"):
         cmd.append("--recent-work-lifecycle")
+    if kwargs.get("recent_work_reconciliation"):
+        cmd.append("--recent-work-reconciliation")
     correction_reason = kwargs.get("correction_reason")
     if correction_reason:
         cmd.extend(["--correction-reason", str(correction_reason)])
@@ -1123,6 +1149,7 @@ def run_smoke(
     browser_manual_handoff_stale: bool = False,
     browser_supporting_attachment_stale: bool = False,
     browser_recent_work_lifecycle: bool = False,
+    browser_recent_work_reconciliation: bool = False,
     browser_iab_click_through: bool = False,
     browser_runner: BrowserRunner | None = None,
 ) -> dict[str, Any]:
@@ -1260,6 +1287,7 @@ def run_smoke(
             "python_browser_record_helper_smoke",
             "browser_iab_profile_proposal_smoke",
             "browser_iab_recent_work_lifecycle_smoke",
+            "browser_iab_recent_work_reconciliation_smoke",
             "browser_iab_manual_handoff_stale_smoke",
             "browser_iab_gmail_api_smoke",
         }
@@ -1318,18 +1346,32 @@ def run_smoke(
 
     if browser_click_through:
         iab_runner_invoked = False
-        browser_gmail_status_gate = (
-            _browser_gmail_api_status_required_check(gmail_status if isinstance(gmail_status, dict) else {})
-            if browser_gmail_api_create
-            else None
-        )
+        browser_gmail_status_gate = None
+        if browser_gmail_api_create:
+            browser_gmail_status_gate = _browser_gmail_api_status_required_check(
+                gmail_status if isinstance(gmail_status, dict) else {}
+            )
+        elif browser_recent_work_reconciliation:
+            browser_gmail_status_gate = _browser_recent_work_reconciliation_status_required_check(
+                gmail_status if isinstance(gmail_status, dict) else {}
+            )
         if browser_gmail_status_gate and browser_gmail_status_gate["status"] != "ready":
             checks_to_report = [browser_gmail_status_gate]
             if not bool(gmail_status.get("fake_mode") if isinstance(gmail_status, dict) else False):
+                fake_mode_check_name = (
+                    "browser_gmail_api_fake_mode_required"
+                    if browser_gmail_api_create
+                    else "browser_recent_work_reconciliation_fake_mode_required"
+                )
+                fake_mode_message = (
+                    "--browser-gmail-api-create must run only against an isolated app with HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1."
+                    if browser_gmail_api_create
+                    else "--browser-recent-work-reconciliation must run only against an isolated app with HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1."
+                )
                 checks_to_report.append(_check(
-                    "browser_gmail_api_fake_mode_required",
+                    fake_mode_check_name,
                     False,
-                    "--browser-gmail-api-create must run only against an isolated app with HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1.",
+                    fake_mode_message,
                     {"fake_mode": gmail_status.get("fake_mode") if isinstance(gmail_status, dict) else None},
                 ))
             browser_report = {
@@ -1372,6 +1414,17 @@ def run_smoke(
                     "failure_count": 1,
                     "send_allowed": False,
                 }
+            elif browser_recent_work_reconciliation and not browser_iab_click_through:
+                browser_report = {
+                    "status": "blocked",
+                    "checks": [_check(
+                        "browser_recent_work_reconciliation",
+                        False,
+                        "--browser-recent-work-reconciliation requires --browser-iab-click-through and is intended for an isolated fake-Gmail seeded draft-history runtime.",
+                    )],
+                    "failure_count": 1,
+                    "send_allowed": False,
+                }
             elif browser_iab_click_through:
                 iab_runner_invoked = True
                 browser_report = _run_browser_iab_smoke_subprocess(
@@ -1393,6 +1446,7 @@ def run_smoke(
                     manual_handoff_stale=browser_manual_handoff_stale,
                     supporting_attachment_stale=browser_supporting_attachment_stale,
                     recent_work_lifecycle=browser_recent_work_lifecycle,
+                    recent_work_reconciliation=browser_recent_work_reconciliation,
                 )
             else:
                 try:
@@ -1442,6 +1496,7 @@ def run_smoke(
                 manual_handoff_stale=browser_manual_handoff_stale,
                 supporting_attachment_stale=browser_supporting_attachment_stale,
                 recent_work_lifecycle=browser_recent_work_lifecycle,
+                recent_work_reconciliation=browser_recent_work_reconciliation,
                 iab_click_through=browser_iab_click_through,
             )
         checks.extend(browser_report.get("checks", []) if isinstance(browser_report, dict) else [])
@@ -1491,6 +1546,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-manual-handoff-stale", action="store_true", help="With --browser-click-through and a prepared payload, build the Manual Draft Handoff packet, then change intake text and verify stale gates clear it.")
     parser.add_argument("--browser-supporting-attachment-stale", action="store_true", help="With browser click-through and a prepared payload, build the Manual Draft Handoff packet, then upload a synthetic Supporting proof and verify stale gates clear it.")
     parser.add_argument("--browser-recent-work-lifecycle", action="store_true", help="With --browser-iab-click-through against seeded history, verify Recent Work lifecycle controls without clicking Gmail verify or local status writes.")
+    parser.add_argument("--browser-recent-work-reconciliation", action="store_true", help="With --browser-iab-click-through against isolated fake Gmail seeded history, verify Recent Work users.drafts.get reconciliation without local status writes.")
     parser.add_argument("--browser-prepare-replacement", action="store_true", help="With --browser-click-through and --browser-correction-mode, click replacement prepare. This can create local PDF/payload artifacts but still never records drafts or calls Gmail.")
     parser.add_argument("--browser-prepare-packet", action="store_true", help="With --browser-click-through, also click packet prepare. This can create local PDF/payload artifacts.")
     parser.add_argument("--browser-record-helper", action="store_true", help="With --browser-click-through and packet prepare, parse fake Gmail IDs and autofill record fields without recording.")
@@ -1522,6 +1578,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_manual_handoff_stale=args.browser_manual_handoff_stale,
         browser_supporting_attachment_stale=args.browser_supporting_attachment_stale,
         browser_recent_work_lifecycle=args.browser_recent_work_lifecycle,
+        browser_recent_work_reconciliation=args.browser_recent_work_reconciliation,
         browser_prepare_replacement=args.browser_prepare_replacement,
         browser_prepare_packet=args.browser_prepare_packet,
         browser_record_helper=args.browser_record_helper,

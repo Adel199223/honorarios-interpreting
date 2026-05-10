@@ -2408,6 +2408,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "temporary synthetic runtime only",
         },
         {
+            "key": "browser_iab_recent_work_reconciliation_smoke",
+            "label": "Browser/IAB Recent Work reconciliation smoke",
+            "description": "Runs the Codex in-app Browser runner against an isolated seeded draft history with fake Gmail mode, clicks the Recent Work read-only verify action, and checks users.drafts.get not_found reconciliation without local status writes.",
+            "command_template": "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recent-work-reconciliation --json",
+            "effect": "temporary_isolated_runtime_fake_gmail_browser",
+            "writes": "temporary synthetic runtime only",
+        },
+        {
             "key": "browser_iab_manual_handoff_stale_smoke",
             "label": "Browser/IAB Manual Draft Handoff stale smoke",
             "description": "Runs the Codex in-app Browser runner against an isolated runtime, prepares a synthetic replacement, builds the Manual Draft Handoff packet, then verifies intake changes clear stale handoff and record-helper state.",
