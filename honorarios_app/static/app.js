@@ -24,6 +24,11 @@ const state = {
   lastGmailCreateConfirmation: null,
   lastManualHandoff: null,
   lastHistoryDraftVerification: null,
+  serverConnection: {
+    connected: true,
+    lastChecked: "",
+    message: "",
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -137,18 +142,95 @@ const SAFE_ACTION_GATES = {
   },
 };
 
+const SERVER_DISCONNECTED_MESSAGE = "Local server disconnected. This browser tab is stale; restart the app and reload before continuing.";
+const SERVER_GATED_SELECTORS = [
+  "#refresh-reference",
+  "#review-intake",
+  "#build-profile",
+  "#notification-upload-form button[type=submit]",
+  "#photo-upload-form button[type=submit]",
+  "#google-photos-upload-form button[type=submit]",
+  "#supporting-attachment-form button[type=submit]",
+  "#google-photos-oauth-start",
+  "#google-photos-picker-start",
+  "#google-photos-picker-check",
+  "#google-photos-picker-import",
+  "#run-public-readiness",
+  "#build-public-candidate",
+  "#refresh-diagnostics",
+  "#export-local-backup",
+  "#copy-local-backup",
+  "#preview-local-backup-import",
+  "#restore-local-backup",
+  "#preview-legalpdf-import",
+  "#export-legalpdf-import-report",
+  "#build-legalpdf-checklist",
+  "#build-legalpdf-import-plan",
+  "#apply-legalpdf-import-plan",
+  "#refresh-legalpdf-apply-history",
+  "#load-legalpdf-restore-plan",
+  "#apply-legalpdf-restore",
+  "#save-destination",
+  "#preview-destination",
+  "#save-court-email",
+  "#preview-court-email",
+  "#save-profile",
+  "#preview-profile-change",
+  "#rollback-profile-change",
+  "#save-personal-profile",
+  "#set-main-personal-profile",
+  "#delete-personal-profile",
+  "#preview-legalpdf-personal-profile-import",
+  "#apply-legalpdf-personal-profile-import",
+];
+
 function setActionGate(id, enabled, reason = "", actionState = "idle") {
   const button = document.getElementById(id);
   if (!button) return;
-  button.disabled = !enabled;
-  button.setAttribute("aria-disabled", enabled ? "false" : "true");
+  const disconnected = state.serverConnection?.connected === false;
+  const effectiveEnabled = enabled && !disconnected;
+  const effectiveReason = disconnected ? SERVER_DISCONNECTED_MESSAGE : reason;
+  button.disabled = !effectiveEnabled;
+  button.setAttribute("aria-disabled", effectiveEnabled ? "false" : "true");
   button.setAttribute("data-safe-action-state", actionState);
-  button.classList.toggle("is-gated", !enabled);
-  if (reason) {
-    button.title = reason;
+  button.classList.toggle("is-gated", !effectiveEnabled);
+  if (effectiveReason) {
+    button.title = effectiveReason;
   } else {
     button.removeAttribute("title");
   }
+}
+
+function syncServerConnectionGates() {
+  const disconnected = state.serverConnection?.connected === false;
+  SERVER_GATED_SELECTORS.forEach((selector) => {
+    document.querySelectorAll(selector).forEach((element) => {
+      if (!("disabled" in element)) return;
+      if (disconnected) {
+        if (element.getAttribute("data-server-disconnected") !== "true") {
+          element.setAttribute("data-server-disconnected-previous-disabled", element.disabled ? "true" : "false");
+          element.setAttribute("data-server-disconnected-previous-title", element.getAttribute("title") || "");
+        }
+        element.disabled = true;
+        element.setAttribute("aria-disabled", "true");
+        element.setAttribute("data-server-disconnected", "true");
+        element.title = SERVER_DISCONNECTED_MESSAGE;
+      } else if (element.getAttribute("data-server-disconnected") === "true") {
+        const wasDisabled = element.getAttribute("data-server-disconnected-previous-disabled") === "true";
+        const previousTitle = element.getAttribute("data-server-disconnected-previous-title") || "";
+        element.disabled = wasDisabled;
+        element.setAttribute("aria-disabled", wasDisabled ? "true" : "false");
+        element.removeAttribute("data-server-disconnected");
+        element.removeAttribute("data-server-disconnected-previous-disabled");
+        element.removeAttribute("data-server-disconnected-previous-title");
+        if (previousTitle) {
+          element.title = previousTitle;
+        } else {
+          element.removeAttribute("title");
+        }
+      }
+    });
+  });
 }
 
 function syncActionGates(action = state.currentNextSafeAction) {
@@ -1413,15 +1495,81 @@ function closeReviewDrawer() {
   document.body.dataset.interpretationReviewDrawer = "closed";
 }
 
+function renderServerConnectionStatus() {
+  const banner = $("#server-connection-banner");
+  const message = $("#server-connection-message");
+  const chip = $("#server-connection-chip");
+  if (!banner || !message || !chip) return;
+  const disconnected = state.serverConnection?.connected === false;
+  banner.classList.toggle("hidden", !disconnected);
+  const text = state.serverConnection?.message || SERVER_DISCONNECTED_MESSAGE;
+  message.textContent = text;
+  chip.textContent = disconnected ? "disconnected" : "connected";
+  chip.className = `status-chip ${disconnected ? "blocked" : "ready"}`;
+}
+
+function setServerConnected() {
+  const wasDisconnected = state.serverConnection?.connected === false;
+  state.serverConnection = {
+    connected: true,
+    lastChecked: new Date().toISOString(),
+    message: "",
+  };
+  renderServerConnectionStatus();
+  syncServerConnectionGates();
+  if (wasDisconnected) syncActionGates();
+}
+
+function setServerDisconnected(error) {
+  const detail = error?.message ? ` ${error.message}` : "";
+  state.serverConnection = {
+    connected: false,
+    lastChecked: new Date().toISOString(),
+    message: `${SERVER_DISCONNECTED_MESSAGE}${detail}`,
+  };
+  renderServerConnectionStatus();
+  syncActionGates();
+  syncServerConnectionGates();
+}
+
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const data = await response.json();
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (error) {
+    setServerDisconnected(error);
+    throw new Error("Local server disconnected. Restart the app and reload before continuing.");
+  }
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    setServerDisconnected(error);
+    throw new Error("Local server returned invalid JSON. Restart the app and reload before continuing.");
+  }
+  setServerConnected();
   if (!response.ok) {
     throw new Error(data.detail || data.message || `Request failed: ${response.status}`);
   }
+  return data;
+}
+
+async function checkServerHealth() {
+  const data = await requestJson("/api/health", { method: "GET" });
+  if (
+    data?.status !== "ready"
+    || data?.send_allowed !== false
+    || data?.write_allowed !== false
+    || data?.managed_data_changed !== false
+  ) {
+    const error = new Error("Health check returned an unsafe or unexpected response.");
+    setServerDisconnected(error);
+    throw error;
+  }
+  setServerConnected();
   return data;
 }
 
@@ -5023,8 +5171,22 @@ function bindActions() {
 bindNavigation();
 bindActions();
 window.addEventListener("hashchange", () => showPanel(window.location.hash, { updateHash: false }));
+window.addEventListener("focus", () => {
+  checkServerHealth().catch(() => {});
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    checkServerHealth().catch(() => {});
+  }
+});
 showPanel(window.location.hash || "new-job", { updateHash: false });
 renderBatchQueue();
+renderServerConnectionStatus();
+syncServerConnectionGates();
+checkServerHealth().catch(() => {});
+setInterval(() => {
+  checkServerHealth().catch(() => {});
+}, 30000);
 loadReference().catch((error) => {
   setStatus("error", error.message);
   showAlert(error.message, "error");

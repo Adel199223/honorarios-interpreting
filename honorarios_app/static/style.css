@@ -295,6 +295,23 @@ pre {
   border: 1px solid rgba(117, 218, 255, 0.22);
 }
 
+.server-connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  border-radius: var(--radius-md);
+  color: #ffe0b0;
+  background: rgba(76, 49, 18, 0.36);
+  border: 1px solid rgba(255, 208, 138, 0.44);
+}
+
+.server-connection-banner p {
+  margin-top: 4px;
+  color: #ffe8c7;
+}
+
 .compact-gmail-strip p {
   margin-top: 4px;
   color: var(--muted);
