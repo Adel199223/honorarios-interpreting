@@ -655,6 +655,32 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             smoke_js.index("browser_gmail_api_fake_mode_required"),
             smoke_js.index('click(tab, "#create-gmail-api-draft"'),
         )
+        gmail_block = smoke_js.split("if (args.gmailApiCreate)", 1)[1].split(
+            'if (!args.prepareReplacement || args.preparePacket)',
+            1,
+        )[0]
+        self.assertLess(
+            gmail_block.index("data-verify-created-draft"),
+            gmail_block.index('fill(tab, "#record_draft_id", "draft-mismatch-smoke"'),
+        )
+        self.assertLess(
+            gmail_block.index('fill(tab, "#record_draft_id", "draft-mismatch-smoke"'),
+            gmail_block.index('click(tab, "#verify-gmail-draft"'),
+        )
+        for text in [
+            'fill(tab, "#record_message_id", "local-message-smoke"',
+            'fill(tab, "#record_thread_id", "local-thread-smoke"',
+            'expectSelectorText(tab, "#gmail-verify-result", "reconciliation mismatch"',
+            'expectSelectorText(tab, "#gmail-verify-result", "Message ID differs"',
+            'expectSelectorText(tab, "#gmail-verify-result", "Thread ID differs"',
+            'expectSelectorText(tab, "#gmail-verify-result", "No local records were changed"',
+            'expectSelectorText(tab, "#gmail-verify-result", "users.drafts.get"',
+        ]:
+            with self.subTest(gmail_mismatch=text):
+                self.assertIn(text, gmail_block)
+        self.assertNotIn('click(tab, "#record-parsed-prepared-draft"', gmail_block)
+        self.assertNotIn('click(tab, "#record-draft"', gmail_block)
+        self.assertNotIn('click(tab, "[data-history-mark-sent', gmail_block)
         self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
         self.assertNotIn('click(tab, "[data-history-mark-not-found', smoke_js)
         self.assertNotIn("_send_email", smoke_js)
