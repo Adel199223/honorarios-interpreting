@@ -245,7 +245,7 @@ def _google_photos_config(config_path: Path) -> dict[str, Any]:
         "client_secret_source": client_secret_source,
         "token_path": token_path,
         "token_path_source": token_path_source or "default_local",
-        "redirect_uri": redirect_uri or "http://127.0.0.1:8766/api/google-photos/oauth/callback",
+        "redirect_uri": redirect_uri or "http://127.0.0.1:8765/api/google-photos/oauth/callback",
         "redirect_uri_source": redirect_uri_source or "default_local",
     }
 

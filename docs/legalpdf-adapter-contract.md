@@ -116,7 +116,7 @@ The response is secret-free and includes:
 Use the read-only caller readiness probe before changing this boundary or wiring a future LegalPDF caller:
 
 ```powershell
-python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --readiness-only --json
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --readiness-only --json
 ```
 
 That probe checks `/api/health` and this adapter contract only. It must not upload sources, prepare PDFs, record drafts, expose local paths, or call Gmail.
@@ -137,13 +137,13 @@ The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_calle
 For focused caller debugging against an already-running isolated app, the shim also has a guarded artifact-writing CLI:
 
 ```powershell
-python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --allow-synthetic-recording --json
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --allow-synthetic-recording --json
 ```
 
 The same guarded CLI can exercise a caller-supplied sanitized source instead of the built-in synthetic PDF fixture:
 
 ```powershell
-python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --source-file .\tmp\sanitized-legalpdf-source.pdf --source-kind notification_pdf --case-number 321/26.0CALLER --service-date 2026-05-06 --allow-synthetic-recording --json
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --source-file .\tmp\sanitized-legalpdf-source.pdf --source-kind notification_pdf --case-number 321/26.0CALLER --service-date 2026-05-06 --allow-synthetic-recording --json
 ```
 
 The flag is intentionally explicit because the full sequence prepares artifacts and records synthetic draft IDs. Use the isolated smoke launcher for normal verification.

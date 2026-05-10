@@ -24,7 +24,7 @@ GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_DRAFTS_CREATE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
 GMAIL_DRAFT_GET_URL_TEMPLATE = "https://gmail.googleapis.com/gmail/v1/users/me/drafts/{draft_id}"
 FAKE_GMAIL_DRAFT_API_ENV = "HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"
-DEFAULT_GMAIL_REDIRECT_URI = "http://127.0.0.1:8766/api/gmail/oauth/callback"
+DEFAULT_GMAIL_REDIRECT_URI = "http://127.0.0.1:8765/api/gmail/oauth/callback"
 DEFAULT_GMAIL_TOKEN_PATH = "config/gmail-token.local.json"
 SAFE_GMAIL_CONFIG_LABEL = "config/gmail.local.json"
 SAFE_GMAIL_EXAMPLE_LABEL = "config/gmail.example.json"
@@ -183,7 +183,7 @@ def _validate_gmail_redirect_uri(redirect_uri: str) -> str:
     value = redirect_uri.strip() or DEFAULT_GMAIL_REDIRECT_URI
     parsed = urlparse(value)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
-        raise IntakeError("Gmail redirect URI must be a local loopback URL such as http://127.0.0.1:8766/api/gmail/oauth/callback.")
+        raise IntakeError("Gmail redirect URI must be a local loopback URL such as http://127.0.0.1:8765/api/gmail/oauth/callback.")
     if parsed.path != "/api/gmail/oauth/callback":
         raise IntakeError("Gmail redirect URI must end with /api/gmail/oauth/callback.")
     return value

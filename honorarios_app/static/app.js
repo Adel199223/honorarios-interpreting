@@ -1932,7 +1932,7 @@ function renderGmailSetup(data) {
     nextStep.textContent = setup.next_step || "Manual Draft Handoff is always available. Connect Gmail API only when you want optional in-app draft creation.";
   }
   if (redirect && !redirect.dataset.userEdited) {
-    redirect.value = setup.redirect_uri || redirect.value || "http://127.0.0.1:8766/api/gmail/oauth/callback";
+    redirect.value = setup.redirect_uri || redirect.value || "http://127.0.0.1:8765/api/gmail/oauth/callback";
   }
 }
 

@@ -16,13 +16,13 @@ Current date: 2026-05-10
 - Local app command:
 
   ```powershell
-  python -m honorarios_app.web --host 127.0.0.1 --port 8766
+  python -m honorarios_app.web --host 127.0.0.1 --port 8765
   ```
 
 - Browser URL:
 
   ```text
-  http://127.0.0.1:8766/
+  http://127.0.0.1:8765/
   ```
 
 - The app is local-first, PDF-only, and Gmail draft-only.
@@ -46,7 +46,7 @@ python -m unittest discover tests
 node --check honorarios_app\static\app.js
 node --check scripts\browser_iab_smoke.mjs
 python scripts\public_repo_gate.py --tracked --json
-python scripts\local_app_smoke.py --base-url http://127.0.0.1:8766 --json
+python scripts\local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
 Optional sanitized candidate audit:
@@ -59,9 +59,9 @@ python scripts\public_release_gate.py --root output\public-candidate --json
 Optional isolated adapter caller CLI, after starting a disposable synthetic app runtime:
 
 ```powershell
-python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --readiness-only --json
-python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --allow-synthetic-recording --json
-python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --source-file .\tmp\sanitized-legalpdf-source.pdf --source-kind notification_pdf --case-number 321/26.0CALLER --service-date 2026-05-06 --allow-synthetic-recording --json
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --readiness-only --json
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --allow-synthetic-recording --json
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --source-file .\tmp\sanitized-legalpdf-source.pdf --source-kind notification_pdf --case-number 321/26.0CALLER --service-date 2026-05-06 --allow-synthetic-recording --json
 ```
 
 ## Public Release Workflow

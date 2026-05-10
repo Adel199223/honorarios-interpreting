@@ -200,7 +200,7 @@ def create_synthetic_runtime(
     })
     _write_json(paths["gmail_config"], {
         "notes": "Synthetic isolated runtime. Configure real Gmail OAuth credentials only in private local files.",
-        "redirect_uri": "http://127.0.0.1:8766/api/gmail/oauth/callback",
+        "redirect_uri": "http://127.0.0.1:8765/api/gmail/oauth/callback",
         "token_path": str(root / "config" / "gmail-token.local.json"),
     })
 

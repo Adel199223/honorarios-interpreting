@@ -1129,7 +1129,7 @@ def _run_supporting_attachment_checks(
 
 
 def run_smoke(
-    base_url: str = "http://127.0.0.1:8766",
+    base_url: str = "http://127.0.0.1:8765",
     *,
     timeout: float = 5.0,
     fetch_text: TextFetcher | None = None,
@@ -1533,7 +1533,7 @@ def run_smoke(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Smoke-check the live local Honorários browser app.")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8766")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8765")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--interaction-checks", action="store_true", help="Also exercise the opt-in profile/review/packet-prepare contract. This may create local draft payload/PDF artifacts on a real app.")
     parser.add_argument("--adapter-contract-checks", action="store_true", help="Exercise the LegalPDF adapter contract sequence through review, packet preflight, prepare, Manual Draft Handoff, and local draft recording. Use the isolated launcher for normal runs.")

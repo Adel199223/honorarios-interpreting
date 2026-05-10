@@ -1498,7 +1498,7 @@ def main(argv: list[str] | None = None) -> int:
             "isolated synthetic runtime for any full sequence."
         ),
     )
-    parser.add_argument("--base-url", default="http://127.0.0.1:8766")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8765")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--profile", default="example_interpreting")
     parser.add_argument("--case-number", default="999/26.0SMOKE")
