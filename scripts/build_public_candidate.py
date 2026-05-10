@@ -2734,6 +2734,74 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertNotIn("copyable_prompt", summary_text)
         self.assertNotIn("/tmp/adapter-packet.draft.json", summary_text)
 
+        with tempfile.TemporaryDirectory() as tmp:
+            source_file = Path(tmp) / "caller-input.pdf"
+            source_file.write_bytes(b"%PDF caller source")
+            caller_output = StringIO()
+            with patch.object(adapter, "run_adapter_sequence_http", return_value=FakeResult()) as run_caller_sequence:
+                with patch.object(adapter, "run_synthetic_adapter_sequence_http") as blocked_synthetic:
+                    with patch("sys.stdout", caller_output):
+                        exit_code = adapter.main([
+                            "--base-url",
+                            "public-candidate.test/",
+                            "--timeout",
+                            "7.5",
+                            "--profile",
+                            "example_interpreting",
+                            "--case-number",
+                            "321/26.0CALLER",
+                            "--service-date",
+                            "2026-05-06",
+                            "--source-file",
+                            str(source_file),
+                            "--source-kind",
+                            "notification_pdf",
+                            "--content-type",
+                            "application/pdf",
+                            "--visible-metadata-text",
+                            "sanitized caller metadata",
+                            "--source-field",
+                            "adapter_trace_id=cli-smoke",
+                            "--allow-synthetic-recording",
+                            "--json",
+                        ])
+
+        self.assertEqual(exit_code, 0)
+        blocked_synthetic.assert_not_called()
+        run_caller_sequence.assert_called_once()
+        _, caller_kwargs = run_caller_sequence.call_args
+        self.assertEqual(caller_kwargs["base_url"], "public-candidate.test/")
+        self.assertEqual(caller_kwargs["timeout"], 7.5)
+        source = caller_kwargs["source"]
+        self.assertIsInstance(source, adapter.AdapterSourceInput)
+        self.assertEqual(source.profile, "example_interpreting")
+        self.assertEqual(source.source_kind, "notification_pdf")
+        self.assertEqual(source.filename, "caller-input.pdf")
+        self.assertEqual(source.content, b"%PDF caller source")
+        self.assertEqual(source.content_type, "application/pdf")
+        self.assertEqual(source.expected_case_number, "321/26.0CALLER")
+        self.assertEqual(source.expected_service_date, "2026-05-06")
+        self.assertEqual(source.visible_metadata_text, "sanitized caller metadata")
+        self.assertEqual(source.extra_fields, {"adapter_trace_id": "cli-smoke"})
+        caller_summary = json.loads(caller_output.getvalue())
+        self.assertEqual(caller_summary["status"], "ready")
+        self.assertNotIn("caller-input.pdf", json.dumps(caller_summary, sort_keys=True))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source_file = Path(tmp) / "caller-input.pdf"
+            source_file.write_bytes(b"%PDF caller source")
+            with patch.object(adapter, "run_adapter_sequence_http") as blocked_caller_sequence:
+                with patch("sys.stderr", StringIO()):
+                    with self.assertRaises(SystemExit) as blocked:
+                        adapter.main([
+                            "--base-url",
+                            "public-candidate.test/",
+                            "--source-file",
+                            str(source_file),
+                        ])
+        self.assertEqual(blocked.exception.code, 2)
+        blocked_caller_sequence.assert_not_called()
+
         readiness_output = StringIO()
         with patch.object(adapter, "run_adapter_readiness_http", return_value=FakeResult()) as run_readiness:
             with patch.object(adapter, "run_synthetic_adapter_sequence_http") as blocked_sequence:

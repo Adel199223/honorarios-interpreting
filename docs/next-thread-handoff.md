@@ -35,7 +35,7 @@ Current date: 2026-05-10
 - LegalPDF-style browser app shell and review drawer.
 - Local PDF/photo upload, source evidence, OpenAI OCR evidence, automatic service-profile detection, numbered questions, duplicate/active-draft blocking, PDF preview, draft payload display, Manual Draft Handoff, optional guarded Gmail draft creation, Recent Work lifecycle controls, personal profiles, service profiles, reference editing, LegalPDF import preview/apply guards, public Git safety tooling, and Browser/IAB smoke coverage.
 - Public repo safety boundary: `.gitignore` keeps real runtime overlays local, `.githooks/pre-commit` runs `python scripts/public_repo_gate.py --staged`, and the browser Public GitHub Readiness panel reports tracked Git safety separately from the stricter full-workspace privacy gate.
-- LegalPDF adapter caller shim: `scripts/legalpdf_adapter_caller.py` now centralizes the safe endpoint list, read-only `/api/health` plus adapter-contract readiness probing, reusable HTTP JSON/multipart transport, prepared-review request fields, stale-token helper, read-only/draft-only contract validation including the nested Gmail boundary and exact prepared-review binding fields, injected synthetic sequence used by the isolated adapter smoke, a guarded live-app CLI for isolated synthetic runs, and secret-free readiness summaries.
+- LegalPDF adapter caller shim: `scripts/legalpdf_adapter_caller.py` now centralizes the safe endpoint list, read-only `/api/health` plus adapter-contract readiness probing, reusable HTTP JSON/multipart transport, caller-supplied sanitized source upload input, prepared-review request fields, stale-token helper, read-only/draft-only contract validation including the nested Gmail boundary and exact prepared-review binding fields, injected synthetic sequence used by the isolated adapter smoke, a guarded live-app CLI for isolated synthetic or caller-source runs, and secret-free readiness summaries.
 
 ## Validation Commands
 
@@ -61,6 +61,7 @@ Optional isolated adapter caller CLI, after starting a disposable synthetic app 
 ```powershell
 python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --readiness-only --json
 python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --allow-synthetic-recording --json
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --source-file .\tmp\sanitized-legalpdf-source.pdf --source-kind notification_pdf --case-number 321/26.0CALLER --service-date 2026-05-06 --allow-synthetic-recording --json
 ```
 
 ## Public Release Workflow

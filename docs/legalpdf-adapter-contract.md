@@ -132,7 +132,7 @@ It drives the future caller sequence through source upload, numbered-answer revi
 - `legalpdf_write_allowed: false`
 - `managed_data_changed: false`
 
-The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, `/api/health` readiness probing, reusable HTTP JSON/multipart transport, `AdapterSourceInput` for caller-supplied sanitized in-memory source uploads, prepared-review request-field helpers, stale-token helpers, contract validation for the exact prepared-review binding fields, the generic `run_adapter_sequence_result(...)`, the synthetic adapter sequence wrapper used by the smoke runner, and secret-free `AdapterReadinessResult.safe_summary()` / `AdapterSequenceResult.safe_summary()` outputs for future callers that need readiness signals without copyable Gmail prompts, uploaded source bytes, source filenames, or local payload paths.
+The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, `/api/health` readiness probing, reusable HTTP JSON/multipart transport, `AdapterSourceInput` for caller-supplied sanitized in-memory source uploads, prepared-review request-field helpers, stale-token helpers, contract validation for the exact prepared-review binding fields, the generic `run_adapter_sequence_result(...)` / `run_adapter_sequence_http(...)`, the synthetic adapter sequence wrapper used by the smoke runner, and secret-free `AdapterReadinessResult.safe_summary()` / `AdapterSequenceResult.safe_summary()` outputs for future callers that need readiness signals without copyable Gmail prompts, uploaded source bytes, source filenames, or local payload paths.
 
 For focused caller debugging against an already-running isolated app, the shim also has a guarded artifact-writing CLI:
 
@@ -140,6 +140,12 @@ For focused caller debugging against an already-running isolated app, the shim a
 python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --allow-synthetic-recording --json
 ```
 
-The flag is intentionally explicit because the full sequence prepares synthetic artifacts and records synthetic draft IDs. Use the isolated smoke launcher for normal verification.
+The same guarded CLI can exercise a caller-supplied sanitized source instead of the built-in synthetic PDF fixture:
+
+```powershell
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --source-file .\tmp\sanitized-legalpdf-source.pdf --source-kind notification_pdf --case-number 321/26.0CALLER --service-date 2026-05-06 --allow-synthetic-recording --json
+```
+
+The flag is intentionally explicit because the full sequence prepares artifacts and records synthetic draft IDs. Use the isolated smoke launcher for normal verification.
 
 Use that endpoint as the machine-readable source for future LegalPDF integration planning.
