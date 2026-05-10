@@ -119,6 +119,31 @@ function check(name, passed, message, details = {}) {
   };
 }
 
+function browserGmailApiStatusRequiredCheck(gmailStatus) {
+  const details = {
+    fake_mode: gmailStatus?.fake_mode === true,
+    draft_only: gmailStatus?.draft_only === true,
+    draft_create_ready: gmailStatus?.draft_create_ready === true,
+    gmail_api_action: gmailStatus?.gmail_api_action,
+    send_allowed: gmailStatus?.send_allowed,
+  };
+  const passed = (
+    details.fake_mode
+    && details.draft_only
+    && details.draft_create_ready
+    && details.gmail_api_action === "users.drafts.create"
+    && details.send_allowed === false
+  );
+  return check(
+    "browser_gmail_api_status_required",
+    passed,
+    passed
+      ? "Browser/IAB confirmed fake, draft-only, create-ready users.drafts.create status before clicking Gmail draft creation."
+      : "Browser/IAB Gmail draft-create smoke requires fake, draft-only, create-ready users.drafts.create status before clicking Create Gmail Draft.",
+    details,
+  );
+}
+
 function report(baseUrl, checks) {
   const failureCount = checks.filter((item) => item.status !== "ready").length;
   return {
@@ -706,15 +731,18 @@ export async function runBrowserIabSmoke(options = {}) {
   }
 
   if (args.gmailApiCreate) {
+    let gmailStatus = null;
     if (!(await runStep(checks, "browser_gmail_api_fake_mode_required", "Browser/IAB confirmed fake Gmail mode before clicking Gmail draft creation.", async () => {
-      const gmailStatus = await fetchJson(baseUrl, "/api/gmail/status", args.timeoutMs);
+      gmailStatus = await fetchJson(baseUrl, "/api/gmail/status", args.timeoutMs);
       if (gmailStatus.fake_mode !== true) {
         throw new Error("Browser/IAB Gmail draft-create smoke requires fake Gmail mode before clicking Create Gmail Draft.");
       }
-      if (gmailStatus.gmail_api_action !== "users.drafts.create" || gmailStatus.send_allowed !== false) {
-        throw new Error("Browser/IAB Gmail draft-create smoke requires draft-only users.drafts.create status.");
-      }
     }))) {
+      return finish();
+    }
+    const statusGate = browserGmailApiStatusRequiredCheck(gmailStatus);
+    checks.push(statusGate);
+    if (statusGate.status !== "ready") {
       return finish();
     }
     if (!(await runStep(checks, "browser_gmail_api_create", "Browser/IAB created and verified a synthetic Gmail draft through the fake Gmail API path.", async () => {
