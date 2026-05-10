@@ -128,6 +128,8 @@ python scripts\isolated_app_smoke.py --adapter-contract-checks --json
 ```
 
 It drives the future caller sequence through source upload, numbered-answer review recovery, packet preflight, prepare, Manual Draft Handoff, stale prepared-review rejection, and synthetic local draft recording in a temporary runtime. It must not contact Gmail or write to LegalPDF Translate.
+
+The reusable full-sequence caller also verifies `/api/health` before upload and refuses to continue unless the server attests `isolated_runtime=true`, `synthetic_runtime=true`, and the expected synthetic runtime marker. `--readiness-only` remains the safe live-app probe because it is read-only.
 - `write_allowed: false`
 - `legalpdf_write_allowed: false`
 - `managed_data_changed: false`
@@ -146,6 +148,6 @@ The same guarded CLI can exercise a caller-supplied sanitized source instead of 
 python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --source-file .\tmp\sanitized-legalpdf-source.pdf --source-kind notification_pdf --case-number 321/26.0CALLER --service-date 2026-05-06 --allow-synthetic-recording --json
 ```
 
-The flag is intentionally explicit because the full sequence prepares artifacts and records synthetic draft IDs. Use the isolated smoke launcher for normal verification.
+The flag is intentionally explicit because the full sequence prepares artifacts and records synthetic draft IDs, and the caller still refuses to continue unless `/api/health` attests an isolated synthetic runtime. Use the isolated smoke launcher for normal verification.
 
 Use that endpoint as the machine-readable source for future LegalPDF integration planning.

@@ -367,8 +367,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         request_payload["preflight_review"] = preflight_data["preflight_review"]
         return client.post("/api/prepare", json=request_payload)
 
-    def adapter_health_payload(self):
-        return {
+    def adapter_health_payload(self, *, isolated_synthetic=False):
+        payload = {
             "status": "ready",
             "app": "LegalPDF Honorários",
             "timestamp": "2026-05-10T00:00:00Z",
@@ -376,6 +376,16 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "write_allowed": False,
             "managed_data_changed": False,
         }
+        if isolated_synthetic:
+            payload.update({
+                "isolated_runtime": True,
+                "synthetic_runtime": True,
+                "runtime": {
+                    "mode": "synthetic_isolated",
+                    "attestation": "honorarios_synthetic_runtime_v1",
+                },
+            })
+        return payload
 
     def adapter_contract_payload(self):
         from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS
@@ -1820,6 +1830,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         def fetch_json(url):
             path = url.split("http://public-candidate.test", 1)[-1]
+            if path == "/api/health":
+                return self.adapter_health_payload(isolated_synthetic=True)
             response = client.get(path)
             self.assertEqual(response.status_code, 200, response.text)
             return response.json()
@@ -2128,6 +2140,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         summary = readiness.safe_summary()
         self.assertTrue(summary["health_ready"])
         self.assertTrue(summary["contract_ready"])
+        self.assertFalse(summary["isolated_synthetic_runtime"])
         summary_text = json.dumps(summary, sort_keys=True)
         for secretish in ["copyable_prompt", "/tmp/adapter", "draft-", "access_token", "source_text"]:
             with self.subTest(secretish=secretish):
@@ -2368,7 +2381,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         def fetch_json(url):
             if url.endswith("/api/health"):
-                return self.adapter_health_payload()
+                return self.adapter_health_payload(isolated_synthetic=True)
             if url.endswith("/api/integration/adapter-contract"):
                 return {
                     "status": "ready",
@@ -2538,6 +2551,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertFalse(result.write_allowed)
         self.assertFalse(result.legalpdf_write_allowed)
         summary = result.safe_summary()
+        self.assertTrue(summary["isolated_synthetic_runtime"])
         self.assertTrue(summary["prepared_review_bound"])
         self.assertTrue(summary["manual_handoff_ready"])
         self.assertTrue(summary["stale_manual_handoff_blocked"])
@@ -2575,7 +2589,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         def fetch_json(url):
             if url.endswith("/api/health"):
-                return self.adapter_health_payload()
+                return self.adapter_health_payload(isolated_synthetic=True)
             if url.endswith("/api/integration/adapter-contract"):
                 return self.adapter_contract_payload()
             if url.endswith("/api/history"):
@@ -2715,6 +2729,47 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         summary_text = json.dumps(result.safe_summary(), sort_keys=True)
         self.assertNotIn("caller-provided sanitized fixture", summary_text)
         self.assertNotIn("legalpdf-caller-source.pdf", summary_text)
+
+    def test_legalpdf_adapter_sequence_stops_before_upload_without_isolated_runtime(self):
+        from scripts.legalpdf_adapter_caller import (
+            AdapterSourceInput,
+            run_adapter_sequence_result,
+        )
+
+        seen_uploads = []
+
+        def fetch_json(url):
+            if url.endswith("/api/health"):
+                return self.adapter_health_payload()
+            if url.endswith("/api/integration/adapter-contract"):
+                return self.adapter_contract_payload()
+            raise AssertionError(url)
+
+        def post_multipart(url, fields, filename, content, content_type):
+            seen_uploads.append(url)
+            return {"status": "uploaded", "send_allowed": False, "candidate_intake": {}}
+
+        result = run_adapter_sequence_result(
+            "http://public-candidate.test/",
+            fetch_json=fetch_json,
+            post_json=lambda _url, _payload: {},
+            post_multipart=post_multipart,
+            source=AdapterSourceInput(
+                profile="example_interpreting",
+                source_kind="notification_pdf",
+                filename="caller-source.pdf",
+                content=b"%PDF caller source",
+                expected_case_number="321/26.0CALLER",
+                expected_service_date="2026-05-06",
+            ),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertFalse(result.safe_summary()["isolated_synthetic_runtime"])
+        names = {check["name"] for check in result.checks}
+        self.assertIn("adapter_isolated_synthetic_runtime_required", names)
+        self.assertNotIn("adapter_source_upload_evidence", names)
+        self.assertEqual(seen_uploads, [])
 
     def test_legalpdf_adapter_synthetic_sequence_stops_before_upload_when_readiness_blocks(self):
         from scripts.legalpdf_adapter_caller import run_synthetic_adapter_sequence
