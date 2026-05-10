@@ -222,6 +222,33 @@ def _gmail_status_mode_guidance_check(gmail_status: dict[str, Any]) -> dict[str,
     )
 
 
+def _browser_gmail_api_status_required_check(gmail_status: dict[str, Any]) -> dict[str, Any]:
+    details = {
+        "fake_mode": gmail_status.get("fake_mode") is True,
+        "draft_only": gmail_status.get("draft_only") is True,
+        "draft_create_ready": gmail_status.get("draft_create_ready") is True,
+        "gmail_api_action": gmail_status.get("gmail_api_action"),
+        "send_allowed": gmail_status.get("send_allowed"),
+    }
+    passed = (
+        details["fake_mode"]
+        and details["draft_only"]
+        and details["draft_create_ready"]
+        and details["gmail_api_action"] == "users.drafts.create"
+        and details["send_allowed"] is False
+    )
+    return _check(
+        "browser_gmail_api_status_required",
+        passed,
+        (
+            "Browser Gmail API smoke is limited to fake, draft-only, create-ready users.drafts.create status."
+            if passed
+            else "--browser-gmail-api-create requires fake, draft-only, create-ready users.drafts.create status before Browser/IAB may click Create Gmail Draft."
+        ),
+        details,
+    )
+
+
 _TINY_PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
     b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?"
@@ -1188,16 +1215,24 @@ def run_smoke(
         ))
 
     if browser_click_through:
-        if browser_gmail_api_create and not bool(gmail_status.get("fake_mode") if isinstance(gmail_status, dict) else False):
-            browser_report = {
-                "status": "blocked",
-                "checks": [_check(
+        browser_gmail_status_gate = (
+            _browser_gmail_api_status_required_check(gmail_status if isinstance(gmail_status, dict) else {})
+            if browser_gmail_api_create
+            else None
+        )
+        if browser_gmail_status_gate and browser_gmail_status_gate["status"] != "ready":
+            checks_to_report = [browser_gmail_status_gate]
+            if not bool(gmail_status.get("fake_mode") if isinstance(gmail_status, dict) else False):
+                checks_to_report.append(_check(
                     "browser_gmail_api_fake_mode_required",
                     False,
                     "--browser-gmail-api-create must run only against an isolated app with HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE=1.",
                     {"fake_mode": gmail_status.get("fake_mode") if isinstance(gmail_status, dict) else None},
-                )],
-                "failure_count": 1,
+                ))
+            browser_report = {
+                "status": "blocked",
+                "checks": checks_to_report,
+                "failure_count": len(checks_to_report),
                 "send_allowed": False,
             }
         elif browser_gmail_api_create and not browser_iab_click_through:
