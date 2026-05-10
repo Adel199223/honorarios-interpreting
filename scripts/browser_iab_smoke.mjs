@@ -25,7 +25,7 @@ const PROFILE_FALLBACKS = [
 function parseArgs(argv) {
   const defaultBrowserClient = DEFAULT_BROWSER_CLIENTS.find((candidate) => existsSync(candidate)) || DEFAULT_BROWSER_CLIENTS[0];
   const args = {
-    baseUrl: "http://127.0.0.1:8766",
+    baseUrl: "http://127.0.0.1:8765",
     browserClient: (typeof process !== "undefined" && process.env && process.env.BROWSER_USE_CLIENT_MJS) || defaultBrowserClient,
     profile: DEFAULT_PROFILE,
     caseNumber: DEFAULT_CASE_NUMBER,
@@ -1202,7 +1202,7 @@ export async function runBrowserIabSmoke(options = {}) {
 async function main(argv = (typeof process !== "undefined" ? process.argv.slice(2) : [])) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8766 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--supporting-attachment-stale] [--recent-work-lifecycle] [--recent-work-reconciliation] [--apply-history] [--profile-proposal] [--gmail-api-create] [--keep-open]");
+    console.log("Usage: node scripts/browser_iab_smoke.mjs --base-url http://127.0.0.1:8765 --json [--upload-photo] [--upload-pdf] [--upload-supporting-attachment] [--answer-questions] [--correction-mode] [--prepare-replacement] [--prepare-packet] [--record-helper] [--manual-handoff-stale] [--supporting-attachment-stale] [--recent-work-lifecycle] [--recent-work-reconciliation] [--apply-history] [--profile-proposal] [--gmail-api-create] [--keep-open]");
     return 0;
   }
   const result = await runBrowserIabSmoke(args);
@@ -1218,7 +1218,7 @@ if (invokedAsCli) {
     })
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      const baseUrl = "http://127.0.0.1:8766";
+      const baseUrl = "http://127.0.0.1:8765";
       console.log(JSON.stringify({
         status: "blocked",
         base_url: baseUrl,

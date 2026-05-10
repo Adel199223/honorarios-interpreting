@@ -240,7 +240,7 @@ def _make_synthetic_supporting_pdf(temp_dir: Path, *, case_number: str, service_
 
 def run_browser_flow_smoke(
     driver: Any | None = None,
-    base_url: str = "http://127.0.0.1:8766",
+    base_url: str = "http://127.0.0.1:8765",
     *,
     profile: str = DEFAULT_PROFILE,
     case_number: str = DEFAULT_CASE_NUMBER,
@@ -570,7 +570,7 @@ def _report(base: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Opt-in browser click-through smoke for the Honorários app.")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8766")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8765")
     parser.add_argument("--profile", default=DEFAULT_PROFILE)
     parser.add_argument("--case-number", default=DEFAULT_CASE_NUMBER)
     parser.add_argument("--service-date", default=DEFAULT_SERVICE_DATE)

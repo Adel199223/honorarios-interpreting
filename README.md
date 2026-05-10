@@ -268,7 +268,7 @@ Store optional Google Photos OAuth settings in ignored `config/google-photos.loc
 {
   "client_id": "example-client-id.apps.googleusercontent.com",
   "client_secret": "example-client-secret",
-  "redirect_uri": "http://127.0.0.1:8766/api/google-photos/oauth/callback",
+  "redirect_uri": "http://127.0.0.1:8765/api/google-photos/oauth/callback",
   "token_path": "config/google-photos-token.local.json"
 }
 ```

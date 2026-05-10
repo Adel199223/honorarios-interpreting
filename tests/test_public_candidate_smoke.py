@@ -2941,6 +2941,36 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertIn(key, required_block)
 
+    def test_local_app_default_port_is_consistent_across_public_guidance(self):
+        root = Path(__file__).resolve().parents[1]
+        default_base = "http://127.0.0.1:8765"
+        stale_base = "http://127.0.0.1:" + "8766"
+        checks = {
+            "README.md": ["--port 8765", default_base],
+            "config/gmail.example.json": [f"{default_base}/api/gmail/oauth/callback"],
+            "config/google-photos.example.json": [f"{default_base}/api/google-photos/oauth/callback"],
+            "docs/next-thread-handoff.md": ["--port 8765", default_base],
+            "docs/legalpdf-adapter-contract.md": [default_base],
+            "docs/process-optimizations.md": [default_base],
+            "honorarios_app/gmail_draft_api.py": [f"{default_base}/api/gmail/oauth/callback"],
+            "honorarios_app/runtime.py": [f"{default_base}/api/gmail/oauth/callback"],
+            "honorarios_app/services.py": [f"{default_base}/api/google-photos/oauth/callback"],
+            "honorarios_app/static/app.js": [f"{default_base}/api/gmail/oauth/callback"],
+            "honorarios_app/templates/index.html": [f"{default_base}/api/gmail/oauth/callback"],
+            "scripts/browser_flow_smoke.py": [f'default="{default_base}"'],
+            "scripts/browser_iab_smoke.mjs": [f'baseUrl: "{default_base}"', f"--base-url {default_base}"],
+            "scripts/build_public_candidate.py": [f"{default_base}/api/gmail/oauth/callback", f"{default_base}/api/google-photos/oauth/callback"],
+            "scripts/legalpdf_adapter_caller.py": [f'default="{default_base}"'],
+            "scripts/local_app_smoke.py": [f'default="{default_base}"'],
+        }
+
+        for relative_path, expected_fragments in checks.items():
+            with self.subTest(path=relative_path):
+                text = (root / relative_path).read_text(encoding="utf-8")
+                self.assertNotIn(stale_base, text)
+                for fragment in expected_fragments:
+                    self.assertIn(fragment, text)
+
     def test_isolated_app_smoke_forwards_browser_iab_answer_and_apply_flags(self):
         root = Path(__file__).resolve().parents[1]
         smoke_source = (root / "scripts" / "isolated_app_smoke.py").read_text(encoding="utf-8")
