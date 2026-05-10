@@ -2322,7 +2322,7 @@ def diagnostics_status_payload() -> dict[str, Any]:
         {
             "key": "isolated_gmail_api_smoke",
             "label": "Advanced/future Gmail Draft API smoke",
-            "description": "Advanced future OAuth path check: runs fake Gmail drafts.create against a temporary synthetic runtime, then verifies local draft-log and duplicate-index updates without contacting Google. The recommended daily path remains Manual Draft Handoff.",
+            "description": "Advanced future OAuth path check: runs fake Gmail drafts.create against a temporary synthetic runtime, verifies local draft-log and duplicate-index updates, then checks a read-only reconciliation mismatch without contacting Google. The recommended daily path remains Manual Draft Handoff.",
             "command_template": "python scripts/isolated_app_smoke.py --gmail-api-checks --json",
             "effect": "temporary_isolated_runtime_fake_gmail",
             "writes": "temporary synthetic runtime only",
