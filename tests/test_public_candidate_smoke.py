@@ -2614,6 +2614,41 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(seen_kwargs["record_helper"])
         self.assertTrue(seen_kwargs["apply_history"])
 
+    def test_local_app_smoke_blocks_iab_report_without_tab_cleanup(self):
+        client = self.make_client()
+
+        def fetch_text(url):
+            path = "/" if url.endswith("/") else url.split("http://public-candidate.test", 1)[-1]
+            return client.get(path).text
+
+        def fetch_json(url):
+            path = url.split("http://public-candidate.test", 1)[-1]
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        def browser_runner(_base_url, **_kwargs):
+            return {
+                "status": "ready",
+                "checks": [{"name": "browser_iab_runtime", "status": "ready", "message": "ok", "details": {}}],
+                "failure_count": 0,
+                "send_allowed": False,
+            }
+
+        report = run_smoke(
+            "http://public-candidate.test/",
+            fetch_text=fetch_text,
+            fetch_json=fetch_json,
+            browser_click_through=True,
+            browser_iab_click_through=True,
+            browser_runner=browser_runner,
+        )
+
+        self.assertEqual(report["status"], "blocked", report)
+        cleanup = next(check for check in report["checks"] if check["name"] == "browser_tab_cleanup")
+        self.assertEqual(cleanup["status"], "blocked")
+        self.assertIn("did not report", cleanup["message"])
+
     def test_local_app_smoke_forwards_supporting_attachment_stale_to_python_runner(self):
         root = Path(__file__).resolve().parents[1]
         smoke_source = (root / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")

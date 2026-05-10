@@ -122,6 +122,26 @@ def _send_allowed_check(name: str, payload: Any, success_message: str) -> dict[s
     )
 
 
+def _browser_iab_tab_cleanup_reported_check(browser_report: Any) -> dict[str, Any] | None:
+    report_checks = browser_report.get("checks") if isinstance(browser_report, dict) else None
+    checks = report_checks if isinstance(report_checks, list) else []
+    has_cleanup_check = any(
+        isinstance(check, dict) and check.get("name") == "browser_tab_cleanup"
+        for check in checks
+    )
+    if has_cleanup_check:
+        return None
+    return _check(
+        "browser_tab_cleanup",
+        False,
+        "Browser/IAB smoke did not report disposable tab cleanup.",
+        {
+            "required_for": "--browser-iab-click-through",
+            "expected_runner_check": "browser_tab_cleanup",
+        },
+    )
+
+
 PUBLIC_READINESS_SECRET_MARKERS = (
     "GOCSPX",
     "ya29.",
@@ -1297,6 +1317,7 @@ def run_smoke(
         ))
 
     if browser_click_through:
+        iab_runner_invoked = False
         browser_gmail_status_gate = (
             _browser_gmail_api_status_required_check(gmail_status if isinstance(gmail_status, dict) else {})
             if browser_gmail_api_create
@@ -1352,6 +1373,7 @@ def run_smoke(
                     "send_allowed": False,
                 }
             elif browser_iab_click_through:
+                iab_runner_invoked = True
                 browser_report = _run_browser_iab_smoke_subprocess(
                     base,
                     profile=interaction_profile,
@@ -1400,6 +1422,7 @@ def run_smoke(
                         supporting_attachment_stale=browser_supporting_attachment_stale,
                     )
         else:
+            iab_runner_invoked = browser_iab_click_through
             browser_report = browser_runner(
                 base,
                 profile=interaction_profile,
@@ -1422,6 +1445,10 @@ def run_smoke(
                 iab_click_through=browser_iab_click_through,
             )
         checks.extend(browser_report.get("checks", []) if isinstance(browser_report, dict) else [])
+        if iab_runner_invoked:
+            cleanup_reported = _browser_iab_tab_cleanup_reported_check(browser_report)
+            if cleanup_reported is not None:
+                checks.append(cleanup_reported)
         checks.append(_send_allowed_check(
             "browser_click_through_send_allowed",
             browser_report,
