@@ -1133,6 +1133,8 @@ export async function runBrowserIabSmoke(options = {}) {
 
     if (!(await runStep(checks, "browser_local_diagnostics", "Browser/IAB refreshed Local Diagnostics and copied readiness/isolated smoke commands without running them.", async () => {
       await expectBodyText(tab, "Local Diagnostics", args.timeoutMs);
+      await uniqueLocator(tab, "#copy-runtime-doctor-command", args.timeoutMs);
+      await expectAttributeContains(tab, "#copy-runtime-doctor-command", "data-copy-diagnostic-command", "runtime_doctor", args.timeoutMs);
       await uniqueLocator(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
       await expectAttributeContains(tab, "#copy-isolated-source-upload-smoke-command", "data-copy-diagnostic-command", "isolated_source_upload_smoke", args.timeoutMs);
       await uniqueLocator(tab, "#copy-legalpdf-adapter-readiness-command", args.timeoutMs);
@@ -1153,6 +1155,8 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectAttributeContains(tab, "#copy-browser-iab-recent-work-reconciliation-smoke-command", "data-copy-diagnostic-command", "browser_iab_recent_work_reconciliation_smoke", args.timeoutMs);
       await click(tab, "#refresh-diagnostics", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Local diagnostics are available", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "Python runtime doctor", args.timeoutMs);
+      await expectSelectorText(tab, "#diagnostics-result", "python scripts/runtime_doctor.py --json", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "Isolated source upload smoke", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "--source-upload-checks", args.timeoutMs);
       await expectSelectorText(tab, "#diagnostics-result", "LegalPDF adapter readiness", args.timeoutMs);
@@ -1175,6 +1179,11 @@ export async function runBrowserIabSmoke(options = {}) {
       await expectSelectorText(tab, "#diagnostics-result", "The browser does not run shell commands or contact Gmail.", args.timeoutMs);
       const forbiddenSendActions = forbiddenSendActionTerms();
       await expectSelectorTextExcludes(tab, "#diagnostics-result", forbiddenSendActions, args.timeoutMs);
+      await click(tab, "#copy-runtime-doctor-command", args.timeoutMs);
+      const runtimeDoctorClipboardText = await expectClipboardText(tab, "python scripts/runtime_doctor.py --json", args.timeoutMs);
+      if (runtimeDoctorClipboardText.trim() !== "python scripts/runtime_doctor.py --json") {
+        throw new Error("Expected copied runtime doctor command to match exactly.");
+      }
       await click(tab, "#copy-isolated-source-upload-smoke-command", args.timeoutMs);
       const clipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --source-upload-checks --json", args.timeoutMs);
       await click(tab, "#copy-legalpdf-adapter-readiness-command", args.timeoutMs);
@@ -1194,7 +1203,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await click(tab, "#copy-browser-iab-recent-work-reconciliation-smoke-command", args.timeoutMs);
       const recentWorkReconciliationClipboardText = await expectClipboardText(tab, "python scripts/isolated_app_smoke.py --browser-iab-click-through --browser-recent-work-reconciliation --json", args.timeoutMs);
       for (const forbidden of forbiddenSendActions) {
-        if (clipboardText.includes(forbidden) || adapterReadinessClipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden) || pythonRecordHelperClipboardText.includes(forbidden) || recentWorkReconciliationClipboardText.includes(forbidden)) {
+        if (runtimeDoctorClipboardText.includes(forbidden) || clipboardText.includes(forbidden) || adapterReadinessClipboardText.includes(forbidden) || adapterClipboardText.includes(forbidden) || browserReviewClipboardText.includes(forbidden) || answerApplyClipboardText.includes(forbidden) || supportingStaleClipboardText.includes(forbidden) || recordHelperClipboardText.includes(forbidden) || pythonRecordHelperClipboardText.includes(forbidden) || recentWorkReconciliationClipboardText.includes(forbidden)) {
           throw new Error(`Expected copied diagnostics command to omit ${forbidden}.`);
         }
       }
