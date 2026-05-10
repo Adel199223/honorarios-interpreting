@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.generate_pdf import ROOT
 from scripts.public_release_gate import analyze_public_readiness
+from scripts.public_repo_gate import analyze_tracked
 
 
 COPY_DIRS = [
@@ -98,6 +100,65 @@ def _reset_target(target: Path) -> None:
             shutil.rmtree(child)
         else:
             child.unlink()
+
+
+def _git_run(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def _candidate_tracked_gate(target: Path) -> dict[str, Any] | None:
+    if not (target / ".git").exists():
+        return None
+    probe = _git_run(target, ["rev-parse", "--is-inside-work-tree"])
+    if probe.returncode != 0 or probe.stdout.strip().lower() != "true":
+        return None
+
+    refresh = _git_run(target, ["add", "-A"])
+    if refresh.returncode != 0:
+        message = refresh.stderr.strip() or refresh.stdout.strip() or "Unable to refresh candidate Git index."
+        return {
+            "status": "blocked",
+            "public_repo_ready": False,
+            "mode": "tracked",
+            "root": str(target),
+            "errors": [message],
+            "scanned_count": 0,
+            "scanned_paths": [],
+            "path_blockers": [],
+            "content_findings": [],
+            "blocker_count": 1,
+            "message": "Public candidate Git index refresh failed.",
+            "send_allowed": False,
+        }
+    return analyze_tracked(target)
+
+
+def _merge_candidate_gates(
+    workspace_gate: dict[str, Any],
+    tracked_gate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if tracked_gate is None:
+        return workspace_gate
+
+    combined = dict(workspace_gate)
+    combined["tracked_gate"] = tracked_gate
+    tracked_ready = bool(tracked_gate.get("public_repo_ready"))
+    workspace_ready = bool(workspace_gate.get("public_ready"))
+    combined["public_ready"] = workspace_ready and tracked_ready
+    combined["status"] = "ready" if combined["public_ready"] else "blocked"
+    combined["blocker_count"] = int(workspace_gate.get("blocker_count", 0)) + int(tracked_gate.get("blocker_count", 0))
+    if not combined["public_ready"]:
+        combined["message"] = (
+            "Public candidate build is blocked until both the working tree and preserved Git index pass privacy gates."
+        )
+    return combined
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -236,6 +297,7 @@ def _write_smoke_tests(target_root: Path) -> None:
         """import json
 import os
 import inspect
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -247,6 +309,7 @@ from fastapi.testclient import TestClient
 
 from honorarios_app.web import create_app
 from scripts.local_app_smoke import _adapter_questions_are_numbered, _post_expected_blocked_json, run_smoke
+from scripts.build_public_candidate import build_public_candidate
 from scripts.public_release_gate import analyze_public_readiness
 
 
@@ -425,7 +488,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         browser_upload = next(check for check in data["checks"] if check["key"] == "browser_iab_upload_smoke")
         self.assertIn("--browser-upload-photo", browser_upload["command_template"])
         self.assertIn("--browser-upload-pdf", browser_upload["command_template"])
-        self.assertEqual(browser_upload["writes"], "none")
+        self.assertEqual(browser_upload["writes"], "synthetic source-preview artifacts only")
         browser_review = next(check for check in data["checks"] if check["key"] == "browser_iab_smoke")
         self.assertIn("--browser-iab-click-through", browser_review["command_template"])
         self.assertEqual(browser_review["writes"], "none")
@@ -2102,6 +2165,48 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         report = analyze_public_readiness(Path(__file__).resolve().parents[1], require_git=False)
         self.assertTrue(report["public_ready"], report)
 
+    def test_public_candidate_builder_refreshes_preserved_git_index(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "candidate"
+            target.mkdir()
+            subprocess.run(["git", "init"], cwd=target, capture_output=True, text=True, check=True)
+            (target / "data").mkdir()
+            (target / "data" / "service-profiles.json").write_text("{}", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "data/service-profiles.json"],
+                cwd=target,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            before = subprocess.run(
+                ["git", "ls-files"],
+                cwd=target,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            self.assertIn("data/service-profiles.json", before)
+
+            result = build_public_candidate(root, target)
+
+            after = subprocess.run(
+                ["git", "ls-files"],
+                cwd=target,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+
+        self.assertEqual(result["status"], "created", result)
+        self.assertTrue(result["gate"]["public_ready"], result)
+        self.assertIn("tracked_gate", result)
+        self.assertTrue(result["tracked_gate"]["public_repo_ready"], result["tracked_gate"])
+        self.assertNotIn("data/service-profiles.json", after)
+        self.assertIn("data/service-profiles.example.json", after)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -2172,13 +2277,20 @@ def build_public_candidate(source_root: str | Path = ROOT, target_root: str | Pa
     _write_smoke_tests(target)
     _write_public_repo_metadata(target)
 
-    gate = analyze_public_readiness(target, require_git=False)
-    return {
-        "status": "created" if gate["public_ready"] else "blocked",
+    workspace_gate = analyze_public_readiness(target, require_git=False)
+    tracked_gate = _candidate_tracked_gate(target)
+    gate = _merge_candidate_gates(workspace_gate, tracked_gate)
+    status = "created" if gate["public_ready"] else "blocked"
+    result = {
+        "status": status,
         "candidate_path": str(target),
         "gate": gate,
         "send_allowed": False,
     }
+    if tracked_gate is not None:
+        result["tracked_gate"] = tracked_gate
+        result["workspace_gate"] = workspace_gate
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
