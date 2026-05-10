@@ -377,12 +377,23 @@ def _run_browser_iab_smoke_subprocess(base_url: str, **kwargs: Any) -> dict[str,
     if os.environ.get("HONORARIOS_ALLOW_IAB_SUBPROCESS") != "1":
         return {
             "status": "blocked",
-            "checks": [_check(
-                "browser_iab_runtime",
-                False,
-                "Browser/IAB smoke must run through the Codex Node REPL Browser runtime; raw subprocess execution is intentionally skipped.",
-                {"node_repl_cell": node_repl_cell, "script": str(script.resolve())},
-            )],
+            "checks": [
+                _check(
+                    "browser_iab_runtime",
+                    False,
+                    "Browser/IAB smoke must run through the Codex Node REPL Browser runtime; raw subprocess execution is intentionally skipped.",
+                    {"node_repl_cell": node_repl_cell, "script": str(script.resolve())},
+                ),
+                _check(
+                    "browser_tab_cleanup",
+                    True,
+                    "Browser/IAB did not create a disposable tab before stopping.",
+                    {
+                        "cleanup_mode": "none",
+                        "reason": "raw_subprocess_skipped",
+                    },
+                ),
+            ],
             "failure_count": 1,
             "send_allowed": False,
         }

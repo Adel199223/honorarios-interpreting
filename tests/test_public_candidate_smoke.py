@@ -2905,6 +2905,19 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertEqual(cleanup["status"], "blocked")
         self.assertIn("did not report", cleanup["message"])
 
+    def test_local_app_smoke_raw_iab_handoff_reports_no_tab_cleanup(self):
+        root = Path(__file__).resolve().parents[1]
+        smoke_source = (root / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
+        raw_handoff_block = smoke_source.split('if os.environ.get("HONORARIOS_ALLOW_IAB_SUBPROCESS") != "1":', 1)[1].split("cmd = [", 1)[0]
+
+        self.assertIn('"browser_iab_runtime"', raw_handoff_block)
+        self.assertIn("node_repl_cell", raw_handoff_block)
+        self.assertIn('"browser_tab_cleanup"', raw_handoff_block)
+        self.assertIn("Browser/IAB did not create a disposable tab before stopping.", raw_handoff_block)
+        self.assertIn('"cleanup_mode": "none"', raw_handoff_block)
+        self.assertIn('"reason": "raw_subprocess_skipped"', raw_handoff_block)
+        self.assertIn('"failure_count": 1', raw_handoff_block)
+
     def test_local_app_smoke_forwards_supporting_attachment_stale_to_python_runner(self):
         root = Path(__file__).resolve().parents[1]
         smoke_source = (root / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
