@@ -15,6 +15,7 @@ JsonFetcher = Callable[[str], Any]
 PostJsonFetcher = Callable[[str, dict[str, Any]], Any]
 PostMultipartFetcher = Callable[[str, dict[str, str], str, bytes, str], Any]
 
+ADAPTER_HEALTH_ENDPOINT = "/api/health"
 ADAPTER_CONTRACT_ENDPOINT = "/api/integration/adapter-contract"
 REQUIRED_ADAPTER_ENDPOINTS = (
     "/api/sources/upload",
@@ -123,6 +124,44 @@ class AdapterSequenceResult:
             "send_allowed": self.send_allowed,
             "write_allowed": self.write_allowed,
             "legalpdf_write_allowed": self.legalpdf_write_allowed,
+        }
+
+
+@dataclass(frozen=True)
+class AdapterReadinessResult:
+    checks: list[dict[str, Any]]
+    health_ready: bool = False
+    contract_ready: bool = False
+    send_allowed: bool = False
+    write_allowed: bool = False
+    legalpdf_write_allowed: bool = False
+    managed_data_changed: bool = False
+
+    @property
+    def failure_count(self) -> int:
+        return sum(1 for check in self.checks if check.get("status") != "ready")
+
+    @property
+    def status(self) -> str:
+        return "ready" if self.failure_count == 0 else "blocked"
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "failure_count": self.failure_count,
+            "health_ready": self.health_ready,
+            "contract_ready": self.contract_ready,
+            "send_allowed": self.send_allowed,
+            "write_allowed": self.write_allowed,
+            "legalpdf_write_allowed": self.legalpdf_write_allowed,
+            "managed_data_changed": self.managed_data_changed,
+            "checks": [
+                {
+                    "name": str(check.get("name") or ""),
+                    "status": str(check.get("status") or ""),
+                }
+                for check in self.checks
+            ],
         }
 
 
@@ -303,6 +342,9 @@ class LegalPdfAdapterCaller:
 
     def url(self, path: str) -> str:
         return adapter_url(self.base_url, path)
+
+    def fetch_health(self) -> Any:
+        return self.fetch_json(self.url(ADAPTER_HEALTH_ENDPOINT))
 
     def fetch_contract(self) -> Any:
         return self.fetch_json(self.url(ADAPTER_CONTRACT_ENDPOINT))
@@ -520,6 +562,94 @@ def _send_allowed_check(name: str, payload: Any, success_message: str) -> dict[s
     )
 
 
+def _payload_flag_true(payload: Any, key: str) -> bool:
+    if isinstance(payload, dict):
+        for item_key, item_value in payload.items():
+            if item_key == key and item_value is True:
+                return True
+            if _payload_flag_true(item_value, key):
+                return True
+    elif isinstance(payload, list):
+        return any(_payload_flag_true(item, key) for item in payload)
+    return False
+
+
+def _adapter_contract_checks(validation: AdapterContractValidation) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    checks.append(_check(
+        "adapter_contract_read_only",
+        validation.ready,
+        "Adapter contract is read-only, draft-only, and Manual Draft Handoff first." if validation.ready else "Adapter contract does not expose the expected read-only manual-handoff boundary.",
+        {
+            "status": validation.details.get("status"),
+            "recommended_gmail_mode": validation.details.get("recommended_gmail_mode"),
+            "write_allowed": validation.write_allowed,
+            "legalpdf_write_allowed": validation.legalpdf_write_allowed,
+            "managed_data_changed": validation.details.get("managed_data_changed"),
+            "required_tool": validation.details.get("required_tool"),
+            "gmail_boundary_ready": validation.details.get("gmail_boundary_ready"),
+            "gmail_boundary_send_allowed": validation.details.get("gmail_boundary_send_allowed"),
+            "gmail_boundary_draft_only": validation.details.get("gmail_boundary_draft_only"),
+        },
+    ))
+    checks.append(_check(
+        "adapter_contract_gmail_boundary",
+        validation.details.get("gmail_boundary_ready") is True,
+        "Adapter contract keeps the nested Gmail boundary draft-only and send-disabled."
+        if validation.details.get("gmail_boundary_ready") is True
+        else "Adapter contract Gmail boundary is missing draft-only or send-disabled fields.",
+        {
+            "required_tool": validation.details.get("required_tool"),
+            "gmail_boundary_send_allowed": validation.details.get("gmail_boundary_send_allowed"),
+            "gmail_boundary_draft_only": validation.details.get("gmail_boundary_draft_only"),
+        },
+    ))
+    optional_gmail_boundary_present = validation.details.get("optional_gmail_draft_api_boundary_present") is True
+    checks.append(_check(
+        "adapter_contract_optional_gmail_draft_api_boundary",
+        validation.details.get("optional_gmail_draft_api_boundary_ready") is True,
+        "Adapter contract keeps optional Gmail Draft API create/verify draft-only and verify read-only."
+        if optional_gmail_boundary_present and validation.details.get("optional_gmail_draft_api_boundary_ready") is True
+        else (
+            "Adapter contract omits optional Gmail Draft API metadata; Manual Draft Handoff remains the required path."
+            if validation.details.get("optional_gmail_draft_api_boundary_ready") is True
+            else "Adapter contract optional Gmail Draft API boundary is send-capable or verify is not read-only."
+        ),
+        {
+            "present": optional_gmail_boundary_present,
+            "create_endpoint": validation.details.get("optional_gmail_create_endpoint"),
+            "verify_endpoint": validation.details.get("optional_gmail_verify_endpoint"),
+            "create_action": validation.details.get("optional_gmail_create_action"),
+            "verify_action": validation.details.get("optional_gmail_verify_action"),
+            "send_allowed": validation.details.get("optional_gmail_send_allowed"),
+            "draft_only": validation.details.get("optional_gmail_draft_only"),
+            "verify_read_only": validation.details.get("optional_gmail_verify_read_only"),
+            "verify_local_records_changed": validation.details.get("optional_gmail_verify_local_records_changed"),
+            "missing_forbidden_actions": validation.details.get("missing_optional_gmail_forbidden_actions"),
+            "mismatched_values": validation.details.get("mismatched_optional_gmail_boundary_values"),
+        },
+    ))
+    checks.append(_check(
+        "adapter_contract_prepared_review_binding",
+        validation.details.get("prepared_review_binding_ready") is True,
+        "Adapter contract advertises the prepared-review fields required for handoff, Gmail API create, and local recording."
+        if validation.details.get("prepared_review_binding_ready") is True
+        else "Adapter contract is missing prepared-review binding fields required by the caller.",
+        {
+            "missing_prepared_review_fields": validation.details.get("missing_prepared_review_fields"),
+            "mismatched_prepared_review_values": validation.details.get("mismatched_prepared_review_values"),
+        },
+    ))
+    endpoints = validation.details.get("endpoints")
+    checks.append(_check(
+        "adapter_contract_sequence",
+        not validation.missing_endpoints,
+        "Adapter contract advertises the safe review, preflight, prepare, handoff, and record sequence." if not validation.missing_endpoints else "Adapter contract is missing expected workflow endpoints.",
+        {"missing": validation.missing_endpoints, "endpoints": endpoints if isinstance(endpoints, list) else []},
+    ))
+    return checks
+
+
 def _post_workflow_json(
     post_json: PostJsonFetcher,
     url: str,
@@ -658,6 +788,97 @@ def _adapter_sequence_result_from_checks(checks: list[dict[str, Any]]) -> Adapte
     )
 
 
+def run_adapter_readiness_result(
+    base_url: str,
+    *,
+    fetch_json: JsonFetcher,
+) -> AdapterReadinessResult:
+    checks: list[dict[str, Any]] = []
+    caller = LegalPdfAdapterCaller(
+        base_url,
+        fetch_json=fetch_json,
+        post_json=lambda _url, _payload: {},
+        post_multipart=lambda _url, _fields, _filename, _content, _content_type: {},
+    )
+    try:
+        health = caller.fetch_health()
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        checks.append(_check("adapter_health_fetch", False, f"Could not load adapter health endpoint: {exc}"))
+        return AdapterReadinessResult(checks=checks)
+
+    checks.append(_send_allowed_check(
+        "adapter_health_send_allowed",
+        health,
+        "Adapter health keeps send_allowed false.",
+    ))
+    health_ready = (
+        isinstance(health, dict)
+        and health.get("status") == "ready"
+        and health.get("app") == "LegalPDF Honorários"
+        and health.get("send_allowed") is False
+        and health.get("write_allowed") is False
+        and health.get("managed_data_changed") is False
+    )
+    checks.append(_check(
+        "adapter_health_read_only",
+        health_ready,
+        "Adapter health is ready, read-only, and secret-free." if health_ready else "Adapter health is missing ready/read-only safety fields.",
+        {
+            "status": health.get("status") if isinstance(health, dict) else None,
+            "app": health.get("app") if isinstance(health, dict) else None,
+            "send_allowed": health.get("send_allowed") if isinstance(health, dict) else None,
+            "write_allowed": health.get("write_allowed") if isinstance(health, dict) else None,
+            "managed_data_changed": health.get("managed_data_changed") if isinstance(health, dict) else None,
+        },
+    ))
+    health_send_allowed = _payload_flag_true(health, "send_allowed")
+    health_write_allowed = _payload_flag_true(health, "write_allowed")
+    health_managed_changed = _payload_flag_true(health, "managed_data_changed")
+    health_legalpdf_write_allowed = _payload_flag_true(health, "legalpdf_write_allowed")
+    if not health_ready:
+        return AdapterReadinessResult(
+            checks=checks,
+            health_ready=False,
+            contract_ready=False,
+            send_allowed=health_send_allowed,
+            write_allowed=health_write_allowed,
+            legalpdf_write_allowed=health_legalpdf_write_allowed,
+            managed_data_changed=health_managed_changed,
+        )
+
+    try:
+        contract = caller.fetch_contract()
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        checks.append(_check("adapter_contract_fetch", False, f"Could not load LegalPDF adapter contract: {exc}"))
+        return AdapterReadinessResult(
+            checks=checks,
+            health_ready=True,
+            contract_ready=False,
+            send_allowed=health_send_allowed,
+            write_allowed=health_write_allowed,
+            legalpdf_write_allowed=health_legalpdf_write_allowed,
+            managed_data_changed=health_managed_changed,
+        )
+
+    checks.append(_send_allowed_check(
+        "adapter_contract_send_allowed",
+        contract,
+        "LegalPDF adapter contract keeps send_allowed false.",
+    ))
+    validation = caller.validate_contract(contract)
+    checks.extend(_adapter_contract_checks(validation))
+    contract_ready = validation.ready and not validation.missing_endpoints
+    return AdapterReadinessResult(
+        checks=checks,
+        health_ready=True,
+        contract_ready=contract_ready,
+        send_allowed=health_send_allowed or validation.send_allowed,
+        write_allowed=health_write_allowed or validation.write_allowed,
+        legalpdf_write_allowed=health_legalpdf_write_allowed or validation.legalpdf_write_allowed,
+        managed_data_changed=health_managed_changed or bool(validation.details.get("managed_data_changed") is True),
+    )
+
+
 def run_synthetic_adapter_sequence(
     base_url: str,
     *,
@@ -675,90 +896,9 @@ def run_synthetic_adapter_sequence(
         post_json=post_json,
         post_multipart=post_multipart,
     )
-    try:
-        contract = caller.fetch_contract()
-    except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
-        return [_check("adapter_contract_fetch", False, f"Could not load LegalPDF adapter contract: {exc}")]
-
-    checks.append(_send_allowed_check(
-        "adapter_contract_send_allowed",
-        contract,
-        "LegalPDF adapter contract keeps send_allowed false.",
-    ))
-    validation = caller.validate_contract(contract)
-    checks.append(_check(
-        "adapter_contract_read_only",
-        validation.ready,
-        "Adapter contract is read-only, draft-only, and Manual Draft Handoff first." if validation.ready else "Adapter contract does not expose the expected read-only manual-handoff boundary.",
-        {
-            "status": validation.details.get("status"),
-            "recommended_gmail_mode": validation.details.get("recommended_gmail_mode"),
-            "write_allowed": validation.write_allowed,
-            "legalpdf_write_allowed": validation.legalpdf_write_allowed,
-            "managed_data_changed": validation.details.get("managed_data_changed"),
-            "required_tool": validation.details.get("required_tool"),
-            "gmail_boundary_ready": validation.details.get("gmail_boundary_ready"),
-            "gmail_boundary_send_allowed": validation.details.get("gmail_boundary_send_allowed"),
-            "gmail_boundary_draft_only": validation.details.get("gmail_boundary_draft_only"),
-        },
-    ))
-    checks.append(_check(
-        "adapter_contract_gmail_boundary",
-        validation.details.get("gmail_boundary_ready") is True,
-        "Adapter contract keeps the nested Gmail boundary draft-only and send-disabled."
-        if validation.details.get("gmail_boundary_ready") is True
-        else "Adapter contract Gmail boundary is missing draft-only or send-disabled fields.",
-        {
-            "required_tool": validation.details.get("required_tool"),
-            "gmail_boundary_send_allowed": validation.details.get("gmail_boundary_send_allowed"),
-            "gmail_boundary_draft_only": validation.details.get("gmail_boundary_draft_only"),
-        },
-    ))
-    optional_gmail_boundary_present = validation.details.get("optional_gmail_draft_api_boundary_present") is True
-    checks.append(_check(
-        "adapter_contract_optional_gmail_draft_api_boundary",
-        validation.details.get("optional_gmail_draft_api_boundary_ready") is True,
-        "Adapter contract keeps optional Gmail Draft API create/verify draft-only and verify read-only."
-        if optional_gmail_boundary_present and validation.details.get("optional_gmail_draft_api_boundary_ready") is True
-        else (
-            "Adapter contract omits optional Gmail Draft API metadata; Manual Draft Handoff remains the required path."
-            if validation.details.get("optional_gmail_draft_api_boundary_ready") is True
-            else "Adapter contract optional Gmail Draft API boundary is send-capable or verify is not read-only."
-        ),
-        {
-            "present": optional_gmail_boundary_present,
-            "create_endpoint": validation.details.get("optional_gmail_create_endpoint"),
-            "verify_endpoint": validation.details.get("optional_gmail_verify_endpoint"),
-            "create_action": validation.details.get("optional_gmail_create_action"),
-            "verify_action": validation.details.get("optional_gmail_verify_action"),
-            "send_allowed": validation.details.get("optional_gmail_send_allowed"),
-            "draft_only": validation.details.get("optional_gmail_draft_only"),
-            "verify_read_only": validation.details.get("optional_gmail_verify_read_only"),
-            "verify_local_records_changed": validation.details.get("optional_gmail_verify_local_records_changed"),
-            "missing_forbidden_actions": validation.details.get("missing_optional_gmail_forbidden_actions"),
-            "mismatched_values": validation.details.get("mismatched_optional_gmail_boundary_values"),
-        },
-    ))
-    checks.append(_check(
-        "adapter_contract_prepared_review_binding",
-        validation.details.get("prepared_review_binding_ready") is True,
-        "Adapter contract advertises the prepared-review fields required for handoff, Gmail API create, and local recording."
-        if validation.details.get("prepared_review_binding_ready") is True
-        else "Adapter contract is missing prepared-review binding fields required by the caller.",
-        {
-            "missing_prepared_review_fields": validation.details.get("missing_prepared_review_fields"),
-            "mismatched_prepared_review_values": validation.details.get("mismatched_prepared_review_values"),
-        },
-    ))
-
-    endpoints = validation.details.get("endpoints")
-    checks.append(_check(
-        "adapter_contract_sequence",
-        not validation.missing_endpoints,
-        "Adapter contract advertises the safe review, preflight, prepare, handoff, and record sequence." if not validation.missing_endpoints else "Adapter contract is missing expected workflow endpoints.",
-        {"missing": validation.missing_endpoints, "endpoints": endpoints if isinstance(endpoints, list) else []},
-    ))
-    if not validation.ready or validation.missing_endpoints:
+    readiness = run_adapter_readiness_result(base_url, fetch_json=fetch_json)
+    checks.extend(readiness.checks)
+    if readiness.status != "ready":
         return checks
 
     synthetic_recipient = "court@" + "tribunais.org.pt"
@@ -1219,6 +1359,15 @@ def run_synthetic_adapter_sequence_http(
     )
 
 
+def run_adapter_readiness_http(
+    base_url: str,
+    *,
+    timeout: float = 5.0,
+) -> AdapterReadinessResult:
+    caller = build_http_adapter_caller(base_url, timeout=timeout)
+    return run_adapter_readiness_result(caller.base_url, fetch_json=caller.fetch_json)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -1231,6 +1380,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default="example_interpreting")
     parser.add_argument("--case-number", default="999/26.0SMOKE")
     parser.add_argument("--service-date", default="2026-05-04")
+    parser.add_argument(
+        "--readiness-only",
+        action="store_true",
+        help="Run only the read-only /api/health and adapter-contract readiness probe.",
+    )
     parser.add_argument(
         "--allow-synthetic-recording",
         action="store_true",
@@ -1245,6 +1399,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Accepted for consistency with other smoke helpers; output is always JSON.",
     )
     args = parser.parse_args(argv)
+    if args.readiness_only:
+        result = run_adapter_readiness_http(args.base_url, timeout=args.timeout)
+        print(json.dumps(result.safe_summary(), ensure_ascii=False, indent=2))
+        return 0 if result.status == "ready" else 1
+
     if not args.allow_synthetic_recording:
         parser.error(
             "--allow-synthetic-recording is required because this sequence prepares "

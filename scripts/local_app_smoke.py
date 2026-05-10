@@ -1228,6 +1228,7 @@ def run_smoke(
             "supporting_attachment_smoke",
             "isolated_source_upload_smoke",
             "isolated_supporting_attachment_smoke",
+            "legalpdf_adapter_readiness",
             "isolated_adapter_contract_smoke",
             "isolated_gmail_api_smoke",
             "browser_iab_smoke",

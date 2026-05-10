@@ -366,6 +366,61 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         request_payload["preflight_review"] = preflight_data["preflight_review"]
         return client.post("/api/prepare", json=request_payload)
 
+    def adapter_health_payload(self):
+        return {
+            "status": "ready",
+            "app": "LegalPDF Honorários",
+            "timestamp": "2026-05-10T00:00:00Z",
+            "send_allowed": False,
+            "write_allowed": False,
+            "managed_data_changed": False,
+        }
+
+    def adapter_contract_payload(self):
+        from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS
+
+        return {
+            "status": "ready",
+            "recommended_gmail_mode": "manual_handoff",
+            "draft_only": True,
+            "send_allowed": False,
+            "write_allowed": False,
+            "legalpdf_write_allowed": False,
+            "managed_data_changed": False,
+            "gmail_boundary": {"required_tool": "_create_draft", "draft_only": True, "send_allowed": False},
+            "optional_gmail_draft_api_boundary": {
+                "status": "optional",
+                "create_endpoint": "/api/gmail/drafts/create",
+                "verify_endpoint": "/api/gmail/drafts/verify",
+                "create_action": "users.drafts.create",
+                "verify_action": "users.drafts.get",
+                "draft_only": True,
+                "send_allowed": False,
+                "verify_read_only": True,
+                "verify_local_records_changed": False,
+                "forbidden_actions": [
+                    "users.messages.send",
+                    "users.drafts.send",
+                    "users.messages.trash",
+                    "users.messages.delete",
+                    "users.messages.list",
+                    "users.drafts.delete",
+                ],
+            },
+            "prepared_review_binding": {
+                "preflight_response_field": "preflight_review",
+                "prepare_request_field": "preflight_review",
+                "prepare_response_field": "prepared_review",
+                "handoff_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint"],
+                "record_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed", "draft_id", "message_id", "thread_id"],
+                "gmail_api_create_required_fields": ["payload", "prepared_manifest", "prepared_review_token", "review_fingerprint", "gmail_handoff_reviewed"],
+                "stale_after_payload_or_manifest_change": True,
+                "local_workflow_guard_only": True,
+                "send_allowed": False,
+            },
+            "sequence": [{"endpoint": endpoint} for endpoint in REQUIRED_ADAPTER_ENDPOINTS],
+        }
+
     def test_homepage_exposes_browser_flow_landmarks(self):
         client = self.make_client()
         response = client.get("/")
@@ -401,6 +456,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Supporting attachment smoke",
             "Copy isolated source upload smoke command",
             "Copy isolated attachment smoke command",
+            "Copy LegalPDF adapter readiness command",
             "Copy advanced Gmail API smoke command",
             "Copy Browser/IAB review smoke command",
             "Copy Browser/IAB upload smoke command",
@@ -479,6 +535,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("supporting_attachment_smoke", keys)
         self.assertIn("isolated_source_upload_smoke", keys)
         self.assertIn("isolated_supporting_attachment_smoke", keys)
+        self.assertIn("legalpdf_adapter_readiness", keys)
         self.assertIn("isolated_adapter_contract_smoke", keys)
         self.assertIn("isolated_gmail_api_smoke", keys)
         self.assertIn("browser_iab_smoke", keys)
@@ -500,6 +557,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("scripts/isolated_app_smoke.py", isolated_source["command_template"])
         self.assertIn("--source-upload-checks", isolated_source["command_template"])
         self.assertEqual(isolated_source["writes"], "temporary synthetic runtime only")
+        adapter_readiness = next(check for check in data["checks"] if check["key"] == "legalpdf_adapter_readiness")
+        self.assertIn("scripts/legalpdf_adapter_caller.py", adapter_readiness["command_template"])
+        self.assertIn("--readiness-only", adapter_readiness["command_template"])
+        self.assertEqual(adapter_readiness["writes"], "none")
         isolated_adapter = next(check for check in data["checks"] if check["key"] == "isolated_adapter_contract_smoke")
         self.assertIn("--adapter-contract-checks", isolated_adapter["command_template"])
         self.assertIn("source upload", isolated_adapter["description"].lower())
@@ -1326,6 +1387,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
         def fetch_json(url):
             path = url.split("http://public-candidate.test", 1)[-1]
+            if path == "/api/health":
+                return self.adapter_health_payload()
             response = client.get(path)
             self.assertEqual(response.status_code, 200, response.text)
             return response.json()
@@ -1849,10 +1912,13 @@ class PublicCandidateSmokeTests(unittest.TestCase):
 
     def test_legalpdf_adapter_caller_shim_exports_safe_contract_helpers(self):
         from scripts.legalpdf_adapter_caller import (
+            ADAPTER_HEALTH_ENDPOINT,
             REQUIRED_ADAPTER_ENDPOINTS,
+            AdapterReadinessResult,
             LegalPdfAdapterCaller,
             adapter_questions_are_numbered,
             prepared_review_request_fields,
+            run_adapter_readiness_result,
             stale_prepared_review_fields,
         )
 
@@ -1937,6 +2003,62 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         smoke_source = (Path(__file__).resolve().parents[1] / "scripts" / "local_app_smoke.py").read_text(encoding="utf-8")
         self.assertIn("from scripts.legalpdf_adapter_caller import", smoke_source)
         self.assertIn("run_synthetic_adapter_sequence(", smoke_source)
+
+        seen_fetches = []
+
+        def fetch_json(url):
+            seen_fetches.append(url)
+            if url.endswith(ADAPTER_HEALTH_ENDPOINT):
+                return self.adapter_health_payload()
+            if url.endswith("/api/integration/adapter-contract"):
+                return contract
+            raise AssertionError(url)
+
+        readiness = run_adapter_readiness_result("http://public-candidate.test/", fetch_json=fetch_json)
+        self.assertIsInstance(readiness, AdapterReadinessResult)
+        self.assertEqual(readiness.status, "ready")
+        self.assertTrue(readiness.health_ready)
+        self.assertTrue(readiness.contract_ready)
+        self.assertFalse(readiness.send_allowed)
+        self.assertFalse(readiness.write_allowed)
+        self.assertFalse(readiness.legalpdf_write_allowed)
+        self.assertEqual(seen_fetches[:2], [
+            "http://public-candidate.test/api/health",
+            "http://public-candidate.test/api/integration/adapter-contract",
+        ])
+        summary = readiness.safe_summary()
+        self.assertTrue(summary["health_ready"])
+        self.assertTrue(summary["contract_ready"])
+        summary_text = json.dumps(summary, sort_keys=True)
+        for secretish in ["copyable_prompt", "/tmp/adapter", "draft-", "access_token", "source_text"]:
+            with self.subTest(secretish=secretish):
+                self.assertNotIn(secretish, summary_text)
+
+    def test_legalpdf_adapter_readiness_rejects_unsafe_health_before_contract(self):
+        from scripts.legalpdf_adapter_caller import run_adapter_readiness_result
+
+        seen_fetches = []
+
+        def fetch_json(url):
+            seen_fetches.append(url)
+            if url.endswith("/api/health"):
+                payload = self.adapter_health_payload()
+                payload["send_allowed"] = True
+                return payload
+            if url.endswith("/api/integration/adapter-contract"):
+                raise AssertionError("Contract should not be fetched when health is unsafe.")
+            raise AssertionError(url)
+
+        readiness = run_adapter_readiness_result("http://public-candidate.test/", fetch_json=fetch_json)
+
+        self.assertEqual(readiness.status, "blocked")
+        self.assertFalse(readiness.health_ready)
+        self.assertFalse(readiness.contract_ready)
+        self.assertTrue(readiness.send_allowed)
+        self.assertEqual(seen_fetches, ["http://public-candidate.test/api/health"])
+        names = {check["name"] for check in readiness.checks}
+        self.assertIn("adapter_health_read_only", names)
+        self.assertNotIn("adapter_contract_read_only", names)
 
     def test_legalpdf_adapter_caller_rejects_contract_without_prepared_review_fields(self):
         from scripts.legalpdf_adapter_caller import REQUIRED_ADAPTER_ENDPOINTS, LegalPdfAdapterCaller
@@ -2146,6 +2268,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         seen_uploads = []
 
         def fetch_json(url):
+            if url.endswith("/api/health"):
+                return self.adapter_health_payload()
             if url.endswith("/api/integration/adapter-contract"):
                 return {
                     "status": "ready",
@@ -2339,6 +2463,39 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("http://public-candidate.test/api/drafts/record", seen_posts)
         self.assertNotIn("http://public-candidate.test/api/gmail/drafts/create", seen_posts)
 
+    def test_legalpdf_adapter_synthetic_sequence_stops_before_upload_when_readiness_blocks(self):
+        from scripts.legalpdf_adapter_caller import run_synthetic_adapter_sequence
+
+        seen_uploads = []
+
+        def fetch_json(url):
+            if url.endswith("/api/health"):
+                payload = self.adapter_health_payload()
+                payload["write_allowed"] = True
+                return payload
+            if url.endswith("/api/integration/adapter-contract"):
+                return self.adapter_contract_payload()
+            raise AssertionError(url)
+
+        def post_multipart(url, fields, filename, content, content_type):
+            seen_uploads.append(url)
+            raise AssertionError("Synthetic sequence should stop before source upload when readiness blocks.")
+
+        checks = run_synthetic_adapter_sequence(
+            "http://public-candidate.test/",
+            fetch_json=fetch_json,
+            post_json=lambda _url, _payload: {},
+            post_multipart=post_multipart,
+            profile="example_interpreting",
+            case_number="999/26.0SMOKE",
+            service_date="2026-05-04",
+        )
+
+        names = {check["name"] for check in checks}
+        self.assertIn("adapter_health_read_only", names)
+        self.assertNotIn("adapter_source_upload_evidence", names)
+        self.assertEqual(seen_uploads, [])
+
     def test_legalpdf_adapter_caller_cli_outputs_guarded_safe_summary(self):
         import scripts.legalpdf_adapter_caller as adapter
 
@@ -2346,6 +2503,10 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertTrue(
             hasattr(adapter, "run_synthetic_adapter_sequence_http"),
             "Adapter caller CLI should reuse the HTTP synthetic sequence helper.",
+        )
+        self.assertTrue(
+            hasattr(adapter, "run_adapter_readiness_result"),
+            "Adapter caller CLI should expose a read-only readiness probe.",
         )
 
         class FakeResult:
@@ -2393,6 +2554,26 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         summary_text = json.dumps(summary, sort_keys=True)
         self.assertNotIn("copyable_prompt", summary_text)
         self.assertNotIn("/tmp/adapter-packet.draft.json", summary_text)
+
+        readiness_output = StringIO()
+        with patch.object(adapter, "run_adapter_readiness_http", return_value=FakeResult()) as run_readiness:
+            with patch.object(adapter, "run_synthetic_adapter_sequence_http") as blocked_sequence:
+                with patch("sys.stdout", readiness_output):
+                    exit_code = adapter.main([
+                        "--base-url",
+                        "public-candidate.test/",
+                        "--timeout",
+                        "7.5",
+                        "--readiness-only",
+                        "--json",
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        run_readiness.assert_called_once_with("public-candidate.test/", timeout=7.5)
+        blocked_sequence.assert_not_called()
+        readiness_summary = json.loads(readiness_output.getvalue())
+        self.assertEqual(readiness_summary["status"], "ready")
+        self.assertFalse(readiness_summary["send_allowed"])
 
         with patch.object(adapter, "run_synthetic_adapter_sequence_http") as blocked_run:
             with patch("sys.stderr", StringIO()):
