@@ -113,7 +113,15 @@ The response is secret-free and includes:
 
 ## Executable Smoke
 
-Use the isolated smoke before changing this boundary:
+Use the read-only caller readiness probe before changing this boundary or wiring a future LegalPDF caller:
+
+```powershell
+python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --readiness-only --json
+```
+
+That probe checks `/api/health` and this adapter contract only. It must not upload sources, prepare PDFs, record drafts, expose local paths, or call Gmail.
+
+Then use the isolated smoke for the full synthetic sequence:
 
 ```powershell
 python scripts\isolated_app_smoke.py --adapter-contract-checks --json
@@ -124,9 +132,9 @@ It drives the future caller sequence through source upload, numbered-answer revi
 - `legalpdf_write_allowed: false`
 - `managed_data_changed: false`
 
-The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, reusable HTTP JSON/multipart transport, prepared-review request-field helpers, stale-token helpers, contract validation for the exact prepared-review binding fields, the injected synthetic adapter sequence used by the smoke runner, and a secret-free `AdapterSequenceResult.safe_summary()` for future callers that need readiness signals without copyable Gmail prompts or local payload paths.
+The reusable caller-shim starting point lives in `scripts/legalpdf_adapter_caller.py`. It exposes the safe endpoint list, `/api/health` readiness probing, reusable HTTP JSON/multipart transport, prepared-review request-field helpers, stale-token helpers, contract validation for the exact prepared-review binding fields, the injected synthetic adapter sequence used by the smoke runner, and secret-free `AdapterReadinessResult.safe_summary()` / `AdapterSequenceResult.safe_summary()` outputs for future callers that need readiness signals without copyable Gmail prompts or local payload paths.
 
-For focused caller debugging against an already-running isolated app, the shim also has a guarded CLI:
+For focused caller debugging against an already-running isolated app, the shim also has a guarded artifact-writing CLI:
 
 ```powershell
 python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8766 --allow-synthetic-recording --json

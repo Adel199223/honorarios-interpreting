@@ -2312,6 +2312,14 @@ def diagnostics_status_payload() -> dict[str, Any]:
             "writes": "temporary synthetic runtime only",
         },
         {
+            "key": "legalpdf_adapter_readiness",
+            "label": "LegalPDF adapter readiness",
+            "description": "Read-only first check for future LegalPDF callers: validates /api/health and the adapter contract without uploading, preparing PDFs, recording drafts, or calling Gmail.",
+            "command_template": "python scripts/legalpdf_adapter_caller.py --base-url {base_url} --readiness-only --json",
+            "effect": "read_only_adapter_readiness",
+            "writes": "none",
+        },
+        {
             "key": "isolated_adapter_contract_smoke",
             "label": "LegalPDF adapter contract smoke",
             "description": "Runs the future LegalPDF caller sequence in a temporary synthetic runtime: source upload, numbered-answer review recovery, packet preflight, prepare, stale prepared-review rejection, Manual Draft Handoff, and local draft recording with no Gmail network call.",
