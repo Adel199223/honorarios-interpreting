@@ -330,6 +330,97 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         ]:
             self.assertNotIn(raw_secret_key, data)
 
+    def test_recent_work_missing_draft_reconciliation_stays_local_only(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+        response = self.make_client().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("data-history-status-filter=\"not_found\"", response.text)
+        self.assertIn("async function verifyHistoryDraft", app_js)
+        self.assertIn("async function markHistoryDraftNotFound", app_js)
+        self.assertIn("lastHistoryDraftVerification", app_js)
+        self.assertIn("data-history-mark-not-found", app_js)
+        self.assertIn("Verify this draft as not_found before marking it locally.", app_js)
+        self.assertIn("Marked not_found from Recent Work after Gmail draft verification returned not_found.", app_js)
+        self.assertIn("Local bookkeeping only. Gmail was not contacted and no email was sent.", app_js)
+        self.assertIn('status: "not_found"', app_js)
+        self.assertIn('"/api/gmail/drafts/verify"', app_js)
+        self.assertIn('"/api/gmail/drafts/reconcile-not-found"', app_js)
+        self.assertIn('"/api/drafts/status"', app_js)
+        self.assertIn("confirm_not_found", app_js)
+        self.assertIn("reconciliation_reason", app_js)
+        self.assertNotIn("_send_email", app_js)
+        self.assertNotIn("_send_draft", app_js)
+        self.assertNotIn("messages.send", app_js)
+        self.assertNotIn("drafts.send", app_js)
+
+    def test_fake_gmail_not_found_reconciliation_records_only_local_status(self):
+        runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime.cleanup)
+        root = Path(runtime.name)
+        project_root = Path(__file__).resolve().parents[1]
+        duplicate_index = root / "duplicate-index.json"
+        draft_log = root / "gmail-draft-log.json"
+        profile_change_log = root / "profile-change-log.json"
+        pdf = root / "request.pdf"
+        duplicate_index.write_text("[]", encoding="utf-8")
+        draft_log.write_text("[]", encoding="utf-8")
+        profile_change_log.write_text("[]", encoding="utf-8")
+        pdf.write_bytes(b"%PDF-1.4\nmissing")
+        previous = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
+        os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
+        try:
+            client = TestClient(create_app(
+                profile=project_root / "config" / "profile.example.json",
+                personal_profiles=project_root / "config" / "profiles.example.json",
+                email_config=project_root / "config" / "email.example.json",
+                service_profiles=project_root / "data" / "service-profiles.example.json",
+                court_emails=project_root / "data" / "court-emails.example.json",
+                known_destinations=project_root / "data" / "known-destinations.example.json",
+                duplicate_index=duplicate_index,
+                draft_log=draft_log,
+                profile_change_log=profile_change_log,
+                output_dir=root / "pdf",
+                html_dir=root / "html",
+                draft_output_dir=root / "email-drafts",
+                manifest_dir=root / "manifests",
+                render_dir=root / "previews",
+                intake_output_dir=root / "intakes",
+                source_upload_dir=root / "source-uploads",
+                packet_output_dir=root / "packets",
+                backup_output_dir=root / "backups",
+                integration_report_output_dir=root / "integration-reports",
+                gmail_config=root / "gmail.local.json",
+            ))
+            response = client.post("/api/gmail/drafts/reconcile-not-found", json={
+                "confirm_not_found": True,
+                "reconciliation_reason": "Synthetic missing draft reconciliation.",
+                "case_number": "999/26.0TEST",
+                "service_date": "2026-05-06",
+                "recipient": "court@example.test",
+                "pdf": str(pdf),
+                "draft_id": "draft-missing",
+                "message_id": "message-missing",
+                "thread_id": "thread-missing",
+            })
+        finally:
+            if previous is None:
+                os.environ.pop("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE", None)
+            else:
+                os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = previous
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["status"], "recorded")
+        self.assertEqual(data["lifecycle_status"], "not_found")
+        self.assertEqual(data["verification"]["status"], "not_found")
+        self.assertEqual(data["gmail_api_action"], "users.drafts.get")
+        self.assertTrue(data["local_records_changed"])
+        self.assertFalse(data["send_allowed"])
+        self.assertEqual(json.loads(draft_log.read_text(encoding="utf-8"))[0]["status"], "not_found")
+        self.assertEqual(json.loads(duplicate_index.read_text(encoding="utf-8"))[0]["status"], "not_found")
+
     def test_fake_gmail_draft_create_records_synthetic_duplicate_only(self):
         runtime = tempfile.TemporaryDirectory()
         self.addCleanup(runtime.cleanup)
@@ -499,6 +590,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             smoke_js.index('click(tab, "#create-gmail-api-draft"'),
         )
         self.assertNotIn("Browser/IAB smoke does not drive local file-picker uploads yet", smoke_js)
+        self.assertNotIn('click(tab, "[data-history-mark-not-found', smoke_js)
         self.assertNotIn("_send_email", smoke_js)
         self.assertNotIn("_send_draft", smoke_js)
 

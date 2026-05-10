@@ -5495,6 +5495,39 @@ def gmail_api_draft_verify(payload: dict[str, Any], paths: AppPaths) -> dict[str
     return verify_gmail_draft_exists(payload, paths.gmail_config)
 
 
+def reconcile_gmail_draft_not_found(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    if not bool(payload.get("confirm_not_found")):
+        raise IntakeError("Confirm the missing Gmail draft before marking the local lifecycle record as not_found.")
+    reason = str(payload.get("reconciliation_reason") or payload.get("reason") or "").strip()
+    if len(reason) < 8:
+        raise IntakeError("Add a short reconciliation reason before marking the local lifecycle record as not_found.")
+
+    verification = gmail_api_draft_verify(payload, paths)
+    if verification.get("status") != "not_found":
+        raise IntakeError("Gmail still reports this draft as existing. Local records were not changed.")
+
+    record_payload = dict(payload)
+    record_payload["status"] = "not_found"
+    record_payload["notes"] = (
+        "Marked not_found from Recent Work after Gmail draft verification returned not_found. "
+        f"Reason: {reason}"
+    )
+    record_payload.pop("confirm_not_found", None)
+    record_payload.pop("reconciliation_reason", None)
+    record = record_draft(record_payload, paths)
+    return {
+        **record,
+        "lifecycle_status": "not_found",
+        "verification": verification,
+        "gmail_api_action": "users.drafts.get",
+        "draft_only": True,
+        "send_allowed": False,
+        "write_allowed": True,
+        "managed_data_changed": True,
+        "local_records_changed": True,
+    }
+
+
 def _load_prepared_draft_payload(payload_path: str | Path) -> tuple[Path, dict[str, Any]]:
     raw_path = Path(str(payload_path or "").strip())
     if not str(raw_path):
