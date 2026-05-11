@@ -215,6 +215,61 @@ function forbiddenSendActionTerms() {
   ];
 }
 
+function safeTabInfo(tab) {
+  return {
+    id: tab?.id ?? null,
+    title: tab?.title ?? null,
+    url: tab?.url ?? null,
+  };
+}
+
+function errorMessage(error) {
+  return String(error && error.message ? error.message : error);
+}
+
+function isBlankTabInfo(tabInfo) {
+  const url = String(tabInfo?.url ?? "").trim().toLowerCase();
+  return url === "" || url === "about:blank";
+}
+
+async function safeRuntimeTabInfo(tab) {
+  try {
+    return {
+      id: tab?.id ?? null,
+      title: typeof tab?.title === "function" ? await tab.title() : tab?.title ?? null,
+      url: typeof tab?.url === "function"
+        ? await tab.url()
+        : (typeof tab?.playwright?.url === "function" ? tab.playwright.url() : tab?.url ?? null),
+    };
+  } catch (_error) {
+    return safeTabInfo(tab);
+  }
+}
+
+async function safeSelectedTabInfo(browserSession) {
+  try {
+    const selected = await browserSession.tabs.selected();
+    return selected ? await safeRuntimeTabInfo(selected) : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function cleanupBlankFallback(tab, error) {
+  try {
+    const current = await safeRuntimeTabInfo(tab);
+    if (isBlankTabInfo(current)) {
+      return {
+        message: "Runner-owned Browser/IAB tab reset to about:blank after a navigation timeout.",
+        warning: errorMessage(error),
+      };
+    }
+  } catch (_error) {
+    // Keep the original cleanup failure if the verification check also fails.
+  }
+  return null;
+}
+
 async function bodyIncludes(tab, text, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let last = "";
@@ -583,12 +638,15 @@ export async function runBrowserIabSmoke(options = {}) {
   let reviewDrawerOpen = false;
   let tab = null;
   let existingTabIds = new Set();
+  let tabsBefore = [];
   let runnerCreatedTab = false;
+  let runnerBorrowedBlankTab = false;
   let runnerTabCleanupMode = "close";
+  let runnerTabOwnership = "created_tab";
   const finish = async () => {
     cleanupSyntheticUploadFixtures(uploadFixtures);
     uploadFixtures = null;
-    if (!args.keepOpen && runnerCreatedTab && tab) {
+    if (!args.keepOpen && (runnerCreatedTab || runnerBorrowedBlankTab) && tab) {
       try {
         if (runnerTabCleanupMode === "blank") {
           await tab.goto("about:blank");
@@ -598,10 +656,17 @@ export async function runBrowserIabSmoke(options = {}) {
           checks.push(check("browser_tab_cleanup", true, "Browser/IAB closed the disposable smoke tab.", { keep_open: false, cleanup_mode: "close" }));
         }
       } catch (error) {
+        if (runnerTabCleanupMode === "blank") {
+          const cleanup = await cleanupBlankFallback(tab, error);
+          if (cleanup) {
+            checks.push(check("browser_tab_cleanup", true, cleanup.message, { keep_open: false, cleanup_mode: "blank", warning: cleanup.warning }));
+            return report(baseUrl, checks);
+          }
+        }
         const message = error instanceof Error ? error.message : String(error);
         checks.push(check("browser_tab_cleanup", false, `Browser/IAB could not close the disposable smoke tab: ${message}`, { keep_open: false }));
       }
-    } else if (args.keepOpen && runnerCreatedTab && tab) {
+    } else if (args.keepOpen && (runnerCreatedTab || runnerBorrowedBlankTab) && tab) {
       checks.push(check("browser_tab_cleanup", true, "Browser/IAB kept the disposable smoke tab open for debugging.", { keep_open: true }));
     } else {
       checks.push(check("browser_tab_cleanup", true, "Browser/IAB did not create a disposable tab before stopping.", { keep_open: Boolean(args.keepOpen) }));
@@ -663,26 +728,54 @@ export async function runBrowserIabSmoke(options = {}) {
   }
   await browserSession.nameSession("🧪 honorários iab smoke");
   try {
-    existingTabIds = new Set((await browserSession.tabs.list()).map((item) => String(item.id)));
+    tabsBefore = await browserSession.tabs.list();
+    existingTabIds = new Set(tabsBefore.map((item) => String(item.id)));
   } catch (error) {
     checks.push(check("browser_iab_runtime", false, error instanceof Error ? error.message : String(error)));
     return finish();
   }
   try {
     tab = await browserSession.tabs.new();
+    const tabsAfterCreate = await browserSession.tabs.list();
     if (existingTabIds.has(String(tab.id))) {
+      const beforeInfo = tabsBefore.find((candidate) => String(candidate.id) === String(tab.id));
+      const selectedInfo = await safeSelectedTabInfo(browserSession);
+      const afterInfo = await safeRuntimeTabInfo(tab);
+      const selectedMatches = selectedInfo?.id === tab.id
+        || String(selectedInfo?.id ?? "") === String(tab.id)
+        || (!selectedInfo && tabsBefore.length === 1 && tabsAfterCreate.length === 1);
+      if (selectedMatches && isBlankTabInfo(beforeInfo) && isBlankTabInfo(afterInfo)) {
+        runnerBorrowedBlankTab = true;
+        runnerTabCleanupMode = "blank";
+        runnerTabOwnership = "selected_blank_tab";
+      } else {
+        checks.push(check(
+          "browser_iab_runtime",
+          false,
+          "Browser/IAB did not allocate a disposable smoke tab; refusing to drive an existing tab.",
+          {
+            existing_tab_count: existingTabIds.size,
+            tab_id: String(tab.id),
+            before_tab: safeTabInfo(beforeInfo),
+            selected_tab: safeTabInfo(selectedInfo),
+            after_tab: safeTabInfo(afterInfo),
+          },
+        ));
+        return finish();
+      }
+    } else {
+      runnerCreatedTab = true;
+      if (tabsAfterCreate.length <= 1) {
+        runnerTabCleanupMode = "blank";
+      }
+    }
+    if (runnerBorrowedBlankTab) {
       checks.push(check(
         "browser_iab_runtime",
-        false,
-        "Browser/IAB did not allocate a disposable smoke tab; refusing to drive an existing tab.",
-        { existing_tab_count: existingTabIds.size, tab_id: String(tab.id) },
+        true,
+        "Browser/IAB borrowed the selected blank tab as a disposable smoke pane.",
+        { backend: "iab", tab_ownership: runnerTabOwnership },
       ));
-      return finish();
-    }
-    runnerCreatedTab = true;
-    const tabsAfterCreate = await browserSession.tabs.list();
-    if (tabsAfterCreate.length <= 1) {
-      runnerTabCleanupMode = "blank";
     }
   } catch (error) {
     checks.push(check("browser_iab_runtime", false, error instanceof Error ? error.message : String(error)));
@@ -690,7 +783,9 @@ export async function runBrowserIabSmoke(options = {}) {
   }
   uploadFixtures = args.uploadPhoto || args.uploadPdf || args.uploadSupportingAttachment || args.supportingAttachmentStale ? createSyntheticUploadFixtures(args) : null;
 
-  checks.push(check("browser_iab_runtime", true, "Browser/IAB runtime initialized.", { backend: "iab" }));
+  if (!runnerBorrowedBlankTab) {
+    checks.push(check("browser_iab_runtime", true, "Browser/IAB runtime initialized.", { backend: "iab", tab_ownership: runnerTabOwnership }));
+  }
 
   if (!(await runStep(checks, "browser_homepage", "Browser/IAB loaded the app shell.", async () => {
     await tab.goto(`${baseUrl}/`);

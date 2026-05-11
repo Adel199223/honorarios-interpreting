@@ -22,7 +22,7 @@ class BrowserIabSmokeSourceTests(unittest.TestCase):
             "await setupAtlasRuntime({ globals: globalThis });",
             "await tab.close()",
             "await tab.goto(\"about:blank\")",
-            "if (!args.keepOpen && runnerCreatedTab && tab)",
+            "if (!args.keepOpen && (runnerCreatedTab || runnerBorrowedBlankTab) && tab)",
             "Browser/IAB closed the disposable smoke tab.",
             "Browser/IAB reset the sole disposable smoke tab to about:blank.",
         ]:
@@ -30,6 +30,40 @@ class BrowserIabSmokeSourceTests(unittest.TestCase):
                 self.assertIn(text, smoke_js)
 
         self.assertNotIn("setupAtlasRuntime({ globals: globalThis, backend })", smoke_js)
+
+    def test_runner_can_borrow_selected_blank_tab_without_driving_user_tab(self):
+        smoke_js = self.smoke_source()
+
+        for text in [
+            "function isBlankTabInfo",
+            "async function safeSelectedTabInfo",
+            "let runnerBorrowedBlankTab = false",
+            "runnerBorrowedBlankTab = true",
+            "selected_blank_tab",
+            "Browser/IAB borrowed the selected blank tab as a disposable smoke pane.",
+            "isBlankTabInfo(beforeInfo)",
+            "isBlankTabInfo(afterInfo)",
+            "selectedInfo?.id === tab.id",
+            "existingTabIds.has(String(tab.id))",
+            "refusing to drive an existing tab",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, smoke_js)
+
+        cleanup_block = smoke_js.split("const finish = async () =>", 1)[1].split("return report(baseUrl, checks);", 1)[0]
+        self.assertIn("(runnerCreatedTab || runnerBorrowedBlankTab)", cleanup_block)
+
+    def test_blank_tab_cleanup_timeout_can_fall_back_to_verified_blank_state(self):
+        smoke_js = self.smoke_source()
+
+        for text in [
+            "async function cleanupBlankFallback",
+            "Runner-owned Browser/IAB tab reset to about:blank after a navigation timeout.",
+            "cleanupBlankFallback(tab, error)",
+            "cleanup.warning",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, smoke_js)
 
     def test_runner_can_keep_debug_tab_open_explicitly(self):
         smoke_js = self.smoke_source()
