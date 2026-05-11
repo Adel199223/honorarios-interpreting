@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.build_public_candidate import build_public_candidate
 from scripts.create_intake import load_profiles
@@ -116,6 +117,27 @@ class PublicRepoGateTests(unittest.TestCase):
         ]:
             with self.subTest(relative=relative):
                 self.assertIn(relative, report["blocked_paths"])
+
+    def test_public_release_gate_skips_runtime_dirs_before_file_stat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_public_metadata(root)
+            runtime_dir = root / "tmp" / "report-build" / "node_modules"
+            runtime_dir.mkdir(parents=True)
+            inaccessible = runtime_dir / "opencollective-postinstall"
+            inaccessible.write_text("synthetic runtime artifact", encoding="utf-8")
+            original_is_file = Path.is_file
+
+            def guarded_is_file(path: Path) -> bool:
+                if path == inaccessible:
+                    raise PermissionError("synthetic inaccessible runtime artifact")
+                return original_is_file(path)
+
+            with patch.object(Path, "is_file", guarded_is_file):
+                report = analyze_public_readiness(root, require_git=False)
+
+        self.assertNotIn("tmp/report-build/node_modules/opencollective-postinstall", report["blocked_paths"])
+        self.assertFalse(report["content_findings"], report)
 
     def test_public_candidate_writes_reference_examples_only(self):
         with tempfile.TemporaryDirectory() as tmp:

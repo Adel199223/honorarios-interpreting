@@ -96,12 +96,16 @@ def _missing_public_metadata(root: Path) -> list[str]:
 def _iter_scannable_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*"):
-        if not path.is_file():
+        relative = path.relative_to(root)
+        if relative.as_posix() in SKIP_FILES:
             continue
-        if path.relative_to(root).as_posix() in SKIP_FILES:
-            continue
-        parts = set(path.relative_to(root).parts)
+        parts = set(relative.parts)
         if parts & SKIP_DIRS:
+            continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
             continue
         if path.suffix.lower() not in TEXT_SUFFIXES:
             continue
