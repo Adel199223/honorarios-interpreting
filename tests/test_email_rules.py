@@ -75,7 +75,7 @@ class EmailRulesTests(unittest.TestCase):
         intake['email_body'] = 'Requerimento e documento comprovativo anexos.'
         ready = build_email_payload(intake, self.pdf, self.config, self.directory)
         self.assertEqual(validate_draft_payload(ready), [])
-        self.assertEqual(ready['gmail_create_draft_args']['attachment_files'], [str(self.pdf), str(proof)])
+        self.assertEqual(ready['gmail_create_draft_args']['attachment_files'], [str(self.pdf.resolve()), str(proof.resolve())])
 
     def test_recording_packet_immediately_blocks_each_underlying_request(self):
         requests = [{**self.intake, 'service_period_label': 'manhã'},
