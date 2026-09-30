@@ -122,6 +122,10 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
 
 export function beginnerReviewFacts(data = {}, intake = {}) {
   const serviceDate = data.service_date || intake.service_date || "";
+  const captureOrigin = reviewFactOrigin("photo_metadata_date", intake.photo_metadata_date, data, intake);
+  const captureLabel = captureOrigin.kind === "ai"
+    ? captureOrigin.label.startsWith("AI suggestion") ? "AI-suggested photo date · needs confirmation" : "AI-read photo date · needs confirmation"
+    : "Photo date · needs confirmation";
   const values = [
     ["case_number", "Case number", data.case_number || intake.case_number],
     ["service_date", "Service date", serviceDate || intake.photo_metadata_date],
@@ -132,7 +136,7 @@ export function beginnerReviewFacts(data = {}, intake = {}) {
   return values.map(([field, label, value]) => ({
     field, label, value: value || "",
     origin: field === "service_date" && !serviceDate && intake.photo_metadata_date
-      ? { kind: "metadata", label: "Photo date · needs confirmation" }
+      ? { kind: captureOrigin.kind === "ai" ? "ai" : "metadata", label: captureLabel }
       : reviewFactOrigin(field, value, data, intake),
   }));
 }

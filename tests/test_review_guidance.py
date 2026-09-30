@@ -112,7 +112,10 @@ console.log(JSON.stringify({
     g.reviewFactOrigin('payment_entity',''),
     g.reviewFactOrigin('service_date','2026-09-28',{source_evidence:{field_evidence:[{field:'service_date',value:'2026-09-28',source:'openai_ocr',status:'conflicts_with_metadata'}]}}),
     g.reviewFactOrigin('recipient_email','typed@example.test')
-  ]
+  ],
+  photoDateFacts: ['openai_ocr','image_metadata'].map(source => g.beginnerReviewFacts({source_evidence:{field_evidence:[
+    {field:'photo_metadata_date',value:'2026-09-28',source,confidence:'medium'}
+  ]}}, {photo_metadata_date:'2026-09-28'})[1])
 }));
 """
         result = subprocess.run(["node", "--input-type=module", "-"], input=script,
@@ -201,3 +204,9 @@ console.log(JSON.stringify({
         self.assertEqual(old_ai, {"kind": "ai", "label": "AI-read · check source"})
         self.assertEqual(missing["kind"], "missing")
         self.assertEqual(conflict["kind"], "conflict")
+
+    def test_photo_date_candidate_retains_ai_origin_until_service_date_confirmation(self):
+        ai_date, metadata_date = self.result["photoDateFacts"]
+        self.assertEqual(ai_date["origin"], {"kind": "ai", "label": "AI-read photo date · needs confirmation"})
+        self.assertEqual(metadata_date["origin"], {"kind": "metadata", "label": "Photo date · needs confirmation"})
+        self.assertEqual(ai_date["value"], metadata_date["value"])
