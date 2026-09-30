@@ -12,6 +12,7 @@ from typing import Any
 import unicodedata
 
 from scripts.request_identity import normalize_case_number
+from scripts.source_parsing import explicit_service_places
 
 
 FIELD_EVIDENCE_LABELS = {
@@ -282,14 +283,18 @@ def build_field_evidence(
                 if ai_value and _values_match(value, normalize_case_number(ai_value) if field == "case_number" else ai_value):
                     continue
             source = deterministic_sources[field]
+            reason = deterministic_reasons[field]
             if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
                 source = "document_text_and_photo_metadata"
+            if field == "service_place" and any(_values_match(value, place) for place in explicit_service_places(independent_text)):
+                source = "document_text"
+                reason = "A local pattern identified this physical service place in the source text. Check the building and city before preparing."
             add(
                 field,
                 value,
                 source=source,
                 confidence="medium" if source == "known_destination" else "high",
-                reason=deterministic_reasons[field],
+                reason=reason,
                 raw_value=deterministic_fields.get("raw_case_number", "") if field == "case_number" else "",
                 excerpt=_line_excerpt(str(candidate.get("source_text") or ""), deterministic_value),
             )

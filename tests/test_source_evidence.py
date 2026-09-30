@@ -145,6 +145,22 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual(entries[0]["source"], "deterministic_text")
         self.assertEqual(entries[0]["confidence"], "high")
 
+    def test_explicit_unknown_service_place_is_source_evidence_without_a_saved_reference(self):
+        place = "Posto da GNR de Faro"
+        text = "Diligência de interpretação realizada no Posto da GNR de Faro em 26/09/2026."
+        candidate = {"service_place": place, "source_text": text}
+        deterministic = {"service_place": place}
+        entry = self.fields(candidate=candidate, deterministic_fields=deterministic, profiles={})[0]
+        self.assertEqual(entry["source"], "document_text")
+        self.assertEqual(entry["confidence"], "high")
+        self.assertIn("physical service place in the source text", entry["reason"])
+        self.assertNotIn("known destination", entry["reason"])
+        self.assertEqual(entry["excerpt"], text)
+        ai_entry = self.fields(candidate=candidate, deterministic_fields=deterministic, profiles={},
+                               ai_recovery={"status": "ok", "raw_visible_text": text, "fields": {"service_place": place}})[0]
+        self.assertEqual(ai_entry["source"], "openai_ocr")
+        self.assertEqual(ai_entry["confidence"], "medium", "Reparsing the same AI text cannot confirm an unknown place.")
+
     def test_patterns_found_only_in_ai_text_remain_ai_even_if_structured_fields_are_missing(self):
         text = "Process 123/26.0SYNTH\ncourt@example.test"
         fields = {"case_number": "123/26.0SYNTH", "recipient_email": "court@example.test"}
