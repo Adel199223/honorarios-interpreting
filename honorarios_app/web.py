@@ -92,7 +92,7 @@ def build_paths(**overrides: Any) -> AppPaths:
 
 def static_asset_version() -> str:
     static_dir = PACKAGE_DIR / "static"
-    asset_paths = [static_dir / "app.js", static_dir / "style.css"]
+    asset_paths = [*static_dir.glob("*.js"), *static_dir.glob("*.css")]
     mtimes = [path.stat().st_mtime_ns for path in asset_paths if path.exists()]
     return str(max(mtimes)) if mtimes else "dev"
 
