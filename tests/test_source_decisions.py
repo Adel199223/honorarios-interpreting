@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts import evaluate_source_quality as evaluator
-from scripts.source_parsing import service_date_evidence
+from scripts.source_parsing import explicit_service_places, service_date_evidence
 
 CORPUS = evaluator.load_corpus()
 
@@ -67,6 +67,39 @@ class SourceDateLineWrappingTests(unittest.TestCase):
             'Serviço de interpretação realizado.\n26/09/2026.')
         self.assertEqual(evidence.value, '')
         self.assertTrue(evidence.needs_confirmation)
+
+
+class SourcePlaceRoleTests(unittest.TestCase):
+    def test_procedural_scope_is_not_a_physical_location(self):
+        self.assertEqual(explicit_service_places(
+            'Serviço de interpretação prestado no âmbito do processo 100/26.0TSTXX em 26/09/2026.'), ())
+
+    def test_service_day_and_procedural_scope_are_not_locations(self):
+        self.assertEqual(explicit_service_places(
+            'Diligência de interpretação realizada no dia 26/09/2026 no âmbito do processo 100/26.0TSTXX.'), ())
+
+    def test_named_gnr_host_survives_procedural_tail(self):
+        self.assertEqual(explicit_service_places(
+            'Prestou serviço de interpretação no Posto da GNR de Beja no âmbito do processo 100/26.0TSTXX em 26/09/2026.'),
+            ('Posto da GNR de Beja',))
+
+    def test_date_phrase_is_not_a_physical_location(self):
+        self.assertEqual(explicit_service_places(
+            'Serviço de interpretação prestado na data de 26/09/2026.'), ())
+
+    def test_service_period_is_not_a_physical_location(self):
+        self.assertEqual(explicit_service_places(
+            'Serviço de interpretação prestado no período da manhã em 26/09/2026.'), ())
+
+    def test_hospital_host_survives_date_tail(self):
+        self.assertEqual(explicit_service_places(
+            'Serviço de interpretação prestado no Hospital de Faro na data de 26/09/2026.'),
+            ('Hospital de Faro',))
+
+    def test_labour_court_host_survives_period_tail(self):
+        self.assertEqual(explicit_service_places(
+            'Diligência de interpretação realizada no Tribunal do Trabalho de Beja no período da manhã.'),
+            ('Tribunal do Trabalho de Beja',))
 
 
 class SourceEvaluationTests(unittest.TestCase):
