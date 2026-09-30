@@ -40,6 +40,11 @@ NON_PLACE_START_RE = re.compile(
     r"(?:dia|data|ambito|periodo|prazo|processo|diligencia|audiencia|"
     r"interpretacao|servico|lingua|portugues|ingles|arabe)\b"
 )
+WRAPPED_PLACE_LINK_RE = re.compile(r"\b(?:no|na|nos|nas|em)\s*$")
+INSTITUTION_START_RE = re.compile(
+    r"^(?:posto|esquadra|hospital|gabinete|instituto|tribunal|juizo|"
+    r"ministerio publico|edificio|instalacoes|unidade|centro|gnr|psp)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -130,10 +135,51 @@ def _place_tail(raw_text: str) -> str:
     return raw_text[:boundary.start() if boundary else len(raw_text)].strip(" :,-")
 
 
+def _place_continuation(line: str) -> bool:
+    candidate = line.strip()
+    date = DATE_RE.match(normalize_text(candidate))
+    if date:
+        candidate = candidate[date.end():].strip()
+        # A wrapped date can itself end with the location preposition; retain
+        # the service label so a following named host can complete the clause.
+        if not candidate or WRAPPED_PLACE_LINK_RE.fullmatch(normalize_text(candidate)):
+            return True
+        preposition = PLACE_PREPOSITION_RE.match(normalize_text(candidate))
+        if not preposition:
+            return False
+        candidate = candidate[preposition.end():]
+    place = _place_tail(candidate)
+    normalized = normalize_text(place)
+    if not place or OTHER_DATE_RE.search(normalized) or re.match(r"^(?:documento|oficio|notificacao|destinatario|pagamento|processo)\b", normalized):
+        return False
+    if INSTITUTION_START_RE.match(normalized):
+        return True
+    # A short capitalized city/name can complete "em\nSerpa". Sentence/header
+    # text with ordinary lower-case words does not become a physical location.
+    words = place.rstrip(".").split()
+    return 0 < len(words) <= 6 and all(
+        word in {"de", "do", "da", "dos", "das", "e"} or word[0].isupper()
+        for word in words
+    )
+
+
+def _join_service_place_lines(text: str) -> str:
+    lines: list[str] = []
+    for line in (text or "").splitlines():
+        if lines and line.strip():
+            unfinished_clause = re.split(r"[;.!?]", lines[-1])[-1]
+            normalized_clause = normalize_text(unfinished_clause)
+            if PLACE_ANCHOR_RE.search(normalized_clause) and WRAPPED_PLACE_LINK_RE.search(normalized_clause) and _place_continuation(line):
+                lines[-1] += " " + line.strip()
+                continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def explicit_service_places(text: str) -> tuple[str, ...]:
     """Return only locations connected to a service/local label, not headers."""
     places: list[str] = []
-    for clause in re.split(r"[\n;.!?]", text or ""):
+    for clause in re.split(r"[\n;.!?]", _join_service_place_lines(text)):
         normalized = normalize_text(clause)
         anchors = list(PLACE_ANCHOR_RE.finditer(normalized))
         if not anchors:
