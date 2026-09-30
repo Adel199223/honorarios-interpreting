@@ -7,13 +7,14 @@ LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpret
 | Layer | Entry points and responsibilities |
 | --- | --- |
 | Browser/API | `honorarios_app/web.py`, templates and static assets: source intake, review, numbered answers, PDF preview, batch queue, draft handoff, profiles and references. |
-| Shared application services | `honorarios_app/services.py`: coordinates review, preparation, freshness binding, managed data, backups and adapter boundaries. |
+| Shared application services | `honorarios_app/services.py`: compatibility facade plus runtime/provider/domain orchestration, review, preparation, freshness binding, managed data, backups and adapter boundaries. |
+| Source evidence | `honorarios_app/source_evidence.py`: pure field provenance, profile evidence, Review Attention and text/metadata helpers; no file or provider operations. |
 | Domain/CLI helpers | `scripts/`: authoritative PDF generation, classification, dates/questions, duplicate identity, recipient validation, packet preparation and local draft recording. |
 | Runtime isolation | `honorarios_app/runtime.py`: separates config/data/output paths and initializes disposable synthetic fixtures for checks. |
 | Optional providers | AI recovery, Google Photos and Gmail helpers: local configuration, secret-free status, guarded provider operations. |
 | Future caller | `scripts/legalpdf_adapter_caller.py` and `/api/integration/adapter-contract`: versioned endpoint sequence and caller validation. |
 
-The browser and CLI share the domain rules. Packaging must include the shared helpers, templates and static assets; an installed import alone is insufficient proof that the workflow works.
+The browser and CLI share the domain rules. The services facade retains existing evidence exports so extraction does not change routes, payloads, dates, duplicate checks, recipients or freshness binding. Packaging must include the shared helpers, templates and static assets; an installed import alone is insufficient proof that the workflow works.
 
 ## Managed data
 
@@ -40,3 +41,11 @@ The September preparation work adds a pinned development environment, locked set
 Daily use is supported from the source checkout. Installed-wheel validation uses an explicit isolated runtime root; configuring an installed distribution's private default runtime is deferred. Future main-app orchestration and production integration acceptance remain separate work.
 
 Use the [integration readiness guide](docs/integration-readiness.md) for the boundary and remaining acceptance criteria, not older roadmap feature inventories.
+
+## Current development foundation
+
+The published environment baseline is PR #58, merged at `bb9b1cf`. The development foundation starts from that baseline and recovers the saved guided interface locally. It adds focused public test groups, bounded code organization, the [plan lifecycle](docs/assistant/exec_plans/PLANS.md), [workflow acceptance checklist](docs/workflow-acceptance.md) and [beginner user guide](docs/user-guide.md).
+
+The guided path leads with one source upload, recovered-fact review, prominent numbered questions, Portuguese draft/PDF preview and Manual Draft Handoff. Advanced intake, batch, evidence and provider controls remain available behind explicit details. Capture-date suggestions are evidence and require service-date confirmation.
+
+This foundation is unpublished development work. Its final API/browser/PDF acceptance and saved-checkout application are pending until the [active plan](docs/assistant/exec_plans/active/2026-09-30_development_foundation.md) and [current handoff](docs/next-thread-handoff.md) record actual results. The earlier setup/CI results do not establish acceptance of this recovered interface. Main-app orchestration, live providers, installed private-default runtime configuration and publication remain separate work.

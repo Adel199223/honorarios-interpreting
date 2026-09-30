@@ -15,6 +15,23 @@ The default wrapper checks the pinned environment, lock/export consistency, depe
 
 `-Full` additionally exercises isolated source-upload, supporting-proof, adapter-contract and fake-Gmail API smoke. Run it before proposing integration readiness, a merge, or changes to code/tests/workflows/dependencies. Report the executed checks and their actual results; do not infer success from command availability.
 
+## Work in focused chunks
+
+While changing one behavior, select its public test group instead of repeatedly rebuilding and checking every unrelated workflow:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group quick
+powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group intake
+powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group ui
+.\.venv311\Scripts\python.exe scripts/run_portable_tests.py --group pdf
+```
+
+The accepted groups are `quick`, `intake`, `pdf`, `email`, `ui`, `package`, `integration` and `full`. Their exact membership lives in `tests/portable-groups.json`; every selected test file must also belong to the explicit public allowlist in `tests/portable-suite.txt`. Unknown groups or unsafe/unlisted entries must fail. Group selection retains the temporary source-only checkout and provider-environment stripping.
+
+Use `quick` for a fast general checkpoint, then the group matching the changed behavior. Intake covers request/review rules, PDF covers document generation, email covers recipient/draft rules, UI covers browser-facing behavior, package covers distribution, and integration covers the adapter/workflow boundary. The wrapper also runs environment/docs/JavaScript checks for the selected group; the direct Python runner runs that group alone.
+
+With no group selected, both commands keep the full public suite as their default. `-Full` requires the `full` group and adds the four isolated workflow smokes. Run it on the final integrated branch; a quick/group pass does not replace final Full or the [browser/PDF acceptance checklist](workflow-acceptance.md). Repeat broader checks when subsequent changes or failures justify them.
+
 Useful focused commands:
 
 ```powershell
@@ -38,7 +55,7 @@ The legacy runtime doctor checks broader runtime/dependency drift. It complement
 
 These checks use disposable runtime roots and synthetic fixtures. The adapter check covers source intake, numbered answers, preflight, preparation, Manual Draft Handoff, review-token binding/stale rejection and synthetic local draft recording. The fake-Gmail check never contacts Google. Neither check writes to LegalPDF Translate.
 
-Optional Browser/IAB or Playwright checks remain documented in [the roadmap/process references](process-optimizations.md). Run any artifact-writing browser path through the isolated launcher. If the adapter lacks a required capability, record the tooling blocker; do not substitute private files or real draft records.
+Optional Browser/IAB or Playwright checks remain documented in [the roadmap/process references](process-optimizations.md). Use the [workflow acceptance checklist](workflow-acceptance.md) for the actual guided journey and rendered PDF. Run any artifact-writing browser path through the isolated launcher. If the adapter lacks a required capability, record the tooling blocker; do not substitute private files or real draft records.
 
 ## Tracked-content privacy checks
 

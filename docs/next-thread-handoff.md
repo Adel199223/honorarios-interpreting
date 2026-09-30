@@ -1,5 +1,18 @@
 # Next Thread Handoff
 
+## Current development foundation: 2026-09-30
+
+The user approved completing the fee app's development foundation: recover the saved guided interface on the published setup, verify the beginner workflow, add focused public test groups and business-rule coverage, make bounded code extractions, and keep development/user guidance coherent. New publication, main-app integration, live providers and private data operations are outside this scope.
+
+- Published baseline: PR #58 merged into GitHub `main` at `bb9b1cf`. Its locked environment/CI preparation is complete; those checks did not publish or accept the saved beginner interface.
+- Current foundation branch: `codex/fee-development-foundation-20260930`, starting from that published baseline. Recovery checkpoint `7a4d066` contains the saved interface work. The original saved branch/private runtime are preserved.
+- Follow [the active plan](assistant/exec_plans/active/2026-09-30_development_foundation.md), [plan lifecycle](assistant/exec_plans/PLANS.md), [validation](validation.md), [workflow acceptance](workflow-acceptance.md), and [beginner guide](user-guide.md). The environment pins and adapter/Gmail/review contracts remain unchanged.
+- Current acceptance: pending final foundation tests, actual browser interactions, rendered synthetic PDF review and safe application to the saved checkout. Do not use earlier setup results as acceptance of these changes. Record completed/failed/skipped checks here when they actually run; retain the plan in `active/` until its objective is complete.
+- This foundation is local and unpublished. Plugins, Codex settings and dependency versions are unchanged; no additional installation was justified by the assessment.
+- Deferred: real documents/providers, production main-app caller/UI/process ownership, installed-distribution private-default runtime setup, and any new publication.
+
+The earlier preparation and May handoffs below are preserved history. Current continuation starts with this foundation section and the active plan.
+
 ## Current preparation: 2026-09-30
 
 The preparation covers this separate fee-request app's development environment, documentation and integration boundary for a future LegalPDF Translate integration. On 2026-09-30 the user approved publishing the preparation-only update and merging after GitHub checks pass. Main-app integration and live Gmail remain separate work.
