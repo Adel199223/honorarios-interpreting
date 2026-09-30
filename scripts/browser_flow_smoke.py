@@ -128,16 +128,33 @@ class PlaywrightBrowserDriver:
     def expect_selector_value(self, selector: str, value: str) -> None:
         locator = self._page.locator(selector)
         locator.wait_for(state="attached", timeout=self.timeout_ms)
-        actual = locator.input_value(timeout=self.timeout_ms)
-        if value not in actual:
-            raise RuntimeError(f"Expected {selector} value to contain {value!r}; got {actual!r}")
+        deadline = time.monotonic() + (self.timeout_ms / 1000)
+        actual = ""
+        while time.monotonic() < deadline:
+            actual = locator.input_value(timeout=self.timeout_ms)
+            if value in actual:
+                return
+            self._page.wait_for_timeout(100)
+        raise RuntimeError(f"Expected {selector} value to contain {value!r}; got {actual!r}")
 
     def expect_selector_value_equals(self, selector: str, value: str) -> None:
         locator = self._page.locator(selector)
         locator.wait_for(state="attached", timeout=self.timeout_ms)
-        actual = locator.input_value(timeout=self.timeout_ms)
-        if actual != value:
-            raise RuntimeError(f"Expected {selector} value to equal {value!r}; got {actual!r}")
+        deadline = time.monotonic() + (self.timeout_ms / 1000)
+        actual = ""
+        while time.monotonic() < deadline:
+            actual = locator.input_value(timeout=self.timeout_ms)
+            if actual == value:
+                return
+            self._page.wait_for_timeout(100)
+        raise RuntimeError(f"Expected {selector} value to equal {value!r}; got {actual!r}")
+
+    def expect_selector_hidden(self, selector: str) -> None:
+        locator = self._page.locator(selector)
+        try:
+            locator.wait_for(state="hidden", timeout=self.timeout_ms)
+        except Exception as exc:
+            raise RuntimeError(f"Expected {selector} to be hidden.") from exc
 
     def expect_button_disabled(self, selector: str) -> None:
         locator = self._page.locator(selector)
@@ -238,6 +255,19 @@ def _make_synthetic_supporting_pdf(temp_dir: Path, *, case_number: str, service_
     return path
 
 
+def _cleanup_temp_dir(temp_dir: tempfile.TemporaryDirectory[str]) -> None:
+    last_error: PermissionError | None = None
+    for _attempt in range(5):
+        try:
+            temp_dir.cleanup()
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.2)
+    if last_error is not None:
+        raise last_error
+
+
 def run_browser_flow_smoke(
     driver: Any | None = None,
     base_url: str = "http://127.0.0.1:8765",
@@ -302,30 +332,68 @@ def run_browser_flow_smoke(
 
         if not _safe_step(checks, "browser_homepage", "Browser loaded the app shell.", lambda: (
             driver.goto(base + "/"),
+            driver.expect_text("Upload source"),
+            driver.expect_text("Review what was found"),
+            driver.expect_text("Answer questions"),
+            driver.expect_text("Preview PDF"),
+            driver.expect_text("Draft email"),
             driver.expect_text("Start Interpretation Request"),
-            driver.expect_text("Review Case Details"),
-            driver.expect_text("Draft-only Gmail"),
+            driver.expect_selector_hidden("#review-intake"),
+            driver.expect_selector_hidden(".advanced-intake-fields"),
+            driver.expect_selector_hidden(".supporting-attachment-details"),
+            driver.expect_text("Advanced"),
         )):
             return _report(base, checks)
 
+        def _open_advanced_intake_fields() -> None:
+            driver.click(".advanced-intake-fields > summary")
+
+        def _open_advanced_workflow() -> None:
+            driver.click(".action-overflow-menu > summary")
+            driver.click("#toggle-advanced-workflow")
+
+        def _open_supporting_attachment_details() -> None:
+            driver.click(".supporting-attachment-details > summary")
+
+        def _open_source_evidence_details() -> None:
+            driver.click(".source-evidence-details > summary")
+
         def _review_drawer() -> None:
             nonlocal review_drawer_open
+            driver.click("#build-profile")
+            driver.expect_selector_text("#review-status", "Missing information")
+            driver.expect_button_enabled("#review-intake")
+            _open_advanced_intake_fields()
             driver.select("#profile", profile)
             driver.fill("#case_number", case_number)
             driver.fill("#service_date", "" if answer_questions else service_date)
-            driver.click("#review-intake")
-            driver.expect_selector_text("#drawer-next-safe-action", "Suggested Next Step")
-            driver.expect_selector_text("#drawer-next-safe-action", "not a separate task")
+            driver.click("#build-profile")
+            driver.expect_button_enabled("#review-intake")
+            driver.expect_selector_text("#next-safe-action", "Next safe action")
+            driver.expect_selector_text("#next-safe-action", "Do this next")
             if answer_questions:
-                driver.expect_text("Answer the numbered questions")
-                driver.expect_selector_visible("#numbered-answers")
-                driver.expect_text("Apply numbered answers")
+                driver.expect_selector_text("#interpretation-review-home-result", "What happened")
+                driver.expect_selector_text("#interpretation-review-home-result", "Answer these questions")
+                driver.expect_selector_text("#interpretation-review-home-result", "Show recovered details")
+                driver.expect_selector_visible("#home-numbered-answers")
+                driver.expect_selector_visible("#home-apply-numbered-answers")
+                driver.expect_text("Apply answers")
             elif correction_mode:
+                driver.click("#review-intake")
                 driver.expect_text("Correction mode")
             else:
-                driver.expect_selector_text("#draft-text", "Número de processo")
-                driver.expect_selector_text("#recipient-summary", "To:")
-            review_drawer_open = True
+                driver.click("#review-intake")
+                driver.expect_selector_text("#interpretation-review-home-result", case_number)
+                driver.expect_selector_text("#interpretation-review-home-result", "Ready for PDF generation")
+                driver.expect_selector_text("#interpretation-review-home-result", "Review draft text and create fee-request PDF")
+                driver.click("[data-open-review-drawer-focus-prepare]")
+                driver.expect_selector_visible("#interpretation-review-summary-card")
+                driver.expect_selector_visible("#drawer-prepare-intake-inline")
+                driver.expect_selector_hidden("#manual-handoff-card")
+                driver.expect_selector_hidden("#manual-record-card")
+                driver.expect_selector_hidden("#record-draft")
+                driver.click("#interpretation-close-review")
+            review_drawer_open = False
 
         def _close_review_drawer_if_open() -> None:
             nonlocal review_drawer_open
@@ -333,19 +401,36 @@ def run_browser_flow_smoke(
                 driver.click("#interpretation-close-review")
                 review_drawer_open = False
 
+        def _reset_workspace_between_source_uploads() -> None:
+            nonlocal review_drawer_open
+            _close_review_drawer_if_open()
+            driver.click("#reset-workspace")
+            driver.expect_selector_hidden("#interpretation-seed-panel")
+            driver.expect_selector_hidden("#review-intake")
+            driver.expect_selector_visible("#source-upload-form")
+            review_drawer_open = False
+
         if not _safe_step(checks, "browser_review_drawer", "Browser opened review drawer with Portuguese draft text.", _review_drawer):
             return _report(base, checks)
 
         if answer_questions:
+            numbered_answers = "\n".join([
+                f"1. {service_date}",
+                "2. Tribunal de Beja",
+                "3. no",
+                "4. Beja",
+                f"5. {service_date}",
+            ])
             if not _safe_step(checks, "browser_answer_questions", "Browser applied numbered missing-info answers and reran review without preparing artifacts.", lambda: (
-                driver.fill("#numbered-answers", f"1. {service_date}"),
-                driver.click("#apply-numbered-answers"),
+                driver.fill("#home-numbered-answers", numbered_answers),
+                driver.click("#home-apply-numbered-answers"),
                 driver.expect_selector_value("#service_date", service_date),
-                driver.expect_selector_text("#draft-text", "Número de processo"),
-                driver.expect_selector_text("#recipient-summary", "To:"),
+                driver.expect_selector_text("#interpretation-review-home-result", case_number),
+                driver.expect_selector_text("#interpretation-review-home-result", "Ready for PDF generation"),
+                driver.expect_selector_text("#interpretation-review-home-result", "Review draft text and create fee-request PDF"),
             )):
                 return _report(base, checks)
-            review_drawer_open = True
+            review_drawer_open = False
 
         if upload_photo:
             if not photo_upload_path:
@@ -353,12 +438,17 @@ def run_browser_flow_smoke(
                 return _report(base, checks)
             if not _safe_step(checks, "browser_photo_upload_evidence", "Browser uploaded a synthetic photo and showed source evidence without preparing artifacts.", lambda: (
                 _close_review_drawer_if_open(),
-                driver.set_input_file("#photo-file", photo_upload_path),
-                driver.click("#photo-upload-form button[type=submit]"),
+                driver.set_input_file("#source-file", photo_upload_path),
+                driver.click("#source-upload-form button[type=submit]"),
+                driver.expect_selector_hidden("#build-profile"),
                 driver.expect_selector_visible("#source-evidence"),
+                _open_source_evidence_details(),
                 driver.expect_selector_text("#source-evidence-body", "Filename"),
             )):
                 return _report(base, checks)
+            if upload_pdf:
+                if not _safe_step(checks, "browser_source_upload_reset", "Browser reset the source-review surface before checking another synthetic upload.", _reset_workspace_between_source_uploads):
+                    return _report(base, checks)
 
         if upload_pdf:
             if not pdf_upload_path:
@@ -366,9 +456,11 @@ def run_browser_flow_smoke(
                 return _report(base, checks)
             if not _safe_step(checks, "browser_pdf_upload_evidence", "Browser uploaded a synthetic notification PDF and surfaced candidate review fields without preparing artifacts.", lambda: (
                 _close_review_drawer_if_open(),
-                driver.set_input_file("#notification-file", pdf_upload_path),
-                driver.click("#notification-upload-form button[type=submit]"),
+                driver.set_input_file("#source-file", pdf_upload_path),
+                driver.click("#source-upload-form button[type=submit]"),
+                driver.expect_selector_hidden("#build-profile"),
                 driver.expect_selector_visible("#source-evidence"),
+                _open_source_evidence_details(),
                 driver.expect_selector_text("#source-evidence-body", "Filename"),
                 driver.expect_selector_value("#case_number", case_number),
                 driver.expect_selector_value("#service_date", service_date),
@@ -381,6 +473,7 @@ def run_browser_flow_smoke(
                 return _report(base, checks)
             if not _safe_step(checks, "browser_supporting_attachment_upload_evidence", "Browser uploaded a synthetic declaration through the Supporting proof UI without preparing artifacts.", lambda: (
                 _close_review_drawer_if_open(),
+                _open_supporting_attachment_details(),
                 driver.set_input_file("#supporting-attachment-file", supporting_upload_path),
                 driver.click("#supporting-attachment-form button[type=submit]"),
                 driver.expect_selector_text("#supporting-attachment-list", "synthetic-declaracao.pdf"),
@@ -388,9 +481,29 @@ def run_browser_flow_smoke(
             )):
                 return _report(base, checks)
 
+        source_upload_only = (upload_photo or upload_pdf) and not any([
+            answer_questions,
+            correction_mode,
+            prepare_replacement,
+            prepare_packet,
+            record_helper,
+            manual_handoff_stale,
+            supporting_attachment_stale,
+        ])
+        if source_upload_only:
+            if not _safe_step(checks, "browser_workspace_reset", "Browser reset the synthetic workspace after upload evidence checks.", lambda: (
+                _close_review_drawer_if_open(),
+                driver.click("#reset-workspace"),
+                driver.expect_selector_hidden("#interpretation-seed-panel"),
+                driver.expect_selector_hidden("#review-intake"),
+            )):
+                return _report(base, checks)
+            return _report(base, checks)
+
         def _batch_queue() -> None:
             nonlocal review_drawer_open
             _close_review_drawer_if_open()
+            _open_advanced_workflow()
             driver.click("#add-current-to-batch")
             driver.expect_selector_text("#batch-count-chip", "1 queued")
             driver.expect_text("Packet item inspector")
@@ -437,7 +550,7 @@ def run_browser_flow_smoke(
         def _prepare_packet() -> None:
             nonlocal review_drawer_open
             _close_review_drawer_if_open()
-            driver.check("#batch-packet-mode")
+            driver.click('label[for="batch-packet-mode"]')
             driver.click("#preflight-batch-intakes")
             review_drawer_open = True
             driver.expect_selector_text("#batch-preflight-result", "Batch preflight")
@@ -512,6 +625,7 @@ def run_browser_flow_smoke(
                 driver.click("#build-manual-handoff")
                 driver.expect_selector_text("#manual-handoff-packet", "Manual handoff packet ready")
                 _close_review_drawer_if_open()
+                _open_supporting_attachment_details()
                 driver.set_input_file("#supporting-attachment-file", supporting_upload_path)
                 driver.click("#supporting-attachment-form button[type=submit]")
                 driver.expect_selector_text("#supporting-attachment-list", "synthetic-declaracao.pdf")
@@ -546,14 +660,15 @@ def run_browser_flow_smoke(
             _close_review_drawer_if_open(),
             driver.click("#reset-workspace"),
             driver.expect_selector_text("#batch-count-chip", "0 queued"),
-            driver.expect_text("Workspace reset"),
+            driver.expect_selector_hidden("#interpretation-seed-panel"),
+            driver.expect_selector_hidden("#review-intake"),
         )):
             return _report(base, checks)
     finally:
-        if temp_dir is not None:
-            temp_dir.cleanup()
         if owns_driver and hasattr(driver, "close"):
             driver.close()
+        if temp_dir is not None:
+            _cleanup_temp_dir(temp_dir)
     return _report(base, checks)
 
 

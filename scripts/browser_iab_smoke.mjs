@@ -519,6 +519,25 @@ async function expectButtonEnabled(tab, selector, timeoutMs) {
   }
 }
 
+async function expectSelectorHidden(tab, selector, timeoutMs) {
+  const locator = await attachedLocator(tab, selector, timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  let lastClass = "";
+  let lastHidden = null;
+  let lastVisible = null;
+  while (Date.now() < deadline) {
+    if (typeof locator.isVisible === "function") {
+      lastVisible = await locator.isVisible();
+      if (!lastVisible) return;
+    }
+    lastHidden = await locator.getAttribute("hidden", { timeoutMs: Math.min(1000, timeoutMs) });
+    lastClass = await locator.getAttribute("class", { timeoutMs: Math.min(1000, timeoutMs) }) || "";
+    if (lastHidden !== null || String(lastClass).split(/\s+/).includes("hidden")) return;
+    await tab.playwright.waitForTimeout(100);
+  }
+  throw new Error(`Expected ${selector} to be hidden; visible=${lastVisible}, hidden=${JSON.stringify(lastHidden)}, class=${JSON.stringify(lastClass)}.`);
+}
+
 function portugueseDate(value) {
   const parts = String(value || "").split("-");
   if (parts.length !== 3) return String(value || "");
@@ -616,6 +635,43 @@ async function openReferencesPanel(tab, timeoutMs) {
     await referencesButton.waitFor({ state: "visible", timeoutMs });
   }
   await referencesButton.click({ timeoutMs });
+}
+
+async function openAdvancedIntakeFields(tab, timeoutMs) {
+  const panel = await attachedLocator(tab, ".advanced-intake-fields", timeoutMs);
+  const isOpen = await panel.getAttribute("open", { timeoutMs: Math.min(1000, timeoutMs) });
+  if (isOpen === null) {
+    await click(tab, ".advanced-intake-fields > summary", timeoutMs);
+  }
+}
+
+async function openAdvancedWorkflow(tab, timeoutMs) {
+  const panel = await attachedLocator(tab, "#batch-queue-panel", timeoutMs);
+  const classes = await panel.getAttribute("class", { timeoutMs: Math.min(1000, timeoutMs) });
+  if (String(classes || "").includes("hidden")) {
+    const toggle = await attachedLocator(tab, "#toggle-advanced-workflow", timeoutMs);
+    if (!(await toggle.isVisible({ timeoutMs: Math.min(1000, timeoutMs) }))) {
+      await click(tab, ".action-overflow-menu > summary", timeoutMs);
+    }
+    await click(tab, "#toggle-advanced-workflow", timeoutMs);
+  }
+  await uniqueLocator(tab, "#batch-queue-panel", timeoutMs);
+}
+
+async function openSourceEvidenceDetails(tab, timeoutMs) {
+  const details = await attachedLocator(tab, ".source-evidence-details", timeoutMs);
+  const isOpen = await details.getAttribute("open", { timeoutMs: Math.min(1000, timeoutMs) });
+  if (isOpen === null) {
+    await click(tab, ".source-evidence-details > summary", timeoutMs);
+  }
+}
+
+async function openSupportingAttachmentDetails(tab, timeoutMs) {
+  const details = await attachedLocator(tab, ".supporting-attachment-details", timeoutMs);
+  const isOpen = await details.getAttribute("open", { timeoutMs: Math.min(1000, timeoutMs) });
+  if (isOpen === null) {
+    await click(tab, ".supporting-attachment-details > summary", timeoutMs);
+  }
 }
 
 async function runStep(checks, name, successMessage, action) {
@@ -790,9 +846,22 @@ export async function runBrowserIabSmoke(options = {}) {
   if (!(await runStep(checks, "browser_homepage", "Browser/IAB loaded the app shell.", async () => {
     await tab.goto(`${baseUrl}/`);
     await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+    await uniqueLocator(tab, ".guided-intake-steps", args.timeoutMs);
+    await expectBodyText(tab, "Upload source", args.timeoutMs);
+    await expectBodyText(tab, "Review what was found", args.timeoutMs);
+    await expectBodyText(tab, "Answer questions", args.timeoutMs);
+    await expectBodyText(tab, "Preview PDF", args.timeoutMs);
+    await expectBodyText(tab, "Draft email", args.timeoutMs);
     await expectBodyText(tab, "Start Interpretation Request", args.timeoutMs);
-    await expectBodyText(tab, "Review Case Details", args.timeoutMs);
-    await expectBodyText(tab, "Draft-only Gmail", args.timeoutMs);
+    await expectSelectorHidden(tab, "#review-intake", args.timeoutMs);
+    await expectSelectorHidden(tab, ".advanced-intake-fields", args.timeoutMs);
+    await expectSelectorHidden(tab, ".supporting-attachment-details", args.timeoutMs);
+    await expectBodyText(tab, "Advanced", args.timeoutMs);
+    const reviewPanel = await attachedLocator(tab, "#interpretation-seed-panel", args.timeoutMs);
+    const reviewPanelClass = await reviewPanel.getAttribute("class", { timeoutMs: Math.min(1000, args.timeoutMs) });
+    if (!String(reviewPanelClass || "").includes("hidden")) {
+      throw new Error("Beginner review panel should stay hidden until a source or review action reveals it.");
+    }
   }))) {
     return finish();
   }
@@ -821,6 +890,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
       await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
       await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await openAdvancedWorkflow(tab, args.timeoutMs);
       await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
       await expectBodyText(tab, "Reset workspace", args.timeoutMs);
     }))) {
@@ -863,6 +933,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
       await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
       await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await openAdvancedWorkflow(tab, args.timeoutMs);
       await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
       await expectBodyText(tab, "Reset workspace", args.timeoutMs);
     }))) {
@@ -874,6 +945,10 @@ export async function runBrowserIabSmoke(options = {}) {
 
   if (args.profileProposal) {
     if (!(await runStep(checks, "browser_profile_proposal", "Browser/IAB previewed a proposed service profile in the guarded editor without saving.", async () => {
+      await click(tab, "#build-profile", args.timeoutMs);
+      await expectSelectorText(tab, "#review-status", "Missing information", args.timeoutMs);
+      await expectButtonEnabled(tab, "#review-intake", args.timeoutMs);
+      await openAdvancedIntakeFields(tab, args.timeoutMs);
       await select(tab, "#profile", "court_mp_generic", args.timeoutMs);
       await fill(tab, "#case_number", "111/26.0TEST", args.timeoutMs);
       await fill(tab, "#service_date", args.serviceDate, args.timeoutMs);
@@ -884,7 +959,9 @@ export async function runBrowserIabSmoke(options = {}) {
       await fill(tab, "#source_text", "Guarda Nacional Republicana. Posto Territorial de Vidigueira. Ministério Público de Beja. Diligência de interpretação.", args.timeoutMs);
       await click(tab, "#review-intake", args.timeoutMs);
       await expectBodyText(tab, "Source Evidence", args.timeoutMs);
+      await openSourceEvidenceDetails(tab, args.timeoutMs);
       await expectBodyText(tab, "Profile proposal", args.timeoutMs);
+      await uniqueLocator(tab, ".profile-proposal-card", args.timeoutMs);
       await expectBodyText(tab, "Preview proposed profile", args.timeoutMs);
       reviewDrawerOpen = true;
       await closeReviewDrawerIfOpen();
@@ -918,6 +995,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
       await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
       await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await openAdvancedWorkflow(tab, args.timeoutMs);
       await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
       await expectBodyText(tab, "Reset workspace", args.timeoutMs);
     }))) {
@@ -927,37 +1005,53 @@ export async function runBrowserIabSmoke(options = {}) {
     return finish();
   }
 
-  if (!(await runStep(checks, "browser_review_drawer", "Browser/IAB opened review drawer with Portuguese draft text.", async () => {
+  if (!(await runStep(checks, "browser_review_drawer", "Browser/IAB opened the beginner review panel with recovered request details.", async () => {
+    await click(tab, "#build-profile", args.timeoutMs);
+    await expectSelectorText(tab, "#review-status", "Missing information", args.timeoutMs);
+    await expectButtonEnabled(tab, "#review-intake", args.timeoutMs);
+    await openAdvancedIntakeFields(tab, args.timeoutMs);
     await select(tab, "#profile", args.profile, args.timeoutMs);
     await fill(tab, "#case_number", args.caseNumber, args.timeoutMs);
     await fill(tab, "#service_date", args.answerQuestions ? "" : args.serviceDate, args.timeoutMs);
+    await click(tab, "#build-profile", args.timeoutMs);
+    await expectButtonEnabled(tab, "#review-intake", args.timeoutMs);
     await click(tab, "#review-intake", args.timeoutMs);
-    await expectBodyText(tab, "Suggested Next Step", args.timeoutMs);
-    await expectBodyText(tab, "Suggested Next Step", args.timeoutMs);
-    await expectBodyText(tab, "not a separate task", args.timeoutMs);
+    await expectBodyText(tab, "Next safe action", args.timeoutMs);
+    await expectBodyText(tab, "Do this next", args.timeoutMs);
     if (args.answerQuestions) {
-      await expectBodyText(tab, "Answer the numbered questions", args.timeoutMs);
-      await uniqueLocator(tab, "#numbered-answers", args.timeoutMs);
-      await expectBodyText(tab, "Apply numbered answers", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Answer these questions", args.timeoutMs);
+      await expectBodyText(tab, "Answer the numbered questions before PDF creation", args.timeoutMs);
+      await uniqueLocator(tab, "#home-numbered-answers", args.timeoutMs);
+      await uniqueLocator(tab, "#home-apply-numbered-answers", args.timeoutMs);
+      await expectBodyText(tab, "Apply answers", args.timeoutMs);
     } else {
-      await expectAnyBodyText(tab, ["Número de processo", "Possible duplicate found"], args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", args.caseNumber, args.timeoutMs);
+      await expectAnyBodyText(tab, ["Ready for PDF generation", "Possible duplicate found"], args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Review draft text and create fee-request PDF", args.timeoutMs);
+      await uniqueLocator(tab, "[data-open-review-drawer-focus-prepare]", args.timeoutMs);
+      await click(tab, "[data-open-review-drawer-focus-prepare]", args.timeoutMs);
+      await uniqueLocator(tab, "#interpretation-review-summary-card", args.timeoutMs);
+      await uniqueLocator(tab, "#drawer-prepare-intake-inline", args.timeoutMs);
+      await expectSelectorHidden(tab, "#manual-handoff-card", args.timeoutMs);
+      await expectSelectorHidden(tab, "#manual-record-card", args.timeoutMs);
+      await expectSelectorHidden(tab, "#record-draft", args.timeoutMs);
+      await click(tab, "#interpretation-close-review", args.timeoutMs);
     }
-    if (!args.correctionMode && !args.answerQuestions) {
-      await expectBodyText(tab, "To:", args.timeoutMs);
-    }
-    reviewDrawerOpen = true;
+    reviewDrawerOpen = false;
   }))) {
     return finish();
   }
 
   if (args.answerQuestions) {
     if (!(await runStep(checks, "browser_answer_questions", "Browser/IAB applied numbered missing-info answers and reran review without preparing artifacts.", async () => {
-      await fill(tab, "#numbered-answers", `1. ${args.serviceDate}`, args.timeoutMs);
-      await click(tab, "#apply-numbered-answers", args.timeoutMs);
-      await expectBodyText(tab, "Número de processo", args.timeoutMs);
+      await fill(tab, "#home-numbered-answers", `1. ${args.serviceDate}`, args.timeoutMs);
+      await click(tab, "#home-apply-numbered-answers", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", args.caseNumber, args.timeoutMs);
       await expectBodyText(tab, portugueseDate(args.serviceDate), args.timeoutMs);
-      await expectBodyText(tab, "To:", args.timeoutMs);
-      reviewDrawerOpen = true;
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Ready for PDF generation", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Review draft text and create fee-request PDF", args.timeoutMs);
+      await uniqueLocator(tab, "[data-open-review-drawer-focus-prepare]", args.timeoutMs);
+      reviewDrawerOpen = false;
     }))) {
       return finish();
     }
@@ -966,9 +1060,16 @@ export async function runBrowserIabSmoke(options = {}) {
   if (args.uploadPhoto) {
     if (!(await runStep(checks, "browser_photo_upload_evidence", "Browser/IAB uploaded a synthetic photo and showed Source Evidence without preparing artifacts.", async () => {
       await closeReviewDrawerIfOpen();
-      await setSyntheticInputFile(tab, "#photo-file", uploadFixtures.photoPath, args.timeoutMs);
-      await click(tab, "#photo-upload-form button[type=submit]", args.timeoutMs);
+      await setSyntheticInputFile(tab, "#source-file", uploadFixtures.photoPath, args.timeoutMs);
+      await click(tab, "#source-upload-form button[type=submit]", args.timeoutMs);
       await expectBodyText(tab, "Source Evidence", args.timeoutMs);
+      await expectSelectorHidden(tab, "#build-profile", args.timeoutMs);
+      await uniqueLocator(tab, "#interpretation-review-home-result", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "What happened", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Answer these questions", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Show recovered details", args.timeoutMs);
+      await uniqueLocator(tab, "#source-evidence", args.timeoutMs);
+      await openSourceEvidenceDetails(tab, args.timeoutMs);
       await expectSelectorText(tab, "#source-evidence-body", "Filename", args.timeoutMs);
     }))) {
       return finish();
@@ -978,9 +1079,16 @@ export async function runBrowserIabSmoke(options = {}) {
   if (args.uploadPdf) {
     if (!(await runStep(checks, "browser_pdf_upload_evidence", "Browser/IAB uploaded a synthetic notification PDF and surfaced candidate review fields without preparing artifacts.", async () => {
       await closeReviewDrawerIfOpen();
-      await setSyntheticInputFile(tab, "#notification-file", uploadFixtures.pdfPath, args.timeoutMs);
-      await click(tab, "#notification-upload-form button[type=submit]", args.timeoutMs);
+      await setSyntheticInputFile(tab, "#source-file", uploadFixtures.pdfPath, args.timeoutMs);
+      await click(tab, "#source-upload-form button[type=submit]", args.timeoutMs);
       await expectBodyText(tab, "Source Evidence", args.timeoutMs);
+      await expectSelectorHidden(tab, "#build-profile", args.timeoutMs);
+      await uniqueLocator(tab, "#interpretation-review-home-result", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "What happened", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Answer these questions", args.timeoutMs);
+      await expectSelectorText(tab, "#interpretation-review-home-result", "Show recovered details", args.timeoutMs);
+      await uniqueLocator(tab, "#source-evidence", args.timeoutMs);
+      await openSourceEvidenceDetails(tab, args.timeoutMs);
       await expectSelectorText(tab, "#source-evidence-body", "Filename", args.timeoutMs);
       await expectValueContains(tab, "#case_number", args.caseNumber, args.timeoutMs);
       await expectValueContains(tab, "#service_date", args.serviceDate, args.timeoutMs);
@@ -992,6 +1100,7 @@ export async function runBrowserIabSmoke(options = {}) {
   if (args.uploadSupportingAttachment) {
     if (!(await runStep(checks, "browser_supporting_attachment_upload_evidence", "Browser/IAB uploaded a synthetic declaration through the Supporting proof UI without preparing artifacts.", async () => {
       await closeReviewDrawerIfOpen();
+      await openSupportingAttachmentDetails(tab, args.timeoutMs);
       await setSyntheticInputFile(tab, "#supporting-attachment-file", uploadFixtures.supportingPath, args.timeoutMs);
       await click(tab, "#supporting-attachment-form button[type=submit]", args.timeoutMs);
       await expectSelectorText(tab, "#supporting-attachment-list", "synthetic-declaracao.pdf", args.timeoutMs);
@@ -999,6 +1108,32 @@ export async function runBrowserIabSmoke(options = {}) {
     }))) {
       return finish();
     }
+  }
+
+  const sourceUploadOnly = (args.uploadPhoto || args.uploadPdf)
+    && !args.answerQuestions
+    && !args.correctionMode
+    && !args.prepareReplacement
+    && !args.preparePacket
+    && !args.recordHelper
+    && !args.applyHistory
+    && !args.profileProposal
+    && !args.gmailApiCreate
+    && !args.manualHandoffStale
+    && !args.supportingAttachmentStale
+    && !args.recentWorkLifecycle
+    && !args.recentWorkReconciliation;
+  if (sourceUploadOnly) {
+    if (!(await runStep(checks, "browser_workspace_reset", "Browser/IAB reset the synthetic workspace after upload evidence checks.", async () => {
+      await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
+      await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
+      await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await expectSelectorHidden(tab, "#review-intake", args.timeoutMs);
+      await expectBodyText(tab, "Reset workspace", args.timeoutMs);
+    }))) {
+      return finish();
+    }
+    return finish();
   }
 
   if (args.gmailApiCreate) {
@@ -1017,7 +1152,8 @@ export async function runBrowserIabSmoke(options = {}) {
       return finish();
     }
     if (!(await runStep(checks, "browser_gmail_api_create", "Browser/IAB created and verified a synthetic Gmail draft through the fake Gmail API path.", async () => {
-      await click(tab, "#drawer-prepare-intake", args.timeoutMs);
+      await click(tab, "[data-open-review-drawer-focus-prepare]", args.timeoutMs);
+      await click(tab, "#drawer-prepare-intake-inline", args.timeoutMs);
       await expectBodyText(tab, "PDF and Gmail draft payload prepared", args.timeoutMs);
       await expectBodyText(tab, "Exact gmail_create_draft_args", args.timeoutMs);
       await setChecked(tab, "#gmail_handoff_reviewed", true, args.timeoutMs);
@@ -1045,6 +1181,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
       await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
       await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+      await openAdvancedWorkflow(tab, args.timeoutMs);
       await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
       await expectBodyText(tab, "Reset workspace", args.timeoutMs);
     }))) {
@@ -1057,6 +1194,7 @@ export async function runBrowserIabSmoke(options = {}) {
   if (!args.prepareReplacement || args.preparePacket) {
     if (!(await runStep(checks, "browser_batch_queue", "Browser/IAB added the reviewed request to the batch queue without preparing artifacts.", async () => {
       await closeReviewDrawerIfOpen();
+      await openAdvancedWorkflow(tab, args.timeoutMs);
       await click(tab, "#add-current-to-batch", args.timeoutMs);
       await expectSelectorText(tab, "#batch-count-chip", "1 queued", args.timeoutMs);
       await expectBodyText(tab, "Packet item inspector", args.timeoutMs);
@@ -1071,10 +1209,10 @@ export async function runBrowserIabSmoke(options = {}) {
     }
     if (!args.preparePacket) {
       if (!(await runStep(checks, "browser_batch_stale_gating", "Browser/IAB marked batch preflight stale and kept artifact-producing actions gated after packet-mode changes.", async () => {
-        await setChecked(tab, "#batch-packet-mode", true, args.timeoutMs);
+        await click(tab, "label[for=\"batch-packet-mode\"]", args.timeoutMs);
         await expectSelectorText(tab, "#batch-preflight-result", "Run a non-writing batch preflight", args.timeoutMs);
         await expectButtonDisabled(tab, "#prepare-batch-intakes", args.timeoutMs);
-        await setChecked(tab, "#batch-packet-mode", false, args.timeoutMs);
+        await click(tab, "label[for=\"batch-packet-mode\"]", args.timeoutMs);
         await expectSelectorText(tab, "#batch-preflight-result", "Run a non-writing batch preflight", args.timeoutMs);
         await expectButtonDisabled(tab, "#prepare-batch-intakes", args.timeoutMs);
       }))) {
@@ -1113,7 +1251,7 @@ export async function runBrowserIabSmoke(options = {}) {
 
   if (args.preparePacket) {
     if (!(await runStep(checks, "browser_packet_prepare", "Browser/IAB prepared packet mode and exposed packet draft helpers.", async () => {
-      await setChecked(tab, "#batch-packet-mode", true, args.timeoutMs);
+      await click(tab, "label[for=\"batch-packet-mode\"]", args.timeoutMs);
       await click(tab, "#preflight-batch-intakes", args.timeoutMs);
       await expectSelectorText(tab, "#batch-preflight-result", "Batch preflight", args.timeoutMs);
       reviewDrawerOpen = true;
@@ -1164,6 +1302,7 @@ export async function runBrowserIabSmoke(options = {}) {
       await setChecked(tab, "#gmail_handoff_reviewed", true, args.timeoutMs);
       await click(tab, "#build-manual-handoff", args.timeoutMs);
       await expectSelectorText(tab, "#manual-handoff-packet", "Manual handoff packet ready", args.timeoutMs);
+      await openSupportingAttachmentDetails(tab, args.timeoutMs);
       await setSyntheticInputFile(tab, "#supporting-attachment-file", uploadFixtures.supportingPath, args.timeoutMs);
       await click(tab, "#supporting-attachment-form button[type=submit]", args.timeoutMs);
       await expectSelectorText(tab, "#supporting-attachment-list", "synthetic-declaracao.pdf", args.timeoutMs);
@@ -1338,6 +1477,7 @@ export async function runBrowserIabSmoke(options = {}) {
     await uniqueLocator(tab, "#reset-workspace", args.timeoutMs);
     await tab.goto(`${baseUrl}/?smoke-reset=${Date.now()}`);
     await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: args.timeoutMs });
+    await openAdvancedWorkflow(tab, args.timeoutMs);
     await expectSelectorText(tab, "#batch-count-chip", "0 queued", args.timeoutMs);
     await expectBodyText(tab, "Reset workspace", args.timeoutMs);
   }))) {

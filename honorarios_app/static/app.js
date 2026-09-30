@@ -1,3 +1,20 @@
+import {
+  todayIsoDate,
+  friendlyQuestionTitle,
+  shortDateLabel,
+  humanList,
+  questionNeedsServiceDate,
+  questionFieldLabel,
+  questionAnswerExample,
+  beginnerFoundLabels,
+  beginnerNeededLabels,
+  guidedStepForState,
+  isWorkflowResponseCurrent,
+  awaitWorkflowResponse,
+  projectWorkflowGuidance,
+  profileFallbackNotice
+} from "./review_guidance.js";
+
 const state = {
   reference: null,
   currentIntake: null,
@@ -5,6 +22,11 @@ const state = {
   batchSelectedIndex: null,
   batchPreflight: null,
   lastPrepared: null,
+  lastReview: null,
+  workflowRevision: 0,
+  workflowStale: false,
+  pendingPreparationRevision: null,
+  locallyRecordedPayload: "",
   aiStatus: null,
   googlePhotosStatus: null,
   gmailStatus: null,
@@ -82,17 +104,26 @@ function statusChipClass(status) {
 }
 
 const HISTORY_STATUS_FILTERS = ["all", "active", "drafted", "sent", "superseded", "trashed", "not_found"];
-
+const QUESTION_ACTION_EXAMPLE = "Answer 3 questions before PDF creation";
+const NEXT_SAFE_ACTION_LABEL = "Next safe action";
 const SAFE_ACTION_GATES = {
   "apply-numbered-answers": {
     states: ["answer_questions"],
-    reason: "Answer the numbered questions before continuing.",
+    reason: "Answer the numbered questions before PDF creation.",
+  },
+  "home-apply-numbered-answers": {
+    states: ["answer_questions"],
+    reason: "Answer the numbered questions before PDF creation.",
   },
   "prepare-intake": {
     states: ["prepare_pdf"],
     reason: "Review a ready interpretation request before generating the PDF.",
   },
   "drawer-prepare-intake": {
+    states: ["prepare_pdf"],
+    reason: "Review a ready interpretation request before generating the PDF.",
+  },
+  "drawer-prepare-intake-inline": {
     states: ["prepare_pdf"],
     reason: "Review a ready interpretation request before generating the PDF.",
   },
@@ -147,6 +178,7 @@ const SERVER_GATED_SELECTORS = [
   "#refresh-reference",
   "#review-intake",
   "#build-profile",
+  "#source-upload-form button[type=submit]",
   "#notification-upload-form button[type=submit]",
   "#photo-upload-form button[type=submit]",
   "#google-photos-upload-form button[type=submit]",
@@ -233,10 +265,16 @@ function syncServerConnectionGates() {
   });
 }
 
+function syncDrawerProgressiveDisclosure(action = state.currentNextSafeAction) {
+  const workflowState = String(action?.state || "idle");
+  document.body.dataset.drawerWorkflowState = workflowState;
+}
+
 function syncActionGates(action = state.currentNextSafeAction) {
   state.currentNextSafeAction = action || null;
   const actionState = String(action?.state || "idle");
   const actionDetail = String(action?.detail || "");
+  syncDrawerProgressiveDisclosure(action);
   Object.entries(SAFE_ACTION_GATES).forEach(([id, gate]) => {
     let enabled = (gate.states || []).includes(actionState);
     let blockedReason = gate.reason;
@@ -249,8 +287,8 @@ function syncActionGates(action = state.currentNextSafeAction) {
     if (id === "prepare-replacement-draft") {
       enabled = enabled && Boolean($("#correction_reason")?.value.trim());
     }
-    if (id === "apply-numbered-answers") {
-      enabled = enabled && Boolean($("#numbered-answers")?.value.trim());
+    if (id === "apply-numbered-answers" || id === "home-apply-numbered-answers") {
+      enabled = enabled && Boolean(numberedAnswersText());
     }
     if (id === "record-parsed-prepared-draft") {
       const handoffReviewed = Boolean($("#gmail_handoff_reviewed")?.checked);
@@ -298,11 +336,30 @@ function syncActionGates(action = state.currentNextSafeAction) {
         && Boolean($("#record_message_id")?.value.trim())
         && (!targetPayload || state.gmailCreateCompletedPayload !== targetPayload);
     }
+    if (state.pendingPreparationRevision !== null) {
+      enabled = false;
+      blockedReason = "Preparation is in progress. Wait for the reviewed result.";
+    }
     setActionGate(id, enabled, enabled ? actionDetail : blockedReason, actionState);
   });
+  const hasReviewableIntake = Boolean(state.currentIntake);
+  setActionGate(
+    "review-intake",
+    hasReviewableIntake,
+    hasReviewableIntake
+      ? "Review recovered details before any PDF or Gmail draft step."
+      : "Upload a source first, or use Enter details manually.",
+    hasReviewableIntake ? actionState : "idle",
+  );
+  $("#review-intake")?.classList.toggle("hidden", !hasReviewableIntake);
 }
 
 function clearPreparedArtifacts(reason = "stale prepared result") {
+  const hadPreparedOrPending = Boolean(state.lastPrepared || state.pendingPreparationRevision !== null);
+  state.workflowRevision += 1;
+  state.workflowStale = state.workflowStale || hadPreparedOrPending;
+  state.pendingPreparationRevision = null;
+  state.locallyRecordedPayload = "";
   state.lastPrepared = null;
   state.draftLifecycle = null;
   state.gmailCreateInFlight = false;
@@ -331,10 +388,15 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
   }
   renderManualHandoffPacket(null);
   renderDraftLifecycle(null);
-  syncActionGates(null);
+  renderNextSafeAction(null);
   const message = String(reason || "").trim();
   if (message) {
     $("#prepare-results").setAttribute("data-stale-reason", message);
+  }
+  if (state.workflowStale) {
+    setStatus("stale", "Details changed. Review the request again before preparing or using a draft handoff.");
+    refreshHomeWorkflow();
+    renderGuidedStep("fix_blocker");
   }
 }
 
@@ -411,12 +473,6 @@ async function copyText(value) {
   textarea.remove();
 }
 
-function todayIsoDate() {
-  const date = new Date();
-  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return offsetDate.toISOString().slice(0, 10);
-}
-
 function parseReferenceLines(value) {
   return String(value || "")
     .split(/\n|,/)
@@ -440,13 +496,42 @@ function fillFormFromIntake(intake) {
     personal_profile_id: intake.personal_profile_id,
     profile: intake.service_profile_key,
   };
+  const clearWhenMissing = new Set([
+    "case_number",
+    "service_date",
+    "photo_metadata_date",
+    "service_period_label",
+    "service_start_time",
+    "service_end_time",
+    "payment_entity",
+    "recipient_email",
+    "service_place",
+    "km_one_way",
+    "source_text",
+  ]);
   Object.entries(values).forEach(([id, value]) => {
     const input = $(`#${id}`);
-    if (input && value !== undefined && value !== null && value !== "") {
+    if (!input) return;
+    if (value !== undefined && value !== null && value !== "") {
       input.value = value;
+    } else if (clearWhenMissing.has(id)) {
+      input.value = "";
     }
   });
   renderSupportingAttachmentList();
+}
+
+function renderGuidedStep(stateName = "idle") {
+  const step = guidedStepForState(stateName);
+  document.querySelectorAll(".guided-intake-steps li").forEach((item, index) => {
+    const current = index + 1 === step;
+    item.classList.toggle("is-current", current);
+    if (current) {
+      item.setAttribute("aria-current", "step");
+    } else {
+      item.removeAttribute("aria-current");
+    }
+  });
 }
 
 function mergeFormIntoCurrentIntake() {
@@ -482,21 +567,9 @@ function showAlert(message, kind = "") {
   setCard($("#alert"), message, kind);
 }
 
-function showQuestions(data) {
-  const box = $("#questions");
-  if (!data.questions || !data.questions.length) {
-    box.className = "result-card hidden";
-    box.innerHTML = "";
-    return;
-  }
-  box.className = "result-card blocked";
-  box.innerHTML = data.questions.map((question) => (
-    `<div><strong>${question.number}.</strong> ${escapeHtml(question.question)} <span>${escapeHtml(question.answer_hint)}</span></div>`
-  )).join("");
-}
-
 function renderNextSafeAction(action) {
   syncActionGates(action);
+  renderGuidedStep(action?.state || (state.workflowStale ? "fix_blocker" : "idle"));
   const targets = [
     {
       card: $("#next-safe-action"),
@@ -525,33 +598,39 @@ function renderNextSafeAction(action) {
     const targetButton = action.button_id
       ? `<div class="button-row compact-button-row"><button type="button" class="mini-button" data-next-action-target="${escapeHtml(action.button_id)}">Take me there</button></div>`
       : "";
-    const whyText = action.why || "This suggested step explains why the app paused here and keeps risky actions gated until the review state changes.";
-    const allowedText = action.allowed_next || action.title || "Review the current state before continuing.";
+    const friendlyTitle = action.state === "answer_questions"
+      ? friendlyQuestionTitle(action)
+      : (action.title || NEXT_SAFE_ACTION_LABEL);
+    const whyText = action.why || "This step must be reviewed before creating files or Gmail draft data.";
+    const allowedText = action.allowed_next || friendlyTitle || "Review the current state before continuing.";
     const blockedText = action.blocked
       ? "PDF creation, Gmail draft creation, and local draft recording stay blocked until this step is resolved."
       : "Email sending is still blocked by design; any later Gmail or local record step must use reviewed draft-only data.";
+    const detailText = action.detail || "Review the current state before continuing.";
     body.className = "next-safe-action-body";
     body.innerHTML = `
-      <p class="safe-action-helper">This is the app's Suggested Next Step. It is not a separate task; it points to the next thing to review, answer, or click.</p>
-      <div class="safe-action-summary-grid">
-        <div>
-          <span>Recommended next step</span>
-          <strong>${escapeHtml(action.title || "Suggested next step")}</strong>
-        </div>
-        <div>
-          <span>Why this appears</span>
-          <p>${escapeHtml(whyText)}</p>
-        </div>
-        <div>
-          <span>What is allowed now</span>
-          <p>${escapeHtml(allowedText)}</p>
-        </div>
-        <div>
-          <span>Still blocked</span>
-          <p>${escapeHtml(blockedText)}</p>
-        </div>
+      <div class="safe-action-primary">
+        <span>Do this next</span>
+        <strong>${escapeHtml(friendlyTitle)}</strong>
+        <p>${escapeHtml(detailText)}</p>
       </div>
-      <p>${escapeHtml(action.detail || "Review the current state before continuing.")}</p>
+      <details class="safe-action-details">
+        <summary>Why this is blocked</summary>
+        <div class="safe-action-summary-grid">
+          <div>
+            <span>Reason</span>
+            <p>${escapeHtml(whyText)}</p>
+          </div>
+          <div>
+            <span>Allowed now</span>
+            <p>${escapeHtml(allowedText)}</p>
+          </div>
+          <div>
+            <span>Still blocked</span>
+            <p>${escapeHtml(blockedText)}</p>
+          </div>
+        </div>
+      </details>
       ${targetButton}
     `;
   });
@@ -939,23 +1018,32 @@ function renderManualHandoffPacket(packet) {
   `;
 }
 
+function requestWorkflowJson(url, options, captured) {
+  return awaitWorkflowResponse(() => requestJson(url, options), captured, () => ({ revision: state.workflowRevision, prepared: state.lastPrepared }));
+}
+
 async function buildManualHandoffPacket() {
+  const capturedRevision = state.workflowRevision;
+  const capturedPrepared = state.lastPrepared;
   const target = preparedRecordTarget();
   if (!target?.draft_payload) {
     throw new Error("Prepare a PDF and Gmail draft payload before building the manual handoff packet.");
   }
-  const data = await requestJson("/api/gmail/manual-handoff", {
+  const data = await requestWorkflowJson("/api/gmail/manual-handoff", {
     method: "POST",
     body: JSON.stringify({
       payload: target.draft_payload,
       ...currentPreparedReviewFields(target.draft_payload),
     }),
-  });
+  }, { revision: capturedRevision, prepared: capturedPrepared });
+  if (!data) return null;
   state.lastManualHandoff = data;
   renderManualHandoffPacket(data);
   setStatus(data.status || "ready", data.message || "Manual handoff packet ready.");
   showAlert("Manual handoff packet ready to copy.", "recorded");
   syncActionGates();
+  refreshHomeWorkflow();
+  renderGuidedStep("review_gmail_draft_args");
   return data;
 }
 
@@ -1017,6 +1105,7 @@ function moveBatchIntake(fromIndex, toIndex) {
   const [item] = state.batchIntakes.splice(from, 1);
   state.batchIntakes.splice(to, 0, item);
   state.batchPreflight = null;
+  clearPreparedArtifacts("batch queue order changed");
   const selected = state.batchSelectedIndex;
   if (selected === from) {
     state.batchSelectedIndex = to;
@@ -1244,16 +1333,256 @@ function renderDraftLifecycle(data) {
   }
 }
 
+function displayValue(value, fallback = "Needs answer") {
+  const text = String(value || "").trim();
+  return text || fallback;
+}
+
+function beginnerField(label, value, confidence = "") {
+  const empty = !String(value || "").trim();
+  return `<li class="${empty ? "needs-answer" : "found"}"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(displayValue(value))}${confidence ? ` <span class="field-confidence">${escapeHtml(confidence)}</span>` : ""}</li>`;
+}
+
+function reviewIntakeForDisplay(data = {}) {
+  return data.effective_intake || data.intake || data.candidate_intake || state.currentIntake || {};
+}
+
+function renderMetadataDateActions(intake, questions) {
+  const metadataDate = String(intake.photo_metadata_date || "").trim();
+  if (!metadataDate || !questionNeedsServiceDate(questions) || String(intake.service_date || "").trim()) {
+    return "";
+  }
+  const label = shortDateLabel(metadataDate);
+  return `
+    <div class="date-confirmation-actions" data-date-confirmation-actions="true">
+      <strong>Is ${escapeHtml(label)} the service date?</strong>
+      <p>The photo metadata suggests this date. Confirm it only if the interpreting service happened then.</p>
+      <div class="button-row compact-button-row">
+        <button type="button" class="mini-button primary-mini-button" data-confirm-metadata-service-date="${escapeHtml(metadataDate)}">Use ${escapeHtml(label)}</button>
+        <button type="button" class="mini-button" data-focus-date-answer="true">Enter another date</button>
+        <button type="button" class="mini-button" data-not-sure-date="true">Not sure yet</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderInlineAnswerPanel(questions) {
+  if (!questions.length) return "";
+  const placeholder = questions.slice(0, 4).map(questionAnswerExample).join("\n") || "1. short answer";
+  return `
+    <div class="inline-answer-panel">
+      <label for="home-numbered-answers">Type your numbered answers</label>
+      <textarea id="home-numbered-answers" rows="3" placeholder="${escapeHtml(placeholder)}"></textarea>
+      <div class="button-row compact-button-row">
+        <button type="button" id="home-apply-numbered-answers" disabled aria-disabled="true">Apply answers</button>
+        <button type="button" class="mini-button" data-open-review-drawer="true">More details</button>
+      </div>
+      <p class="field-hint">Short answers are enough. The app will rerun the normal duplicate and draft-safety checks after applying them.</p>
+    </div>
+  `;
+}
+
+function currentWorkflowGuidance(data = {}) {
+  const target = preparedRecordTarget();
+  return projectWorkflowGuidance({
+    status: data.status || "idle",
+    hasPrepared: Boolean(target?.draft_payload),
+    handoffReady: Boolean(state.lastManualHandoff?.copyable_prompt),
+    recorded: Boolean(target?.draft_payload && state.locallyRecordedPayload === target.draft_payload),
+    stale: state.workflowStale,
+    preparing: state.pendingPreparationRevision === state.workflowRevision,
+  });
+}
+
+function refreshHomeWorkflow() {
+  const review = state.lastReview || {};
+  const target = preparedRecordTarget();
+  updateHomeReviewCard({
+    ...review,
+    intake: state.currentIntake || review.intake || review.effective_intake || {},
+    effective_intake: state.currentIntake || review.effective_intake || review.intake || {},
+    case_number: target?.case_number || state.currentIntake?.case_number || review.case_number || "",
+    service_date: target?.service_date || state.currentIntake?.service_date || review.service_date || "",
+    recipient: target?.recipient || state.currentIntake?.recipient_email || review.recipient || "",
+  });
+}
+
+function sourceSafetyLine(data = {}) {
+  const workflow = currentWorkflowGuidance(data);
+  const status = String(data.status || "").replaceAll("_", " ") || "waiting";
+  const blocked = workflow.phase === "review" ? data.status && data.status !== "ready" : workflow.phase === "stale";
+  return `
+    <div class="source-safety-line ${blocked ? "blocked" : "ready"}">
+      <strong>${workflow.phase === "review" ? blocked ? "Paused safely" : "Ready for preview" : escapeHtml(workflow.headline)}</strong>
+      <span>${escapeHtml(workflow.safety)}${workflow.phase === "review" ? ` Review status: ${escapeHtml(status)}.` : ""}</span>
+    </div>
+  `;
+}
+
+function renderBeginnerQuestionFocus(questions, extraActions = "") {
+  if (!questions.length) return "";
+  const items = questions.map((question) => `
+    <li>
+      <span>${escapeHtml(String(question.number || ""))}</span>
+      <div>
+        <strong>${escapeHtml(questionFieldLabel(question))}</strong>
+        <p>${escapeHtml(question.question || "Answer this missing detail.")}</p>
+        <small>Example: ${escapeHtml(questionAnswerExample(question))}</small>
+      </div>
+    </li>
+  `).join("");
+  return `
+    <section class="beginner-question-focus" aria-label="Answer missing questions">
+      <div class="beginner-question-focus-header">
+        <span>Do this now</span>
+        <strong>Answer these questions</strong>
+        <p>Short answers are enough. Questions first; evidence stays below.</p>
+      </div>
+      <ol class="beginner-question-list">
+        ${items}
+        <li class="is-answer-box">${renderInlineAnswerPanel(questions)}</li>
+      </ol>
+      ${extraActions}
+    </section>
+  `;
+}
+
+function renderBeginnerOutcomeBanner(data, intake, questions) {
+  const workflow = currentWorkflowGuidance(data);
+  const status = String(data.status || "review");
+  const foundLabels = beginnerFoundLabels(data, intake);
+  const neededLabels = beginnerNeededLabels(questions);
+  const statusClass = ["ready", "prepared", "recorded"].includes(status) ? "ready" : status === "error" ? "error" : questions.length || workflow.phase === "stale" ? "blocked" : "info";
+  let headline = "I found the source details and stopped for review before creating anything.";
+  if (questions.length) {
+    headline = `I found ${foundLabels.length ? humanList(foundLabels.slice(0, 3)) : "some details"}, but I still need ${questions.length} answer${questions.length === 1 ? "" : "s"} before PDF creation.`;
+  } else if (status === "ready") {
+    headline = "I found enough reviewed details to move to PDF preview.";
+  } else if (status === "set_aside") {
+    headline = "This source may not be an in-person interpreting request, so I set it aside before creating anything.";
+  } else if (["duplicate", "active_draft"].includes(status)) {
+    headline = "This request may already exist, so I stopped before creating another PDF or draft.";
+  } else if (status === "error") {
+    headline = "I could not review this source yet. Check the message below and try again.";
+  }
+  const foundText = foundLabels.length
+    ? `Found: ${humanList(foundLabels.slice(0, 5))}.`
+    : "Found: source evidence that still needs review.";
+  if (workflow.phase !== "review") headline = workflow.headline;
+  const neededText = workflow.phase !== "review"
+    ? workflow.needed
+    : neededLabels.length
+    ? `Still needed: ${humanList(neededLabels.slice(0, 5))}.`
+    : (status === "ready" ? "Still needed: preview the PDF before any draft step." : "Still needed: review the next safe action.");
+  return `
+    <div class="beginner-outcome-banner ${statusClass}">
+      <span>What happened</span>
+      <strong>${escapeHtml(headline)}</strong>
+      <p>${escapeHtml(foundText)} ${escapeHtml(neededText)}</p>
+      <small>${escapeHtml(workflow.safety)}</small>
+    </div>
+  `;
+}
+
+function renderBeginnerReviewSummary(data) {
+  const workflow = currentWorkflowGuidance(data);
+  const questions = workflow.phase === "review" && Array.isArray(data.questions) ? data.questions : [];
+  const intake = reviewIntakeForDisplay(data);
+  const readyForPdf = workflow.phase === "review" && data.status === "ready" && questions.length === 0;
+  const recipient = data.recipient || intake.recipient_email || "";
+  const servicePlace = intake.service_place || "";
+  const profile = intake.auto_profile?.profile_key || intake.service_profile_key || "";
+  const metadataDate = intake.photo_metadata_date || "";
+  const found = [
+    beginnerField("Case", data.case_number || intake.case_number),
+    beginnerField("Service date", data.service_date || intake.service_date || metadataDate, intake.service_date ? "" : metadataDate ? "needs confirmation" : ""),
+    beginnerField("Service place", servicePlace),
+    beginnerField("Recipient", recipient),
+    profile ? beginnerField("Profile", profile) : "",
+    beginnerField("Status", String(data.status || "").replaceAll("_", " ")),
+  ].filter(Boolean).join("");
+  const needs = questions.length
+    ? questions.map((question) => `<li><strong>${escapeHtml(String(question.number || ""))}.</strong> ${escapeHtml(question.question || "")}</li>`).join("")
+    : `<li>${escapeHtml(workflow.phase !== "review" ? workflow.needed : data.status === "ready" ? "No missing review questions." : "Upload or review the source to see the next question.")}</li>`;
+  const readyCta = readyForPdf
+    ? `
+      <div class="beginner-ready-cta">
+        <div>
+          <span>Ready</span>
+          <strong>Review draft text and create fee-request PDF</strong>
+          <p>Open the draft preview, check the Portuguese text, then use the existing guarded PDF button.</p>
+        </div>
+        <button type="button" class="mini-button" data-open-review-drawer-focus-prepare="true">Review draft and PDF step</button>
+      </div>
+    `
+    : ["prepared", "handoff_ready", "recorded"].includes(workflow.phase)
+    ? `<div class="beginner-ready-cta">
+        <div><span>Prepared</span><strong>Review the PDF and draft handoff</strong><p>${escapeHtml(workflow.needed)}</p></div>
+        <button type="button" class="mini-button" data-open-review-drawer-focus-handoff="true">Review PDF and handoff</button>
+      </div>`
+    : "";
+  const fallback = profileFallbackNotice(data, intake);
+  const fallbackNotice = fallback && workflow.phase === "review"
+    ? `<div class="source-attention-card attention-review" data-profile-fallback-notice="true">
+        <div class="result-header"><strong>Check the automatic profile fallback</strong><span class="status-chip info">${escapeHtml(fallback.confidence)} confidence</span></div>
+        <p>${escapeHtml(fallback.reason)}</p>
+        <div>Profile: <strong>${escapeHtml(fallback.profile)}</strong></div>
+        <div>Payment entity: <strong>${escapeHtml(fallback.paymentEntity)}</strong></div>
+        <div>Recipient: <strong>${escapeHtml(fallback.recipient)}</strong></div>
+      </div>`
+    : "";
+  const questionFocus = renderBeginnerQuestionFocus(questions, renderMetadataDateActions(intake, questions));
+  return `
+    <div class="source-review-wizard">
+      <div class="source-review-title">
+        <div>
+          <span>Review this source</span>
+          <strong>${workflow.phase !== "review" ? escapeHtml(workflow.headline) : questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : "Ready for the next step"}</strong>
+        </div>
+        <span class="status-chip ${questions.length ? "blocked" : statusChipClass(data.status)}">${questions.length ? "Needs review" : escapeHtml(String(data.status || "review"))}</span>
+      </div>
+      ${renderBeginnerOutcomeBanner(data, intake, questions)}
+      ${sourceSafetyLine(data)}
+      ${questionFocus}
+      ${fallbackNotice}
+      ${readyCta}
+    </div>
+    <details class="beginner-found-details">
+      <summary>
+        <span>Show recovered details</span>
+        <small>What I found and what still needs review</small>
+      </summary>
+      <div class="beginner-review-summary">
+        <div>
+          <strong>What I found</strong>
+          <ul>${found}</ul>
+        </div>
+        <div>
+          <strong>What I still need</strong>
+          <ul>${needs}</ul>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
 function updateHomeReviewCard(data) {
+  const workflow = currentWorkflowGuidance(data);
+  if (workflow.phase !== "review") {
+    data = { ...data, status: workflow.status, message: workflow.headline, questions: [] };
+  }
   const card = $("#interpretation-review-home-result");
   const status = data.status || "idle";
+  if (status !== "idle") {
+    showHomeReviewPanel();
+  }
   const title = data.case_number ? `${data.case_number} · ${data.service_date || "date pending"}` : status.replaceAll("_", " ");
   const recipient = data.recipient ? `<div>Recipient: <code>${escapeHtml(data.recipient)}</code></div>` : "";
   const duplicate = data.duplicate?.draft_id ? `<div>Existing draft: <code>${escapeHtml(data.duplicate.draft_id)}</code></div>` : "";
   const questions = data.questions?.length ? `<div>${data.questions.length} numbered question${data.questions.length === 1 ? "" : "s"} need an answer.</div>` : "";
 
   card.className = `result-card ${["ready", "prepared", "recorded"].includes(status) ? "ready" : ""}`.trim();
-  if (["duplicate", "active_draft", "set_aside", "blocked", "needs_info"].includes(status)) {
+  if (["duplicate", "active_draft", "set_aside", "blocked", "needs_info", "stale"].includes(status)) {
     card.className = `result-card blocked`;
   }
   if (status === "error") {
@@ -1265,8 +1594,9 @@ function updateHomeReviewCard(data) {
         <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(data.message || "Review the recovered details before creating the PDF.")}</p>
       </div>
-      <span class="status-chip ${status === "ready" ? "ready" : status === "error" ? "error" : status === "idle" ? "info" : "blocked"}">${escapeHtml(status.replaceAll("_", " "))}</span>
+      <span class="status-chip ${statusChipClass(status)}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>
+    ${renderBeginnerReviewSummary(data)}
     ${recipient}
     ${duplicate}
     ${questions}
@@ -1371,6 +1701,8 @@ function renderSourceEvidence(data) {
   const body = $("#source-evidence-body");
   const reviewEvidence = data?.review_evidence || null;
   if (!data?.source && !reviewEvidence) {
+    const details = box.querySelector(".source-evidence-details");
+    if (details) details.open = false;
     box.className = "result-card hidden";
     body.innerHTML = "";
     return;
@@ -1422,21 +1754,21 @@ function renderSourceEvidence(data) {
     ${sourceAttention}
     <div class="source-evidence-layout">
       <div class="source-evidence-list">
-        <div><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>
-        <div><span>Case</span><code>${escapeHtml(evidence.case_number || "not recovered")}</code></div>
-        <div><span>Raw case</span><code>${escapeHtml(evidence.raw_case_number || "")}</code></div>
-        <div><span>Profile Decision</span><code>${escapeHtml(profileSummary)}</code></div>
-        <div><span>Profile reason</span><code>${escapeHtml(profileDecision.reason || profileDecision.suggestion_reason || "")}</code></div>
-        <div><span>Service date</span><code>${escapeHtml(evidence.service_date || "needs review")}</code></div>
-        <div><span>Metadata date</span><code>${escapeHtml(evidence.photo_metadata_date || metadata.exif_date || metadata.visible_metadata_date || "")}</code></div>
-        <div><span>Recipient</span><code>${escapeHtml(evidence.recipient_email || "profile/default")}</code></div>
-        <div><span>AI Recovery</span><code>${escapeHtml(evidence.ai_status || "not attempted")}</code></div>
-        <div><span>AI Schema</span><code>${escapeHtml(evidence.ai_schema_name || "")}</code></div>
-        <div><span>AI Prompt</span><code>${escapeHtml(evidence.ai_prompt_version || "")}</code></div>
-        <div><span>Warnings</span><code>${escapeHtml(warnings.join("; ") || "none")}</code></div>
-        <div><span>Rendered pages</span><strong>${escapeHtml(evidence.rendered_page_count || renderedPageUrls.length || 0)}</strong></div>
-        <div><span>Questions</span><strong>${escapeHtml(evidence.question_count || 0)}</strong></div>
-        <div><span>SHA-256</span><code>${escapeHtml((source.sha256 || "").slice(0, 16))}</code></div>
+        <div class="source-evidence-row"><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>
+        <div class="source-evidence-row"><span>Case</span><code>${escapeHtml(evidence.case_number || "not recovered")}</code></div>
+        <div class="source-evidence-row"><span>Raw case</span><code>${escapeHtml(evidence.raw_case_number || "")}</code></div>
+        <div class="source-evidence-row"><span>Profile Decision</span><code>${escapeHtml(profileSummary)}</code></div>
+        <div class="source-evidence-row"><span>Profile reason</span><code>${escapeHtml(profileDecision.reason || profileDecision.suggestion_reason || "")}</code></div>
+        <div class="source-evidence-row"><span>Service date</span><code>${escapeHtml(evidence.service_date || "needs review")}</code></div>
+        <div class="source-evidence-row"><span>Metadata date</span><code>${escapeHtml(evidence.photo_metadata_date || metadata.exif_date || metadata.visible_metadata_date || "")}</code></div>
+        <div class="source-evidence-row"><span>Recipient</span><code>${escapeHtml(evidence.recipient_email || "needs answer")}</code></div>
+        <div class="source-evidence-row"><span>AI Recovery</span><code>${escapeHtml(evidence.ai_status || "not attempted")}</code></div>
+        <div class="source-evidence-row"><span>AI Schema</span><code>${escapeHtml(evidence.ai_schema_name || "")}</code></div>
+        <div class="source-evidence-row"><span>AI Prompt</span><code>${escapeHtml(evidence.ai_prompt_version || "")}</code></div>
+        <div class="source-evidence-row"><span>Warnings</span><code>${escapeHtml(warnings.join("; ") || "none")}</code></div>
+        <div class="source-evidence-row"><span>Rendered pages</span><strong>${escapeHtml(evidence.rendered_page_count || renderedPageUrls.length || 0)}</strong></div>
+        <div class="source-evidence-row"><span>Questions</span><strong>${escapeHtml(evidence.question_count || 0)}</strong></div>
+        <div class="source-evidence-row"><span>SHA-256</span><code>${escapeHtml((source.sha256 || "").slice(0, 16))}</code></div>
         ${proposal}
       </div>
       <div>${preview}</div>
@@ -1489,10 +1821,60 @@ function openReviewDrawer() {
   document.body.dataset.interpretationReviewDrawer = "open";
 }
 
+function focusDrawerPrepareButton() {
+  const card = $("#interpretation-review-summary-card");
+  const button = $("#drawer-prepare-intake-inline") || $("#drawer-prepare-intake");
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!button) return;
+  if (typeof button.focus === "function") button.focus({ preventScroll: true });
+}
+
 function closeReviewDrawer() {
   const backdrop = $("#interpretation-review-drawer-backdrop");
   backdrop.classList.add("hidden");
   document.body.dataset.interpretationReviewDrawer = "closed";
+}
+
+function hasMeaningfulNumberedAnswer(value) {
+  return /^\s*\d+\s*[\).:\-]?\s*\S+/m.test(String(value || ""));
+}
+
+function numberedAnswersText(sourceSelector = "") {
+  const preferred = sourceSelector ? document.querySelector(sourceSelector) : null;
+  if (preferred) {
+    const text = String(preferred.value || "").trim();
+    return hasMeaningfulNumberedAnswer(text) ? text : "";
+  }
+  const homeBox = $("#home-numbered-answers");
+  const drawerBox = $("#numbered-answers");
+  const values = [homeBox?.value, drawerBox?.value].map((value) => String(value || "").trim());
+  return values.find(hasMeaningfulNumberedAnswer) || "";
+}
+
+function focusHomeAnswerBox() {
+  const box = $("#home-numbered-answers");
+  if (!box) return false;
+  box.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (!box.value.trim()) {
+    box.value = "1. ";
+    syncActionGates();
+  }
+  box.focus();
+  return true;
+}
+
+function toggleAdvancedWorkflow() {
+  const panel = $("#batch-queue-panel");
+  const button = $("#toggle-advanced-workflow");
+  if (!panel) return;
+  const opening = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !opening);
+  if (button) {
+    button.textContent = opening ? "Hide batch tools" : "Show batch tools";
+  }
+  if (opening) {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function renderServerConnectionStatus() {
@@ -1569,6 +1951,12 @@ async function checkServerHealth() {
     setServerDisconnected(error);
     throw error;
   }
+  const runtimeSummary = $("#runtime-mode-summary");
+  if (runtimeSummary) {
+    runtimeSummary.textContent = data.isolated_runtime === true && data.synthetic_runtime === true
+      ? "Test workspace: fictional profiles and records, separate from your saved data."
+      : "Local workspace: using your saved profiles, duplicate index, and Gmail draft log.";
+  }
   setServerConnected();
   return data;
 }
@@ -1586,6 +1974,39 @@ function setDropStatus(message, kind = "info") {
   if (!status) return;
   status.textContent = message;
   status.className = `field-hint source-drop-status ${kind}`.trim();
+}
+
+function showHomeReviewPanel() {
+  const panel = $("#interpretation-seed-panel");
+  if (panel) panel.classList.remove("hidden");
+  const shell = document.querySelector(".simple-task-shell");
+  if (shell) {
+    shell.classList.add("has-review");
+    shell.classList.toggle("source-review", state.currentReviewOrigin === "source");
+    shell.classList.toggle("manual-review", state.currentReviewOrigin === "manual");
+  }
+}
+
+function hideHomeReviewPanel() {
+  const panel = $("#interpretation-seed-panel");
+  if (panel) panel.classList.add("hidden");
+  const shell = document.querySelector(".simple-task-shell");
+  if (shell) {
+    shell.classList.remove("has-review", "source-review", "manual-review");
+  }
+  state.currentReviewOrigin = "";
+}
+
+function focusHomeReviewCard() {
+  const panel = $("#interpretation-seed-panel");
+  const card = $("#interpretation-review-home-result");
+  if (!panel || !card) return;
+  showHomeReviewPanel();
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  card.setAttribute("tabindex", "-1");
+  if (typeof card.focus === "function") {
+    card.focus({ preventScroll: true });
+  }
 }
 
 function getClipboardSourceFile(event) {
@@ -1636,6 +2057,7 @@ async function uploadSource(sourceKind, options = {}) {
     if (sourceKind === "google_photos") throw new Error("Choose a Google Photos image first.");
     throw new Error("Choose a photo or screenshot first.");
   }
+  state.currentReviewOrigin = "source";
   clearPreparedArtifacts("source changed");
   const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
   const visibleText = [$("#source_text").value.trim(), googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
@@ -1664,12 +2086,17 @@ async function uploadSource(sourceKind, options = {}) {
   if (data.review?.intake) {
     data.review.intake = state.currentIntake;
   }
+  if (data.review) {
+    data.review.source_evidence = data.source_evidence || null;
+    data.review.candidate_intake = state.currentIntake;
+  }
   state.lastProfileProposal = data.profile_proposal || null;
   fillFormFromIntake(state.currentIntake);
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
-  applyReview(data.review);
-  setDropStatus(`Recovered ${file.name || "dropped source"} as ${sourceKind === "notification_pdf" ? "notification PDF" : "photo/screenshot"}.`, "ready");
+  applyReview(data.review, { openDrawer: false });
+  setDropStatus(`Recovered ${file.name || "dropped source"}. Review what I found below before any PDF or Gmail draft step.`, "ready");
+  focusHomeReviewCard();
   return data;
 }
 
@@ -2197,10 +2624,13 @@ async function createGmailApiDraft() {
     $("#record_thread_id").value = data.thread_id || data.confirmation?.thread_id || "";
     $("#record_status").value = "active";
     state.gmailCreateCompletedPayload = target.draft_payload;
+    state.locallyRecordedPayload = target.draft_payload;
     state.lastGmailCreateConfirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
     renderGmailApiResult(data, "created");
     setStatus("recorded", "Gmail draft created and recorded locally. Review and send it manually in Gmail.");
     showAlert("Gmail draft created and duplicate protection updated.", "recorded");
+    refreshHomeWorkflow();
+    renderGuidedStep("review_gmail_draft_args");
     await loadReference();
     return data;
   } finally {
@@ -2268,9 +2698,10 @@ async function importGooglePhotosPickerSelection() {
   renderGooglePhotosPickerResult({
     ...data,
     status: "imported",
-    message: "Google Photos image imported for review.",
+    message: "Google Photos image imported. Review what I found below before any PDF or Gmail draft step.",
   });
-  applyReview(data.review);
+  applyReview(data.review, { openDrawer: false });
+  focusHomeReviewCard();
   return data;
 }
 
@@ -3818,7 +4249,8 @@ function removeEmpty(value) {
   return value;
 }
 
-async function buildIntakeFromProfile() {
+async function buildIntakeFromProfile(options = {}) {
+  state.currentReviewOrigin = "manual";
   const payload = removeEmpty(collectProfilePayload());
   if (!payload.profile) {
     payload.profile = "court_mp_generic";
@@ -3831,12 +4263,12 @@ async function buildIntakeFromProfile() {
   });
   state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody);
   fillFormFromIntake(state.currentIntake);
-  applyReview(data.review);
+  applyReview(data.review, options);
 }
 
-async function reviewIntake() {
+async function reviewIntake(options = {}) {
   if (!state.currentIntake) {
-    await buildIntakeFromProfile();
+    await buildIntakeFromProfile(options);
     return;
   }
   mergeFormIntoCurrentIntake();
@@ -3844,15 +4276,16 @@ async function reviewIntake() {
     method: "POST",
     body: JSON.stringify({ intake: state.currentIntake }),
   });
-  applyReview(data);
+  applyReview(data, options);
+  return data;
 }
 
-async function applyNumberedAnswers() {
+async function applyNumberedAnswers(options = {}) {
   if (!state.currentIntake) {
     await buildIntakeFromProfile();
   }
   mergeFormIntoCurrentIntake();
-  const answers = $("#numbered-answers").value.trim();
+  const answers = numberedAnswersText(options.sourceSelector || "");
   if (!answers) {
     throw new Error("Paste numbered answers before applying them.");
   }
@@ -3862,13 +4295,48 @@ async function applyNumberedAnswers() {
   });
   state.currentIntake = data.intake || state.currentIntake;
   fillFormFromIntake(state.currentIntake);
-  applyReview(data);
+  applyReview(data, { openDrawer: options.openDrawer });
   const applied = data.applied_fields?.length
     ? data.applied_fields.join(", ")
     : "no matching fields";
   showAlert(`Applied numbered answers: ${applied}.`, data.status === "ready" ? "recorded" : "blocked");
-  openReviewDrawer();
+  if (options.openDrawer === false) {
+    focusHomeReviewCard();
+  } else {
+    openReviewDrawer();
+  }
   return data;
+}
+
+async function confirmMetadataServiceDate(dateValue) {
+  const serviceDate = String(dateValue || state.currentIntake?.photo_metadata_date || "").trim();
+  if (!serviceDate) {
+    throw new Error("No photo metadata date is available to confirm.");
+  }
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+  }
+  state.currentIntake = {
+    ...(state.currentIntake || {}),
+    service_date: serviceDate,
+    service_date_source: "photo_metadata_user_confirmed",
+  };
+  fillFormFromIntake(state.currentIntake);
+  const data = await reviewIntake({ openDrawer: false });
+  focusHomeReviewCard();
+  showAlert(`Confirmed ${shortDateLabel(serviceDate)} as the service date.`, data?.status === "ready" ? "recorded" : "blocked");
+  return data;
+}
+
+function focusDateAnswerBox() {
+  if (focusHomeAnswerBox()) return;
+  openReviewDrawer();
+  const box = $("#numbered-answers");
+  if (!box) return;
+  if (!box.value.trim()) {
+    box.value = "1. ";
+  }
+  box.focus();
 }
 
 async function activeCheck() {
@@ -3919,6 +4387,26 @@ async function addCurrentIntakeToBatch() {
   }
 }
 
+function beginPreparation() {
+  clearPreparedArtifacts("preparation started");
+  state.workflowStale = false;
+  state.pendingPreparationRevision = state.workflowRevision;
+  setStatus("preparing", "Preparing the reviewed request. Wait for the PDF preview.");
+  syncActionGates(null);
+  refreshHomeWorkflow();
+  renderGuidedStep("prepare_pdf");
+  return state.workflowRevision;
+}
+
+function finishPreparationWait(capturedRevision) {
+  if (state.pendingPreparationRevision !== capturedRevision) return;
+  state.pendingPreparationRevision = null;
+  state.workflowStale = true;
+  syncActionGates(null);
+  refreshHomeWorkflow();
+  renderGuidedStep("fix_blocker");
+}
+
 async function prepareBatchIntakes() {
   if (!state.batchIntakes.length) {
     throw new Error("Add at least one ready request to the batch queue first.");
@@ -3929,22 +4417,32 @@ async function prepareBatchIntakes() {
   }
   const packetMode = currentBatchPacketMode();
   const intakes = state.batchIntakes.map(cloneIntake);
-  const data = await requestJson("/api/prepare", {
-    method: "POST",
-    body: JSON.stringify({
-      intakes,
-      render_previews: true,
-      packet_mode: packetMode,
-      preflight_review: state.batchPreflight?.preflight_review || null,
-    }),
-  });
-  state.lastPrepared = data;
-  const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
-  setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared ${modeText}.`);
-  showAlert("", "");
-  renderPrepared(data);
-  openReviewDrawer();
-  await loadReference();
+  const capturedRevision = beginPreparation();
+  try {
+    const data = await requestWorkflowJson("/api/prepare", {
+      method: "POST",
+      body: JSON.stringify({
+        intakes,
+        render_previews: true,
+        packet_mode: packetMode,
+        preflight_review: state.batchPreflight?.preflight_review || null,
+      }),
+    }, { revision: capturedRevision });
+    if (!data) return null;
+    state.lastPrepared = data;
+    const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
+    setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared ${modeText}.`);
+    showAlert("", "");
+    renderPrepared(data);
+    openReviewDrawer();
+    await loadReference();
+    return data;
+  } catch (error) {
+    if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;
+    throw error;
+  } finally {
+    finishPreparationWait(capturedRevision);
+  }
 }
 
 async function preflightBatchIntakes(options = {}) {
@@ -3956,10 +4454,13 @@ async function preflightBatchIntakes(options = {}) {
   const packetMode = currentBatchPacketMode();
   const intakes = state.batchIntakes.map(cloneIntake);
   const requestSignature = batchPreflightSignature(packetMode, intakes);
-  const data = await requestJson("/api/prepare/preflight", {
+  const capturedRevision = state.workflowRevision;
+  const capturedPrepared = state.lastPrepared;
+  const data = await requestWorkflowJson("/api/prepare/preflight", {
     method: "POST",
     body: JSON.stringify({ intakes, packet_mode: packetMode }),
-  });
+  }, { revision: capturedRevision, prepared: capturedPrepared });
+  if (!data || requestSignature !== batchPreflightSignature(currentBatchPacketMode(), state.batchIntakes)) return null;
   state.batchPreflight = { ...data, request_signature: requestSignature };
   renderBatchPreflight();
   renderNextSafeAction(data.next_safe_action || null);
@@ -3978,8 +4479,10 @@ async function preflightBatchIntakes(options = {}) {
   return data;
 }
 
-function applyReview(data) {
+function applyReview(data, options = {}) {
   clearPreparedArtifacts("review changed");
+  state.workflowStale = false;
+  state.lastReview = data;
   if (data.effective_intake || data.intake) {
     state.currentIntake = data.effective_intake || data.intake;
     fillFormFromIntake(state.currentIntake);
@@ -3989,8 +4492,8 @@ function applyReview(data) {
     renderSourceEvidence(data);
   }
   setStatus(data.status, data.message);
-  showQuestions(data);
   renderNextSafeAction(data.next_safe_action || null);
+  renderGuidedStep(data.next_safe_action?.state || data.status || "idle");
   const alertNeeded = ["duplicate", "active_draft", "set_aside", "error"].includes(data.status);
   showAlert(alertNeeded ? data.message : "", data.status === "error" ? "error" : "blocked");
   updateHomeReviewCard(data);
@@ -4010,7 +4513,7 @@ function applyReview(data) {
     renderDraftLifecycle(state.draftLifecycle);
   }
 
-  if (["ready", "needs_info", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
+  if (options.openDrawer !== false && ["ready", "needs_info", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
     openReviewDrawer();
   }
 }
@@ -4020,7 +4523,8 @@ async function prepareIntake(options = {}) {
     await buildIntakeFromProfile();
   }
   mergeFormIntoCurrentIntake();
-  const requestPayload = { intakes: [state.currentIntake], render_previews: true };
+  const requestIntake = cloneIntake(state.currentIntake);
+  const requestPayload = { intakes: [requestIntake], render_previews: true };
   if (options.correctionMode) {
     requestPayload.correction_mode = true;
     requestPayload.correction_reason = ($("#correction_reason").value || "").trim();
@@ -4029,39 +4533,52 @@ async function prepareIntake(options = {}) {
     }
   }
   const preflightPayload = {
-    intakes: [cloneIntake(state.currentIntake)],
+    intakes: [cloneIntake(requestIntake)],
     packet_mode: false,
   };
   if (requestPayload.correction_mode) {
     preflightPayload.correction_mode = true;
     preflightPayload.correction_reason = requestPayload.correction_reason;
   }
-  const preflight = await requestJson("/api/prepare/preflight", {
-    method: "POST",
-    body: JSON.stringify(preflightPayload),
-  });
-  renderNextSafeAction(preflight.next_safe_action || null);
-  if (preflight.status !== "ready" || !preflight.preflight_review) {
-    const message = preflight.message || "Run a current ready preflight before preparing artifacts.";
-    setStatus(preflight.status || "blocked", message);
-    showAlert(message, "blocked");
+  const capturedRevision = beginPreparation();
+  try {
+    const preflight = await requestWorkflowJson("/api/prepare/preflight", {
+      method: "POST",
+      body: JSON.stringify(preflightPayload),
+    }, { revision: capturedRevision });
+    if (!preflight) return null;
+    if (preflight.status !== "ready" || !preflight.preflight_review) {
+      renderNextSafeAction(preflight.next_safe_action || null);
+      const message = preflight.message || "Run a current ready preflight before preparing artifacts.";
+      setStatus(preflight.status || "blocked", message);
+      showAlert(message, "blocked");
+      openReviewDrawer();
+      throw new Error(message);
+    }
+    requestPayload.preflight_review = preflight.preflight_review;
+    const data = await requestWorkflowJson("/api/prepare", {
+      method: "POST",
+      body: JSON.stringify(requestPayload),
+    }, { revision: capturedRevision });
+    if (!data) return null;
+    state.lastPrepared = data;
+    setStatus(data.status, "PDF and Gmail draft payload prepared. Review before using Gmail _create_draft.");
+    showAlert("", "");
+    renderPrepared(data);
     openReviewDrawer();
-    throw new Error(message);
+    await loadReference();
+    return data;
+  } catch (error) {
+    if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;
+    throw error;
+  } finally {
+    finishPreparationWait(capturedRevision);
   }
-  requestPayload.preflight_review = preflight.preflight_review;
-  const data = await requestJson("/api/prepare", {
-    method: "POST",
-    body: JSON.stringify(requestPayload),
-  });
-  state.lastPrepared = data;
-  setStatus(data.status, "PDF and Gmail draft payload prepared. Review before using Gmail _create_draft.");
-  showAlert("", "");
-  renderPrepared(data);
-  openReviewDrawer();
-  await loadReference();
 }
 
 function renderPrepared(data) {
+  state.pendingPreparationRevision = null;
+  state.workflowStale = false;
   const items = data.items || [];
   const packet = data.packet || null;
   const first = items[0];
@@ -4070,6 +4587,7 @@ function renderPrepared(data) {
   $("#gmail_handoff_reviewed").checked = false;
   renderManualHandoffPacket(null);
   renderNextSafeAction(data.next_safe_action || null);
+  renderGuidedStep(data.next_safe_action?.state || "review_gmail_draft_args");
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
   const packetPreviews = packet
@@ -4153,6 +4671,7 @@ function renderPrepared(data) {
     });
   }
   syncActionGates();
+  refreshHomeWorkflow();
 }
 
 function renderPreparedPacketContents(items) {
@@ -4197,7 +4716,13 @@ function draftRecordPayloadFromForm() {
   };
 }
 
-async function finishDraftRecord(data) {
+async function finishDraftRecord(data, context) {
+  if (context && !isWorkflowResponseCurrent(context.revision, state.workflowRevision, context.prepared, state.lastPrepared)) {
+    await loadReference();
+    showAlert("The earlier draft was recorded locally. Review the changed current request before using another handoff.", "recorded");
+    return data;
+  }
+  state.locallyRecordedPayload = context?.payload || preparedRecordTarget()?.draft_payload || "";
   setStatus(data.status, `Recorded Gmail draft ${data.draft_id}.`);
   const superseded = data.superseded_drafts?.length ? ` Superseded: ${data.superseded_drafts.join(", ")}.` : "";
   const blockerCount = Number(data.recorded_duplicate_count || 0);
@@ -4208,6 +4733,8 @@ async function finishDraftRecord(data) {
     ? ` The duplicate index now protects ${blockerCount} duplicate blocker${blockerCount === 1 ? "" : "s"}${duplicateKeys.length ? `: ${duplicateKeys.join("; ")}` : ""}.`
     : " The duplicate index now protects this case/date.";
   showAlert(`Draft recorded locally.${blockerText}${superseded}`, "recorded");
+  refreshHomeWorkflow();
+  renderGuidedStep("review_gmail_draft_args");
   await loadReference();
   return data;
 }
@@ -4219,32 +4746,38 @@ async function recordPreparedDraftFromForm() {
     gmail_handoff_reviewed: true,
     ...currentPreparedReviewFields(payloadPath),
   };
+  const context = { revision: state.workflowRevision, prepared: state.lastPrepared, payload: payloadPath };
   const data = await requestJson("/api/drafts/record", {
     method: "POST",
     body: JSON.stringify(removeEmpty(payload)),
   });
-  return finishDraftRecord(data);
+  return finishDraftRecord(data, context);
 }
 
 async function recordDraft() {
   const payload = draftRecordPayloadFromForm();
+  const context = { revision: state.workflowRevision, prepared: state.lastPrepared, payload: payload.payload };
   const data = await requestJson("/api/drafts/status", {
     method: "POST",
     body: JSON.stringify(removeEmpty(payload)),
   });
-  return finishDraftRecord(data);
+  return finishDraftRecord(data, context);
 }
 
 function resetReview({ closeDrawer = true } = {}) {
   state.currentIntake = null;
   clearPreparedArtifacts("review reset");
+  state.workflowStale = false;
+  state.lastReview = null;
   state.draftLifecycle = null;
   state.googlePhotosPicker = null;
   $("#intake-form").reset();
   $("#notification-upload-form").reset();
   $("#photo-upload-form").reset();
+  $("#source-upload-form").reset();
   $("#google-photos-upload-form").reset();
   $("#supporting-attachment-form").reset();
+  setDropStatus("", "");
   renderSourceEvidence(null);
   renderAiRecovery(null);
   renderSupportingAttachmentList();
@@ -4261,10 +4794,11 @@ function resetReview({ closeDrawer = true } = {}) {
   $("#draft-text").textContent = "The Portuguese draft will appear here before the PDF is created.";
   $("#recipient-summary").textContent = "Recipient appears here after review.";
   $("#interpretation-review-home-result").className = "result-card empty-state";
-  $("#interpretation-review-home-result").textContent = "Upload a notification PDF or screenshot to recover the case details, or start a blank request.";
+  $("#interpretation-review-home-result").textContent = "Upload a notification PDF or screenshot to review the case details, or enter details manually.";
+  hideHomeReviewPanel();
   showAlert("", "");
-  showQuestions({});
-  setStatus("idle", "Upload a notification or start a blank request to begin.");
+  renderGuidedStep("idle");
+  setStatus("idle", "Upload a source or enter details manually to begin.");
   if (closeDrawer) closeReviewDrawer();
 }
 
@@ -4286,7 +4820,7 @@ function resetWorkspace() {
   renderBatchQueue();
   renderBatchPreflight();
   showPanel("new-job");
-  setStatus("idle", "Workspace reset. Upload a notification or start a blank request to begin.");
+  setStatus("idle", "Workspace reset. Upload a source or enter details manually to begin.");
   showAlert("Workspace reset. Batch queue cleared.", "recorded");
   closeReviewDrawer();
 }
@@ -4353,10 +4887,71 @@ function bindActions() {
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-next-action-target]");
     if (!button) return;
+    if (button.dataset.nextActionTarget === "apply-numbered-answers" && focusHomeAnswerBox()) {
+      return;
+    }
     const target = document.getElementById(button.dataset.nextActionTarget || "");
     if (!target) return;
+    if (button.dataset.nextActionTarget === "apply-numbered-answers" || target.closest("#interpretation-review-drawer")) {
+      openReviewDrawer();
+    }
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     if (typeof target.focus === "function") target.focus({ preventScroll: true });
+  });
+  document.addEventListener("input", (event) => {
+    if (event.target?.id === "home-numbered-answers") {
+      syncActionGates();
+    }
+  });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("#home-apply-numbered-answers");
+    if (!button) return;
+    try {
+      await applyNumberedAnswers({ sourceSelector: "#home-numbered-answers", openDrawer: false });
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-review-drawer]");
+    if (!button) return;
+    openReviewDrawer();
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-review-drawer-focus-prepare]");
+    if (!button) return;
+    openReviewDrawer();
+    window.requestAnimationFrame(() => focusDrawerPrepareButton());
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-review-drawer-focus-handoff]");
+    if (!button) return;
+    openReviewDrawer();
+    window.requestAnimationFrame(() => {
+      const panel = !$("#pdf-preview-panel")?.classList.contains("hidden") ? $("#pdf-preview-panel") : $("#prepare-results");
+      panel?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-confirm-metadata-service-date]");
+    if (!button) return;
+    try {
+      await confirmMetadataServiceDate(button.dataset.confirmMetadataServiceDate || "");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-focus-date-answer]");
+    if (!button) return;
+    focusDateAnswerBox();
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-not-sure-date]");
+    if (!button) return;
+    openReviewDrawer();
+    showAlert("No problem. Check the source or enter the correct date in the numbered answers when you know it.", "blocked");
   });
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-copy-diagnostic-command]");
@@ -4762,6 +5357,18 @@ function bindActions() {
   };
   $("#duplicate-list").addEventListener("click", handleHistoryDraftAction);
   $("#draft-log-list").addEventListener("click", handleHistoryDraftAction);
+  $("#source-upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const file = $("#source-file").files?.[0];
+      if (!file) throw new Error("Choose a PDF, photo, or screenshot first.");
+      await recoverLocalSourceFile(file, "chosen source file");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
   $("#notification-upload-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -4898,7 +5505,8 @@ function bindActions() {
   });
   $("#build-profile").addEventListener("click", async () => {
     try {
-      await buildIntakeFromProfile();
+      await buildIntakeFromProfile({ openDrawer: false });
+      focusHomeReviewCard();
     } catch (error) {
       setStatus("error", error.message);
       showAlert(error.message, "error");
@@ -4907,13 +5515,15 @@ function bindActions() {
   });
   $("#review-intake").addEventListener("click", async () => {
     try {
-      await reviewIntake();
+      await reviewIntake({ openDrawer: false });
+      focusHomeReviewCard();
     } catch (error) {
       setStatus("error", error.message);
       showAlert(error.message, "error");
       updateHomeReviewCard({ status: "error", message: error.message });
     }
   });
+  $("#toggle-advanced-workflow").addEventListener("click", toggleAdvancedWorkflow);
   $("#apply-numbered-answers").addEventListener("click", async () => {
     try {
       await applyNumberedAnswers();
@@ -4932,6 +5542,14 @@ function bindActions() {
     }
   });
   $("#drawer-prepare-intake").addEventListener("click", async () => {
+    try {
+      await prepareIntake();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#drawer-prepare-intake-inline").addEventListener("click", async () => {
     try {
       await prepareIntake();
     } catch (error) {
@@ -4970,13 +5588,22 @@ function bindActions() {
     state.batchIntakes = [];
     state.batchSelectedIndex = null;
     state.batchPreflight = null;
+    clearPreparedArtifacts("batch queue cleared");
     $("#batch-packet-mode").checked = false;
     renderBatchQueue();
     setStatus("idle", "Batch queue cleared.");
     showAlert("Batch queue cleared.", "recorded");
   });
-  $("#batch-packet-mode").addEventListener("change", () => {
+  const packetMode = $("#batch-packet-mode");
+  const packetModeCard = document.querySelector('label[for="batch-packet-mode"]');
+  packetModeCard.addEventListener("click", (event) => {
+    event.preventDefault();
+    packetMode.checked = !packetMode.checked;
+    packetMode.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  packetMode.addEventListener("change", () => {
     state.batchPreflight = null;
+    clearPreparedArtifacts("batch packet mode changed");
     renderBatchPreflight();
     syncActionGates();
   });
@@ -5002,6 +5629,7 @@ function bindActions() {
     const removedIndex = Number(button.dataset.removeBatchIndex);
     state.batchIntakes.splice(removedIndex, 1);
     state.batchPreflight = null;
+    clearPreparedArtifacts("batch queue item removed");
     if (state.batchSelectedIndex === removedIndex) {
       state.batchSelectedIndex = state.batchIntakes.length ? Math.min(removedIndex, state.batchIntakes.length - 1) : null;
     } else if (state.batchSelectedIndex !== null && state.batchSelectedIndex > removedIndex) {
@@ -5159,6 +5787,7 @@ function bindActions() {
     }
   });
   $("#interpretation-clear-review").addEventListener("click", resetReview);
+  $("#change-source").addEventListener("click", resetWorkspace);
   $("#interpretation-close-review").addEventListener("click", closeReviewDrawer);
   $("#interpretation-close-review-footer").addEventListener("click", closeReviewDrawer);
   $("#interpretation-review-drawer-backdrop").addEventListener("click", (event) => {

@@ -8,6 +8,8 @@ Develop this app separately while its interpreting workflow matures. Future Lega
 
 Start with [development setup](docs/development-environment.md), [validation](docs/validation.md), [app knowledge](APP_KNOWLEDGE.md), and [integration readiness](docs/integration-readiness.md). The [current handoff](docs/next-thread-handoff.md) records preparation results and remaining work; [agent.md](agent.md) is the development runbook.
 
+For using the guided interface, read [Create an interpreting fee request](docs/user-guide.md). The environment baseline is published through PR #58; recovered guided-interface/foundation changes remain local until separately reviewed and published. Use the [workflow acceptance checklist](docs/workflow-acceptance.md) when evaluating that build.
+
 ## Quick Start
 
 ### Local Browser App
@@ -46,7 +48,7 @@ The app supports the main workflow:
 - auto-detect the best service profile from local evidence when you upload a source, while still showing the profile decision for review
 - propose a guarded reusable service profile when a new upload looks like a recurring pattern that does not match existing profiles
 - create an intake from a known service profile
-- show a `Suggested Next Step` card that points to the safest next step after each review or preparation result
+- show a `Next safe action` card that points to the safest next step after each review or preparation result
 - review the Portuguese draft text before generating the PDF
 - queue multiple reviewed requests, run a non-writing batch preflight, and prepare a batch package only after the queue is clean
 - enable Packet mode for a batch when several requerimentos should become one combined PDF attachment
@@ -96,7 +98,7 @@ To smoke-check the running local app without creating PDFs or Gmail drafts:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --json
 ```
 
-The smoke runner checks `/api/health` first, then the LegalPDF-style workflow landmarks, the `Suggested Next Step` guidance surface, draft-only Gmail contract, Manual Draft Handoff status, Gmail Draft API status, Google Photos/AI status endpoints, local diagnostics status, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email`, `_send_draft`, `messages.send`, or `drafts.send` appears on the homepage.
+The smoke runner checks `/api/health` first, then the LegalPDF-style workflow landmarks, the `Next safe action` guidance surface, draft-only Gmail contract, Manual Draft Handoff status, Gmail Draft API status, Google Photos/AI status endpoints, local diagnostics status, and public-readiness endpoint. It fails if send-capable Gmail copy such as `_send_email`, `_send_draft`, `messages.send`, or `drafts.send` appears on the homepage.
 
 For a real browser review-flow click-through, use the opt-in browser smoke:
 
@@ -104,7 +106,7 @@ For a real browser review-flow click-through, use the opt-in browser smoke:
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Suggested Next Step` safety card, adds it to the batch queue, and runs the non-writing `Check batch preflight` action. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
+This opens the app, creates a synthetic reviewed request from a profile, verifies the review drawer and `Next safe action` safety card, adds it to the batch queue, and runs the non-writing `Check batch preflight` action. By default it does not click prepare, record drafts, or call Gmail. If Python Playwright is not installed, the check reports a clean blocker instead of crashing. The deeper `--browser-prepare-packet` and `--browser-prepare-replacement` options are for disposable/synthetic state only because they can create local PDF/payload artifacts.
 
 Browser smoke checks now reset the workspace at the end of a successful run, so synthetic values such as `999/26.0SMOKE` and queued test requests do not linger in the open app tab. Python browser smoke clicks `Reset workspace`; the Browser/IAB smoke verifies that control and then reloads the local app as a safer adapter-compatible reset. You can also click `Reset workspace` yourself in the left sidebar when you want a clean New Job surface without changing any real duplicate records, draft logs, generated PDFs, or Gmail state. If a stale tab remains after the local server stops, the app shows a disconnected-server banner and blocks server-writing actions until you restart the app and reload; `Reset workspace` stays available because it only clears client-side state.
 

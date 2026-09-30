@@ -1,6 +1,11 @@
 [CmdletBinding()]
-param([switch]$Full)
+param(
+    [switch]$Full,
+    [ValidateSet('quick', 'intake', 'pdf', 'email', 'ui', 'package', 'integration', 'full')]
+    [string]$Group = 'full'
+)
 $ErrorActionPreference = 'Stop'
+if ($Full -and $Group -ne 'full') { throw '-Full requires the complete full test group.' }
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $pythonExe = Join-Path $projectRoot '.venv311\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $pythonExe)) { throw 'Run scripts/setup_dev_env.ps1 first.' }
@@ -20,9 +25,10 @@ try {
     if (($actualExport -replace "`r`n", "`n") -ne ($expectedExport -replace "`r`n", "`n")) { throw 'requirements.txt does not match the tracked lock export.' }
     Invoke-Check $pythonExe @('scripts/check_project_docs.py')
     Invoke-Check node @('--check', 'honorarios_app/static/app.js')
+    Invoke-Check node @('--check', 'honorarios_app/static/review_guidance.js')
     Invoke-Check node @('--check', 'scripts/browser_iab_smoke.mjs')
-    # Includes an actual offline installed-wheel test, outside the checkout.
-    Invoke-Check $pythonExe @('scripts/run_portable_tests.py')
+    # The full/package groups include an actual offline installed-wheel test.
+    Invoke-Check $pythonExe @('scripts/run_portable_tests.py', '--group', $Group)
     if ($Full) {
         foreach ($smokeFlag in @('--source-upload-checks', '--supporting-attachment-checks', '--adapter-contract-checks', '--gmail-api-checks')) {
             Invoke-Check $pythonExe @('scripts/isolated_app_smoke.py', $smokeFlag)

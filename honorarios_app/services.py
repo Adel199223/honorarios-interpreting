@@ -12,7 +12,6 @@ import shutil
 import secrets
 import subprocess
 import threading
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
@@ -104,6 +103,17 @@ from .personal_profiles import (
 )
 
 
+# Compatibility exports: browser routes and existing callers keep using services.
+from .source_evidence import (
+    FIELD_EVIDENCE_LABELS,
+    _photo_metadata_date_source,
+    build_field_evidence,
+    build_profile_evidence,
+    build_source_attention,
+    combine_text_parts,
+    fold_match_text,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INTAKE_OUTPUT_DIR = ROOT / "output" / "intakes"
 DEFAULT_SOURCE_UPLOAD_DIR = ROOT / "output" / "source-uploads"
@@ -135,6 +145,29 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNOREC
 ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
+VISIBLE_MONTH_DATE_RE = re.compile(
+    r"\b("
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|"
+    r"jan(?:eiro)?|fev(?:ereiro)?|mar(?:co|ço)?|abr(?:il)?|mai(?:o)?|jun(?:ho)?|jul(?:ho)?|"
+    r"ago(?:sto)?|set(?:embro)?|out(?:ubro)?|nov(?:embro)?|dez(?:embro)?"
+    r")\s+(\d{1,2})(?:,?\s+(20\d{2}))?\b",
+    re.IGNORECASE,
+)
+VISIBLE_MONTHS = {
+    "jan": 1, "january": 1, "janeiro": 1,
+    "feb": 2, "february": 2, "fev": 2, "fevereiro": 2,
+    "mar": 3, "march": 3, "marco": 3, "março": 3,
+    "apr": 4, "april": 4, "abr": 4, "abril": 4,
+    "may": 5, "mai": 5, "maio": 5,
+    "jun": 6, "june": 6, "junho": 6,
+    "jul": 7, "july": 7, "julho": 7,
+    "aug": 8, "august": 8, "ago": 8, "agosto": 8,
+    "sep": 9, "sept": 9, "september": 9, "set": 9, "setembro": 9,
+    "oct": 10, "october": 10, "out": 10, "outubro": 10,
+    "nov": 11, "november": 11, "novembro": 11,
+    "dec": 12, "december": 12, "dez": 12, "dezembro": 12,
+}
 LEGALPDF_APPLY_REPORT_ID_RE = re.compile(r"^legalpdf-import-apply-[A-Za-z0-9_.-]+$")
 AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
 LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-10.optional-gmail-boundary.v4"
@@ -568,13 +601,34 @@ def extract_first_date(text: str) -> str:
 
 def extract_visible_metadata_date(text: str) -> str:
     compact = COMPACT_DATE_RE.search(text or "")
-    if not compact:
+    if compact:
+        year, month, day = compact.groups()
+        try:
+            return datetime(int(year), int(month), int(day)).date().isoformat()
+        except ValueError:
+            return ""
+    month_match = VISIBLE_MONTH_DATE_RE.search(text or "")
+    if not month_match:
         return ""
-    year, month, day = compact.groups()
+    month_name, day, year = month_match.groups()
+    month = VISIBLE_MONTHS.get(fold_match_text(month_name))
+    if not month:
+        return ""
     try:
-        return datetime(int(year), int(month), int(day)).date().isoformat()
+        today = datetime.strptime(app_current_date(), "%Y-%m-%d").date()
+    except ValueError:
+        today = datetime.now().date()
+    inferred_year = int(year) if year else today.year
+    try:
+        candidate = datetime(inferred_year, int(month), int(day)).date()
     except ValueError:
         return ""
+    if not year and (candidate - today).days > 14:
+        try:
+            candidate = datetime(inferred_year - 1, int(month), int(day)).date()
+        except ValueError:
+            return ""
+    return candidate.isoformat()
 
 
 def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
@@ -614,478 +668,6 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
     return fields
 
 
-FIELD_EVIDENCE_LABELS = {
-    "profile_key": "Profile",
-    "case_number": "Case number",
-    "service_date": "Service date",
-    "photo_metadata_date": "Metadata date",
-    "recipient_email": "Recipient email",
-    "payment_entity": "Payment entity",
-    "service_entity": "Service entity",
-    "service_entity_type": "Service entity type",
-    "service_place": "Service place",
-    "service_place_phrase": "Service place phrase",
-    "transport_destination": "Transport destination",
-    "km_one_way": "Kilometers one way",
-}
-
-
-def _date_text_variants(value: Any) -> list[str]:
-    text = str(value or "").strip()
-    variants = [text] if text else []
-    try:
-        parsed = datetime.strptime(text, "%Y-%m-%d")
-    except ValueError:
-        return variants
-    variants.extend([
-        parsed.strftime("%d/%m/%Y"),
-        parsed.strftime("%d-%m-%Y"),
-    ])
-    return variants
-
-
-def _text_contains_value(text: str, value: Any) -> bool:
-    folded_text = fold_match_text(text)
-    for variant in _date_text_variants(value):
-        if variant and fold_match_text(variant) in folded_text:
-            return True
-    normalized_case = normalize_case_number(str(value or "")) if "/" in str(value or "") else ""
-    if normalized_case and fold_match_text(normalized_case) in folded_text:
-        return True
-    return False
-
-
-def _line_excerpt(text: str, value: Any) -> str:
-    source = str(text or "")
-    if not source.strip() or value in (None, ""):
-        return ""
-    variants = [str(value)]
-    variants.extend(_date_text_variants(value))
-    if "/" in str(value):
-        variants.append(normalize_case_number(str(value)))
-    for line in source.splitlines():
-        folded_line = fold_match_text(line)
-        if any(variant and fold_match_text(variant) in folded_line for variant in variants):
-            return line.strip()[:220]
-    return ""
-
-
-def _field_evidence_entry(
-    field: str,
-    value: Any,
-    *,
-    source: str,
-    confidence: str,
-    status: str = "applied",
-    reason: str = "",
-    raw_value: Any = "",
-    excerpt: str = "",
-    conflicts_with: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "field": field,
-        "label": FIELD_EVIDENCE_LABELS.get(field, field.replace("_", " ").title()),
-        "value": value,
-        "source": source,
-        "confidence": confidence,
-        "status": status,
-        "reason": reason,
-    }
-    if raw_value not in (None, ""):
-        entry["raw_value"] = raw_value
-    if excerpt:
-        entry["excerpt"] = excerpt
-    if conflicts_with:
-        entry["conflicts_with"] = conflicts_with
-    return entry
-
-
-def _profile_default(profiles: dict[str, Any], profile_key: str, field: str) -> Any:
-    profile = profiles.get(profile_key) if isinstance(profiles, dict) else {}
-    defaults = profile.get("defaults") if isinstance(profile, dict) else {}
-    if not isinstance(defaults, dict):
-        return ""
-    if field == "km_one_way":
-        transport = defaults.get("transport") if isinstance(defaults.get("transport"), dict) else {}
-        return transport.get("km_one_way", "")
-    if field == "transport_destination":
-        transport = defaults.get("transport") if isinstance(defaults.get("transport"), dict) else {}
-        return transport.get("destination", "")
-    return defaults.get(field, "")
-
-
-def _field_from_candidate(candidate: dict[str, Any], field: str) -> Any:
-    if field == "km_one_way":
-        transport = candidate.get("transport") if isinstance(candidate.get("transport"), dict) else {}
-        return transport.get("km_one_way", "")
-    if field == "transport_destination":
-        transport = candidate.get("transport") if isinstance(candidate.get("transport"), dict) else {}
-        return transport.get("destination", "")
-    return candidate.get(field, "")
-
-
-def _ai_field_value(ai_recovery: dict[str, Any], field: str) -> str:
-    ai_fields = ai_recovery.get("fields") if isinstance(ai_recovery, dict) else {}
-    if not isinstance(ai_fields, dict):
-        return ""
-    aliases = {
-        "case_number": ("raw_case_number", "source_case_number", "case_number"),
-        "recipient_email": ("court_email", "recipient_email"),
-        "km_one_way": ("km_one_way", "transport_km_one_way", "one_way_km"),
-        "transport_destination": ("transport_destination", "destination", "locality", "city"),
-        "service_place": ("service_place", "locality"),
-        "source_document_timestamp": ("source_document_timestamp", "document_timestamp"),
-    }.get(field, (field,))
-    for alias in aliases:
-        value = str(ai_fields.get(alias) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _values_match(left: Any, right: Any) -> bool:
-    if left in (None, "") or right in (None, ""):
-        return False
-    left_text = str(left).strip()
-    right_text = str(right).strip()
-    if "/" in left_text and "/" in right_text:
-        return normalize_case_number(left_text).casefold() == normalize_case_number(right_text).casefold()
-    return fold_match_text(left_text) == fold_match_text(right_text)
-
-
-def _ai_source_for_field(field: str, value: Any, raw_visible_text: str, metadata_date: str) -> tuple[str, str, str]:
-    if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
-        return "openai_and_photo_metadata", "high", "AI recovered the service date and it matches the image metadata date."
-    confidence = "high" if _text_contains_value(raw_visible_text, value) else "medium"
-    return "openai_ocr", confidence, "OpenAI OCR recovered this value from the uploaded source."
-
-
-def build_field_evidence(
-    *,
-    candidate: dict[str, Any],
-    deterministic_fields: dict[str, Any],
-    metadata: dict[str, Any],
-    ai_recovery: dict[str, Any],
-    profile_decision: dict[str, Any],
-    profiles: dict[str, Any],
-) -> list[dict[str, Any]]:
-    evidence: list[dict[str, Any]] = []
-    seen_fields: set[str] = set()
-    profile_key = str(profile_decision.get("profile_key") or "").strip()
-    profile_mode = str(profile_decision.get("mode") or "").strip()
-    profile_source = {
-        "auto_applied": "auto_profile",
-        "explicit_profile": "explicit_profile",
-        "auto_fallback": "fallback_profile",
-    }.get(profile_mode, "profile")
-    if profile_key:
-        evidence.append(_field_evidence_entry(
-            "profile_key",
-            profile_key,
-            source=profile_source,
-            confidence=str(profile_decision.get("confidence") or ("high" if profile_mode == "explicit_profile" else "medium")),
-            reason=str(profile_decision.get("reason") or profile_decision.get("suggestion_reason") or "Service profile selected for this intake."),
-        ))
-        seen_fields.add("profile_key")
-
-    raw_visible_text = str(ai_recovery.get("raw_visible_text") or "")
-    metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
-
-    def add(field: str, value: Any, *, source: str, confidence: str, reason: str, raw_value: Any = "", excerpt: str = "") -> None:
-        if field in seen_fields or value in (None, ""):
-            return
-        status = "applied"
-        conflicts_with = None
-        if field == "service_date" and metadata_date and str(value or "").strip() != metadata_date:
-            status = "conflicts_with_metadata"
-            conflicts_with = {
-                "field": "photo_metadata_date",
-                "value": metadata_date,
-            }
-        evidence.append(_field_evidence_entry(
-            field,
-            value,
-            source=source,
-            confidence=confidence,
-            status=status,
-            reason=reason,
-            raw_value=raw_value,
-            excerpt=excerpt,
-            conflicts_with=conflicts_with,
-        ))
-        seen_fields.add(field)
-
-    if metadata_date:
-        add(
-            "photo_metadata_date",
-            metadata_date,
-            source="image_metadata",
-            confidence="high",
-            reason="Image metadata supplied the capture date used for review.",
-        )
-
-    deterministic_sources = {
-        "case_number": "deterministic_text",
-        "service_date": "document_text",
-        "recipient_email": "visible_email",
-        "service_place": "known_destination",
-        "transport_destination": "known_destination",
-        "km_one_way": "known_destination",
-    }
-    deterministic_reasons = {
-        "case_number": "A local pattern matched the visible NUIPC/process number.",
-        "service_date": "A local date pattern matched the uploaded source text.",
-        "recipient_email": "A local email pattern matched the uploaded source text.",
-        "service_place": "A known destination matched the uploaded source text.",
-        "transport_destination": "A known destination matched the uploaded source text.",
-        "km_one_way": "A known destination supplied the stored one-way distance.",
-    }
-    for field in ("case_number", "service_date", "recipient_email", "service_place", "transport_destination", "km_one_way"):
-        value = _field_from_candidate(candidate, field)
-        deterministic_value = deterministic_fields.get(field)
-        if field in {"transport_destination", "km_one_way"}:
-            deterministic_value = deterministic_fields.get(field)
-        if deterministic_value not in (None, "") and _values_match(value, deterministic_value):
-            source = deterministic_sources[field]
-            if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
-                source = "document_text_and_photo_metadata"
-            add(
-                field,
-                value,
-                source=source,
-                confidence="high",
-                reason=deterministic_reasons[field],
-                raw_value=deterministic_fields.get("raw_case_number", "") if field == "case_number" else "",
-                excerpt=_line_excerpt(str(candidate.get("source_text") or ""), deterministic_value),
-            )
-
-    ai_status = str(ai_recovery.get("status") or "")
-    if ai_status == "ok":
-        for field in (
-            "case_number",
-            "service_date",
-            "recipient_email",
-            "payment_entity",
-            "service_entity",
-            "service_entity_type",
-            "service_place",
-            "service_place_phrase",
-            "transport_destination",
-            "km_one_way",
-        ):
-            value = _field_from_candidate(candidate, field)
-            ai_value = _ai_field_value(ai_recovery, field)
-            if ai_value and _values_match(value, normalize_case_number(ai_value) if field == "case_number" else ai_value):
-                source, confidence, reason = _ai_source_for_field(field, value, raw_visible_text, metadata_date)
-                add(
-                    field,
-                    value,
-                    source=source,
-                    confidence=confidence,
-                    reason=reason,
-                    raw_value=ai_value if field == "case_number" else "",
-                    excerpt=_line_excerpt(raw_visible_text, ai_value),
-                )
-
-    for field in (
-        "payment_entity",
-        "recipient_email",
-        "service_entity",
-        "service_entity_type",
-        "service_place",
-        "service_place_phrase",
-        "transport_destination",
-        "km_one_way",
-    ):
-        value = _field_from_candidate(candidate, field)
-        default_value = _profile_default(profiles, profile_key, field)
-        if default_value not in (None, "") and _values_match(value, default_value):
-            add(
-                field,
-                value,
-                source="service_profile",
-                confidence="medium" if profile_source != "auto_profile" else "high",
-                reason=f"Service profile {profile_key} supplied this default.",
-            )
-
-    return evidence
-
-
-def build_profile_evidence(profile_decision: dict[str, Any]) -> dict[str, Any]:
-    signals = [
-        {
-            "text": str(signal),
-            "source": "source_text_or_openai_ocr",
-        }
-        for signal in profile_decision.get("signals", [])
-        if str(signal).strip()
-    ]
-    return {
-        "mode": profile_decision.get("mode", ""),
-        "profile_key": profile_decision.get("profile_key", ""),
-        "suggested_profile_key": profile_decision.get("suggested_profile_key", ""),
-        "confidence": profile_decision.get("confidence", ""),
-        "reason": profile_decision.get("reason", ""),
-        "suggestion_reason": profile_decision.get("suggestion_reason", ""),
-        "auto_applied": bool(profile_decision.get("auto_applied")),
-        "signals": signals,
-    }
-
-
-def _attention_flag(code: str, severity: str, title: str, detail: str) -> dict[str, Any]:
-    return {
-        "code": code,
-        "severity": severity,
-        "title": title,
-        "detail": detail,
-    }
-
-
-def build_source_attention(
-    *,
-    candidate: dict[str, Any],
-    review: dict[str, Any],
-    ai_recovery: dict[str, Any],
-    profile_decision: dict[str, Any],
-    profile_proposal: dict[str, Any],
-    field_evidence: list[dict[str, Any]],
-    warnings: list[str],
-) -> dict[str, Any]:
-    flags: list[dict[str, Any]] = []
-    review_status = str(review.get("status") or "").strip()
-
-    if review_status == "set_aside":
-        flags.append(_attention_flag(
-            "translation_set_aside",
-            "blocked",
-            "Translation or word-count source",
-            "This source was set aside before questions or PDF generation.",
-        ))
-    elif review_status == "needs_info":
-        question_count = len(review.get("questions") or [])
-        flags.append(_attention_flag(
-            "missing_required_info",
-            "blocked",
-            "Missing required information",
-            f"{question_count} numbered question{'s' if question_count != 1 else ''} must be answered before generation.",
-        ))
-    elif review_status == "duplicate":
-        flags.append(_attention_flag(
-            "duplicate_request",
-            "blocked",
-            "Possible duplicate",
-            "A drafted or sent request already matches this case/date/period.",
-        ))
-    elif review_status == "active_draft":
-        flags.append(_attention_flag(
-            "active_draft",
-            "blocked",
-            "Active draft exists",
-            "Use correction mode only if this is an intentional replacement.",
-        ))
-    elif review_status == "error":
-        flags.append(_attention_flag(
-            "review_error",
-            "blocked",
-            "Review error",
-            str(review.get("message") or "The intake could not be reviewed safely."),
-        ))
-
-    if any(str(item.get("status") or "") == "conflicts_with_metadata" for item in field_evidence):
-        flags.append(_attention_flag(
-            "date_conflict",
-            "blocked",
-            "Date conflict",
-            "The recovered service date conflicts with image metadata and needs confirmation.",
-        ))
-
-    cleaned_warnings = [str(item).strip() for item in warnings if str(item).strip()]
-    if cleaned_warnings:
-        flags.append(_attention_flag(
-            "source_warnings",
-            "review",
-            "Inspect source quality",
-            "; ".join(cleaned_warnings[:3]),
-        ))
-
-    ai_status = str(ai_recovery.get("status") or "").strip()
-    if ai_status in {"failed", "unavailable"}:
-        flags.append(_attention_flag(
-            "ai_recovery_issue",
-            "review",
-            "AI recovery issue",
-            str(ai_recovery.get("reason") or "AI recovery did not produce usable evidence."),
-        ))
-    elif ai_status == "ok":
-        missing_ai_fields = {str(field) for field in ai_recovery.get("missing_fields", [])}
-        critical_missing: list[str] = []
-        critical_map = {
-            "case_number": "case_number",
-            "service_date": "service_date",
-            "payment_entity": "payment_entity",
-            "court_email": "recipient_email",
-            "service_place": "service_place",
-        }
-        for ai_field, intake_field in critical_map.items():
-            if ai_field in missing_ai_fields and not str(candidate.get(intake_field) or "").strip():
-                critical_missing.append(intake_field)
-        if critical_missing:
-            flags.append(_attention_flag(
-                "ai_missing_critical_fields",
-                "review",
-                "AI missed critical fields",
-                "Still missing from the candidate: " + ", ".join(critical_missing),
-            ))
-
-    if str(profile_decision.get("mode") or "") == "auto_fallback":
-        flags.append(_attention_flag(
-            "profile_fallback",
-            "review",
-            "Generic profile fallback",
-            "Auto-detect did not find a high-confidence service profile.",
-        ))
-
-    if str(profile_proposal.get("status") or "") not in {"", "not_needed"}:
-        flags.append(_attention_flag(
-            "profile_proposal",
-            "review",
-            "Reusable profile proposal",
-            "A new recurring pattern can be previewed in the guarded profile editor.",
-        ))
-
-    status = "ready"
-    if any(flag["severity"] == "blocked" for flag in flags):
-        status = "blocked"
-    elif flags:
-        status = "review"
-
-    return {
-        "status": status,
-        "flag_count": len(flags),
-        "flags": flags,
-    }
-
-
-def combine_text_parts(*parts: str) -> str:
-    seen: set[str] = set()
-    output: list[str] = []
-    for part in parts:
-        cleaned = str(part or "").strip()
-        if not cleaned:
-            continue
-        key = cleaned.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(cleaned)
-    return "\n\n".join(output)
-
-
-def fold_match_text(value: Any) -> str:
-    normalized = unicodedata.normalize("NFKD", str(value or "").casefold())
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
-
-
 def _ai_recovery_text(ai_recovery: dict[str, Any]) -> str:
     if not isinstance(ai_recovery, dict):
         return ""
@@ -1096,6 +678,9 @@ def _ai_recovery_text(ai_recovery: dict[str, Any]) -> str:
     indicators = ai_recovery.get("translation_indicators")
     if isinstance(indicators, list):
         parts.extend(str(item) for item in indicators if str(item).strip())
+    warnings = ai_recovery.get("warnings")
+    if isinstance(warnings, list):
+        parts.extend(str(item) for item in warnings if str(item).strip())
     return combine_text_parts(*parts)
 
 
@@ -1144,6 +729,8 @@ def choose_service_profile(
     ai_recovery: dict[str, Any],
     profiles: dict[str, Any],
 ) -> dict[str, Any]:
+    if not profiles:
+        raise IntakeError("No service profiles are available. Add a service profile in References before uploading or reviewing a source.")
     requested = str(requested_profile or "").strip()
     evidence_text = combine_text_parts(extracted_text, _ai_recovery_text(ai_recovery))
     suggestion = _profile_signal_decision(evidence_text)
@@ -1176,13 +763,21 @@ def choose_service_profile(
             "auto_applied": True,
         }
 
+    fallback_key = "court_mp_generic" if "court_mp_generic" in profiles else ""
+    fallback_reason = str(suggestion.get("reason") or "No confident service-profile match was found.")
+    if not fallback_key and len(profiles) == 1:
+        fallback_key = next(iter(profiles))
+        fallback_reason += f" Only available service profile {fallback_key!r} was used as a fallback; review its payment entity and recipient before preparing."
+    elif not fallback_key:
+        fallback_reason += " Several service profiles are available; choose one explicitly or answer the missing payment and service questions. No profile defaults were applied."
+
     return {
         "mode": "auto_fallback",
-        "profile_key": "court_mp_generic",
+        "profile_key": fallback_key,
         "requested_profile": requested,
         "suggested_profile_key": suggested_key if suggested_is_available else "",
-        "confidence": suggestion.get("confidence", "low"),
-        "reason": suggestion.get("reason", "No confident service-profile match was found."),
+        "confidence": "low",
+        "reason": fallback_reason,
         "signals": suggestion.get("signals", []),
         "auto_applied": False,
     }
@@ -1372,7 +967,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     This wrapper gives manual/pasted review the same proactive help without
     saving reference data or skipping the normal duplicate/PDF/Gmail guards.
     """
-    profiles = load_profiles(paths.service_profiles)
+    profiles = _load_available_service_profiles(paths)
     requested_profile = _requested_service_profile_from_intake(intake)
     existing_auto = intake.get("auto_profile")
     evidence_text = combine_text_parts(
@@ -1529,6 +1124,10 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         intake["raw_case_number"] = raw_case
         intake["source_case_number"] = raw_case
         intake["case_number"] = normalize_case_number(raw_case)
+
+    photo_metadata_date = _first_ai_field(ai_recovery, "photo_metadata_date", "metadata_date")
+    if photo_metadata_date and _looks_like_iso_date(photo_metadata_date) and not intake.get("photo_metadata_date"):
+        intake["photo_metadata_date"] = photo_metadata_date
 
     service_date = _first_ai_field(ai_recovery, "service_date")
     if service_date and _looks_like_iso_date(service_date) and not intake.get("service_date"):
@@ -1743,6 +1342,16 @@ def resolve_artifact_path(root_key: str, relative_path: str, paths: AppPaths) ->
     return target
 
 
+def _load_available_service_profiles(paths: AppPaths) -> dict[str, Any]:
+    try:
+        profiles = load_profiles(paths.service_profiles)
+    except FileNotFoundError as exc:
+        raise IntakeError("Service profiles are missing. Add a service profile in References or restore the configured service-profile file before uploading or reviewing a source.") from exc
+    if not profiles:
+        raise IntakeError("No service profiles are available. Add a service profile in References before uploading or reviewing a source.")
+    return profiles
+
+
 def build_partial_intake_from_profile(
     *,
     profile_name: str,
@@ -1754,10 +1363,12 @@ def build_partial_intake_from_profile(
     metadata: dict[str, Any],
     paths: AppPaths,
 ) -> dict[str, Any]:
-    profiles = load_profiles(paths.service_profiles)
-    selected_profile = profile_name or "court_mp_generic"
-    profile = profiles.get(selected_profile)
-    if not isinstance(profile, dict):
+    profiles = _load_available_service_profiles(paths)
+    selected_profile = str(profile_name or "").strip()
+    if not selected_profile:
+        selected_profile = str(choose_service_profile(requested_profile="", extracted_text=extracted_text, ai_recovery={}, profiles=profiles)["profile_key"])
+    profile = profiles.get(selected_profile) if selected_profile else {}
+    if selected_profile and not isinstance(profile, dict):
         available = ", ".join(sorted(profiles))
         raise IntakeError(f"Unknown service profile {selected_profile!r}. Available profiles: {available}")
 
@@ -1814,6 +1425,7 @@ def recover_source_upload(
     paths: AppPaths,
 ) -> dict[str, Any]:
     suffix = validate_upload(source_kind, filename, content_type or "", content)
+    profiles = _load_available_service_profiles(paths)
     digest = sha256_hex(content)
     safe_name = safe_upload_filename(filename)
     stored_filename = f"{timestamp_slug()}_{digest[:12]}_{safe_name}"
@@ -1831,9 +1443,10 @@ def recover_source_upload(
         metadata = image_metadata_from_bytes(content)
     if visible_text.strip():
         extracted_text = "\n".join(part for part in [extracted_text, visible_text.strip()] if part)
-        visible_metadata_date = extract_visible_metadata_date(visible_text)
-        if source_kind == "photo" and visible_metadata_date:
-            metadata["visible_metadata_date"] = visible_metadata_date
+    visible_metadata_context = "\n".join(part for part in [filename, visible_text.strip()] if part)
+    visible_metadata_date = extract_visible_metadata_date(visible_metadata_context)
+    if source_kind == "photo" and visible_metadata_date:
+        metadata["visible_metadata_date"] = visible_metadata_date
 
     rendered_page_paths: list[Path] = []
     if source_kind == "notification_pdf" and text_is_weak_for_pdf_ocr(extracted_text):
@@ -1865,7 +1478,6 @@ def recover_source_upload(
         source_metadata=metadata,
         rendered_page_images=[str(path.resolve()) for path in rendered_page_paths],
     )
-    profiles = load_profiles(paths.service_profiles)
     profile_decision = choose_service_profile(
         requested_profile=profile_name,
         extracted_text=extracted_text,
@@ -1873,7 +1485,7 @@ def recover_source_upload(
         profiles=profiles,
     )
     candidate = build_partial_intake_from_profile(
-        profile_name=str(profile_decision.get("profile_key") or "court_mp_generic"),
+        profile_name=str(profile_decision.get("profile_key") or ""),
         source_kind=source_kind,
         filename=filename,
         stored_path=stored_path,
@@ -1883,6 +1495,13 @@ def recover_source_upload(
         paths=paths,
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
+    if (
+        str(candidate.get("photo_metadata_date") or "").strip()
+        and not str(candidate.get("service_date") or "").strip()
+    ):
+        # EXIF and visible capture dates are source evidence. An uploaded photo
+        # without a document service date still needs the user's date choice.
+        candidate["photo_metadata_date_requires_confirmation"] = True
     if str(personal_profile_id or "").strip():
         candidate["personal_profile_id"] = str(personal_profile_id or "").strip()
     candidate["auto_profile"] = profile_decision
@@ -5266,10 +4885,11 @@ def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | No
         )
     if status == "needs_info":
         count = len(questions or [])
+        question_word = "question" if count == 1 else "questions"
         return next_safe_action(
             state="answer_questions",
-            title="Answer the numbered questions",
-            detail=f"Provide the missing value{'s' if count != 1 else ''} using short numbered replies, then apply the answers and review again.",
+            title=f"Answer {count} {question_word} before PDF creation",
+            detail=f"{count} numbered {question_word} need an answer. Provide short numbered replies, then apply the answers and review again.",
             button_id="apply-numbered-answers",
             blocked=True,
         )

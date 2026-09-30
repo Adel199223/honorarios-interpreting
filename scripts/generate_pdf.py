@@ -136,6 +136,8 @@ def get_service_date_value(intake: dict[str, Any]) -> str:
     service_date = str(intake.get("service_date") or "").strip()
     if service_date:
         return service_date
+    if bool(intake.get("photo_metadata_date_requires_confirmation")):
+        raise IntakeError("Missing required field: service_date")
     metadata_date = str(intake.get("photo_metadata_date") or "").strip()
     if metadata_date:
         return metadata_date
