@@ -38,6 +38,33 @@ class PdfRulesTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, text)
 
+    def test_actual_pdf_preserves_distinct_payment_host_and_confirmed_service_date_without_optional_phrase(self):
+        self.intake.update(
+            addressee='Exmo. Senhor Procurador da República\nFictional Payment Court',
+            payment_entity='Fictional Payment Court',
+            service_entity='Polícia Judiciária',
+            service_entity_type='police', entities_differ=True,
+            service_place='Posto da GNR de Beja', service_place_phrase='',
+            service_date='2026-09-26', photo_metadata_date='2026-09-28',
+            service_date_source='user_confirmed_exception', closing_date='2026-09-30',
+            claim_transport=False,
+        )
+        rendered = build_rendered_request(self.intake, self.profile)
+        target = self.root / 'distinct-payment-host.pdf'
+        generate_pdf(rendered, target)
+        reader = PdfReader(target)
+        self.assertEqual(len(reader.pages), 1)
+        text = ' '.join(reader.pages[0].extract_text().split())
+        self.assertIn('Fictional Payment Court', text)
+        self.assertIn('Posto da GNR de Beja', text)
+        self.assertIn('no dia 26/09/2026', text)
+        self.assertIn('30 de setembro de 2026', text)
+        self.assertNotIn('28/09/2026', text, 'Capture date cannot replace the explicitly chosen service date.')
+        self.assertNotIn('despesas de transporte', text)
+        self.assertNotIn('12 km', text)
+        self.assertIn('Posto da GNR de Beja', rendered.service_paragraph)
+        self.assertNotIn('Fictional Payment Court', rendered.service_paragraph, 'Paying court is not the physical host.')
+
     def test_html_preview_escapes_user_text_without_changing_visible_pdf_text(self):
         self.intake['case_number'] = '100/26.0TSTXX <script>alert(1)</script>'
         self.profile['applicant_name'] = 'Example <Interpreter>'
