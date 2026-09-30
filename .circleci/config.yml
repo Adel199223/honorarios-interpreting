@@ -3,17 +3,39 @@ version: 2.1
 jobs:
   test:
     docker:
-      - image: cimg/python:3.11
+      - image: cimg/python:3.11.9
     steps:
       - checkout
       - run:
-          name: Install dependencies
+          name: Reconstruct pinned development environment
           command: |
-            python -m pip install --upgrade pip
-            python -m pip install -r requirements.txt
+            python -m pip install uv==0.12.20
+            feeNodeVersion="$(cat .node-version)"
+            feeNodeArchive="node-v${feeNodeVersion}-linux-x64.tar.xz"
+            mkdir -p .tmp-test/node
+            curl --fail --show-error --location "https://nodejs.org/dist/v${feeNodeVersion}/${feeNodeArchive}" --output ".tmp-test/${feeNodeArchive}"
+            curl --fail --show-error --location "https://nodejs.org/dist/v${feeNodeVersion}/SHASUMS256.txt" --output .tmp-test/node-sha256.txt
+            cd .tmp-test
+            grep " ${feeNodeArchive}$" node-sha256.txt | sha256sum --check --strict
+            tar --extract --xz --file "$feeNodeArchive" --directory node --strip-components=1
+            cd ..
+            printf '%s\n' 'export PATH="$PWD/.tmp-test/node/bin:$PATH"' >> "$BASH_ENV"
+            UV_PROJECT_ENVIRONMENT=.venv311 uv sync --locked --extra dev --python "$(cat .python-version)" --no-python-downloads
       - run:
-          name: Run unit tests
-          command: python -m unittest discover tests
+          name: Validate portable synthetic workflow
+          command: |
+            .venv311/bin/python scripts/check_dev_environment.py
+            uv lock --check --offline --python .venv311/bin/python --no-python-downloads
+            uv pip check --python .venv311/bin/python --offline
+            uv export --locked --no-emit-project --no-header --format requirements-txt --quiet | diff - requirements.txt
+            .venv311/bin/python scripts/check_project_docs.py
+            node --check honorarios_app/static/app.js
+            node --check scripts/browser_iab_smoke.mjs
+            .venv311/bin/python scripts/run_portable_tests.py
+            .venv311/bin/python scripts/isolated_app_smoke.py --source-upload-checks
+            .venv311/bin/python scripts/isolated_app_smoke.py --supporting-attachment-checks
+            .venv311/bin/python scripts/isolated_app_smoke.py --adapter-contract-checks
+            .venv311/bin/python scripts/isolated_app_smoke.py --gmail-api-checks
 
 workflows:
   test:

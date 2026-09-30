@@ -8,6 +8,10 @@ __pycache__/
 .tmp-test/
 .worktrees/
 worktrees/
+.venv*/
+*.egg-info/
+build/
+dist/
 AGENTS.md
 
 # Local personal/payment data and real case history.
