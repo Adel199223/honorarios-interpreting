@@ -21,7 +21,7 @@ EXPECTED = {
               'test_source_evidence.py', 'test_service_profile_selection.py', 'test_review_guidance.py'],
     'intake': ['test_intake_rules.py', 'test_source_evidence.py', 'test_service_profile_selection.py', 'test_public_runtime.py',
                'test_source_decisions.py', 'test_public_ai_recovery.py'],
-    'quality': ['test_source_decisions.py'],
+    'quality': ['test_source_decisions.py', 'test_photo_defaults.py'],
     'pdf': ['test_pdf_rules.py'],
     'email': ['test_email_rules.py', 'test_public_email.py'],
     'ui': ['test_browser_iab_smoke.py', 'test_review_guidance.py', 'test_public_ui.py'],
