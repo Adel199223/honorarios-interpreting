@@ -23,6 +23,7 @@ OTHER_DATE_RE = re.compile(
     r"agendad[oa]|marcad[oa]|designad[oa]|convocad[oa]|comparecer|"
     r"scheduled|appointment|captura|metadados|metadata|fotografia|photo)\b"
 )
+WRAPPED_DATE_LINK_RE = re.compile(r"(?:\b(?:em|no dia|na data|data de)\s*|:)\s*$")
 PLACE_ANCHOR_RE = re.compile(
     r"\b(?:local(?: da diligencia| do servico| de realizacao)?\s*:|"
     r"servico(?: de interpretacao)?|interpretacao|diligencia|audiencia|"
@@ -50,6 +51,20 @@ def _date_role(text: str, start: int, end: int) -> str:
     # Limit labels to this clause, so a document header cannot label a later
     # service date and a service paragraph cannot relabel an issue date.
     left_boundary = max((text.rfind(char, 0, start) for char in "\n;.!?"), default=-1) + 1
+    if left_boundary and text[left_boundary - 1] == "\n" and not text[left_boundary:start].strip():
+        previous_line_start = text.rfind("\n", 0, left_boundary - 1) + 1
+        previous_clause_start = max(
+            previous_line_start,
+            max((text.rfind(char, previous_line_start, left_boundary - 1) for char in ";.!?"), default=-1) + 1,
+        )
+        previous_clause = text[previous_clause_start:left_boundary - 1]
+        # OCR may wrap "realizado em" or "Data de emissão:" directly before
+        # its value. Bridge that unfinished labelled clause, never a blank line,
+        # completed sentence, or unrelated header that has no date connector.
+        if WRAPPED_DATE_LINK_RE.search(previous_clause) and (
+            SERVICE_DATE_RE.search(previous_clause) or OTHER_DATE_RE.search(previous_clause)
+        ):
+            left_boundary = previous_clause_start
     right_positions = [position for char in "\n;.!?" if (position := text.find(char, end)) >= 0]
     right_boundary = min(right_positions, default=len(text))
     clause = text[left_boundary:right_boundary]
