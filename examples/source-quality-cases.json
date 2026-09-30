@@ -1263,6 +1263,122 @@
         "review_status": "ready",
         "question_fields": []
       }
+    },
+    {
+      "id": "date_wrapped_performed",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Documento emitido em 18/09/2026.\nDeclara-se que o serviço de interpretação foi realizado em\n26/09/2026 no Tribunal do Trabalho de Beja. Assinatura: 2026-09-30.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "date_wrapped_issue_only",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Documento emitido em\n30/09/2026. Serviço de interpretação com data ilegível.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "absent_candidate_fields": [
+          "service_date"
+        ],
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "date_unrelated_service_header",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Documento emitido em 18/09/2026.\nServiço de interpretação\n26/09/2026. Assinatura: 2026-09-30.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "absent_candidate_fields": [
+          "service_date"
+        ],
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "date_blank_line_after_label",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Documento emitido em 18/09/2026.\nDeclara-se serviço de interpretação realizado em\n\n26/09/2026. Assinatura: 2026-09-30.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "absent_candidate_fields": [
+          "service_date"
+        ],
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ]
+      }
     }
   ]
 }

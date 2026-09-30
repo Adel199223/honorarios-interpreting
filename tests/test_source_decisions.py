@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts import evaluate_source_quality as evaluator
+from scripts.source_parsing import service_date_evidence
 
 CORPUS = evaluator.load_corpus()
 
@@ -29,6 +30,43 @@ def _scenario_test(case):
 
 for _case in CORPUS['cases']:
     setattr(SourceDecisionTests, 'test_' + _case['id'], _scenario_test(_case))
+
+
+class SourceDateLineWrappingTests(unittest.TestCase):
+    def test_performed_date_connector_spans_one_wrapped_line(self):
+        evidence = service_date_evidence(
+            'Documento emitido em 18/09/2026.\n'
+            'Declara-se que o serviço de interpretação foi realizado em\n'
+            '26/09/2026 no Tribunal do Trabalho de Beja. Assinatura: 2026-09-30.')
+        self.assertEqual(evidence.value, '2026-09-26')
+        self.assertFalse(evidence.needs_confirmation)
+
+    def test_wrapped_issue_label_does_not_supply_service_date(self):
+        evidence = service_date_evidence('Documento emitido em\n30/09/2026.')
+        self.assertEqual(evidence.value, '')
+        self.assertEqual(evidence.candidates, ('2026-09-30',))
+        self.assertTrue(evidence.needs_confirmation)
+
+    def test_unrelated_heading_does_not_label_next_line_date(self):
+        evidence = service_date_evidence(
+            'Documento emitido em 18/09/2026.\n'
+            'Serviço de interpretação\n26/09/2026. Assinatura: 2026-09-30.')
+        self.assertEqual(evidence.value, '')
+        self.assertTrue(evidence.needs_confirmation)
+
+    def test_blank_line_keeps_service_label_separate(self):
+        evidence = service_date_evidence(
+            'Documento emitido em 18/09/2026.\n'
+            'Serviço de interpretação realizado em\n\n26/09/2026.')
+        self.assertEqual(evidence.value, '')
+        self.assertTrue(evidence.needs_confirmation)
+
+    def test_terminal_sentence_keeps_later_unlabelled_date_separate(self):
+        evidence = service_date_evidence(
+            'Documento emitido em 18/09/2026.\n'
+            'Serviço de interpretação realizado.\n26/09/2026.')
+        self.assertEqual(evidence.value, '')
+        self.assertTrue(evidence.needs_confirmation)
 
 
 class SourceEvaluationTests(unittest.TestCase):
