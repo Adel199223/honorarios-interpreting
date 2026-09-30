@@ -12,6 +12,8 @@ The [development foundation plan](completed/2026-09-30_development_foundation.md
 
 The [source decision quality plan](completed/2026-09-30_source_decision_quality.md) is complete locally, validated and applied to the saved app. Its subsequently authorized publication is tracked in [PR #60](https://github.com/Adel199223/honorarios-interpreting/pull/60). Use that record for GitHub check/merge status; main-app integration remains separate.
 
+The [photo defaults plan](completed/2026-09-30_photo_defaults.md) is complete locally, applied and validated in the usual saved checkout. It remains unpublished and includes one separately authorized bounded real-source/PDF acceptance check. Create a new active plan for further substantial work; the prior publication approval does not cover this newer scope.
+
 ## Complete and preserve
 
 Move a plan to `completed/` only when the authorized objective and required checks are complete. Preserve its implementation history and limitations, then update the current handoff and documentation map to point to the next work. Local completion and publication are separate statuses; a completed local plan can still describe an unpublished change.

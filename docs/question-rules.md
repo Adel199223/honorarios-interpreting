@@ -19,8 +19,8 @@ The question script uses these rules:
 - If the source mentions GNR, PSP, police, `posto`, `esquadra`, `destacamento`, `hospital`, or `gabinete` but does not say the exact location, ask for the service entity.
 - If the source mentions Polícia Judiciária, PJ, Diretoria, or Inspetor/a, require the local host building and city. PJ alone is not enough because it usually uses another local building, often GNR.
 - Do not ask for the inspector name. Include it only when it is already visible in the source or volunteered by the user.
-- If the image metadata date is available, use it as the priority service-date signal.
-- If a printed document timestamp and the image metadata date conflict, ask which is the service date unless the user has already confirmed the exception.
+- If the user has enabled the saved photo-date default, use the unambiguous capture day as the service day without repeated confirmation. Keep any different printed date as evidence. Otherwise ask for uploaded capture-only dates and unresolved conflicts.
+- If the saved photo-city court default is enabled, use the actual capture city and its uniquely configured court/contact. Do not substitute a police district or service locality. Ask for the payer and verified recipient when capture city/contact is missing or ambiguous; do not use the general email fallback.
 
 ## Missing Process Number
 

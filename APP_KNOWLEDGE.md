@@ -19,6 +19,7 @@ The browser and CLI share the domain rules. The services facade retains existing
 
 ## Managed data
 
+- Ignored `config/photo-defaults.local.json` optionally supplies the user's capture-day/service-day and capture-city/local-court policy. `honorarios_app/photo_defaults.py` applies it after photo reading, retains provenance and coherent routing through re-review; unresolved photo routing cannot use the general email fallback. See [source quality](docs/source-quality.md#saved-photo-defaults).
 - Personal profiles contain the applicant/payment/address/travel information. The selected profile is adapted into the existing generator profile contract.
 - Service profiles contain recurring interpreting service/payment/recipient patterns.
 - Duplicate records and draft lifecycle records protect both drafted and sent requests; packet requests retain their underlying identities.
@@ -43,7 +44,13 @@ Daily use is supported from the source checkout. Installed-wheel validation uses
 
 Use the [integration readiness guide](docs/integration-readiness.md) for the boundary and remaining acceptance criteria, not older roadmap feature inventories.
 
-## Current development foundation
+## Current photo defaults
+
+The [completed photo defaults plan](docs/assistant/exec_plans/completed/2026-09-30_photo_defaults.md) implements the user's standing photo policy: capture day is the interpreting day, and the court in the capture city is the payer. The policy is opt-in through local preferences; selected values remain editable and visibly labeled as defaults. Automatic profiles and source court names cannot replace the city rule. An explicitly selected service profile or later manual edit can supply an exception. Missing or competing capture information and missing court contacts still pause.
+
+The changes and authorized local preferences are applied to the usual saved checkout. Final saved-checkout Full passed 285 public synthetic tests and four isolated workflows, including the bounded shared PDF grammar correction. One authorized read of the supplied partial photo took 28.45 seconds with gpt-6.1-sol/high; replay with the applied settings required no additional provider call. Astra independently accepted the regenerated final PDF and the routing, manual-edit and grammar fixes. The 19 pre-existing private JSON files and saved branch/history remain unchanged; launch preflight passed at 8878. This is acceptance of the supplied example, not a production accuracy estimate. The [current handoff](docs/next-thread-handoff.md) records the completed local scope. No Gmail action or publication was performed.
+
+## Historical development foundation
 
 The [source decision quality plan](docs/assistant/exec_plans/completed/2026-09-30_source_decision_quality.md) is complete locally and applied to the saved app, from published main `f792c95` (PR #59 merged). It repairs contextual dates/locations, classification, physical-host PDF wording, honest AI evidence and the five-fact beginner review. Source recovery now defaults to gpt-6.1-sol/high; the intended saved AI settings select it. Final Full passed 256 public synthetic tests and four isolated workflows in the candidate and saved checkout, plus actual fictional PDF/photo, date-confirmation, stale-edit, rendered-PDF and manual-handoff checks. The 39 labelled decision cases pass; a six-source/three-model actual comparison passed for every candidate, with measured costs and limitations in [source quality](docs/source-quality.md). The user authorized publication and merge on 2026-09-30; [PR #60](https://github.com/Adel199223/honorarios-interpreting/pull/60) is the authoritative publication/check/merge record for this scope. The foundation acceptance below is historical.
 

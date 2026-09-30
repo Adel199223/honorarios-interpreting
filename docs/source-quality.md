@@ -4,6 +4,18 @@ The app should identify the date and place of the interpreting service, distingu
 
 The beginner review shows case, service date, paying authority, service place and recipient together. Its origin labels describe how each value was obtained. AI-read values still need checking; an AI model repeating its own reading is not independent confirmation. The labels are categories, not measured probabilities. Capture metadata and explicit user confirmation remain distinct evidence.
 
+## Saved photo defaults
+
+The user can authorize standing photo rules through ignored `config/photo-defaults.local.json`, alongside the runtime's AI configuration. [The example](../config/photo-defaults.example.json) enables `capture_date_is_service_date` and `photo_city_court`; an absent file preserves the ordinary confirmation behavior. These preferences are separate from model/key settings and remain local.
+
+The date rule selects one unambiguous capture day even when a printed service-date candidate differs. The city rule reads `photo_metadata_city` separately from document/service locality, then selects one configured `city_courts` record or one exact local court-directory match. Each configured city record supplies `payment_entity`, `recipient_email` and optionally `addressee`. Only a verified `tribunais.org.pt` contact is usable; the app does not construct an email from a city name or use the general email fallback for unresolved photo routing.
+
+Policy-applied values are labeled as saved defaults and remain editable. A deliberately chosen service profile or manual edit is a per-request routing exception. A different source court remains evidence rather than automatically overriding the standing city rule. Payer/address/recipient/key are kept coherent during later profile review; source footer contacts cannot silently replace selected photo routing. Unknown city/contact or competing capture dates stay unresolved. Duplicate checks and PDF/preflight use the selected date normally. Notification PDFs and unconfigured runtimes retain their existing rules.
+
+Clearing a selected date or recipient keeps it unresolved through later profile review, including explicit-profile mode. Changing the payer clears its previous address/contact/key so an old court's recipient cannot survive a correction.
+
+The revised internal extraction prompt is `honorarios-source-photo-city-v3`; OCR still extracts source facts only. Standing photo rules run after extraction and are not represented as printed evidence or individual confirmation.
+
 ## Model configuration
 
 Source recovery uses the existing OpenAI Responses API and strict structured output. The default is `gpt-6.1-sol` with `high` reasoning. Ignored `config/ai.local.json` can set `model`, `reasoning_effort` and `timeout_seconds`; environment overrides are `HONORARIOS_OPENAI_MODEL`, `HONORARIOS_OPENAI_REASONING_EFFORT` and `HONORARIOS_OPENAI_TIMEOUT_SECONDS`. Keep credentials in the existing ignored configuration or `OPENAI_API_KEY`; never include them in tests, reports or GitHub.

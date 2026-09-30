@@ -22,7 +22,9 @@ In **Review Case Details**, read **What happened** and **Next safe action**, the
 
 Expand **Show recovered details** or the detailed evidence when you need more context. When OpenAI reading is enabled, the source is read by OpenAI to suggest details. The default is GPT-6.1 Sol with high reasoning; source reading cost about one to three US cents in the fictional tests. See [the measured comparison and configuration](source-quality.md) for its limits and alternatives.
 
-Check the actual interpreting service date. A date suggested from a photo can be its capture date. Use the suggested date only if the service happened then; otherwise choose another date or leave it unresolved until you know.
+With your saved photo defaults enabled, the app uses the capture day as the interpreting day and the court in the photo's capture city as the payer. The five facts label these as **Your photo-date default** and **Your photo-city court default**. You do not need to confirm the same defaults on every photo. **Edit** still lets you enter an exception.
+
+The capture city comes from photo location metadata or the photo viewer's location panel, not the police command's district. A configured city-court contact supplies the recipient; the app asks when date, city or court contact is missing or ambiguous. These are your workflow defaults, not facts printed on the document. A deliberately selected service profile or manual edit can supply a per-request exception. A different court named in the source remains visible evidence; it does not silently replace your default. See [photo preference configuration](source-quality.md#saved-photo-defaults).
 
 If the app identifies a translation request, duplicate or existing draft, read the warning before continuing. The ordinary PDF path stays blocked until the problem is resolved. Corrections use the explicit correction workflow, not a second normal request.
 
@@ -32,7 +34,7 @@ Type short answers using the displayed question numbers, then click **Apply answ
 
 The app reviews the request again. Continue only when no required questions or blocking warnings remain. You do not need to fill unrelated advanced fields merely because they are available.
 
-If document and photo dates differ, the question shows both dates. Answer the actual service date, or use `document` or `metadata` only when that is correct. Once confirmed, the difference remains recorded as resolved evidence.
+Without the saved photo-date default, conflicting document/photo dates still ask which to use. With it enabled, the capture day takes priority and the previous printed-date candidate remains evidence. Missing or conflicting capture metadata still asks; you can always enter the actual service date as an exception.
 
 ## 4. Review and create the PDF
 
