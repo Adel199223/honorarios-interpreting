@@ -70,6 +70,32 @@ class SourceDateLineWrappingTests(unittest.TestCase):
 
 
 class SourcePlaceRoleTests(unittest.TestCase):
+    def test_court_host_on_line_after_wrapped_service_date_label(self):
+        self.assertEqual(explicit_service_places(
+            'Declara-se que o serviço de interpretação foi realizado em\n'
+            '26/09/2026 no Tribunal do Trabalho de Beja.'), ('Tribunal do Trabalho de Beja',))
+
+    def test_court_host_after_wrapped_place_preposition(self):
+        self.assertEqual(explicit_service_places(
+            'Declara-se que o serviço de interpretação foi realizado em 26/09/2026 no\n'
+            'Tribunal do Trabalho de Beja.'), ('Tribunal do Trabalho de Beja',))
+
+    def test_wrapped_psp_institution_and_city_are_preserved(self):
+        for text, place in (
+            ('Serviço de interpretação realizado em 26/09/2026 na\nEsquadra da PSP de Serpa.', 'Esquadra da PSP de Serpa'),
+            ('Serviço de interpretação realizado em\nSerpa.', 'Serpa'),
+        ):
+            with self.subTest(place=place):
+                self.assertEqual(explicit_service_places(text), (place,))
+
+    def test_blank_line_does_not_bridge_place_preposition_to_heading(self):
+        self.assertEqual(explicit_service_places(
+            'Serviço de interpretação realizado em 26/09/2026 no\n\nTribunal do Trabalho de Beja.'), ())
+
+    def test_completed_sentence_does_not_bind_standalone_host_heading(self):
+        self.assertEqual(explicit_service_places(
+            'Serviço de interpretação realizado em 26/09/2026.\nTribunal do Trabalho de Beja.'), ())
+
     def test_procedural_scope_is_not_a_physical_location(self):
         self.assertEqual(explicit_service_places(
             'Serviço de interpretação prestado no âmbito do processo 100/26.0TSTXX em 26/09/2026.'), ())
