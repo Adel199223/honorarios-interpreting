@@ -55,3 +55,9 @@ Use isolated checkpoints and exact local beforeimages. Do not rewrite the origin
 ## Progress and evidence
 
 - 2026-09-30: current goal and authorization inspected. Approved base verified; original patch applied cleanly. Fresh locked environment reconstructed with unchanged versions. Original saved checkout remains untouched by recovery.
+
+- 2026-09-30: recovered interface checkpoint `7a4d066` is combined with the locked baseline. Pure browser review guidance and source-evidence responsibilities were extracted; existing outward exports/routes remain available.
+- Actual synthetic browser acceptance: a complete PDF source reached review, generated PDF preview, and the manual handoff; a missing-date PDF required a visible numbered answer before the same sequence. The rendered fictional PDF was manually inspected for wording, dates, layout and clipping. Changing source cleared the prepared client controls. No providers or Gmail were called.
+- Browser acceptance found and repaired an unavailable automatic profile selection. Further observed issues are being repaired before final acceptance: stale home guidance after preparation, weak fallback visibility, awaited-response invalidation, and EXIF capture dates bypassing the existing confirmation requirement.
+- Focused worker validation passed all named groups and Full (153 public synthetic tests plus four isolated smokes); this is preliminary worker evidence, not the final root/application acceptance. Its bounded implementation was integrated in checkpoint `9b4de2f`.
+- Failed attempts retained: initial browser binding timeout recovered through the same supported tool; a preview locator deadline expired while generation was in progress, then fresh visible state confirmed the completed preview. AX summary controls required their actual accessibility targets rather than guessed DOM roles. These tooling observations do not establish app failures.

@@ -56,3 +56,7 @@ Prepare LegalPDF Honorários for dependable separate development and eventual in
 - The installed wheel includes shared scripts/template/assets and runs from outside the checkout with explicit synthetic runtime paths. Installed default private-runtime configuration and repository-specific diagnostic parity are not accepted deployment modes.
 - Documentation routing/links, JavaScript syntax, whitespace and preparation-content privacy checks pass. Current guides/handoff and a small machine routing map are synchronized. Exact beforeimages, original work patch, environment evidence and operation logs are retained in ignored local evidence.
 - Hosted Windows/GitHub CI subsequently passed during the authorized publication phase. CircleCI/Linux, optional browser click-through and real documents/providers remain unexecuted. Production main-app orchestration remains separate work. Publication excludes prior interface edits and private/local files; only the reviewed 37 preparation files are included.
+
+## Local publication receipt
+
+PR #58 merged into GitHub main at `bb9b1cf` after final Windows/GitHub run 187 passed at `efc802c`. The publication checkout is clean on synchronized main. Original interface edits, private overlays and preparation safety worktrees remain preserved locally. The ignored publication receipt records the exact checks and commit identities.
