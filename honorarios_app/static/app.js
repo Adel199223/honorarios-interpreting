@@ -617,7 +617,7 @@ function renderNextSafeAction(action) {
         <p>${escapeHtml(detailText)}</p>
       </div>
       <details class="safe-action-details">
-        <summary>Why this is blocked</summary>
+        <summary>${blocked ? "Why this is blocked" : "About this step"}</summary>
         <div class="safe-action-summary-grid">
           <div>
             <span>Reason</span>
