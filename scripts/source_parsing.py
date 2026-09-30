@@ -31,8 +31,14 @@ PLACE_ANCHOR_RE = re.compile(
 )
 PLACE_PREPOSITION_RE = re.compile(r"\b(?:no|na|nos|nas|em)\s+(?=[a-z])")
 PLACE_END_RE = re.compile(
-    r",|\b(?:no dia|em\s+(?:20\d{2}-|\d{1,2}/)|as\s+\d|"
-    r"no ambito|processo|nuipc|para\s+|e\s+(?:no|na|em)\s+)"
+    r",|\b(?:(?:no|na|nos|nas|em)\s+(?:dia|data|ambito|periodo|prazo|processo)\b|"
+    r"em\s+(?:20\d{2}-|\d{1,2}/)|as\s+\d|"
+    r"processo|nuipc|para\s+|e\s+(?:no|na|em)\s+)"
+)
+NON_PLACE_START_RE = re.compile(
+    r"^(?:(?:no|na|nos|nas|em|o|a|os|as|proprio|propria|mesmo|mesma)\s+)*"
+    r"(?:dia|data|ambito|periodo|prazo|processo|diligencia|audiencia|"
+    r"interpretacao|servico|lingua|portugues|ingles|arabe)\b"
 )
 
 
@@ -118,6 +124,8 @@ def service_date_evidence(text: str) -> ServiceDateEvidence:
 
 def _place_tail(raw_text: str) -> str:
     normalized = normalize_text(raw_text)
+    if NON_PLACE_START_RE.search(normalized.strip()):
+        return ""
     boundary = PLACE_END_RE.search(normalized)
     return raw_text[:boundary.start() if boundary else len(raw_text)].strip(" :,-")
 
@@ -139,7 +147,7 @@ def explicit_service_places(text: str) -> tuple[str, ...]:
             for match in PLACE_PREPOSITION_RE.finditer(normalized, anchor.end()):
                 # An issuer's office mentioned before this anchor is excluded.
                 place = _place_tail(clause[match.end():])
-                if place and len(place) >= 3 and not re.match(r"(?:diligencia|audiencia|interpretacao|servico|lingua|portugues|ingles|arabe)\b", normalize_text(place)):
+                if place and len(place) >= 3:
                     places.append(place)
     unique: dict[str, str] = {}
     for place in places:
