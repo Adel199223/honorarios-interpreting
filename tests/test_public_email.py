@@ -494,4 +494,3 @@ class PublicEmailTests(PublicCandidateSmokeTests):
         check = next(check for check in report["checks"] if check["name"] == "gmail_api_verify_mismatch_read_only")
         self.assertEqual(check["status"], "ready")
         self.assertFalse(check["details"]["local_records_changed"])
-

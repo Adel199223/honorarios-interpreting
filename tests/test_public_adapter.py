@@ -1348,4 +1348,3 @@ class PublicAdapterTests(PublicCandidateSmokeTests):
             [{"number": 1, "field": "closing_date"}],
             "Closing date?",
         ))
-

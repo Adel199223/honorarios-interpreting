@@ -57,4 +57,3 @@ class PublicPublicationTests(PublicCandidateSmokeTests):
         self.assertTrue(result["tracked_gate"]["public_repo_ready"], result["tracked_gate"])
         self.assertNotIn("data/service-profiles.json", after)
         self.assertIn("data/service-profiles.example.json", after)
-

@@ -773,4 +773,3 @@ class PublicRuntimeTests(PublicCandidateSmokeTests):
             with self.subTest(path=relative_path):
                 text = (root / relative_path).read_text(encoding="utf-8")
                 self.assertIn("python scripts/public_repo_gate.py --hook-configured --json", text)
-
