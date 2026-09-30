@@ -18,7 +18,7 @@ from pypdf import PdfReader
 from honorarios_app import ai_recovery as ai
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
 from honorarios_app.services import (
-    AppPaths, preflight_intakes, prepare_intakes, recover_source_upload,
+    AppPaths, apply_numbered_answers, preflight_intakes, prepare_intakes, recover_source_upload,
     require_current_preflight_review, review_intake_with_profile_evidence,
 )
 from honorarios_app.web import create_app
@@ -246,6 +246,55 @@ class MultiCaseSourceTests(unittest.TestCase):
                 self.assertEqual(candidate['case_number'], CASES[0])
                 self.assertEqual(candidate['source_case_number'], CASES[0])
                 self.assertNotIn('case_number', {q['field'] for q in result['review'].get('questions', [])})
+
+    def test_ambiguous_row_attention_is_blocked_even_beside_a_ready_case(self):
+        text = (f'Processo {CASES[2]}\n'
+                f'Processo {CASES[0]} ou {CASES[1]} (últimos dígitos ilegíveis).')
+        result = self.upload(case_numbers=CASES[:3], text=text)
+        for record in result['case_candidates']:
+            review = record['review']
+            evidence = review.get('review_evidence') or review.get('source_evidence') or {}
+            attention = evidence.get('attention') or {}
+            if not record['candidate_intake'].get('case_number'):
+                self.assertEqual(review['status'], 'needs_info')
+                self.assertEqual(attention.get('status'), 'blocked', record)
+                self.assertTrue(any(flag.get('severity') == 'blocked' for flag in attention.get('flags', [])))
+            else:
+                self.assertEqual(review['status'], 'ready')
+                self.assertNotEqual(attention.get('status'), 'blocked')
+
+    def test_numbered_case_answer_requires_one_valid_reference_before_readiness(self):
+        text = f'Processo {CASES[0]} ou {CASES[1]} (últimos dígitos ilegíveis).'
+        uploaded = self.upload(case_numbers=CASES[:2], text=text)
+        candidate = uploaded['candidate_intake']
+        for bad_answer in (f'{CASES[0]} ou {CASES[1]}', '710/??.0TSTXX'):
+            with self.subTest(answer=bad_answer):
+                initial = review_intake_with_profile_evidence(copy.deepcopy(candidate), self.paths)
+                questions = {q['field']: q['number'] for q in initial['questions']}
+                self.assertIn('case_number', questions)
+                bad = apply_numbered_answers({'intake': initial['intake'],
+                    'answer_text': f"{questions['case_number']}. {bad_answer}"}, self.paths)
+                self.assertEqual(bad['status'], 'needs_info', bad)
+                self.assertFalse(bad['intake'].get('case_number'))
+                self.assertEqual(preflight_intakes([bad['intake']], self.paths)['status'], 'blocked')
+                with self.assertRaises(IntakeError):
+                    prepare_intakes([bad['intake']], self.paths)
+                remaining = {q['field']: q['number'] for q in bad['questions']}
+                resolved = apply_numbered_answers({'intake': bad['intake'],
+                    'answer_text': f"{remaining['case_number']}. {CASES[0]}"}, self.paths)
+                self.assertEqual(resolved['status'], 'ready', resolved)
+                self.assertEqual(resolved['intake']['case_number'], CASES[0])
+        self.assert_no_preparation_artifacts()
+
+    def test_npp_and_npe_administrative_references_do_not_become_fee_requests(self):
+        administrative = ('720/26.0TSTXX', '721/26.0TSTXX')
+        text = (f'Processo {CASES[0]}\nNPP: {administrative[0]}\n'
+                f'NPe: {administrative[1]}\nRegisto do serviço de interpretação presencial.')
+        result = self.upload(case_numbers=[CASES[0], *administrative], text=text)
+        self.assertEqual(result['case_count'], 1)
+        self.assertEqual(result['candidate_intake']['case_number'], CASES[0])
+        self.assertEqual(result['review']['status'], 'ready', result['review'])
+        self.assertEqual(len(result['case_candidates']), 1)
 
     def test_existing_duplicate_blocks_entire_batch_before_any_artifacts(self):
         candidates = self.ready_candidates(self.upload())

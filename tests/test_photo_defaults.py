@@ -17,6 +17,7 @@ from honorarios_app.services import (
     AppPaths, apply_answer_to_intake, apply_numbered_answers, recover_source_upload,
     review_intake, review_intake_with_profile_evidence,
 )
+from scripts.generate_pdf import build_rendered_request
 
 
 CASE_NUMBER = '710/26.0TSTXX'
@@ -497,6 +498,75 @@ class PhotoDefaultTests(unittest.TestCase):
             self.assertFalse(review['intake'].get(field), field)
         self.assertEqual(review['status'], 'needs_info')
         self.assertTrue(self.question_fields({'review': review}) & {'service_place', 'service_entity'})
+
+    def assert_changed_venue_paragraph(self, candidate, place, entity_type):
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'ready', review)
+        effective = review['intake']
+        self.assertEqual(effective['service_place'], place)
+        self.assertEqual(effective['service_entity'], place)
+        self.assertEqual(effective['service_entity_type'], entity_type)
+        self.assertTrue(effective['entities_differ'])
+        self.assertEqual(effective['payment_entity'], CAPTURE_COURT)
+        profile = json.loads(self.paths.profile.read_text(encoding='utf-8'))
+        paragraph = build_rendered_request(effective, profile).service_paragraph
+        self.assertIn(place, paragraph)
+        self.assertNotIn(CAPTURE_COURT, paragraph)
+        return effective, paragraph
+
+    def test_clearing_only_default_place_clears_dependent_venue_fields_and_pauses(self):
+        self.enable(venue=True)
+        candidate = copy.deepcopy(self.missing_venue_upload()['candidate_intake'])
+        candidate['service_place'] = ''
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'needs_info')
+        self.assertIn('service_entity', self.question_fields({'review': review}))
+        for field in ('service_place', 'service_place_phrase', 'service_entity', 'service_entity_type'):
+            self.assertFalse(review['intake'].get(field), field)
+        self.assertEqual(review['intake']['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(review['intake']['recipient_email'], CAPTURE_RECIPIENT)
+
+    def test_single_entity_answers_replace_place_type_and_default_pdf_wording(self):
+        self.enable(venue=True)
+        for place, entity_type, expected_clause in (
+            ('Esquadra da PSP de Manual City', 'psp', 'na Esquadra da PSP de Manual City'),
+            ('Posto da GNR de Manual City', 'gnr', 'no Posto da GNR de Manual City'),
+        ):
+            with self.subTest(place=place):
+                candidate = copy.deepcopy(self.missing_venue_upload()['candidate_intake'])
+                apply_answer_to_intake(candidate, 'service_entity', place)
+                self.assertFalse(candidate.get('service_place_phrase'))
+                effective, paragraph = self.assert_changed_venue_paragraph(candidate, place, entity_type)
+                self.assertIn(expected_clause, paragraph)
+                self.assertEqual(effective['photo_defaults_applied']['service_place'], CAPTURE_COURT)
+
+    def test_numbered_entity_answer_resolves_cleared_default_without_restoring_court_venue(self):
+        self.enable(venue=True)
+        for place, entity_type in (
+            ('Esquadra da PSP de Manual City', 'psp'),
+            ('Posto da GNR de Manual City', 'gnr'),
+        ):
+            with self.subTest(place=place):
+                candidate = copy.deepcopy(self.missing_venue_upload()['candidate_intake'])
+                candidate['service_entity'] = ''
+                initial = review_intake_with_profile_evidence(candidate, self.paths)
+                questions = {item['field']: item['number'] for item in initial['questions']}
+                self.assertIn('service_entity', questions)
+                result = apply_numbered_answers({'intake': initial['intake'],
+                    'answer_text': f"{questions['service_entity']}. {place}"}, self.paths)
+                self.assertEqual(result['status'], 'ready', result)
+                self.assert_changed_venue_paragraph(result['intake'], place, entity_type)
+
+    def test_explicit_custom_venue_phrase_is_preserved_when_default_alias_changes(self):
+        self.enable(venue=True)
+        candidate = copy.deepcopy(self.missing_venue_upload()['candidate_intake'])
+        place = 'Esquadra da PSP de Manual City'
+        phrase = 'em diligência presencial realizada na Esquadra da PSP de Manual City'
+        candidate['service_place_phrase'] = phrase
+        candidate['service_entity'] = place
+        effective, paragraph = self.assert_changed_venue_paragraph(candidate, place, 'psp')
+        self.assertEqual(effective['service_place_phrase'], phrase)
+        self.assertIn(phrase, paragraph)
 
 
 if __name__ == '__main__':
