@@ -38,6 +38,7 @@ Useful focused commands:
 .\.venv311\Scripts\python.exe scripts/check_dev_environment.py --json
 .\.venv311\Scripts\python.exe scripts/run_portable_tests.py
 node --check honorarios_app/static/app.js
+node --check honorarios_app/static/review_guidance.js
 node --check scripts/browser_iab_smoke.mjs
 .\.venv311\Scripts\python.exe scripts/installed_wheel_smoke.py --json
 ```

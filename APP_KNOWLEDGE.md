@@ -7,6 +7,7 @@ LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpret
 | Layer | Entry points and responsibilities |
 | --- | --- |
 | Browser/API | `honorarios_app/web.py`, templates and static assets: source intake, review, numbered answers, PDF preview, batch queue, draft handoff, profiles and references. |
+| Browser review guidance | `honorarios_app/static/review_guidance.js`: pure guided-step, question and outcome helpers; rendering/action gates remain in `app.js`. |
 | Shared application services | `honorarios_app/services.py`: compatibility facade plus runtime/provider/domain orchestration, review, preparation, freshness binding, managed data, backups and adapter boundaries. |
 | Source evidence | `honorarios_app/source_evidence.py`: pure field provenance, profile evidence, Review Attention and text/metadata helpers; no file or provider operations. |
 | Domain/CLI helpers | `scripts/`: authoritative PDF generation, classification, dates/questions, duplicate identity, recipient validation, packet preparation and local draft recording. |
