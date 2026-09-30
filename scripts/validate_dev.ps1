@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$Full,
-    [ValidateSet('quick', 'intake', 'pdf', 'email', 'ui', 'package', 'integration', 'full')]
+    [ValidateSet('quick', 'intake', 'quality', 'pdf', 'email', 'ui', 'package', 'integration', 'full')]
     [string]$Group = 'full'
 )
 $ErrorActionPreference = 'Stop'

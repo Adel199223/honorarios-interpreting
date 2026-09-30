@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 from scripts.build_public_candidate import COPY_DIRS, COPY_FILES, PUBLIC_PORTABLE_TESTS, build_public_candidate
+from scripts.run_portable_tests import PUBLIC_EVALUATION_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,10 @@ class PreparedCandidateTests(unittest.TestCase):
         for relative in COPY_FILES:
             if (source / relative).is_file():
                 shutil.copy2(source / relative, fixture / relative)
+        for relative in PUBLIC_EVALUATION_FILES:
+            target = fixture / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source / relative, target)
         for directory in COPY_DIRS:
             source_directory = source / directory
             if not source_directory.is_dir():
@@ -71,6 +76,9 @@ class PreparedCandidateTests(unittest.TestCase):
             self.assertIn("test_installed_wheel.py", names)
             self.assertIn("test_prepared_candidate.py", names)
             self.assertTrue(all((candidate / "tests" / name).is_file() for name in names))
+            for relative in PUBLIC_EVALUATION_FILES:
+                self.assertEqual(json.loads((candidate / relative).read_text(encoding="utf-8")),
+                                 json.loads((source / relative).read_text(encoding="utf-8")))
             self.assertFalse((candidate / "tests" / "test_unlisted_local.py").exists())
             completed = subprocess.run([sys.executable, "scripts/check_project_docs.py"], cwd=candidate, capture_output=True, text=True, timeout=30, check=False)
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)

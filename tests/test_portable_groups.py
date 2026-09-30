@@ -19,7 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED = {
     'quick': ['test_portable_groups.py', 'test_intake_rules.py', 'test_pdf_rules.py', 'test_email_rules.py',
               'test_source_evidence.py', 'test_service_profile_selection.py', 'test_review_guidance.py'],
-    'intake': ['test_intake_rules.py', 'test_source_evidence.py', 'test_service_profile_selection.py', 'test_public_runtime.py'],
+    'intake': ['test_intake_rules.py', 'test_source_evidence.py', 'test_service_profile_selection.py', 'test_public_runtime.py',
+               'test_source_decisions.py', 'test_public_ai_recovery.py'],
+    'quality': ['test_source_decisions.py'],
     'pdf': ['test_pdf_rules.py'],
     'email': ['test_email_rules.py', 'test_public_email.py'],
     'ui': ['test_browser_iab_smoke.py', 'test_review_guidance.py', 'test_public_ui.py'],
@@ -39,6 +41,10 @@ class PortableGroupTests(unittest.TestCase):
         names = sorted(runner.PUBLIC_TEST_FILES)
         for name in names:
             (source / 'tests' / name).write_text('# Explicit public fixture\n', encoding='utf-8')
+        for relative in runner.PUBLIC_EVALUATION_FILES:
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{}', encoding='utf-8')
         groups = {**copy.deepcopy(EXPECTED), 'full': names}
         (source / 'tests/portable-suite.txt').write_text('\n'.join(names) + '\n', encoding='utf-8')
         self.write_groups(source, groups)
@@ -112,6 +118,23 @@ class PortableGroupTests(unittest.TestCase):
         for directory in ('config', 'data', 'output', '.venv311'):
             self.assertFalse((target / directory / 'private.json').exists())
         self.assertTrue((target / 'tests/portable-groups.json').is_file())
+        self.assertTrue((target / 'examples/source-quality-cases.json').is_file())
+
+    def test_unlisted_evaluation_data_is_never_copied(self):
+        root, source, _ = self.fixture()
+        (source / 'examples/private-source.json').write_text('fictional private sentinel', encoding='utf-8')
+        target = root / 'target'
+        runner.copy_portable_checkout(source, target)
+        self.assertFalse((target / 'examples/private-source.json').exists())
+        self.assertTrue((target / 'examples/source-quality-cases.json').is_file())
+
+    def test_missing_evaluation_fixture_fails_before_copy(self):
+        root, source, _ = self.fixture()
+        (source / 'examples/source-quality-cases.json').unlink()
+        target = root / 'target'
+        with self.assertRaisesRegex(ValueError, 'Missing public evaluation fixture'):
+            runner.copy_portable_checkout(source, target)
+        self.assertFalse(target.exists())
 
     def test_unsafe_manifest_fails_before_any_copy_or_git_mutation(self):
         root, source, _ = self.fixture()

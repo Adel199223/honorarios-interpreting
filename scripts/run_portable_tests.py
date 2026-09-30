@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GROUP_NAMES = ('quick', 'intake', 'pdf', 'email', 'ui', 'package', 'integration', 'full')
+GROUP_NAMES = ('quick', 'intake', 'quality', 'pdf', 'email', 'ui', 'package', 'integration', 'full')
 # This code allowlist is independent of editable manifests. Never import arbitrary
 # test names from a caller or copy ignored/private regression files.
 PUBLIC_TEST_FILES = frozenset({
@@ -24,13 +24,21 @@ PUBLIC_TEST_FILES = frozenset({
     'test_intake_rules.py', 'test_pdf_rules.py', 'test_email_rules.py',
     'test_portable_groups.py',
     'test_source_evidence.py', 'test_service_profile_selection.py', 'test_review_guidance.py',
+    'test_source_decisions.py', 'test_public_ai_recovery.py',
 })
+PUBLIC_EVALUATION_FILES = frozenset({'examples/source-quality-cases.json'})
 
 
 def load_selection(root: Path, group: str = 'full') -> tuple[list[str], list[str]]:
     """Validate every group before copying anything, including unselected groups."""
     if group not in GROUP_NAMES:
         raise ValueError('Unknown portable test group: ' + group)
+    for relative in PUBLIC_EVALUATION_FILES:
+        path = root / relative
+        if not path.is_file():
+            raise ValueError('Missing public evaluation fixture: ' + relative)
+        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError('Linked fixtures cannot enter the public suite.')
     tests_root = root / 'tests'
     if tests_root.is_symlink() or not tests_root.resolve().is_relative_to(root.resolve()):
         raise ValueError('Linked test directories cannot enter the public suite.')
@@ -95,6 +103,7 @@ def copy_portable_checkout(source: Path, target: Path) -> None:
     for directory in ('honorarios_app', 'scripts', 'templates', 'docs', '.github', '.circleci'):
         source_files += [p for p in (source / directory).rglob('*') if p.is_file() and p.suffix in extensions and '__pycache__' not in p.parts]
     source_files += [source / 'tests' / name for name in names]
+    source_files += [source / relative for relative in PUBLIC_EVALUATION_FILES]
     for path in source_files:
         if not path.exists():
             if path.parent.name == 'tests':

@@ -1,0 +1,1268 @@
+{
+  "schema_version": 1,
+  "fictional": true,
+  "benchmark_kind": "source_decisions",
+  "description": "Independently specified fictional decision oracles. Provided text/replayed provider output measures decision handling; it does not measure OCR or production accuracy.",
+  "families": [
+    "court_only",
+    "source_dates",
+    "capture_dates",
+    "pj_gnr",
+    "pj_hospital",
+    "source_cities",
+    "profile_city",
+    "work_classification",
+    "travel",
+    "recipient"
+  ],
+  "environment": {
+    "court_emails": [
+      {
+        "key": "fictional-court",
+        "email": "{{court_primary}}",
+        "payment_entity_aliases": [
+          "Tribunal Fictício de Beja",
+          "Tribunal do Trabalho de Beja"
+        ]
+      }
+    ],
+    "known_destinations": [
+      {
+        "destination": "Beja",
+        "institution_examples": [
+          "Tribunal Fictício de Beja",
+          "Posto Territorial de Beja",
+          "Comando Territorial de Beja"
+        ],
+        "km_one_way": 12
+      },
+      {
+        "destination": "Serpa",
+        "institution_examples": [
+          "Posto Territorial de Serpa"
+        ],
+        "km_one_way": 24
+      },
+      {
+        "destination": "Faro",
+        "institution_examples": [
+          "Hospital de Faro"
+        ],
+        "km_one_way": 200
+      }
+    ],
+    "service_profiles": {
+      "court_only": {
+        "description": "Fictional configured court-only pattern.",
+        "defaults": {
+          "addressee": "Exmo. Senhor Juiz\nTribunal Fictício de Beja",
+          "payment_entity": "Tribunal Fictício de Beja",
+          "service_entity": "Tribunal Fictício de Beja",
+          "service_entity_type": "court",
+          "entities_differ": false,
+          "service_place": "Tribunal Fictício de Beja",
+          "claim_transport": false,
+          "closing_city": "Cidade Fictícia",
+          "recipient_email": "{{court_primary}}"
+        }
+      },
+      "location_pending": {
+        "description": "Fictional GNR request whose physical host is unresolved.",
+        "defaults": {
+          "addressee": "Exmo. Senhor Juiz\nTribunal Fictício de Beja",
+          "payment_entity": "Tribunal Fictício de Beja",
+          "service_entity": "Guarda Nacional Republicana",
+          "service_entity_type": "gnr",
+          "entities_differ": true,
+          "claim_transport": false,
+          "closing_city": "Cidade Fictícia",
+          "recipient_email": "{{court_primary}}"
+        }
+      },
+      "court_mp_generic": {
+        "description": "Fictional fallback deliberately supplies no payment/location guesses.",
+        "defaults": {
+          "claim_transport": false,
+          "closing_city": "Cidade Fictícia"
+        }
+      },
+      "beja_trabalho": {
+        "description": "Fictional configured Beja labour pattern.",
+        "defaults": {
+          "addressee": "Exmo. Senhor Juiz\nTribunal do Trabalho de Beja",
+          "payment_entity": "Tribunal do Trabalho de Beja",
+          "service_entity": "Tribunal do Trabalho de Beja",
+          "service_entity_type": "court",
+          "entities_differ": false,
+          "service_place": "Tribunal do Trabalho de Beja",
+          "claim_transport": false,
+          "closing_city": "Cidade Fictícia",
+          "recipient_email": "{{court_primary}}"
+        }
+      },
+      "pj_medico_legal_beja": {
+        "description": "Fictional configured local PJ medical pattern.",
+        "defaults": {
+          "addressee": "Exmo. Senhor Juiz\nTribunal Fictício de Beja",
+          "payment_entity": "Tribunal Fictício de Beja",
+          "service_entity": "Polícia Judiciária",
+          "service_entity_type": "police",
+          "entities_differ": true,
+          "service_place": "Gabinete Médico-Legal de Beja",
+          "claim_transport": false,
+          "closing_city": "Cidade Fictícia",
+          "recipient_email": "{{court_primary}}"
+        }
+      }
+    },
+    "personal_profiles": [
+      {
+        "id": "origin_a",
+        "first_name": "Pessoa",
+        "last_name": "Fictícia A",
+        "document_name_override": "Pessoa Fictícia A",
+        "email": "a@example.test",
+        "postal_address": "Rua Fictícia 1",
+        "iban": "EXAMPLE0000000000000000000",
+        "iva_text": "23%",
+        "irs_text": "Sem retenção",
+        "travel_origin_label": "Origem Fictícia A",
+        "travel_distances_by_city": {
+          "Serpa": 28
+        }
+      },
+      {
+        "id": "origin_b",
+        "first_name": "Pessoa",
+        "last_name": "Fictícia B",
+        "document_name_override": "Pessoa Fictícia B",
+        "email": "b@example.test",
+        "postal_address": "Rua Fictícia 2",
+        "iban": "EXAMPLE0000000000000000000",
+        "iva_text": "23%",
+        "irs_text": "Sem retenção",
+        "travel_origin_label": "Origem Fictícia B",
+        "travel_distances_by_city": {
+          "Serpa": 46
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "court_clear_iso",
+      "family": "court_only",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Declara-se que o serviço de interpretação foi realizado em 2026-09-26, no Tribunal Fictício de Beja.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26",
+          "payment_entity": "Tribunal Fictício de Beja",
+          "service_place": "Tribunal Fictício de Beja"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "court_clear_eu",
+      "family": "court_only",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 26/09/2026 no Tribunal Fictício de Beja.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "date_issue_then_service",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Data de emissão: 2026-09-18. Declara-se que o serviço de interpretação foi realizado em 2026-09-26. Assinatura: 2026-09-30.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "date_eu_service_iso_issue",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Interpretação realizada em 26/09/2026. Emissão do documento: 2026-09-30.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "date_appointment_service_closing",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Notificação emitida em 2026-09-18; comparência agendada para 2026-09-25. Declara-se interpretação prestada em 26/09/2026. Pede deferimento, 2026-09-30.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "date_issue_only",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Documento emitido em 2026-09-30. Nomeação de intérprete para diligência, sem data do serviço legível.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "date_two_unlabelled",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação. Datas legíveis: 2026-09-25 e 26/09/2026. O contexto das datas não está legível.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "metadata_only_case_known",
+      "family": "capture_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Nomeação para serviço de interpretação. Data do serviço ilegível.",
+        "profile": "court_only",
+        "metadata_date": "2026-09-26"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "photo_metadata_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "metadata_case_answer_only",
+      "family": "capture_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Nomeação para serviço de interpretação. Processo e data do serviço ilegíveis.",
+        "profile": "court_only",
+        "metadata_date": "2026-09-26",
+        "answers": {
+          "case_number": "710/26.0TSTXX"
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "photo_metadata_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "metadata_conflicts_explicit",
+      "family": "capture_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Declara-se interpretação realizada em 2026-09-25.",
+        "profile": "court_only",
+        "metadata_date": "2026-09-26"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-25",
+          "photo_metadata_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date_source"
+        ]
+      }
+    },
+    {
+      "id": "pj_gnr_payment_host",
+      "family": "pj_gnr",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Polícia Judiciária. Serviço de interpretação realizado em 2026-09-26 no Posto Territorial de Serpa.",
+        "profile": "court_only",
+        "intake_overrides": {
+          "service_entity": "Polícia Judiciária",
+          "service_entity_type": "police",
+          "entities_differ": true
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26",
+          "payment_entity": "Tribunal Fictício de Beja",
+          "service_entity": "Polícia Judiciária",
+          "service_place": "Posto Territorial de Serpa"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "pj_header_no_host",
+      "family": "pj_gnr",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Polícia Judiciária, Diretoria. Serviço de interpretação realizado em 2026-09-26. Edifício e cidade não legíveis.",
+        "profile": "location_pending",
+        "intake_overrides": {
+          "service_entity": "Polícia Judiciária",
+          "service_entity_type": "police",
+          "entities_differ": true
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_place"
+        ]
+      }
+    },
+    {
+      "id": "pj_hospital_unfamiliar_city",
+      "family": "pj_hospital",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Polícia Judiciária. Serviço de interpretação realizado em 2026-09-26 no Hospital de Faro.",
+        "profile": "court_only",
+        "intake_overrides": {
+          "service_entity": "Polícia Judiciária",
+          "service_entity_type": "police",
+          "entities_differ": true
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26",
+          "service_place": "Hospital de Faro"
+        },
+        "review_status": "ready",
+        "question_fields": [],
+        "profile_fields": {
+          "auto_applied": false
+        }
+      }
+    },
+    {
+      "id": "pj_hospital_without_city",
+      "family": "pj_hospital",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Polícia Judiciária. Serviço de interpretação realizado em 2026-09-26 no hospital. Cidade ilegível.",
+        "profile": "location_pending",
+        "intake_overrides": {
+          "service_entity": "Polícia Judiciária",
+          "service_entity_type": "police",
+          "service_place": "Hospital",
+          "entities_differ": true
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_place"
+        ]
+      }
+    },
+    {
+      "id": "header_beja_service_serpa",
+      "family": "source_cities",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Comando Territorial de Beja. Declara-se que o serviço de interpretação foi realizado em 2026-09-26 no Posto Territorial de Serpa.",
+        "profile": "location_pending"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26",
+          "service_place": "Posto Territorial de Serpa",
+          "transport.destination": "Serpa",
+          "transport.km_one_way": 24
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "two_cities_ambiguous",
+      "family": "source_cities",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Beja / Serpa. Posto e local da diligência não legíveis.",
+        "profile": "location_pending",
+        "remove_candidate_fields": [
+          "service_entity"
+        ]
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_entity"
+        ],
+        "absent_candidate_fields": [
+          "service_place",
+          "transport.destination",
+          "transport.km_one_way"
+        ]
+      }
+    },
+    {
+      "id": "labour_beja",
+      "family": "profile_city",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Tribunal do Trabalho de Beja. Serviço de interpretação realizado em 2026-09-26.",
+        "profile": "auto"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26",
+          "payment_entity": "Tribunal do Trabalho de Beja"
+        },
+        "review_status": "ready",
+        "question_fields": [],
+        "profile_fields": {
+          "profile_key": "beja_trabalho",
+          "auto_applied": true
+        }
+      }
+    },
+    {
+      "id": "labour_evora",
+      "family": "profile_city",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Tribunal do Trabalho de Évora. Serviço de interpretação realizado em 2026-09-26.",
+        "profile": "auto"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "payment_entity"
+        ],
+        "profile_fields": {
+          "auto_applied": false
+        },
+        "absent_candidate_fields": [
+          "payment_entity",
+          "recipient_email"
+        ]
+      }
+    },
+    {
+      "id": "labour_no_city",
+      "family": "profile_city",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Tribunal do Trabalho. Serviço de interpretação realizado em 2026-09-26. Cidade ilegível.",
+        "profile": "auto"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "payment_entity"
+        ],
+        "profile_fields": {
+          "auto_applied": false
+        },
+        "absent_candidate_fields": [
+          "payment_entity",
+          "recipient_email"
+        ]
+      }
+    },
+    {
+      "id": "ordinary_words_interpreting",
+      "family": "work_classification",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. O intérprete explicou por outras palavras durante a diligência.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "translation_word_count",
+      "family": "work_classification",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Documento traduzido em 2026-09-26. Tradução escrita com número de palavras: 420.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "set_aside",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "translation_explicit_role",
+      "family": "work_classification",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Nomeado tradutor para tradução de documentos em 2026-09-26.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "set_aside",
+        "question_fields": []
+      }
+    },
+    {
+      "id": "travel_origin_a",
+      "family": "travel",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Destino da deslocação: Serpa.",
+        "profile": "court_only",
+        "personal_profile_id": "origin_a",
+        "intake_overrides": {
+          "claim_transport": true,
+          "transport": {
+            "destination": "Serpa"
+          }
+        },
+        "remove_candidate_fields": [
+          "transport.km_one_way",
+          "transport.origin"
+        ]
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": [],
+        "effective_fields": {
+          "transport.origin": "Origem Fictícia A",
+          "transport.destination": "Serpa",
+          "transport.km_one_way": 28
+        }
+      }
+    },
+    {
+      "id": "travel_origin_b",
+      "family": "travel",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Destino da deslocação: Serpa.",
+        "profile": "court_only",
+        "personal_profile_id": "origin_b",
+        "intake_overrides": {
+          "claim_transport": true,
+          "transport": {
+            "destination": "Serpa"
+          }
+        },
+        "remove_candidate_fields": [
+          "transport.km_one_way",
+          "transport.origin"
+        ]
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": [],
+        "effective_fields": {
+          "transport.origin": "Origem Fictícia B",
+          "transport.destination": "Serpa",
+          "transport.km_one_way": 46
+        }
+      }
+    },
+    {
+      "id": "travel_not_claimed",
+      "family": "travel",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26 no Tribunal Fictício de Beja.",
+        "profile": "court_only",
+        "intake_overrides": {
+          "claim_transport": false
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "claim_transport": false
+        },
+        "review_status": "ready",
+        "question_fields": [],
+        "draft_text_excludes": [
+          "quilómetros",
+          "quilometros"
+        ]
+      }
+    },
+    {
+      "id": "travel_unknown_distance",
+      "family": "travel",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Destino: Cidade Fictícia Remota.",
+        "profile": "court_only",
+        "intake_overrides": {
+          "claim_transport": true,
+          "transport": {
+            "origin": "Origem Fictícia A",
+            "destination": "Cidade Fictícia Remota"
+          }
+        },
+        "remove_candidate_fields": [
+          "transport.km_one_way"
+        ]
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "transport.km_one_way"
+        ]
+      }
+    },
+    {
+      "id": "recipient_source_correct",
+      "family": "recipient",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Pagamento: Tribunal Fictício de Beja. Contacto: {{court_primary}}.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "recipient_email": "{{court_primary}}"
+        },
+        "review_status": "ready",
+        "question_fields": [],
+        "review_fields": {
+          "recipient": "{{court_primary}}"
+        }
+      }
+    },
+    {
+      "id": "recipient_directory_missing_source",
+      "family": "recipient",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Sem endereço no documento.",
+        "profile": "court_only",
+        "remove_candidate_fields": [
+          "recipient_email"
+        ],
+        "intake_overrides": {
+          "court_email_key": "fictional-court"
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "ready",
+        "question_fields": [],
+        "review_fields": {
+          "recipient": "{{court_primary}}"
+        }
+      }
+    },
+    {
+      "id": "recipient_mismatch",
+      "family": "recipient",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Contacto: {{court_other}}.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "recipient_email": "{{court_other}}"
+        },
+        "review_status": "error",
+        "question_fields": [],
+        "message_contains": "Recipient does not match the payment entity"
+      }
+    },
+    {
+      "id": "recipient_multiple",
+      "family": "recipient",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Contactos: {{court_primary}} e {{court_other}}.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "error",
+        "question_fields": [],
+        "message_contains": "Multiple court emails"
+      }
+    },
+    {
+      "id": "date_closing_only",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Requerimento para serviço de interpretação. Pede deferimento, 2026-09-30.",
+        "profile": "court_only"
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "ai_issue_date_cannot_unblock",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Documento emitido em 2026-09-30. Serviço de interpretação com data ilegível.",
+        "profile": "court_only",
+        "replayed_ai": {
+          "status": "ok",
+          "attempted": true,
+          "raw_visible_text": "Documento emitido em 2026-09-30.",
+          "fields": {
+            "service_date": "2026-09-30"
+          }
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "ai_ambiguous_date_cannot_unblock",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação. Datas legíveis: 2026-09-25 e 2026-09-26. Contexto ilegível.",
+        "profile": "court_only",
+        "replayed_ai": {
+          "status": "ok",
+          "attempted": true,
+          "fields": {
+            "service_date": "2026-09-26"
+          }
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "ai_capture_date_cannot_unblock",
+      "family": "capture_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação. Data do serviço ilegível.",
+        "profile": "court_only",
+        "metadata_date": "2026-09-26",
+        "replayed_ai": {
+          "status": "ok",
+          "attempted": true,
+          "fields": {
+            "service_date": "2026-09-26",
+            "photo_metadata_date": "2026-09-26"
+          }
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "photo_metadata_date": "2026-09-26"
+        },
+        "review_status": "needs_info",
+        "question_fields": [
+          "service_date"
+        ],
+        "absent_candidate_fields": [
+          "service_date"
+        ]
+      }
+    },
+    {
+      "id": "ai_conflicting_date_keeps_performed",
+      "family": "source_dates",
+      "descriptor": {
+        "document_kind": "fictional interpreting declaration",
+        "layout": "portrait",
+        "render_variants": [
+          "text_pdf",
+          "portrait_photo",
+          "rotated_photo"
+        ],
+        "fictional_notice": "DOCUMENTO FICTÍCIO — APENAS PARA AVALIAÇÃO"
+      },
+      "input": {
+        "source_text": "Processo 710/26.0TSTXX. Declara-se que a interpretação foi realizada em 2026-09-26. Documento emitido em 2026-09-30.",
+        "profile": "court_only",
+        "replayed_ai": {
+          "status": "ok",
+          "attempted": true,
+          "fields": {
+            "service_date": "2026-09-30"
+          }
+        }
+      },
+      "expected": {
+        "candidate_fields": {
+          "case_number": "710/26.0TSTXX",
+          "service_date": "2026-09-26"
+        },
+        "review_status": "ready",
+        "question_fields": []
+      }
+    }
+  ]
+}
