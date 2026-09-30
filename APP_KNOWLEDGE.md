@@ -35,7 +35,7 @@ LegalPDF reference import previews and plans are read-only. Existing apply/resto
 
 ## Current preparation status
 
-The September preparation work adds a pinned development environment, locked setup/validation commands, package checks, and concise documentation front doors. Local isolated Full validation passed 91 portable synthetic tests (including actual installed-wheel checks) and four isolated workflow smokes. Application to the original checkout and hosted-check status are recorded separately in the [current handoff](docs/next-thread-handoff.md).
+The September preparation work adds a pinned development environment, locked setup/validation commands, package checks, and concise documentation front doors. The preparation-only publication branch passed 89 portable synthetic tests (including actual installed-wheel checks), four isolated workflow smokes, and hosted Windows/GitHub Full validation. The original saved checkout passed 91 tests because it also retains separate local interface work. Publication and application evidence are recorded in the [current handoff](docs/next-thread-handoff.md).
 
 Daily use is supported from the source checkout. Installed-wheel validation uses an explicit isolated runtime root; configuring an installed distribution's private default runtime is deferred. Future main-app orchestration and production integration acceptance remain separate work.
 
