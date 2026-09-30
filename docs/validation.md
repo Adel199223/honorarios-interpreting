@@ -77,6 +77,8 @@ The existing local hook is a separate configuration check. A fresh worktree must
 
 ## Live and production acceptance
 
+For a multi-case source, exercise case switching, unresolved/edited rows, fresh review, atomic bulk queueing and preservation of earlier sources. Check each case's own evidence and duplicate identity. Prepare separate PDFs and inspect every rendered page for its own case/date/payer/venue/travel facts. In mixed-city batches, the prepared summary must come from the prepared snapshot even when another source case is selected. Capture-day, payer-court and missing-venue court preferences are user policies, not proof of printed facts. The [completed six-case acceptance](assistant/exec_plans/completed/2026-09-30_six_case_photo_acceptance.md) records the bounded actual-source exception, provider-call/replay distinction and final 330-test checks; routine tests remain fictional and isolated.
+
 A read-only smoke of an already-authorized running fee app may use its actual base URL, such as `http://127.0.0.1:8878`. Check ownership and health first. Do not assume the historical `8765` URL belongs to this app.
 
 Real Gmail/provider calls, profile imports/restores, visual review of real generated PDFs, and production main-app orchestration are separate acceptance work. Synthetic success does not establish those outcomes. Record current check results and deferred work in [the handoff](next-thread-handoff.md).

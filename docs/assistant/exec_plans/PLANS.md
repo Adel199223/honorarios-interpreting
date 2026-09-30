@@ -16,6 +16,8 @@ The [photo defaults plan](completed/2026-09-30_photo_defaults.md) is complete lo
 
 ## Complete and preserve
 
+The [six-case photo plan](completed/2026-09-30_six_case_photo_acceptance.md) is complete locally, applied and validated in the saved app. It adds per-case review/queueing and the missing-venue court preference, with bounded real-source/provider, actual browser and six rendered-PDF acceptance. It remains unpublished; its comparison and examples do not establish production accuracy. Create a new active plan for further substantial work.
+
 Move a plan to `completed/` only when the authorized objective and required checks are complete. Preserve its implementation history and limitations, then update the current handoff and documentation map to point to the next work. Local completion and publication are separate statuses; a completed local plan can still describe an unpublished change.
 
 If work pauses or cannot complete, retain the active plan with a precise next action and blocking condition. Do not move it to completed merely to tidy the folder, and do not invent stage approval requirements for already authorized work.

@@ -10,6 +10,7 @@ LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpret
 | Browser review guidance | `honorarios_app/static/review_guidance.js`: pure guided-step, question and outcome helpers; rendering/action gates remain in `app.js`. |
 | Shared application services | `honorarios_app/services.py`: compatibility facade plus runtime/provider/domain orchestration, review, preparation, freshness binding, managed data, backups and adapter boundaries. |
 | Source evidence | `honorarios_app/source_evidence.py`: pure field provenance, profile evidence, Review Attention and text/metadata helpers; no file or provider operations. |
+| Source cases | `honorarios_app/source_cases.py`: source-grounded case references, ordered deduplication and ambiguity/administrative-reference checks; services review each child independently. |
 | Domain/CLI helpers | `scripts/`: authoritative PDF generation, classification, dates/questions, duplicate identity, recipient validation, packet preparation and local draft recording. |
 | Runtime isolation | `honorarios_app/runtime.py`: separates config/data/output paths and initializes disposable synthetic fixtures for checks. |
 | Optional providers | AI recovery, Google Photos and Gmail helpers: local configuration, secret-free status, guarded provider operations. |
@@ -44,7 +45,17 @@ Daily use is supported from the source checkout. Installed-wheel validation uses
 
 Use the [integration readiness guide](docs/integration-readiness.md) for the boundary and remaining acceptance criteria, not older roadmap feature inventories.
 
-## Current photo defaults
+## Current multi-case photo acceptance
+
+The [completed six-case plan](docs/assistant/exec_plans/completed/2026-09-30_six_case_photo_acceptance.md) extends the photo rules with the user's third preference: when a physical service venue is absent, use the capture-city court. An explicitly named source station or other physical host wins over that venue default. Defaults remain editable, distinct from source evidence and separately enabled in ignored preferences.
+
+Several visible case references now produce separately reviewable requests on one immutable source. Invalid or ambiguous rows remain unresolved; administrative references cannot become cases. Normal review runs for every row before atomic bulk queueing. Corrections, duplicate collisions and stale preparation remain blocked, and changing sources preserves previously queued requests. Prepared summaries use the prepared request snapshot rather than a different currently selected source case.
+
+The validated files and intended private photo-policy/contact changes are applied to the usual saved checkout. Final candidate and saved-checkout Full passed 330 public synthetic tests and four isolated workflows; saved launch preflight passed at 8878. Actual browser controls prepared six separate PDFs from the two authorized photos. Root and independent review accepted every rendered page; saved-import replay reached six ready requests without more provider calls. Five actual provider reads were used in total; later browser/replay runs reused their captured responses. The bounded handwritten comparison recovered the same five cases with Sol and Astra, so Sol/high remains the default. See [source quality](docs/source-quality.md) for timings, cost estimates and Decisions API limits.
+
+Exactly two protected configuration entries changed: the public example and the intended ignored photo policy/verified city contact. The other 19 protected hashes, saved branch/history and unrelated private records remain unchanged. Exact beforeimages and private results remain ignored and local. The owned test server is stopped and temporary browser tab blank. This scope is complete locally and unpublished; no Gmail, draft/index record write or main-app integration occurred. Two photos do not establish production accuracy.
+
+## Historical photo defaults
 
 The [completed photo defaults plan](docs/assistant/exec_plans/completed/2026-09-30_photo_defaults.md) implements the user's standing photo policy: capture day is the interpreting day, and the court in the capture city is the payer. The policy is opt-in through local preferences; selected values remain editable and visibly labeled as defaults. Automatic profiles and source court names cannot replace the city rule. An explicitly selected service profile or later manual edit can supply an exception. Missing or competing capture information and missing court contacts still pause.
 
