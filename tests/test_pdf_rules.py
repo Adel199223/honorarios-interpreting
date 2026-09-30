@@ -76,6 +76,21 @@ class PdfRulesTests(unittest.TestCase):
         self.assertIn('&lt;script&gt;', html)
         self.assertIn('Example &lt;Interpreter&gt;', html)
 
+    def test_bare_recovered_place_phrase_gets_preposition_in_actual_pdf(self):
+        self.intake.update(service_entity='Esquadra de Example City',
+                           service_entity_type='police', entities_differ=True,
+                           service_place='Esquadra de Example City',
+                           service_place_phrase='ESQUADRA DE EXAMPLE CITY')
+        rendered = build_rendered_request(self.intake, self.profile)
+        target = self.root / 'photo-place-phrase.pdf'
+        generate_pdf(rendered, target)
+        text = ' '.join(PdfReader(target).pages[0].extract_text().split())
+        self.assertIn('na ESQUADRA DE EXAMPLE CITY', text)
+        self.intake['service_place_phrase'] = 'na Esquadra de Example City'
+        rendered = build_rendered_request(self.intake, self.profile)
+        self.assertIn('na Esquadra de Example City', rendered.service_paragraph)
+        self.assertNotIn('na na ', rendered.service_paragraph)
+
     def test_transport_is_optional_and_service_period_is_explicit(self):
         self.intake.update(claim_transport=False, service_period_label='manhã', service_start_time='09:00', service_end_time='11:00')
         rendered = build_rendered_request(self.intake, self.profile)

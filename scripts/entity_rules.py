@@ -179,6 +179,11 @@ def resolve_entities(intake: dict[str, Any]) -> dict[str, Any]:
 def build_service_place_clause(intake: dict[str, Any], service_entity: str) -> str:
     explicit_phrase = str(intake.get("service_place_phrase") or "").strip()
     if explicit_phrase:
+        # OCR sometimes returns only the venue name as a phrase. Complete that
+        # location while preserving deliberately written clauses verbatim.
+        locations = (str(intake.get('service_place') or '').strip(), service_entity)
+        if any(normalize_text(explicit_phrase) == normalize_text(location) for location in locations if location):
+            return _location_clause(explicit_phrase)
         return explicit_phrase
 
     physical_place = str(intake.get("service_place") or "").strip()
