@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scripts.source_parsing import service_date_evidence
+
 try:  # OpenAI is optional at runtime until AI recovery is configured.
     from openai import OpenAI
 except Exception:  # pragma: no cover - exercised when dependency is absent locally.
@@ -175,7 +177,7 @@ def text_is_weak_for_pdf_ocr(text: str) -> bool:
         return True
     has_case = bool(CASE_NUMBER_RE.search(cleaned))
     has_date = bool(ISO_DATE_RE.search(cleaned) or EU_DATE_RE.search(cleaned))
-    return not (has_case and has_date)
+    return not (has_case and has_date) or service_date_evidence(cleaned).needs_confirmation
 
 
 def should_attempt_ai_recovery(source_kind: str, mode: str, extracted_text: str) -> bool:
@@ -268,7 +270,8 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         "The uploaded image may be rotated, sideways, cropped, partially visible, or a Google Photos screenshot with a right-side "
         "metadata panel. Inspect all orientations and put visible Google Photos capture dates in photo_metadata_date as "
         "YYYY-MM-DD when the year is visible or inferable from a filename such as 20260508_123723.jpg. Use that only as "
-        "photo/capture-date evidence, not as service_date unless the document text agrees or the service date is otherwise explicit.\n\n"
+        "photo/capture-date evidence, not as service_date unless document text explicitly confirms that the performed "
+        "interpreting service occurred on that date.\n\n"
         "Return this JSON shape:\n"
         "{\n"
         '  "raw_visible_text": "all visible OCR text, preserving useful line breaks",\n'

@@ -2,7 +2,7 @@
 
 This checklist defines evidence needed to accept the guided fee-request workflow. It is not a receipt saying those checks have passed. Prior acceptance is recorded in the [completed foundation plan](assistant/exec_plans/completed/2026-09-30_development_foundation.md). Record new results and limitations in the task's active plan and [current handoff](next-thread-handoff.md), following the [plan lifecycle](assistant/exec_plans/PLANS.md).
 
-Use the final served build, a new isolated synthetic runtime and fictional source fixtures. Strip provider configuration from the test process. Never use real case history, personal profiles, Gmail IDs or external provider calls for this checklist.
+Use the final served build, a new isolated synthetic runtime and fictional source fixtures. Default checks strip provider configuration and never use real case history, personal profiles or Gmail IDs. A separately authorized provider acceptance session may pass the existing fee-app key only to that isolated process, bound calls/cost/time, and use fictional documents with `store=False`; record actual usage and failures separately from provider-free checks. Never contact real Gmail for this checklist.
 
 | Step or safeguard | Required observation |
 | --- | --- |

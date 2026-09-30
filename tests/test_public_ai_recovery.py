@@ -81,6 +81,14 @@ class AIRecoveryTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(result['fields'], {})
 
+    def test_native_pdf_with_uncertain_date_gets_cross_check_but_clear_source_skips_it(self):
+        source = 'Processo 710/26.0TSTXX. ' + 'Interpretação em português. ' * 3
+        self.assertTrue(ai.should_attempt_ai_recovery('notification_pdf', 'auto',
+            source + 'Documento emitido em 2026-09-30. Data do serviço ilegível.'))
+        self.assertFalse(ai.should_attempt_ai_recovery('notification_pdf', 'auto',
+            source + 'Serviço realizado em 2026-09-26. Documento emitido em 2026-09-30.'))
+        self.assertFalse(ai.should_attempt_ai_recovery('notification_pdf', 'off', source))
+
     def test_provider_and_client_creation_errors_never_echo_sensitive_messages(self):
         class Provider:
             def __init__(self, **_options):

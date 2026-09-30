@@ -520,7 +520,7 @@ pre {
 .simple-task-shell.has-review.source-review #source-drop-zone,
 .simple-task-shell.has-review.source-review #source-drop-status,
 .simple-task-shell.has-review.source-review .secondary-upload-options,
-.simple-task-shell.has-review.source-review .advanced-intake-fields,
+.simple-task-shell.has-review.source-review .advanced-intake-fields:not([open]),
 .simple-task-shell.has-review.source-review #build-profile {
   display: none;
 }

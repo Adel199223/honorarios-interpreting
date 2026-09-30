@@ -22,11 +22,14 @@ While changing one behavior, select its public test group instead of repeatedly 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group quick
 powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group intake
+powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group quality
 powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group ui
 .\.venv311\Scripts\python.exe scripts/run_portable_tests.py --group pdf
 ```
 
-The accepted groups are `quick`, `intake`, `pdf`, `email`, `ui`, `package`, `integration` and `full`. Their exact membership lives in `tests/portable-groups.json`; every selected test file must also belong to the explicit public allowlist in `tests/portable-suite.txt`. Unknown groups or unsafe/unlisted entries must fail. Group selection retains the temporary source-only checkout and provider-environment stripping.
+The accepted groups are `quick`, `intake`, `quality`, `pdf`, `email`, `ui`, `package`, `integration` and `full`. Their exact membership lives in `tests/portable-groups.json`; every selected test file must also belong to the explicit public allowlist in `tests/portable-suite.txt`. Unknown groups or unsafe/unlisted entries must fail. Group selection retains the temporary source-only checkout and provider-environment stripping.
+
+The `quality` group runs fictional source-decision oracles and evaluator safeguards. Run `.\.venv311\Scripts\python.exe scripts/evaluate_source_quality.py` for the repeatable scorecard. It measures decision handling from provided text/provider replay, not OCR or private-document accuracy. Actual paid model and image-reading acceptance requires an explicitly authorized bounded session with fictional sources; see [the model comparison](source-quality.md).
 
 Use `quick` for a fast general checkpoint, then the group matching the changed behavior. Intake covers request/review rules, PDF covers document generation, email covers recipient/draft rules, UI covers browser-facing behavior, package covers distribution, and integration covers the adapter/workflow boundary. The wrapper also runs environment/docs/JavaScript checks for the selected group; the direct Python runner runs that group alone.
 
