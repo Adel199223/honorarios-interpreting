@@ -28,6 +28,7 @@ from scripts.build_email_draft import (
     DEFAULT_EMAIL_CONFIG,
     build_email_payload,
     file_sha256,
+    resolve_email_body,
     resolve_recipient,
     validate_draft_payload,
 )
@@ -5759,8 +5760,8 @@ def underlying_requests_for_packet(items: list[dict[str, Any]]) -> list[dict[str
     return requests
 
 
-def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[str, Any]) -> str:
-    default_body = str(email_config.get("body") or "")
+def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[str, Any], *, signature_name: str = "") -> str:
+    default_body = resolve_email_body({}, email_config, signature_name=signature_name)
     signature = "Example Interpreter"
     if "Melhores cumprimentos," in default_body:
         signature = default_body.split("Melhores cumprimentos,", 1)[1].strip() or signature
@@ -5800,6 +5801,7 @@ def build_packet_result(
     court_directory: list[dict[str, Any]],
     render_previews: bool,
     preview_warning: str,
+    signature_name: str = "",
 ) -> dict[str, Any]:
     packet_sources: list[Path] = []
     for item in items:
@@ -5818,7 +5820,8 @@ def build_packet_result(
     packet_intake["service_period_label"] = "packet"
     packet_intake.pop("additional_attachment_files", None)
     packet_intake["underlying_requests"] = underlying_requests_for_packet(items)
-    packet_intake["email_body"] = str(packet_intake.get("packet_email_body") or "").strip() or default_packet_email_body(items, email_config)
+    custom_packet_body = str(packet_intake.get("packet_email_body") or "")
+    packet_intake["email_body"] = custom_packet_body if custom_packet_body.strip() else default_packet_email_body(items, email_config, signature_name=signature_name)
 
     payload = build_email_payload(packet_intake, packet_pdf, email_config, court_directory)
     payload_errors = validate_draft_payload(payload)
@@ -6181,6 +6184,7 @@ def prepare_intakes(
             court_directory=court_directory,
             render_previews=effective_render_previews,
             preview_warning=preview_warning,
+            signature_name=build_rendered_request(effective_intakes[0], generator_profiles[0]).signature_name,
         )
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"

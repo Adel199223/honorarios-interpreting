@@ -96,7 +96,7 @@ def synthetic_email_config() -> dict[str, Any]:
             "Venho por este meio requerer o pagamento dos honorários devidos.\n\n"
             "Poderão encontrar o requerimento em anexo.\n\n"
             "Melhores cumprimentos,\n\n"
-            "Example Interpreter"
+            "{{signature_name}}"
         ),
         "draft_only": True,
         "allowed_gmail_tool": "_create_draft",

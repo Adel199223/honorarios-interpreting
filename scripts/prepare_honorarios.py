@@ -263,7 +263,8 @@ def prepare_one(
     if missing:
         raise IntakeError(f"PDF verification failed for {pdf_path}: missing {missing}")
 
-    payload = build_email_payload(intake, pdf_path, email_config, court_directory)
+    payload = build_email_payload(intake, pdf_path, email_config, court_directory,
+                                  signature_name=rendered.signature_name)
     payload_errors = validate_draft_payload(payload)
     if payload_errors:
         raise IntakeError(f"Draft payload is not Gmail-ready: {'; '.join(payload_errors)}")

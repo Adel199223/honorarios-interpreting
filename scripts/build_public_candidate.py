@@ -236,7 +236,7 @@ def _write_synthetic_runtime_files(target_root: Path) -> None:
     _write_json(target_root / "config" / "email.example.json", {
         "default_to": "court@example.test",
         "subject": "Requerimento de honorários",
-        "body": "Bom dia,\n\nVenho por este meio requerer o pagamento dos honorários devidos.\n\nPoderão encontrar o requerimento em anexo.\n\nMelhores cumprimentos,\n\nExample Interpreter",
+        "body": "Bom dia,\n\nVenho por este meio requerer o pagamento dos honorários devidos.\n\nPoderão encontrar o requerimento em anexo.\n\nMelhores cumprimentos,\n\n{{signature_name}}",
         "draft_only": True,
         "allowed_gmail_tool": "_create_draft",
         "forbidden_gmail_tools": ["_send_email", "_send_draft"],
