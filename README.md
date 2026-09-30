@@ -1,8 +1,12 @@
-# Honorários Interpreting PDF Project
+# LegalPDF Honorários
 
 This project helps create Portuguese `requerimento de honorários` PDFs for in-person interpreting services.
 
 It is built from the confirmed interpreting honorários PDFs sent between 2026-02-02 and 2026-05-02. It deliberately excludes translation/word-count requests.
+
+Develop this app separately while its interpreting workflow matures. Future LegalPDF Translate integration uses the existing adapter contract and shared rules.
+
+Start with [development setup](docs/development-environment.md), [validation](docs/validation.md), [app knowledge](APP_KNOWLEDGE.md), and [integration readiness](docs/integration-readiness.md). The [current handoff](docs/next-thread-handoff.md) records preparation results and remaining work; [agent.md](agent.md) is the development runbook.
 
 ## Quick Start
 
@@ -10,21 +14,24 @@ It is built from the confirmed interpreting honorários PDFs sent between 2026-0
 
 This project now includes a local-first browser app inspired by the LegalPDF Translate interpretation workflow, while keeping this project's PDF-only generator, duplicate checks, and Gmail draft safety rules as the source of truth.
 
-Install the dependencies:
+Set up the locked project environment with the pinned tools described in the development guide:
 
 ```powershell
-python -m pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File scripts/setup_dev_env.ps1
+.\.venv311\Scripts\python.exe scripts/check_dev_environment.py --json
 ```
 
 Start the app:
 
 ```powershell
-python -m honorarios_app.web --host 127.0.0.1 --port 8765
+powershell -ExecutionPolicy Bypass -File scripts/start_dev.ps1
 ```
 
 Then open:
 
-`http://127.0.0.1:8765`
+`http://127.0.0.1:8878`
+
+The development helper avoids the main app's ports. The historical direct-launch default remains `8765`; use the actual fee-app URL for smoke checks and keep any existing OAuth callback configuration aligned with its chosen port. The Python examples in the detailed feature reference below assume the locked project environment is selected; prefer the explicit project interpreter and the isolated validation guide when developing.
 
 The app supports the main workflow:
 
@@ -495,17 +502,11 @@ For simple kilometer/destination updates, recurring court email aliases, or guar
 
 ## Verification
 
-Run:
+Run the project validation wrapper from the source root:
 
 ```powershell
-python scripts/generate_pdf.py examples/intake.example.json --allow-duplicate
-python scripts/build_email_draft.py examples/intake.example.json --pdf output/pdf/398-24.5T8BJA_2026-02-05.pdf
-python scripts/prepare_honorarios.py examples/intake.gnr-cuba-photo-metadata-15.example.json
-python -m unittest discover tests
+powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1
+powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Full
 ```
 
-For visual checks, render the generated PDF:
-
-```powershell
-pdftoppm -png output/pdf/398-24.5T8BJA_2026-02-05.pdf tmp/pdfs/rendered
-```
+Use [the validation guide](docs/validation.md) for focused checks, isolated PDF/upload/adapter/fake-Gmail coverage, installed-wheel validation and optional visual/browser tooling. Development tests must not create synthetic records or generated artifacts in the private runtime. Actual real PDF review and provider acceptance remain separately scoped.

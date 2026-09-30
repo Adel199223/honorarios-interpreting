@@ -469,9 +469,9 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             check=False,
         )
 
-        self.assertEqual(completed.returncode, 0, completed.stderr)
         data = json.loads(completed.stdout)
         self.assertIn(data["status"], {"ready", "blocked"})
+        self.assertEqual(completed.returncode, 0 if data["status"] == "ready" else 1, completed.stderr)
         self.assertFalse(data["send_allowed"])
         self.assertFalse(data["write_allowed"])
         self.assertFalse(data["managed_data_changed"])
@@ -3168,7 +3168,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         default_base = "http://127.0.0.1:8765"
         stale_base = "http://127.0.0.1:" + "8766"
         checks = {
-            "README.md": ["--port 8765", default_base],
+            "README.md": ["scripts/start_dev.ps1", "http://127.0.0.1:8878", "default remains `8765`"],
             "config/gmail.example.json": [f"{default_base}/api/gmail/oauth/callback"],
             "config/google-photos.example.json": [f"{default_base}/api/google-photos/oauth/callback"],
             "docs/next-thread-handoff.md": ["--port 8765", default_base],

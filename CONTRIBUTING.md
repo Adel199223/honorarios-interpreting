@@ -2,11 +2,18 @@
 
 Use synthetic fixtures only. Do not commit real case numbers, court email addresses, Gmail draft IDs, generated PDFs, source screenshots, IBANs, addresses, or local API keys.
 
-Before opening a pull request, run:
+Use [the locked development setup](docs/development-environment.md) and [the validation guide](docs/validation.md). Preserve existing local edits and use an isolated worktree for concurrent or substantial changes. Keep routine changes on the current locked package versions.
+
+Before proposing a code/test/workflow/dependency change or a merge, run:
 
 ```powershell
-python -m unittest discover tests
-python scripts/public_release_gate.py --no-require-git --json
+powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Full
+.\.venv311\Scripts\python.exe scripts/public_repo_gate.py --hook-configured --json
+.\.venv311\Scripts\python.exe scripts/public_repo_gate.py --tracked --json
 ```
 
-The Gmail workflow is draft-only. Do not add UI, API, scripts, or tests that send email automatically.
+Stage only intended paths and run `scripts/public_repo_gate.py --staged --json` with the project interpreter before committing. A full-workspace `public_release_gate` can block on intentionally ignored private overlays; reserve that stricter check for a separately requested sanitized candidate. Do not silently change shared hook configuration to satisfy a fresh-worktree check.
+
+Update only affected documentation using [the runbook](agent.md); record actual results and remaining acceptance work in the handoff. No public change, deployment, live provider operation or main-app integration follows automatically from preparation checks.
+
+The Gmail workflow is draft-only. Do not add UI, API, scripts, or tests that send email automatically. Preserve the [adapter contract](docs/legalpdf-adapter-contract.md) and execute artifact-writing checks only in disposable synthetic runtimes.

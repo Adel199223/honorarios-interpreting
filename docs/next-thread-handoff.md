@@ -1,5 +1,28 @@
 # Next Thread Handoff
 
+## Current preparation: 2026-09-30
+
+The preparation covers this separate fee-request app's development environment, documentation and integration boundary for a future LegalPDF Translate integration. On 2026-09-30 the user approved publishing the preparation-only update and merging after GitHub checks pass. Main-app integration and live Gmail remain separate work.
+
+- Original working branch: `codex/beginner-guided-intake-ux`, based on `a0ef9e1`, with fifteen pre-existing locally modified files. Preserve that development work.
+- Preparation is performed in isolated worktrees. Prior local changes and document beforeimages are retained before applying preparation changes.
+- Daily source-checkout setup uses Python `3.11.9`, uv `0.12.20`, Node `24.14.0` and the locked `.venv311` environment. The previous global Python environment and its package versions are preserved.
+- The development launch helper uses `127.0.0.1:8878` to coexist with the main app. It preserves the application's historical direct-launch default and existing contracts.
+- See [development environment](development-environment.md), [validation](validation.md), [app knowledge](../APP_KNOWLEDGE.md), [integration readiness](integration-readiness.md), and [runbook](../agent.md). The existing [adapter contract](legalpdf-adapter-contract.md) remains authoritative.
+- Source-checkout use is the supported daily workflow. Installed-wheel checks exercise an explicit isolated runtime root; private default-runtime setup for an installed distribution remains deferred.
+- Isolated validation: locked setup and independent environment reconstruction passed; 37 distributions are installed including this app and development tooling, with all 29 observed runtime package versions preserved. Full passed 91 portable synthetic tests, JavaScript syntax, lock/export compatibility, documentation routing, real offline installed-wheel verification and four isolated source/proof/adapter/fake-Gmail smokes.
+- A complete separate uv-managed Python 3.11.9 was provisioned after the old installation was found missing a standard-library file. The initial uv install reported a minor-version-link error; subsequent direct integrity checks and uv interpreter discovery confirmed the complete installation. The first authoring environment and failed check logs are preserved. Old Python environments were not repaired/replaced.
+- Initial Full attempts exposed an outdated startup-documentation expectation and slow full-workspace scanning of new environments. The repaired scanner prunes environment/worktree directories while still blocking their inclusion in whole-tree releases. Portable tests now run from an allowlisted temporary source checkout without private overlays; launch helpers refuse populated synthetic runtime paths.
+- Application complete: the preparation files and dedicated `.venv311` are installed in the original saved checkout, retaining `codex/beginner-guided-intake-ux`. Saved-checkout Full independently passed the same 91 portable tests and four isolated smokes; launcher preflight passed at 8878. The application attempt exposed newline-only assertions in template/export parity tests; those now compare equivalent text across Windows line endings, and the bundled template matches the original source. Failed attempt logs are retained.
+- Publication: the preparation-only update is published in [PR #58](https://github.com/Adel199223/honorarios-interpreting/pull/58). Hosted Windows/GitHub Full validation passed [run 186](https://github.com/Adel199223/honorarios-interpreting/actions/runs/36726038688) at `dc0d3af`; merge is authorized once the final checks pass. CircleCI/Linux, browser click-through and real document/provider acceptance remain unverified. The initial local application receipt is retained separately in ignored evidence.
+- Future work: production LegalPDF caller/UI/process orchestration, reviewed private-data mapping, and real PDF/provider acceptance. Publication of the preparation-only scope is now approved; it excludes earlier interface work.
+
+- Publication preflight (2026-09-30): the preparation-only delta was reconstructed on fresh `origin/main` (`a0ef9e1`) in `codex/fee-environment-preparation-20260930`. Its independent locked setup and Full validation passed 89 portable tests and four isolated workflow smokes. This scope excludes the earlier beginner-interface edits and local/private files. The earlier 91-test runs include that separate interface work. The user approved publication and merge after hosted checks pass. Hosted Windows/GitHub validation passed; the earlier interface work stays local. The preparation-only branch is the publication scope.
+
+The May handoff below is preserved as historical context. Its old workspace placeholder, startup examples and public-branch description are not the current preparation authority.
+
+## Historical handoff: 2026-05-10
+
 Current date: 2026-05-10
 
 ## Project State

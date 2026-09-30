@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "project": "LegalPDF Honorarios",
+  "runbook": "agent.md",
+  "app_knowledge": "APP_KNOWLEDGE.md",
+  "handoff": "docs/next-thread-handoff.md",
+  "development_environment": "docs/development-environment.md",
+  "validation": "docs/validation.md",
+  "integration_readiness": "docs/integration-readiness.md",
+  "adapter_contract": "docs/legalpdf-adapter-contract.md",
+  "historical_references": [
+    "docs/web-app-roadmap.md",
+    "docs/process-optimizations.md"
+  ]
+}

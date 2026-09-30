@@ -24,6 +24,8 @@ TEXT_SUFFIXES = {
     ".md",
     ".mjs",
     ".py",
+    ".ps1",
+    ".lock",
     ".toml",
     ".txt",
     ".yml",

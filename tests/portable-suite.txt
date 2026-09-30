@@ -1,0 +1,6 @@
+test_browser_iab_smoke.py
+test_public_candidate_smoke.py
+test_public_repo_gate.py
+test_dev_environment.py
+test_installed_wheel.py
+test_prepared_candidate.py

@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
             print("missing: " + ", ".join(summary["missing_modules"]))
         else:
             print("missing: none")
-    return 0
+    return 0 if result.status == "ready" else 1
 
 
 if __name__ == "__main__":

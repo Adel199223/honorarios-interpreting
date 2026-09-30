@@ -27,7 +27,9 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = ROOT / "config" / "profile.json"
-DEFAULT_TEMPLATE = ROOT / "templates" / "interprete_requerimento.html"
+SOURCE_DEFAULT_TEMPLATE = ROOT / "templates" / "interprete_requerimento.html"
+PACKAGED_DEFAULT_TEMPLATE = ROOT / "honorarios_app" / "pdf_templates" / "interprete_requerimento.html"
+DEFAULT_TEMPLATE = SOURCE_DEFAULT_TEMPLATE if SOURCE_DEFAULT_TEMPLATE.is_file() else PACKAGED_DEFAULT_TEMPLATE
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "pdf"
 DEFAULT_HTML_DIR = ROOT / "tmp" / "pdfs"
 DEFAULT_DUPLICATE_INDEX = ROOT / "data" / "duplicate-index.json"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,9 @@ PRIVATE_PATHS = [
     "output/",
     "tmp/",
     ".playwright-mcp/",
+    ".tmp-test/",
+    ".worktrees/",
+    "worktrees/",
     "AGENTS.md",
 ]
 REQUIRED_PUBLIC_FILES = [
@@ -34,7 +38,7 @@ REQUIRED_PUBLIC_FILES = [
     ".github/workflows/python-package.yml",
 ]
 
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".playwright-mcp", "output", "tmp"}
+SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".playwright-mcp", ".tmp-test", ".worktrees", "worktrees", "output", "tmp", "build", "dist"}
 SKIP_FILES = {"scripts/public_release_gate.py"}
 TEXT_SUFFIXES = {
     ".cfg",
@@ -46,6 +50,8 @@ TEXT_SUFFIXES = {
     ".md",
     ".mjs",
     ".py",
+    ".ps1",
+    ".lock",
     ".toml",
     ".txt",
     ".yml",
@@ -86,6 +92,10 @@ def _matches_existing_paths(root: Path) -> list[str]:
 
     for screenshot in root.glob("*.png"):
         blocked.append(screenshot.name)
+    # Environments are excluded from content scans but still block a whole-tree release.
+    for environment in root.glob(".venv*"):
+        if environment.is_dir():
+            blocked.append(environment.name + "/")
     return sorted(set(blocked))
 
 
@@ -95,26 +105,21 @@ def _missing_public_metadata(root: Path) -> list[str]:
 
 def _iter_scannable_files(root: Path) -> list[Path]:
     files: list[Path] = []
-    for path in root.rglob("*"):
-        relative = path.relative_to(root)
-        if relative.as_posix() in SKIP_FILES:
-            continue
-        parts = set(relative.parts)
-        if parts & SKIP_DIRS:
-            continue
-        try:
-            if not path.is_file():
+    for directory, child_dirs, filenames in os.walk(root, followlinks=False):
+        # Prune before traversal: a new locked environment or nested worktrees can
+        # contain thousands of files and must not stall browser diagnostics.
+        child_dirs[:] = [name for name in child_dirs if name not in SKIP_DIRS and not name.startswith(".venv") and not name.endswith(".egg-info")]
+        for filename in filenames:
+            path = Path(directory) / filename
+            relative = path.relative_to(root)
+            if relative.as_posix() in SKIP_FILES or path.suffix.lower() not in TEXT_SUFFIXES:
                 continue
-        except OSError:
-            continue
-        if path.suffix.lower() not in TEXT_SUFFIXES:
-            continue
-        try:
-            if path.stat().st_size > 1_500_000:
+            try:
+                if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_500_000:
+                    continue
+            except OSError:
                 continue
-        except OSError:
-            continue
-        files.append(path)
+            files.append(path)
     return files
 
 

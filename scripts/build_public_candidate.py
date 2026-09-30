@@ -28,11 +28,25 @@ COPY_DIRS = [
 ]
 COPY_FILES = [
     ".gitignore",
+    ".python-version",
+    ".node-version",
+    "uv.lock",
     "pyproject.toml",
+    "agent.md",
+    "APP_KNOWLEDGE.md",
     "README.md",
+    "CONTRIBUTING.md",
     "requirements.txt",
 ]
-TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".mjs", ".py", ".toml", ".txt", ".yml", ".yaml"}
+PUBLIC_PORTABLE_TESTS = frozenset({
+    "test_browser_iab_smoke.py",
+    "test_public_candidate_smoke.py",
+    "test_public_repo_gate.py",
+    "test_dev_environment.py",
+    "test_installed_wheel.py",
+    "test_prepared_candidate.py",
+})
+TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".mjs", ".py", ".ps1", ".lock", ".toml", ".txt", ".yml", ".yaml"}
 SANITIZERS = [
     (re.compile(r"\b[A-Z0-9._%+\-]+@tribunais\.org\.pt\b", re.IGNORECASE), "court@example.test"),
     (re.compile(r"\bPT\d{23}\b", re.IGNORECASE), "EXAMPLE_IBAN"),
@@ -82,6 +96,28 @@ def _copy_tree(source: Path, target: Path) -> None:
             continue
         relative = path.relative_to(source)
         _copy_and_sanitize_file(path, target / relative)
+
+
+def _portable_test_manifest(source_root: Path) -> list[str] | None:
+    manifest = source_root / "tests" / "portable-suite.txt"
+    if not manifest.is_file():
+        return None
+    names = manifest.read_text(encoding="utf-8").splitlines()
+    if not names or len(set(names)) != len(names):
+        raise ValueError("Public portable test manifest must be nonempty and unique.")
+    for name in names:
+        if name not in PUBLIC_PORTABLE_TESTS or not (source_root / "tests" / name).is_file():
+            raise ValueError("Unsupported or missing public portable test file: " + name)
+    return names
+
+
+def _copy_portable_tests(source_root: Path, target_root: Path, names: list[str] | None) -> None:
+    if names is None:
+        return
+    # Never copy the whole tests directory: it can contain ignored local regressions.
+    for name in names:
+        _copy_and_sanitize_file(source_root / "tests" / name, target_root / "tests" / name)
+    shutil.copy2(source_root / "tests" / "portable-suite.txt", target_root / "tests" / "portable-suite.txt")
 
 
 def _reset_target(target: Path) -> None:
@@ -3549,6 +3585,7 @@ def build_public_candidate(source_root: str | Path = ROOT, target_root: str | Pa
     source = Path(source_root).resolve()
     target = Path(target_root or (source / "output" / "public-candidate")).resolve()
     _ensure_safe_target(source, target)
+    portable_tests = _portable_test_manifest(source)
     _reset_target(target)
 
     for relative in COPY_FILES:
@@ -3562,7 +3599,10 @@ def build_public_candidate(source_root: str | Path = ROOT, target_root: str | Pa
     shutil.rmtree(target / ".playwright-mcp", ignore_errors=True)
     _write_synthetic_runtime_files(target)
     _write_smoke_tests(target)
+    _copy_portable_tests(source, target, portable_tests)
     _write_public_repo_metadata(target)
+    if portable_tests is not None and (source / "CONTRIBUTING.md").is_file():
+        _copy_and_sanitize_file(source / "CONTRIBUTING.md", target / "CONTRIBUTING.md")
 
     workspace_gate = analyze_public_readiness(target, require_git=False)
     tracked_gate = _candidate_tracked_gate(target)
