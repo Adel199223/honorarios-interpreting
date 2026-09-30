@@ -295,6 +295,17 @@ function copySourceCase(value) {
   return JSON.parse(JSON.stringify(value || {}));
 }
 
+export function mergeSourceReviewEvidence(review = {}, previous = {}) {
+  const source = { ...copySourceCase(previous), ...copySourceCase(review.source_evidence) };
+  const evidence = { ...source, ...copySourceCase(review.review_evidence) };
+  // Review values and attention belong to the selected case and latest check.
+  // The immutable uploaded file and its preview still belong to the source.
+  ["filename", "kind", "source_kind", "sha256", "artifact_url", "metadata", "rendered_page_urls", "rendered_page_count"].forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(source, field)) evidence[field] = source[field];
+  });
+  return evidence;
+}
+
 export function sourceCaseCandidatesFromUpload(data = {}) {
   const candidates = Array.isArray(data.case_candidates) ? data.case_candidates : [];
   if (candidates.length <= 1) return [];
@@ -307,7 +318,7 @@ export function sourceCaseCandidatesFromUpload(data = {}) {
       candidate_intake: intake,
       review: { ...review, candidate_intake: intake,
         source: review.source || copySourceCase(data.source),
-        source_evidence: review.source_evidence || copySourceCase(data.source_evidence) },
+        source_evidence: mergeSourceReviewEvidence(review, data.source_evidence) },
       answers: "",
       needs_review: false,
     };
@@ -336,9 +347,9 @@ export async function reviewSourceCaseCandidates(candidates, requestReview, isCu
       throw error;
     }
     if (!isCurrent()) return null;
-    const review = retainCaptureDateOrigin({ ...result,
-      source: result.source || candidate.review?.source,
-      source_evidence: result.source_evidence || candidate.review?.source_evidence }, candidate.review);
+    let review = retainCaptureDateOrigin({ ...result,
+      source: result.source || candidate.review?.source }, candidate.review);
+    review = { ...review, source_evidence: mergeSourceReviewEvidence(review, candidate.review?.source_evidence) };
     reviewed.push({ ...copySourceCase(candidate),
       candidate_intake: copySourceCase(review.effective_intake || review.intake || intake),
       review, needs_review: false });
@@ -350,4 +361,21 @@ export function browserRequestIdentityKey(intake = {}) {
   const caseNumber = String(intake.case_number || "").replace(/\s+/g, "").toUpperCase().replace(/^0+(?=\d)/, "");
   return [caseNumber, String(intake.service_date || "").trim(),
     String(intake.service_period_label || "").trim().replace(/\s+/g, " ").toLowerCase()].join("|");
+}
+
+export function duplicateSourceCaseIndices(candidates = []) {
+  const firstByIdentity = new Map();
+  const duplicates = new Set();
+  candidates.forEach((candidate, index) => {
+    const intake = candidate.candidate_intake || {};
+    if (!String(intake.case_number || "").trim()) return;
+    const identity = browserRequestIdentityKey(intake);
+    if (firstByIdentity.has(identity)) {
+      duplicates.add(firstByIdentity.get(identity));
+      duplicates.add(index);
+    } else {
+      firstByIdentity.set(identity, index);
+    }
+  });
+  return [...duplicates].sort((left, right) => left - right);
 }

@@ -10,6 +10,114 @@ from scripts.generate_pdf import get_service_date_value
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class SourceCaseEvidenceRegressionTests(unittest.TestCase):
+    def run_guidance(self, body):
+        module_url = (ROOT / "honorarios_app/static/review_guidance.js").as_uri()
+        script = "import * as g from " + json.dumps(module_url) + ";\n" + body
+        result = subprocess.run(["node", "--input-type=module", "-"], input=script,
+                                text=True, encoding="utf-8", capture_output=True, check=True, cwd=ROOT)
+        return json.loads(result.stdout)
+
+    def test_candidate_evidence_uses_its_own_case_and_attention_with_shared_source_metadata(self):
+        result = self.run_guidance("""
+const upload = {source:{source_kind:'photo',filename:'fictional.jpg',sha256:'shared-hash'},
+  source_evidence:{filename:'fictional.jpg',kind:'photo',metadata:{visible_metadata_date:'2026-09-26'},
+    rendered_page_urls:['/fictional-preview'],rendered_page_count:1,case_number:'710/26.0TSTXX',
+    field_evidence:[{field:'case_number',value:'710/26.0TSTXX'}],attention:{flags:[{code:'first-case-only'}]}},
+  case_candidates:[710,711].map(number => ({candidate_intake:{case_number:`${number}/26.0TSTXX`},
+    review:{status:'ready',review_evidence:{filename:'Manual review',rendered_page_urls:[],rendered_page_count:0,
+      case_number:`${number}/26.0TSTXX`,field_evidence:[{field:'case_number',value:`${number}/26.0TSTXX`}],
+      attention:{flags:[{code:`case-${number}`}]}}}}))};
+const before = JSON.stringify(upload);
+const candidates = g.sourceCaseCandidatesFromUpload(upload);
+console.log(JSON.stringify({evidence:candidates.map(row=>row.review.source_evidence),
+  hashes:candidates.map(row=>row.review.source.sha256),unchanged:JSON.stringify(upload)===before}));
+""")
+        evidence = result['evidence']
+        self.assertEqual([row['case_number'] for row in evidence], ['710/26.0TSTXX', '711/26.0TSTXX'])
+        self.assertEqual(evidence[1]['field_evidence'][0]['value'], '711/26.0TSTXX')
+        self.assertEqual(evidence[1]['attention']['flags'], [{'code': 'case-711'}])
+        self.assertEqual(evidence[1]['filename'], 'fictional.jpg')
+        self.assertEqual(evidence[1]['metadata'], {'visible_metadata_date': '2026-09-26'})
+        self.assertEqual(evidence[1]['rendered_page_urls'], ['/fictional-preview'])
+        self.assertEqual(evidence[1]['rendered_page_count'], 1)
+        self.assertEqual(result['hashes'], ['shared-hash', 'shared-hash'])
+        self.assertTrue(result['unchanged'])
+
+    def test_fresh_review_replaces_old_fields_and_clears_resolved_attention(self):
+        result = self.run_guidance("""
+const candidates = [{candidate_intake:{case_number:'711/26.0TSTXX'},review:{source:{sha256:'shared-hash'},
+  source_evidence:{filename:'fictional.jpg',metadata:{visible_metadata_date:'2026-09-26'},
+    case_number:'710/26.0TSTXX',field_evidence:[{field:'case_number',value:'710/26.0TSTXX'}],
+    attention:{status:'blocked',flags:[{code:'old-question'}]}}}}];
+const before = JSON.stringify(candidates);
+const fresh = {status:'ready',intake:{case_number:'711/26.0TSTXX'},review_evidence:{filename:'Manual review',
+  case_number:'711/26.0TSTXX',field_evidence:[{field:'case_number',value:'711/26.0TSTXX'}],
+  attention:{status:'ready',flags:[]},question_count:0}};
+const reviewed = await g.reviewSourceCaseCandidates(candidates,async()=>fresh);
+console.log(JSON.stringify({evidence:reviewed[0].review.source_evidence,source:reviewed[0].review.source,
+  unchanged:JSON.stringify(candidates)===before,refresh:g.mergeSourceReviewEvidence(fresh,candidates[0].review.source_evidence)}));
+""")
+        self.assertEqual(result['evidence']['case_number'], '711/26.0TSTXX')
+        self.assertEqual(result['evidence']['field_evidence'][0]['value'], '711/26.0TSTXX')
+        self.assertEqual(result['evidence']['attention'], {'status': 'ready', 'flags': []})
+        self.assertEqual(result['evidence']['filename'], 'fictional.jpg')
+        self.assertEqual(result['source']['sha256'], 'shared-hash')
+        self.assertEqual(result['refresh'], result['evidence'])
+        self.assertTrue(result['unchanged'])
+
+    def test_bulk_collision_and_fresh_answer_evidence_use_actual_browser_state_functions(self):
+        result = self.run_guidance("""
+import fs from 'node:fs';
+import vm from 'node:vm';
+const elements = new Map();
+const element = selector => {
+  if (!elements.has(selector)) elements.set(selector,{value:'',checked:false,textContent:'',innerHTML:'',disabled:false,
+    className:'',dataset:{},classList:{add(){},remove(){},toggle(){},contains(){return false;}},
+    setAttribute(){},getAttribute(){return ''},removeAttribute(){},focus(){},scrollIntoView(){},reset(){},
+    querySelector(s){return element(s)},querySelectorAll(){return []}});
+  return elements.get(selector);
+};
+let calls = 0;
+const context = {...g,console,FormData,JSON,Map,Set,Date,window:{},document:{querySelector:element,
+  querySelectorAll(){return []},getElementById:id=>element('#'+id),body:{dataset:{}}},fetch:async(url,options)=>{
+  if (url!=='/api/review') throw new Error('Unexpected synthetic route');
+  const intake = JSON.parse(options.body).intake; calls += 1;
+  return {ok:true,json:async()=>({status:'ready',intake,questions:[],next_safe_action:{state:'prepare_pdf',blocked:false},
+    review_evidence:{case_number:intake.case_number,attention:{status:'ready',flags:[]}}})};
+}};
+let app = fs.readFileSync('honorarios_app/static/app.js','utf8').replace(/^import \\{[\\s\\S]*?\\} from "\\.\\/review_guidance\\.js";/,'');
+app = app.slice(0,app.lastIndexOf('\\nbindNavigation();'));
+app += '\\nthis.api={state,adoptUploadedSource,selectSourceCase,addSourceCasesToBatch,applyReview};';
+vm.runInNewContext(app,context);
+const a = context.api;
+a.state.batchIntakes=[{case_number:'900/26.0TSTXX',service_date:'2026-09-25'}];
+const before = JSON.stringify(a.state.batchIntakes);
+const entries = ['00710 / 26.0tstxx','710/26.0TSTXX'].map(case_number=>({candidate_intake:{case_number,
+  service_date:'2026-09-26',recipient_email:'court@example.test',source_sha256:'shared-hash'},
+  review:{status:'ready',questions:[],next_safe_action:{state:'prepare_pdf',blocked:false}}}));
+a.adoptUploadedSource({candidate_intake:entries[0].candidate_intake,case_candidates:entries,
+  source:{source_kind:'photo',filename:'fictional.jpg',sha256:'shared-hash'},
+  source_evidence:{filename:'fictional.jpg',case_number:'old-case',attention:{status:'blocked',flags:[{code:'old-question'}]}}});
+a.selectSourceCase(0,{persist:false,focus:false});
+let message = '';
+try {await a.addSourceCasesToBatch();} catch(error){message=error.message;}
+a.applyReview({status:'ready',intake:a.state.currentIntake,questions:[],review_evidence:{case_number:'corrected-case',
+  field_evidence:[{field:'case_number',value:'corrected-case'}],attention:{status:'ready',flags:[]}}},{openDrawer:false});
+console.log(JSON.stringify({message,calls,queueUnchanged:JSON.stringify(a.state.batchIntakes)===before,
+  selected:a.state.sourceCaseSelectedIndex,evidence:a.state.lastReview.source_evidence,
+  displayed:element('#source-evidence-body').innerHTML}));
+""")
+        self.assertEqual(result['calls'], 2)
+        self.assertIn('same case, service date and period', result['message'])
+        self.assertTrue(result['queueUnchanged'])
+        self.assertEqual(result['selected'], 0)
+        self.assertEqual(result['evidence']['case_number'], 'corrected-case')
+        self.assertEqual(result['evidence']['attention'], {'status': 'ready', 'flags': []})
+        self.assertIn('corrected-case', result['displayed'])
+        self.assertNotIn('old-question', result['displayed'])
+
+
 class ReviewGuidanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

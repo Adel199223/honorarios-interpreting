@@ -18,7 +18,9 @@ import {
   sourceCaseCandidatesFromUpload,
   sourceCaseReadiness,
   reviewSourceCaseCandidates,
-  browserRequestIdentityKey
+  browserRequestIdentityKey,
+  mergeSourceReviewEvidence,
+  duplicateSourceCaseIndices
 } from "./review_guidance.js";
 
 const state = {
@@ -844,6 +846,11 @@ async function addSourceCasesToBatch() {
     if (blockedIndex >= 0) {
       selectSourceCase(blockedIndex, { persist: false });
       throw new Error("A case needs attention after the fresh check. Resolve it before adding this source; the batch queue was unchanged.");
+    }
+    const duplicateIndices = duplicateSourceCaseIndices(reviewed);
+    if (duplicateIndices.length) {
+      selectSourceCase(duplicateIndices[0], { persist: false });
+      throw new Error(`Source rows ${duplicateIndices.map((index) => index + 1).join(", ")} have the same case, service date and period. Correct the case details and review them again; the batch queue was unchanged.`);
     }
     clearPreparedArtifacts("photo cases added to batch queue");
     reviewed.forEach((candidate) => {
@@ -2374,7 +2381,8 @@ function adoptUploadedSource(data, attachments = [], emailBody = "") {
   state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.candidate_intake, attachments, emailBody);
   if (data.review) {
     data.review = { ...data.review, intake: state.currentIntake, effective_intake: state.currentIntake,
-      candidate_intake: state.currentIntake, source_evidence: data.review.source_evidence || data.source_evidence || null };
+      source: data.review.source || data.source,
+      candidate_intake: state.currentIntake, source_evidence: mergeSourceReviewEvidence(data.review, data.source_evidence) };
   }
   $("#numbered-answers").value = "";
   renderSourceCaseList();
@@ -4772,13 +4780,16 @@ async function preflightBatchIntakes(options = {}) {
 
 function applyReview(data, options = {}) {
   const candidate = selectedSourceCase();
-  if (candidate && !data.source_evidence && candidate.review?.source_evidence) {
-    data = { ...data, source_evidence: candidate.review.source_evidence };
-  }
-  if (candidate && !data.source && candidate.review?.source) {
-    data = { ...data, source: candidate.review.source };
+  const intake = data.effective_intake || data.intake || state.currentIntake || {};
+  const previousIntake = state.lastReview?.effective_intake || state.lastReview?.intake || {};
+  const previousSourceReview = candidate?.review || (intake.source_sha256 && intake.source_sha256 === previousIntake.source_sha256 ? state.lastReview : null);
+  if (!data.source && previousSourceReview?.source) {
+    data = { ...data, source: previousSourceReview.source };
   }
   data = retainCaptureDateOrigin(data, state.lastReview || {});
+  if (candidate || data.source_evidence || data.review_evidence) {
+    data = { ...data, source_evidence: mergeSourceReviewEvidence(data, previousSourceReview?.source_evidence) };
+  }
   clearPreparedArtifacts("review changed");
   state.workflowStale = false;
   state.lastReview = data;
