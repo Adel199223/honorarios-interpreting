@@ -4391,6 +4391,7 @@ function beginPreparation() {
   clearPreparedArtifacts("preparation started");
   state.workflowStale = false;
   state.pendingPreparationRevision = state.workflowRevision;
+  setStatus("preparing", "Preparing the reviewed request. Wait for the PDF preview.");
   syncActionGates(null);
   refreshHomeWorkflow();
   renderGuidedStep("prepare_pdf");
@@ -4546,8 +4547,8 @@ async function prepareIntake(options = {}) {
       body: JSON.stringify(preflightPayload),
     }, { revision: capturedRevision });
     if (!preflight) return null;
-    renderNextSafeAction(preflight.next_safe_action || null);
     if (preflight.status !== "ready" || !preflight.preflight_review) {
+      renderNextSafeAction(preflight.next_safe_action || null);
       const message = preflight.message || "Run a current ready preflight before preparing artifacts.";
       setStatus(preflight.status || "blocked", message);
       showAlert(message, "blocked");
@@ -4776,6 +4777,7 @@ function resetReview({ closeDrawer = true } = {}) {
   $("#source-upload-form").reset();
   $("#google-photos-upload-form").reset();
   $("#supporting-attachment-form").reset();
+  setDropStatus("", "");
   renderSourceEvidence(null);
   renderAiRecovery(null);
   renderSupportingAttachmentList();
