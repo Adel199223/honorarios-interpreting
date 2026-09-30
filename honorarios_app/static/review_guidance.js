@@ -141,6 +141,23 @@ export function beginnerReviewFacts(data = {}, intake = {}) {
   }));
 }
 
+export function retainCaptureDateOrigin(data = {}, previous = {}) {
+  const intake = data.effective_intake || data.intake || data.candidate_intake || {};
+  const priorIntake = previous.effective_intake || previous.intake || previous.candidate_intake || {};
+  if (!intake.source_sha256 || intake.source_sha256 !== priorIntake.source_sha256 || !intake.photo_metadata_date || intake.photo_metadata_date !== priorIntake.photo_metadata_date) return data;
+  const fields = data.review_evidence?.field_evidence;
+  const priorFields = (previous.review_evidence || previous.source_evidence)?.field_evidence;
+  if (!Array.isArray(fields) || !Array.isArray(priorFields)) return data;
+  const original = priorFields.find(item => item.field === "photo_metadata_date"
+    && item.value === intake.photo_metadata_date && item.confidence === "high"
+    && ["image_metadata", "visible_google_photos_metadata"].includes(item.source));
+  if (!original || !fields.some(item => item.field === "photo_metadata_date" && item.value === original.value)) return data;
+  // Only keep the origin of the same immutable source/date. Current review,
+  // conflicts and generation permissions always come from the new response.
+  return { ...data, review_evidence: { ...data.review_evidence, field_evidence: fields.map(item =>
+    item.field === "photo_metadata_date" && item.value === original.value ? { ...original } : item) } };
+}
+
 export function todayIsoDate() {
   const date = new Date();
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -221,7 +238,7 @@ export function questionAnswerExample(question) {
     payment_entity: "Tribunal Judicial de Beja",
     recipient_email: "court@example.test",
     service_date: "2026-05-08",
-    service_date_source: "yes, use the photo date",
+    service_date_source: "document",
     service_entity: "GNR Beringel",
     service_entity_type: "gnr",
     service_place: "Beringel",

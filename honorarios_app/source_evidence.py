@@ -28,6 +28,9 @@ FIELD_EVIDENCE_LABELS = {
     "transport_destination": "Transport destination",
     "km_one_way": "Kilometers one way",
 }
+CONFIRMED_SERVICE_DATE_SOURCES = frozenset({
+    "user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed",
+})
 
 
 def _date_text_variants(value: Any) -> list[str]:
@@ -245,9 +248,7 @@ def build_field_evidence(
             ),
         )
 
-    if str(candidate.get("service_date_source") or "") in {
-        "user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed",
-    }:
+    if str(candidate.get("service_date_source") or "").strip().lower() in CONFIRMED_SERVICE_DATE_SOURCES:
         add("service_date", candidate.get("service_date"), source="user_confirmed", confidence="high", reason="You explicitly supplied or confirmed the service date. Source, conflict and duplicate checks still apply.")
 
     deterministic_sources = {
@@ -453,13 +454,25 @@ def build_source_attention(
             metadata_detail,
         ))
 
-    if any(str(item.get("status") or "") == "conflicts_with_metadata" for item in field_evidence):
-        flags.append(_attention_flag(
-            "date_conflict",
-            "blocked",
-            "Date conflict",
-            "The recovered service date conflicts with image metadata and needs confirmation.",
-        ))
+    date_conflicts = [item for item in field_evidence if str(item.get("status") or "") == "conflicts_with_metadata"]
+    if date_conflicts:
+        service_date = str(candidate.get("service_date") or "").strip()
+        confirmed = (
+            service_date
+            and str(candidate.get("service_date_source") or "").strip().lower() in CONFIRMED_SERVICE_DATE_SOURCES
+            and all(str(item.get("value") or "").strip() == service_date for item in date_conflicts)
+        )
+        if confirmed:
+            capture_date = str(candidate.get("photo_metadata_date") or date_conflicts[0].get("conflicts_with", {}).get("value") or "").strip()
+            flags.append(_attention_flag(
+                "date_conflict_resolved", "info", "Service date choice confirmed",
+                f"You confirmed {service_date} as the service date. The photo date {capture_date} remains capture evidence; no further date answer is needed for this difference.",
+            ))
+        else:
+            flags.append(_attention_flag(
+                "date_conflict", "blocked", "Date conflict",
+                "The recovered service date conflicts with image metadata and needs confirmation.",
+            ))
 
     cleaned_warnings = [str(item).strip() for item in warnings if str(item).strip()]
     if cleaned_warnings:
@@ -520,7 +533,7 @@ def build_source_attention(
     status = "ready"
     if any(flag["severity"] == "blocked" for flag in flags):
         status = "blocked"
-    elif flags:
+    elif any(flag["severity"] == "review" for flag in flags):
         status = "review"
 
     return {

@@ -13,7 +13,8 @@ import {
   awaitWorkflowResponse,
   projectWorkflowGuidance,
   profileFallbackNotice,
-  beginnerReviewFacts
+  beginnerReviewFacts,
+  retainCaptureDateOrigin
 } from "./review_guidance.js";
 
 const state = {
@@ -1710,7 +1711,7 @@ function renderSourceAttention(attention) {
       <div class="result-header compact-result-header">
         <div>
           <strong>Review Attention</strong>
-          <p>These flags summarize what needs human review before PDF or Gmail draft work.</p>
+          <p>${safeStatus === "ready" ? "The recorded choice is resolved. Continue with the normal PDF and draft-safety checks." : "These flags summarize what needs human review before PDF or Gmail draft work."}</p>
         </div>
         <span class="status-chip ${attentionChipClass(safeStatus)} attention-severity">${escapeHtml(status)}</span>
       </div>
@@ -4514,6 +4515,7 @@ async function preflightBatchIntakes(options = {}) {
 }
 
 function applyReview(data, options = {}) {
+  data = retainCaptureDateOrigin(data, state.lastReview || {});
   clearPreparedArtifacts("review changed");
   state.workflowStale = false;
   state.lastReview = data;

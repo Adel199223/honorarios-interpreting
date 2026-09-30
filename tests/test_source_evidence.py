@@ -62,6 +62,39 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual(service["status"], "applied")
         self.assertEqual(self.attention(field_evidence=entries)["status"], "ready")
 
+    def test_confirmed_date_difference_is_resolved_attention_with_both_dates_retained(self):
+        for origin in ("user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed"):
+            with self.subTest(origin=origin):
+                candidate = {"service_date": "2026-09-26", "photo_metadata_date": "2026-09-28", "service_date_source": origin}
+                entries = self.fields(candidate=candidate, metadata={"exif_date": "2026-09-28"})
+                before = copy.deepcopy(entries)
+                attention = self.attention(candidate=candidate, field_evidence=entries)
+                self.assertEqual(attention["status"], "ready")
+                self.assertEqual(attention["flag_count"], 1)
+                flag = attention["flags"][0]
+                self.assertEqual((flag["code"], flag["severity"]), ("date_conflict_resolved", "info"))
+                self.assertIn("2026-09-26", flag["detail"])
+                self.assertIn("2026-09-28", flag["detail"])
+                self.assertIn("no further date answer", flag["detail"])
+                service = next(entry for entry in entries if entry["field"] == "service_date")
+                self.assertEqual(service["conflicts_with"], {"field": "photo_metadata_date", "value": "2026-09-28"})
+                self.assertEqual(entries, before, "Resolving attention must retain the original conflict ledger.")
+
+    def test_date_confirmation_does_not_resolve_other_blockers_or_a_changed_date(self):
+        candidate = {"service_date": "2026-09-26", "photo_metadata_date": "2026-09-28", "service_date_source": "user_confirmed_exception"}
+        entries = self.fields(candidate=candidate, metadata={"exif_date": "2026-09-28"})
+        for status in ("needs_info", "duplicate", "active_draft", "set_aside", "error"):
+            with self.subTest(status=status):
+                attention = self.attention(candidate=candidate, review={"status": status}, field_evidence=entries)
+                self.assertEqual(attention["status"], "blocked")
+                self.assertEqual(attention["flags"][0]["severity"], "blocked")
+                self.assertEqual(attention["flags"][-1]["code"], "date_conflict_resolved")
+        for changed in ({**candidate, "service_date": "2026-09-25"}, {**candidate, "service_date_source": "document_text"}):
+            with self.subTest(changed=changed):
+                attention = self.attention(candidate=changed, field_evidence=entries)
+                self.assertEqual(attention["status"], "blocked")
+                self.assertEqual(attention["flags"][0]["code"], "date_conflict")
+
     def test_metadata_origin_distinguishes_exif_visible_and_ai_recovered_metadata(self):
         for metadata, ai, source, confidence in (
             ({"exif_date": "2026-09-20", "visible_metadata_date": "2026-09-20"}, {}, "image_metadata", "high"),
