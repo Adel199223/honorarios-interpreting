@@ -1120,8 +1120,8 @@ def build_source_attention(
         flags.append(_attention_flag(
             "profile_fallback",
             "review",
-            "Generic profile fallback",
-            "Auto-detect did not find a high-confidence service profile.",
+            "Review service profile fallback",
+            str(profile_decision.get("reason") or "Auto-detect did not find a high-confidence service profile."),
         ))
 
     if str(profile_proposal.get("status") or "") not in {"", "not_needed"}:
@@ -1226,6 +1226,8 @@ def choose_service_profile(
     ai_recovery: dict[str, Any],
     profiles: dict[str, Any],
 ) -> dict[str, Any]:
+    if not profiles:
+        raise IntakeError("No service profiles are available. Add a service profile in References before uploading or reviewing a source.")
     requested = str(requested_profile or "").strip()
     evidence_text = combine_text_parts(extracted_text, _ai_recovery_text(ai_recovery))
     suggestion = _profile_signal_decision(evidence_text)
@@ -1258,13 +1260,21 @@ def choose_service_profile(
             "auto_applied": True,
         }
 
+    fallback_key = "court_mp_generic" if "court_mp_generic" in profiles else ""
+    fallback_reason = str(suggestion.get("reason") or "No confident service-profile match was found.")
+    if not fallback_key and len(profiles) == 1:
+        fallback_key = next(iter(profiles))
+        fallback_reason += f" Only available service profile {fallback_key!r} was used as a fallback; review its payment entity and recipient before preparing."
+    elif not fallback_key:
+        fallback_reason += " Several service profiles are available; choose one explicitly or answer the missing payment and service questions. No profile defaults were applied."
+
     return {
         "mode": "auto_fallback",
-        "profile_key": "court_mp_generic",
+        "profile_key": fallback_key,
         "requested_profile": requested,
         "suggested_profile_key": suggested_key if suggested_is_available else "",
-        "confidence": suggestion.get("confidence", "low"),
-        "reason": suggestion.get("reason", "No confident service-profile match was found."),
+        "confidence": "low",
+        "reason": fallback_reason,
         "signals": suggestion.get("signals", []),
         "auto_applied": False,
     }
@@ -1454,7 +1464,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     This wrapper gives manual/pasted review the same proactive help without
     saving reference data or skipping the normal duplicate/PDF/Gmail guards.
     """
-    profiles = load_profiles(paths.service_profiles)
+    profiles = _load_available_service_profiles(paths)
     requested_profile = _requested_service_profile_from_intake(intake)
     existing_auto = intake.get("auto_profile")
     evidence_text = combine_text_parts(
@@ -1842,6 +1852,16 @@ def resolve_artifact_path(root_key: str, relative_path: str, paths: AppPaths) ->
     return target
 
 
+def _load_available_service_profiles(paths: AppPaths) -> dict[str, Any]:
+    try:
+        profiles = load_profiles(paths.service_profiles)
+    except FileNotFoundError as exc:
+        raise IntakeError("Service profiles are missing. Add a service profile in References or restore the configured service-profile file before uploading or reviewing a source.") from exc
+    if not profiles:
+        raise IntakeError("No service profiles are available. Add a service profile in References before uploading or reviewing a source.")
+    return profiles
+
+
 def build_partial_intake_from_profile(
     *,
     profile_name: str,
@@ -1853,10 +1873,12 @@ def build_partial_intake_from_profile(
     metadata: dict[str, Any],
     paths: AppPaths,
 ) -> dict[str, Any]:
-    profiles = load_profiles(paths.service_profiles)
-    selected_profile = profile_name or "court_mp_generic"
-    profile = profiles.get(selected_profile)
-    if not isinstance(profile, dict):
+    profiles = _load_available_service_profiles(paths)
+    selected_profile = str(profile_name or "").strip()
+    if not selected_profile:
+        selected_profile = str(choose_service_profile(requested_profile="", extracted_text=extracted_text, ai_recovery={}, profiles=profiles)["profile_key"])
+    profile = profiles.get(selected_profile) if selected_profile else {}
+    if selected_profile and not isinstance(profile, dict):
         available = ", ".join(sorted(profiles))
         raise IntakeError(f"Unknown service profile {selected_profile!r}. Available profiles: {available}")
 
@@ -1913,6 +1935,7 @@ def recover_source_upload(
     paths: AppPaths,
 ) -> dict[str, Any]:
     suffix = validate_upload(source_kind, filename, content_type or "", content)
+    profiles = _load_available_service_profiles(paths)
     digest = sha256_hex(content)
     safe_name = safe_upload_filename(filename)
     stored_filename = f"{timestamp_slug()}_{digest[:12]}_{safe_name}"
@@ -1965,7 +1988,6 @@ def recover_source_upload(
         source_metadata=metadata,
         rendered_page_images=[str(path.resolve()) for path in rendered_page_paths],
     )
-    profiles = load_profiles(paths.service_profiles)
     profile_decision = choose_service_profile(
         requested_profile=profile_name,
         extracted_text=extracted_text,
@@ -1973,7 +1995,7 @@ def recover_source_upload(
         profiles=profiles,
     )
     candidate = build_partial_intake_from_profile(
-        profile_name=str(profile_decision.get("profile_key") or "court_mp_generic"),
+        profile_name=str(profile_decision.get("profile_key") or ""),
         source_kind=source_kind,
         filename=filename,
         stored_path=stored_path,
