@@ -26,6 +26,8 @@ With your saved photo defaults enabled, the app uses the capture day as the inte
 
 The capture city comes from photo location metadata or the photo viewer's location panel, not the police command's district. A configured city-court contact supplies the recipient; the app asks when date, city or court contact is missing or ambiguous. These are your workflow defaults, not facts printed on the document. A deliberately selected service profile or manual edit can supply a per-request exception. A different court named in the source remains visible evidence; it does not silently replace your default. See [photo preference configuration](source-quality.md#saved-photo-defaults).
 
+The optional missing-venue rule uses the court in the capture city only when the source does not establish a physical service building. It appears as **Your photo-city court venue default · editable**. A police station or other venue identified in the source stays the service place, even if the court is paying. You can edit an exception or clear the default and answer the venue question. This rule is your saved preference, rather than proof of where the service occurred.
+
 If the app identifies a translation request, duplicate or existing draft, read the warning before continuing. The ordinary PDF path stays blocked until the problem is resolved. Corrections use the explicit correction workflow, not a second normal request.
 
 ## 3. Answer the missing questions
@@ -44,6 +46,16 @@ Then click **Create fee-request PDF**. Open the generated PDF or its preview and
 
 Changing the source or request details makes the old prepared result stale. Review again and create a fresh PDF before using its email handoff.
 
+## Several cases in one photo
+
+The review shows **Cases found in this source** when one photo contains several case references. Use **Review case** beside each row to check its facts and questions. Your field edits and unfinished numbered answers stay with that case when you switch. An unclear case remains visible until you correct it.
+
+When every case is ready, click **Add all cases to batch**. The app checks each case again before adding the whole source. If one needs attention, it opens that case and leaves the queue unchanged. Adding cases only updates the queue; it does not create PDFs.
+
+To include another photo, queue the current reviewed request or all its cases first, then use **Change source**. The previous queue stays in place while the next source starts with empty recovered text and capture metadata. Bulk adding a multi-case source selects separate fee-request PDFs. Check that every expected case appears in **Batch Queue**, leave **Packet mode** unchecked, run **Check batch preflight**, then use **Prepare batch package**. Review each generated PDF before any email step.
+
+Editing a case after queueing pauses batch preparation until you review the correction and add the updated case or source to the queue. Do not rely on an earlier green batch check after changing details. **Reset workspace** clears the whole visible queue when you want to start over.
+
 ## 5. Prepare the email draft handoff
 
 In **Manual Draft Handoff**, click **Build handoff packet**, check its recipient/body/attachments, then use **Copy handoff prompt**. Building or copying the packet does not create or send an email.
@@ -58,6 +70,6 @@ Finally, open the draft in Gmail, check the recipient and attachments again, and
 
 ## Start another request
 
-Use **Reset workspace** for a clean visible workspace. It clears the current review and queue without deleting stored request history, generated files or Gmail drafts. If the app reports that its server is disconnected, restart the normal launcher and reload the page before continuing.
+Use **Change source** to keep queued requests while clearing the current review for another photo or document. Use **Reset workspace** for a clean visible workspace; it clears the current review and queue without deleting stored request history, generated files or Gmail drafts. If the app reports that its server is disconnected, restart the normal launcher and reload the page before continuing.
 
 Batch tools, detailed source evidence, reference editing and direct Gmail setup are advanced paths. They can stay closed while you complete a single ordinary request.

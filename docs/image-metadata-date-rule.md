@@ -41,3 +41,9 @@ Use `user_confirmed_exception` when the user chooses a non-default date, such as
 ## Example
 
 If a document says `2026-02-12 12:30` but the photo's capture metadata says `2026-02-16`, the saved photo-date default selects `2026-02-16`. Without that preference, ask which date to use. If the user explicitly chooses `2026-02-12`, record it as `service_date` with `service_date_source: user_confirmed_exception`.
+
+## Capture city and missing venue
+
+The photo capture city is separate from the document's district header and from the physical service host. The opt-in `photo_city_court` preference selects the configured court/contact for that capture city as payer. The separate `missing_venue_is_city_court` preference uses that court as the service venue only when the source does not identify a physical building. Both values remain editable policy defaults; a case suffix does not prove a venue. See [saved photo preferences and the public configuration example](source-quality.md#saved-photo-defaults).
+
+When a photo has several case references, each underlying request receives the same selected capture-date evidence but keeps its own case number and duplicate identity. A date or venue correction belongs to the selected case and needs fresh review. Missing or ambiguous case references remain unresolved even when capture metadata is clear.
