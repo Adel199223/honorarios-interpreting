@@ -132,7 +132,7 @@ console.log(JSON.stringify({
 }));
 """
         result = subprocess.run(["node", "--input-type=module", "-"], input=script,
-                                text=True, capture_output=True, check=True, cwd=ROOT)
+                                text=True, encoding="utf-8", capture_output=True, check=True, cwd=ROOT)
         cls.result = json.loads(result.stdout)
 
     def test_guided_progress_uses_review_states(self):

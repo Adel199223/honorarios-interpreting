@@ -644,7 +644,7 @@ const latePrepare = { result: ignoredPrepare, requests: requests.length, rendere
 console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
 """
         result = subprocess.run(['node', '--input-type=module', '-'], input=script, text=True,
-                                capture_output=True, timeout=20, check=True, cwd=root)
+                                encoding='utf-8', capture_output=True, timeout=20, check=True, cwd=root)
         data = json.loads(result.stdout)
         snapshot = data['snapshot']
         self.assertEqual([item['url'] for item in snapshot['requests']], ['/api/prepare/preflight', '/api/prepare'])
@@ -839,7 +839,7 @@ const invalid = focusReviewCorrection('source_file');
 console.log(JSON.stringify({html,edited,invalid,focused,lookups,opened:details.open,intakeUnchanged:before===JSON.stringify(intake)}));
 """
         result = subprocess.run(["node", "--input-type=module", "-"], input=script, text=True,
-                                capture_output=True, timeout=20, check=True, cwd=root)
+                                encoding="utf-8", capture_output=True, timeout=20, check=True, cwd=root)
         data = json.loads(result.stdout)
         html = data["html"]
         self.assertIn('aria-label="Check key facts"', html)
