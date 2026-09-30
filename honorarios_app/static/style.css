@@ -1592,6 +1592,46 @@ body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #record-draft {
   background: linear-gradient(135deg, rgba(47, 35, 19, 0.82), rgba(5, 17, 30, 0.88));
 }
 
+.source-case-review {
+  margin-bottom: 16px;
+  border-color: rgba(117, 218, 255, 0.45);
+}
+
+.source-case-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source-case-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(117, 218, 255, 0.16);
+  border-radius: 10px;
+}
+
+.source-case-row.is-current {
+  border-color: var(--accent);
+  background: rgba(117, 218, 255, 0.07);
+}
+
+.source-case-row > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-case-row .status-chip {
+  justify-self: start;
+}
+
 .source-review-title {
   display: flex;
   justify-content: space-between;

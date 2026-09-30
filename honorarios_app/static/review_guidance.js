@@ -104,7 +104,10 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   }
   const photoDefault = intake.photo_defaults_applied?.[field];
   if (photoDefault && String(photoDefault).trim().toLowerCase() === String(value).trim().toLowerCase()) {
-    return { kind: "default", label: field === "service_date" ? "Your photo-date default · editable" : "Your photo-city court default · editable" };
+    const label = field === "service_date" ? "Your photo-date default · editable"
+      : field === "service_place" ? "Your photo-city court venue default · editable"
+      : "Your photo-city court default · editable";
+    return { kind: "default", label };
   }
   const evidence = data.review_evidence || data.source_evidence || {};
   const fields = Array.isArray(evidence.field_evidence)
@@ -286,4 +289,65 @@ export function beginnerNeededLabels(questions) {
     if (label && !labels.includes(label)) labels.push(label);
   });
   return labels;
+}
+
+function copySourceCase(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+export function sourceCaseCandidatesFromUpload(data = {}) {
+  const candidates = Array.isArray(data.case_candidates) ? data.case_candidates : [];
+  if (candidates.length <= 1) return [];
+  // Preserve unresolved rows as well as readable cases. The server's ordinary
+  // review decides whether each one is ready; the browser never guesses a case.
+  return candidates.map((candidate) => {
+    const intake = copySourceCase(candidate.candidate_intake);
+    const review = copySourceCase(candidate.review);
+    return {
+      candidate_intake: intake,
+      review: { ...review, candidate_intake: intake,
+        source: review.source || copySourceCase(data.source),
+        source_evidence: review.source_evidence || copySourceCase(data.source_evidence) },
+      answers: "",
+      needs_review: false,
+    };
+  });
+}
+
+export function sourceCaseReadiness(candidate = {}) {
+  const review = candidate.review || {};
+  const status = candidate.needs_review ? "needs_review" : String(review.status || "blocked");
+  return { status, ready: !candidate.needs_review && review.status === "ready"
+    && Boolean(String(candidate.candidate_intake?.case_number || "").trim())
+    && !(Array.isArray(review.questions) && review.questions.length)
+    && review.next_safe_action?.blocked !== true };
+}
+
+export async function reviewSourceCaseCandidates(candidates, requestReview, isCurrent = () => true) {
+  const reviewed = [];
+  for (const candidate of candidates) {
+    if (!isCurrent()) return null;
+    const intake = copySourceCase(candidate.candidate_intake);
+    let result;
+    try {
+      result = await requestReview(intake);
+    } catch (error) {
+      if (!isCurrent()) return null;
+      throw error;
+    }
+    if (!isCurrent()) return null;
+    const review = retainCaptureDateOrigin({ ...result,
+      source: result.source || candidate.review?.source,
+      source_evidence: result.source_evidence || candidate.review?.source_evidence }, candidate.review);
+    reviewed.push({ ...copySourceCase(candidate),
+      candidate_intake: copySourceCase(review.effective_intake || review.intake || intake),
+      review, needs_review: false });
+  }
+  return reviewed;
+}
+
+export function browserRequestIdentityKey(intake = {}) {
+  const caseNumber = String(intake.case_number || "").replace(/\s+/g, "").toUpperCase().replace(/^0+(?=\d)/, "");
+  return [caseNumber, String(intake.service_date || "").trim(),
+    String(intake.service_period_label || "").trim().replace(/\s+/g, " ").toLowerCase()].join("|");
 }

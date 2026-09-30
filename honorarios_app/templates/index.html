@@ -275,6 +275,15 @@
                 <span class="status-chip info" id="status-pill">idle</span>
               </div>
               <p class="panel-copy" id="review-status">Upload a source or enter details manually to begin.</p>
+              <section class="result-card source-case-review hidden" id="source-case-review" aria-labelledby="source-case-heading">
+                <strong id="source-case-heading">Cases found in this source</strong>
+                <p id="source-case-summary"></p>
+                <ul id="source-case-list" class="source-case-list"></ul>
+                <p class="field-hint" id="source-case-next-action" aria-live="polite"></p>
+                <div class="button-row compact-button-row">
+                  <button type="button" id="add-source-cases-to-batch" disabled aria-disabled="true">Add all reviewed cases to batch</button>
+                </div>
+              </section>
               <div class="result-card next-safe-action-card hidden" id="next-safe-action">
                 <div class="result-header">
                   <div>

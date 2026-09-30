@@ -14,12 +14,19 @@ import {
   projectWorkflowGuidance,
   profileFallbackNotice,
   beginnerReviewFacts,
-  retainCaptureDateOrigin
+  retainCaptureDateOrigin,
+  sourceCaseCandidatesFromUpload,
+  sourceCaseReadiness,
+  reviewSourceCaseCandidates,
+  browserRequestIdentityKey
 } from "./review_guidance.js";
 
 const state = {
   reference: null,
   currentIntake: null,
+  sourceCaseCandidates: [],
+  sourceCaseSelectedIndex: null,
+  sourceCaseBatchInFlight: false,
   batchIntakes: [],
   batchSelectedIndex: null,
   batchPreflight: null,
@@ -132,6 +139,10 @@ const SAFE_ACTION_GATES = {
   "add-current-to-batch": {
     states: ["prepare_pdf"],
     reason: "Review a ready request before adding it to the batch queue.",
+  },
+  "add-source-cases-to-batch": {
+    states: [],
+    reason: "Review and resolve every case in this photo before adding them together.",
   },
   "prepare-batch-intakes": {
     states: [],
@@ -281,10 +292,18 @@ function syncActionGates(action = state.currentNextSafeAction) {
     let enabled = (gate.states || []).includes(actionState);
     let blockedReason = gate.reason;
     if (id === "preflight-batch-intakes") {
-      enabled = state.batchIntakes.length > 0;
+      enabled = state.batchIntakes.length > 0 && !sourceCasesNeedQueueRefresh();
+      if (sourceCasesNeedQueueRefresh()) blockedReason = "Resolve and add every current source case to the batch before checking it.";
+    }
+    if (id === "add-source-cases-to-batch") {
+      enabled = state.sourceCaseCandidates.length > 1
+        && state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)
+        && !state.sourceCaseBatchInFlight;
+      if (state.sourceCaseBatchInFlight) blockedReason = "Checking each photo case before updating the queue.";
     }
     if (id === "prepare-batch-intakes") {
       enabled = hasCurrentReadyBatchPreflight();
+      if (sourceCasesNeedQueueRefresh()) blockedReason = "The current source cases need review or a queue update before preparing the batch.";
     }
     if (id === "prepare-replacement-draft") {
       enabled = enabled && Boolean($("#correction_reason")?.value.trim());
@@ -516,7 +535,7 @@ function fillFormFromIntake(intake) {
     if (!input) return;
     if (value !== undefined && value !== null && value !== "") {
       input.value = value;
-    } else if (clearWhenMissing.has(id)) {
+    } else if (clearWhenMissing.has(id) || (id === "profile" && selectedSourceCase())) {
       input.value = "";
     }
   });
@@ -553,10 +572,10 @@ function mergeFormIntoCurrentIntake() {
     "source_text",
     "personal_profile_id",
   ].forEach((key) => {
-    if (payload[key]) intake[key] = payload[key];
+    if (payload[key] || (selectedSourceCase() && Object.prototype.hasOwnProperty.call(intake, key))) intake[key] = payload[key] || "";
   });
   if (intake.photo_defaults_applied) {
-    ["service_date", "payment_entity", "recipient_email"].forEach((key) => {
+    ["service_date", "payment_entity", "recipient_email", "service_place"].forEach((key) => {
       intake[key] = payload[key] || "";
     });
     if (intake.service_date !== state.currentIntake.service_date) {
@@ -583,6 +602,8 @@ function mergeFormIntoCurrentIntake() {
   }
   if (payload.km_one_way) {
     intake.transport = { ...(intake.transport || {}), km_one_way: Number(payload.km_one_way) || payload.km_one_way };
+  } else if (selectedSourceCase() && Object.prototype.hasOwnProperty.call(intake.transport || {}, "km_one_way")) {
+    intake.transport = { ...intake.transport, km_one_way: "" };
   }
   state.currentIntake = intake;
   return intake;
@@ -666,12 +687,184 @@ function cloneIntake(intake) {
 }
 
 function batchIntakeKey(intake) {
-  const period = String(intake?.service_period_label || "").trim().toLowerCase();
-  return [
-    String(intake?.case_number || "").trim().toUpperCase(),
-    String(intake?.service_date || "").trim(),
-    period,
-  ].join("|");
+  return browserRequestIdentityKey(intake);
+}
+
+function selectedSourceCase() {
+  return state.sourceCaseCandidates[state.sourceCaseSelectedIndex] || null;
+}
+
+function saveSourceCaseAnswers(value) {
+  const candidate = selectedSourceCase();
+  if (!candidate) return;
+  candidate.answers = String(value || "");
+  ["#home-numbered-answers", "#numbered-answers"].forEach((selector) => {
+    const input = $(selector);
+    if (input && input.value !== candidate.answers) input.value = candidate.answers;
+  });
+}
+
+function persistCurrentSourceCase({ mergeForm = false, reviewed = false } = {}) {
+  const candidate = selectedSourceCase();
+  if (!candidate || !state.currentIntake) return;
+  if (mergeForm) mergeFormIntoCurrentIntake();
+  const changed = JSON.stringify(candidate.candidate_intake) !== JSON.stringify(state.currentIntake);
+  candidate.candidate_intake = cloneIntake(state.currentIntake);
+  if (reviewed) {
+    candidate.review = cloneIntake(state.lastReview);
+    candidate.needs_review = false;
+  } else if (changed) {
+    candidate.needs_review = true;
+  }
+}
+
+function sourceCaseDisplayReview(candidate) {
+  const intake = candidate.candidate_intake;
+  const review = { ...candidate.review, intake, effective_intake: intake,
+    case_number: intake.case_number || "", service_date: intake.service_date || "", recipient: intake.recipient_email || "" };
+  if (!candidate.needs_review) return review;
+  return { ...review, status: "blocked", questions: [],
+    message: "Details changed. Review recovered details to check this case again.",
+    draft_text: "", question_text: "",
+    next_safe_action: { state: "fix_blocker", blocked: true, button_id: "review-intake",
+      title: "Review the edited case", detail: "Use Review recovered details before adding this case or creating its PDF." } };
+}
+
+function renderSourceCaseList() {
+  const panel = $("#source-case-review");
+  const list = $("#source-case-list");
+  if (!panel || !list) return;
+  const candidates = state.sourceCaseCandidates;
+  panel.classList.toggle("hidden", candidates.length <= 1);
+  if (candidates.length <= 1) {
+    list.innerHTML = "";
+    return;
+  }
+  const readyCount = candidates.filter((candidate) => sourceCaseReadiness(candidate).ready).length;
+  $("#source-case-heading").textContent = `${candidates.length} cases found in this source`;
+  $("#source-case-summary").textContent = `${readyCount} of ${candidates.length} ready. Review each case below; each will have its own fee-request PDF.`;
+  $("#source-case-next-action").textContent = state.sourceCaseBatchInFlight
+    ? "Checking every case with the normal review before adding them. No documents are being created."
+    : readyCount === candidates.length
+      ? "All cases are ready for the queue. Add them together, then check the batch and review its PDF step."
+      : "Open each case that needs attention and resolve its questions or edited details before adding this source to the batch.";
+  list.innerHTML = candidates.map((candidate, index) => {
+    const selected = index === state.sourceCaseSelectedIndex;
+    const { status, ready } = sourceCaseReadiness(candidate);
+    const intake = candidate.candidate_intake;
+    const label = intake.case_number || intake.raw_case_number || "Unclear case";
+    return `<li class="source-case-row${selected ? " is-current" : ""}">
+      <div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(intake.service_date || "date needs review")} · ${escapeHtml(intake.service_place || "place needs review")}</small>
+        <span class="status-chip ${ready ? "ready" : "blocked"}">${escapeHtml(status.replaceAll("_", " "))}</span></div>
+      <button type="button" class="mini-button" data-review-source-case="${index}" aria-pressed="${selected ? "true" : "false"}"${state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null ? " disabled" : ""}>${selected ? "Reviewing" : "Review case"} ${index + 1}</button>
+    </li>`;
+  }).join("");
+  const button = $("#add-source-cases-to-batch");
+  if (button) button.textContent = `Add all ${candidates.length} cases to batch`;
+  syncActionGates();
+}
+
+function selectSourceCase(index, { persist = true, focus = true } = {}) {
+  if (!Number.isInteger(index) || !state.sourceCaseCandidates[index]) return;
+  if (persist) persistCurrentSourceCase();
+  const candidate = state.sourceCaseCandidates[index];
+  state.sourceCaseSelectedIndex = index;
+  state.currentIntake = cloneIntake(candidate.candidate_intake);
+  state.lastReview = null;
+  fillFormFromIntake(state.currentIntake);
+  $("#numbered-answers").value = candidate.answers || "";
+  applyReview(sourceCaseDisplayReview(candidate), { openDrawer: false, saveSourceCase: false });
+  renderSourceEvidence(state.lastReview);
+  renderSourceCaseList();
+  if (focus) focusHomeReviewCard();
+}
+
+function clearSourceCaseReview() {
+  state.sourceCaseCandidates = [];
+  state.sourceCaseSelectedIndex = null;
+  state.sourceCaseBatchInFlight = false;
+  renderSourceCaseList();
+}
+
+function sourceCaseDetailsChanged() {
+  if (!selectedSourceCase()) return;
+  persistCurrentSourceCase({ mergeForm: true });
+  if (selectedSourceCase().needs_review) {
+    state.batchPreflight = null;
+    state.workflowStale = true;
+    refreshHomeWorkflow();
+    renderNextSafeAction(sourceCaseDisplayReview(selectedSourceCase()).next_safe_action);
+  }
+  renderSourceCaseList();
+  renderBatchPreflight();
+}
+
+function sourceCasesNeedQueueRefresh() {
+  if (state.sourceCaseCandidates.length <= 1) return false;
+  return state.sourceCaseCandidates.some((candidate) => {
+    if (!sourceCaseReadiness(candidate).ready) return true;
+    const queued = state.batchIntakes.find((intake) => batchIntakeKey(intake) === batchIntakeKey(candidate.candidate_intake));
+    return !queued || JSON.stringify(queued) !== JSON.stringify(candidate.candidate_intake);
+  });
+}
+
+function queueReviewedIntake(intake, previousKey = "") {
+  const key = batchIntakeKey(intake);
+  if (previousKey && previousKey !== key) {
+    const previousIndex = state.batchIntakes.findIndex((queued) => batchIntakeKey(queued) === previousKey);
+    if (previousIndex >= 0) state.batchIntakes.splice(previousIndex, 1);
+  }
+  const existingIndex = state.batchIntakes.findIndex((queued) => batchIntakeKey(queued) === key);
+  if (existingIndex >= 0) {
+    state.batchIntakes[existingIndex] = cloneIntake(intake);
+    state.batchSelectedIndex = existingIndex;
+  } else {
+    state.batchIntakes.push(cloneIntake(intake));
+    state.batchSelectedIndex = state.batchIntakes.length - 1;
+  }
+}
+
+async function addSourceCasesToBatch() {
+  persistCurrentSourceCase();
+  if (state.sourceCaseBatchInFlight) return null;
+  if (state.sourceCaseCandidates.length <= 1 || !state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)) {
+    renderSourceCaseList();
+    throw new Error("Resolve and review every case in this source before adding them together.");
+  }
+  const capturedRevision = state.workflowRevision;
+  state.sourceCaseBatchInFlight = true;
+  renderSourceCaseList();
+  try {
+    const reviewed = await reviewSourceCaseCandidates(state.sourceCaseCandidates,
+      (intake) => requestJson("/api/review", { method: "POST", body: JSON.stringify({ intake }) }),
+      () => isWorkflowResponseCurrent(capturedRevision, state.workflowRevision));
+    if (!reviewed) return null;
+    state.sourceCaseCandidates = reviewed;
+    const blockedIndex = reviewed.findIndex((candidate) => !sourceCaseReadiness(candidate).ready);
+    if (blockedIndex >= 0) {
+      selectSourceCase(blockedIndex, { persist: false });
+      throw new Error("A case needs attention after the fresh check. Resolve it before adding this source; the batch queue was unchanged.");
+    }
+    clearPreparedArtifacts("photo cases added to batch queue");
+    reviewed.forEach((candidate) => {
+      queueReviewedIntake(candidate.candidate_intake, candidate.queued_key);
+      candidate.queued_key = batchIntakeKey(candidate.candidate_intake);
+    });
+    state.batchPreflight = null;
+    $("#batch-packet-mode").checked = false;
+    selectSourceCase(state.sourceCaseSelectedIndex || 0, { persist: false, focus: false });
+    renderBatchQueue();
+    $("#batch-queue-panel").classList.remove("hidden");
+    $("#toggle-advanced-workflow").textContent = "Hide batch tools";
+    setStatus("ready", `${reviewed.length} source cases added; ${state.batchIntakes.length} requests are queued for separate PDFs.`);
+    showAlert("The queue is ready for its non-writing batch check. No PDFs or draft payloads were created.", "recorded");
+    $("#batch-queue-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    $("#preflight-batch-intakes").focus({ preventScroll: true });
+    return reviewed;
+  } finally {
+    state.sourceCaseBatchInFlight = false;
+    renderSourceCaseList();
+  }
 }
 
 function currentBatchPacketMode() {
@@ -686,7 +879,7 @@ function batchPreflightSignature(packetMode = currentBatchPacketMode(), intakes 
 }
 
 function hasCurrentReadyBatchPreflight() {
-  return state.batchPreflight?.status === "ready"
+  return !sourceCasesNeedQueueRefresh() && state.batchPreflight?.status === "ready"
     && state.batchPreflight?.request_signature === batchPreflightSignature();
 }
 
@@ -763,6 +956,7 @@ function addSupportingAttachmentToIntake(attachment) {
   }
   state.currentIntake = mergeSupportingAttachmentsIntoIntake(state.currentIntake, [storedPath]);
   clearPreparedArtifacts("supporting attachments changed");
+  sourceCaseDetailsChanged();
   renderSupportingAttachmentList();
   syncActionGates();
   return state.currentIntake;
@@ -1254,6 +1448,11 @@ function renderBatchQueue() {
 function renderBatchPreflight() {
   const card = $("#batch-preflight-result");
   if (!card) return;
+  if (sourceCasesNeedQueueRefresh()) {
+    card.className = "result-card blocked-card";
+    card.textContent = "The current source cases need review or a queue update. Resolve every case, then add all source cases to the batch before its check and PDF step.";
+    return;
+  }
   const data = state.batchPreflight;
   if (!data) {
     card.className = "result-card empty-state";
@@ -1659,6 +1858,10 @@ function updateHomeReviewCard(data) {
     ${duplicate}
     ${questions}
   `;
+  const candidate = selectedSourceCase();
+  if (candidate && $("#home-numbered-answers")) {
+    $("#home-numbered-answers").value = candidate.answers || "";
+  }
 }
 
 function renderFieldEvidence(fieldEvidence) {
@@ -2117,8 +2320,11 @@ async function uploadSource(sourceKind, options = {}) {
   }
   state.currentReviewOrigin = "source";
   clearPreparedArtifacts("source changed");
+  clearSourceCaseReview();
+  const capturedRevision = state.workflowRevision;
   const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
-  const visibleText = [$("#source_text").value.trim(), googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
+  const enteredSourceText = state.currentIntake?.source_sha256 ? "" : $("#source_text").value.trim();
+  const visibleText = [enteredSourceText, googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
   const form = new FormData();
   form.append("file", file);
   form.append("source_kind", sourceKind === "google_photos" ? "photo" : sourceKind);
@@ -2140,22 +2346,36 @@ async function uploadSource(sourceKind, options = {}) {
   if (!response.ok) {
     throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
   }
-  state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.candidate_intake, existingAttachments, existingEmailBody);
-  if (data.review?.intake) {
-    data.review.intake = state.currentIntake;
-  }
-  if (data.review) {
-    data.review.source_evidence = data.source_evidence || null;
-    data.review.candidate_intake = state.currentIntake;
-  }
+  if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;
+  adoptUploadedSource(data, existingAttachments, existingEmailBody);
   state.lastProfileProposal = data.profile_proposal || null;
-  fillFormFromIntake(state.currentIntake);
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
-  applyReview(data.review, { openDrawer: false });
+  if (state.sourceCaseCandidates.length > 1) {
+    selectSourceCase(0, { persist: false, focus: false });
+  } else {
+    fillFormFromIntake(state.currentIntake);
+    applyReview(data.review, { openDrawer: false });
+  }
   setDropStatus(`Recovered ${file.name || "dropped source"}. Review what I found below before any PDF or Gmail draft step.`, "ready");
   focusHomeReviewCard();
   return data;
+}
+
+function adoptUploadedSource(data, attachments = [], emailBody = "") {
+  state.sourceCaseCandidates = sourceCaseCandidatesFromUpload(data).map((candidate) => {
+    const intake = mergeSupportingAttachmentsIntoIntake(candidate.candidate_intake, attachments, emailBody);
+    return { ...candidate, candidate_intake: intake,
+      review: { ...candidate.review, intake, effective_intake: intake, candidate_intake: intake } };
+  });
+  state.sourceCaseSelectedIndex = state.sourceCaseCandidates.length > 1 ? 0 : null;
+  state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.candidate_intake, attachments, emailBody);
+  if (data.review) {
+    data.review = { ...data.review, intake: state.currentIntake, effective_intake: state.currentIntake,
+      candidate_intake: state.currentIntake, source_evidence: data.review.source_evidence || data.source_evidence || null };
+  }
+  $("#numbered-answers").value = "";
+  renderSourceCaseList();
 }
 
 function bindSourceDropZone() {
@@ -2745,11 +2965,16 @@ async function importGooglePhotosPickerSelection() {
     visible_metadata_text: $("#google-photos-metadata").value.trim(),
     ai_recovery: $("#ai_recovery_mode").value || "auto",
   };
-  const data = await requestJson("/api/google-photos/picker/import", {
+  state.currentReviewOrigin = "source";
+  clearPreparedArtifacts("source changed");
+  clearSourceCaseReview();
+  const capturedRevision = state.workflowRevision;
+  const data = await requestWorkflowJson("/api/google-photos/picker/import", {
     method: "POST",
     body: JSON.stringify(payload),
-  });
-  state.currentIntake = data.candidate_intake;
+  }, { revision: capturedRevision });
+  if (!data) return null;
+  adoptUploadedSource(data);
   fillFormFromIntake(state.currentIntake);
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
@@ -2758,7 +2983,8 @@ async function importGooglePhotosPickerSelection() {
     status: "imported",
     message: "Google Photos image imported. Review what I found below before any PDF or Gmail draft step.",
   });
-  applyReview(data.review, { openDrawer: false });
+  if (state.sourceCaseCandidates.length > 1) selectSourceCase(0, { persist: false, focus: false });
+  else applyReview(data.review, { openDrawer: false });
   focusHomeReviewCard();
   return data;
 }
@@ -4309,6 +4535,7 @@ function removeEmpty(value) {
 
 async function buildIntakeFromProfile(options = {}) {
   state.currentReviewOrigin = "manual";
+  clearSourceCaseReview();
   const payload = removeEmpty(collectProfilePayload());
   if (!payload.profile) {
     payload.profile = "court_mp_generic";
@@ -4330,10 +4557,12 @@ async function reviewIntake(options = {}) {
     return;
   }
   mergeFormIntoCurrentIntake();
-  const data = await requestJson("/api/review", {
+  const capturedRevision = state.workflowRevision;
+  const data = await requestWorkflowJson("/api/review", {
     method: "POST",
     body: JSON.stringify({ intake: state.currentIntake }),
-  });
+  }, { revision: capturedRevision });
+  if (!data) return null;
   applyReview(data, options);
   return data;
 }
@@ -4347,10 +4576,13 @@ async function applyNumberedAnswers(options = {}) {
   if (!answers) {
     throw new Error("Paste numbered answers before applying them.");
   }
-  const data = await requestJson("/api/review/apply-answers", {
+  const capturedRevision = state.workflowRevision;
+  const data = await requestWorkflowJson("/api/review/apply-answers", {
     method: "POST",
     body: JSON.stringify({ intake: state.currentIntake, answers }),
-  });
+  }, { revision: capturedRevision });
+  if (!data) return null;
+  if (selectedSourceCase()) saveSourceCaseAnswers("");
   state.currentIntake = data.intake || state.currentIntake;
   fillFormFromIntake(state.currentIntake);
   applyReview(data, { openDrawer: options.openDrawer });
@@ -4416,24 +4648,20 @@ async function addCurrentIntakeToBatch() {
     await buildIntakeFromProfile();
   }
   mergeFormIntoCurrentIntake();
-  const review = await requestJson("/api/review", {
+  const capturedRevision = state.workflowRevision;
+  const review = await requestWorkflowJson("/api/review", {
     method: "POST",
     body: JSON.stringify({ intake: state.currentIntake }),
-  });
+  }, { revision: capturedRevision });
+  if (!review) return null;
   applyReview(review);
   if (review.status !== "ready") {
     throw new Error("Only a ready reviewed request can be added to the batch queue.");
   }
   const intake = cloneIntake(state.currentIntake);
-  const key = batchIntakeKey(intake);
-  const existingIndex = state.batchIntakes.findIndex((queued) => batchIntakeKey(queued) === key);
-  if (existingIndex >= 0) {
-    state.batchIntakes[existingIndex] = intake;
-    state.batchSelectedIndex = existingIndex;
-  } else {
-    state.batchIntakes.push(intake);
-    state.batchSelectedIndex = state.batchIntakes.length - 1;
-  }
+  const candidate = selectedSourceCase();
+  queueReviewedIntake(intake, candidate?.queued_key);
+  if (candidate) candidate.queued_key = batchIntakeKey(intake);
   state.batchPreflight = null;
   renderBatchQueue();
   setStatus("ready", `${intake.case_number || "Request"} added to the batch queue.`);
@@ -4507,6 +4735,9 @@ async function preflightBatchIntakes(options = {}) {
   if (!state.batchIntakes.length) {
     throw new Error("Add at least one ready request to the batch queue first.");
   }
+  if (sourceCasesNeedQueueRefresh()) {
+    throw new Error("Resolve and add all current source cases to the queue before checking the batch. This keeps every case and edit in the prepared PDFs.");
+  }
   const openDrawerAfter = options.openDrawer !== false;
   const showResultAlert = options.showResultAlert !== false;
   const packetMode = currentBatchPacketMode();
@@ -4538,6 +4769,13 @@ async function preflightBatchIntakes(options = {}) {
 }
 
 function applyReview(data, options = {}) {
+  const candidate = selectedSourceCase();
+  if (candidate && !data.source_evidence && candidate.review?.source_evidence) {
+    data = { ...data, source_evidence: candidate.review.source_evidence };
+  }
+  if (candidate && !data.source && candidate.review?.source) {
+    data = { ...data, source: candidate.review.source };
+  }
   data = retainCaptureDateOrigin(data, state.lastReview || {});
   clearPreparedArtifacts("review changed");
   state.workflowStale = false;
@@ -4546,6 +4784,7 @@ function applyReview(data, options = {}) {
     state.currentIntake = data.effective_intake || data.intake;
     fillFormFromIntake(state.currentIntake);
   }
+  if (options.saveSourceCase !== false) persistCurrentSourceCase({ mergeForm: false, reviewed: true });
   if (data.review_evidence) {
     state.lastProfileProposal = data.profile_proposal || data.review_evidence.profile_proposal || null;
     renderSourceEvidence(data);
@@ -4575,6 +4814,7 @@ function applyReview(data, options = {}) {
   if (options.openDrawer !== false && ["ready", "needs_info", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
     openReviewDrawer();
   }
+  renderSourceCaseList();
 }
 
 async function prepareIntake(options = {}) {
@@ -4825,12 +5065,15 @@ async function recordDraft() {
 
 function resetReview({ closeDrawer = true } = {}) {
   state.currentIntake = null;
+  clearSourceCaseReview();
   clearPreparedArtifacts("review reset");
   state.workflowStale = false;
   state.lastReview = null;
   state.draftLifecycle = null;
   state.googlePhotosPicker = null;
   $("#intake-form").reset();
+  $("#source_text").value = "";
+  $("#photo_metadata_date").value = "";
   $("#notification-upload-form").reset();
   $("#photo-upload-form").reset();
   $("#source-upload-form").reset();
@@ -4926,8 +5169,25 @@ function bindNavigation() {
 
 function bindActions() {
   bindSourceDropZone();
-  $("#intake-form").addEventListener("input", () => clearPreparedArtifacts("intake form changed"));
-  $("#intake-form").addEventListener("change", () => clearPreparedArtifacts("intake form changed"));
+  const intakeChanged = () => {
+    clearPreparedArtifacts("intake form changed");
+    sourceCaseDetailsChanged();
+  };
+  $("#intake-form").addEventListener("input", intakeChanged);
+  $("#intake-form").addEventListener("change", intakeChanged);
+  $("#source-case-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-review-source-case]");
+    if (!button || button.disabled) return;
+    selectSourceCase(Number(button.dataset.reviewSourceCase));
+  });
+  $("#add-source-cases-to-batch").addEventListener("click", async () => {
+    try {
+      await addSourceCasesToBatch();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
   const resetControl = $("#reset-workspace");
   if (resetControl) {
     resetControl.addEventListener("click", (event) => {
@@ -4958,7 +5218,8 @@ function bindActions() {
     if (typeof target.focus === "function") target.focus({ preventScroll: true });
   });
   document.addEventListener("input", (event) => {
-    if (event.target?.id === "home-numbered-answers") {
+    if (["home-numbered-answers", "numbered-answers"].includes(event.target?.id)) {
+      saveSourceCaseAnswers(event.target.value);
       syncActionGates();
     }
   });
@@ -5851,7 +6112,12 @@ function bindActions() {
     }
   });
   $("#interpretation-clear-review").addEventListener("click", resetReview);
-  $("#change-source").addEventListener("click", resetWorkspace);
+  $("#change-source").addEventListener("click", () => {
+    resetReview();
+    if (state.batchIntakes.length) {
+      setStatus("idle", `Choose the next source. ${state.batchIntakes.length} reviewed requests remain in the batch queue.`);
+    }
+  });
   $("#interpretation-close-review").addEventListener("click", closeReviewDrawer);
   $("#interpretation-close-review-footer").addEventListener("click", closeReviewDrawer);
   $("#interpretation-review-drawer-backdrop").addEventListener("click", (event) => {
