@@ -20,7 +20,8 @@ import {
   reviewSourceCaseCandidates,
   browserRequestIdentityKey,
   mergeSourceReviewEvidence,
-  duplicateSourceCaseIndices
+  duplicateSourceCaseIndices,
+  preparedFirstRequestReview
 } from "./review_guidance.js";
 
 const state = {
@@ -1574,7 +1575,7 @@ function beginnerField(label, value, confidence = "") {
   return `<li class="${empty ? "needs-answer" : "found"}"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(displayValue(value))}${confidence ? ` <span class="field-confidence">${escapeHtml(confidence)}</span>` : ""}</li>`;
 }
 
-function renderBeginnerFacts(data, intake) {
+function renderBeginnerFacts(data, intake, { editable = true } = {}) {
   const rows = beginnerReviewFacts(data, intake).map((fact) => `
     <li class="review-fact-row">
       <div>
@@ -1582,7 +1583,7 @@ function renderBeginnerFacts(data, intake) {
         <span class="review-fact-value">${escapeHtml(displayValue(fact.value))}</span>
         <small class="review-fact-origin ${escapeHtml(fact.origin.kind)}">${escapeHtml(fact.origin.label)}</small>
       </div>
-      <button type="button" class="mini-button" data-review-correct-field="${escapeHtml(fact.field)}" aria-label="Edit ${escapeHtml(fact.label.toLowerCase())}">Edit</button>
+      ${editable ? `<button type="button" class="mini-button" data-review-correct-field="${escapeHtml(fact.field)}" aria-label="Edit ${escapeHtml(fact.label.toLowerCase())}">Edit</button>` : ""}
     </li>
   `).join("");
   return `
@@ -1590,7 +1591,7 @@ function renderBeginnerFacts(data, intake) {
       <strong>Check key facts</strong>
       <p>AI-read values and suggestions still need checking against the original source. Payment entity and recipient can differ from the service place.</p>
       <ul>${rows}</ul>
-      <small>Edit a detail, then use Review recovered details to check the request again.</small>
+      <small>${editable ? "Edit a detail, then use Review recovered details to check the request again." : "These facts belong to the first prepared request. Review the relevant source before correcting details and preparing again."}</small>
     </section>
   `;
 }
@@ -1659,14 +1660,19 @@ function currentWorkflowGuidance(data = {}) {
 
 function refreshHomeWorkflow() {
   const review = state.lastReview || {};
-  const target = preparedRecordTarget();
+  const preparedReview = preparedFirstRequestReview(state.lastPrepared,
+    [review, ...state.sourceCaseCandidates.map((candidate) => candidate.review)]);
+  if (preparedReview) {
+    updateHomeReviewCard(preparedReview);
+    return;
+  }
   updateHomeReviewCard({
     ...review,
     intake: state.currentIntake || review.intake || review.effective_intake || {},
     effective_intake: state.currentIntake || review.effective_intake || review.intake || {},
-    case_number: target?.case_number || state.currentIntake?.case_number || review.case_number || "",
-    service_date: target?.service_date || state.currentIntake?.service_date || review.service_date || "",
-    recipient: target?.recipient || state.currentIntake?.recipient_email || review.recipient || "",
+    case_number: state.currentIntake?.case_number || review.case_number || "",
+    service_date: state.currentIntake?.service_date || review.service_date || "",
+    recipient: state.currentIntake?.recipient_email || review.recipient || "",
   });
 }
 
@@ -1807,7 +1813,7 @@ function renderBeginnerReviewSummary(data) {
       ${renderBeginnerOutcomeBanner(data, intake, questions)}
       ${sourceSafetyLine(data)}
       ${questionFocus}
-      ${renderBeginnerFacts(data, intake)}
+      ${renderBeginnerFacts(data, intake, { editable: !["prepared", "handoff_ready", "recorded"].includes(workflow.phase) })}
       ${fallbackNotice}
       ${readyCta}
     </div>

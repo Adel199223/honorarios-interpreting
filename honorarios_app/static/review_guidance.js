@@ -363,6 +363,28 @@ export function browserRequestIdentityKey(intake = {}) {
     String(intake.service_period_label || "").trim().replace(/\s+/g, " ").toLowerCase()].join("|");
 }
 
+export function preparedFirstRequestReview(prepared = {}, reviews = []) {
+  const first = prepared?.items?.[0];
+  if (!first) return null;
+  // The prepared manifest is the snapshot used to create these PDFs. A current
+  // source selection can belong to another request and must not supply facts.
+  const intake = copySourceCase(prepared.prepared_review_material?.effective_intakes?.[0]
+    || first.effective_intake || first.intake || {
+      case_number: first.case_number || "", service_date: first.service_date || "",
+      payment_entity: first.payment_entity || "", service_place: first.service_place || "",
+      recipient_email: first.recipient || "",
+    });
+  const matched = reviews.find((review) => {
+    const candidate = review?.effective_intake || review?.intake || review?.candidate_intake || {};
+    return browserRequestIdentityKey(candidate) === browserRequestIdentityKey(intake)
+      && String(candidate.source_sha256 || "") === String(intake.source_sha256 || "");
+  }) || {};
+  return { ...copySourceCase(matched), intake, effective_intake: intake,
+    case_number: first.case_number || intake.case_number || "",
+    service_date: first.service_date || intake.service_date || "",
+    recipient: first.recipient || intake.recipient_email || "", questions: [] };
+}
+
 export function duplicateSourceCaseIndices(candidates = []) {
   const firstByIdentity = new Map();
   const duplicates = new Set();
