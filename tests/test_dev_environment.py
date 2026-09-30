@@ -68,8 +68,12 @@ class DevelopmentEnvironmentTests(unittest.TestCase):
         (source / 'tests').mkdir(parents=True)
         (source / 'config').mkdir()
         (source / 'data').mkdir()
-        (source / 'tests/portable-suite.txt').write_text('test_synthetic.py\n')
-        (source / 'tests/test_synthetic.py').write_text('')
+        project_tests = Path(__file__).resolve().parent
+        names = (project_tests / 'portable-suite.txt').read_text(encoding='utf-8').splitlines()
+        (source / 'tests/portable-suite.txt').write_text('\n'.join(names) + '\n', encoding='utf-8')
+        (source / 'tests/portable-groups.json').write_text((project_tests / 'portable-groups.json').read_text(encoding='utf-8'), encoding='utf-8')
+        for name in names:
+            (source / 'tests' / name).write_text('# Synthetic public fixture\n', encoding='utf-8')
         (source / 'tests/test_private.py').write_text('do not copy')
         (source / 'config/profile.json').write_text('private synthetic sentinel')
         (source / 'config/ai.local.json').write_text('private synthetic sentinel')
@@ -77,7 +81,7 @@ class DevelopmentEnvironmentTests(unittest.TestCase):
         (source / 'config/profile.example.json').write_text('{}')
         copy_portable_checkout(source, target)
         self.assertTrue((target / 'config/profile.example.json').is_file())
-        self.assertTrue((target / 'tests/test_synthetic.py').is_file())
+        self.assertTrue((target / 'tests/test_pdf_rules.py').is_file())
         for path in ('config/profile.json','config/ai.local.json','data/duplicate-index.json','tests/test_private.py'):
             self.assertFalse((target / path).exists(), path)
 

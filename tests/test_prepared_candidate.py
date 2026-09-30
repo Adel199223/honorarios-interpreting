@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -46,6 +47,7 @@ class PreparedCandidateTests(unittest.TestCase):
         if self_name not in names:
             names.append(self_name)
         (tests / "portable-suite.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
+        shutil.copy2(source / "tests" / "portable-groups.json", tests / "portable-groups.json")
         (tests / "test_unlisted_local.py").write_text('raise AssertionError("Unlisted local tests must never be copied or run.")\n', encoding="utf-8")
         return fixture
 
@@ -63,6 +65,7 @@ class PreparedCandidateTests(unittest.TestCase):
                 self.assertEqual((source / name).read_text(encoding="utf-8"), (candidate / name).read_text(encoding="utf-8"))
             manifest = candidate / "tests" / "portable-suite.txt"
             self.assertEqual(manifest.read_bytes(), (source / "tests" / "portable-suite.txt").read_bytes())
+            self.assertEqual((candidate / "tests" / "portable-groups.json").read_bytes(), (source / "tests" / "portable-groups.json").read_bytes())
             names = manifest.read_text(encoding="utf-8").splitlines()
             self.assertIn("test_dev_environment.py", names)
             self.assertIn("test_installed_wheel.py", names)
@@ -87,6 +90,22 @@ class PreparedCandidateTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Unsupported or missing public portable"):
                         build_public_candidate(source, target)
                     self.assertTrue(marker.is_file())
+
+    def test_invalid_group_map_is_rejected_before_target_reset(self):
+        with tempfile.TemporaryDirectory(prefix="honorarios-candidate-groups-") as temporary:
+            root = Path(temporary)
+            source = self.make_source_fixture(root)
+            target = root / "candidate"
+            target.mkdir()
+            marker = target / "preserve-me.txt"
+            marker.write_text("Existing target remains untouched.\n", encoding="utf-8")
+            map_path = source / "tests" / "portable-groups.json"
+            groups = json.loads(map_path.read_text(encoding="utf-8"))
+            groups["email"] = ["test_unlisted_local.py"]
+            map_path.write_text(json.dumps(groups), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unlisted files"):
+                build_public_candidate(source, target)
+            self.assertTrue(marker.is_file())
 
 
 if __name__ == "__main__":

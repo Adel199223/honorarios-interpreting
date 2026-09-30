@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.generate_pdf import ROOT
 from scripts.public_release_gate import analyze_public_readiness
 from scripts.public_repo_gate import analyze_tracked
+from scripts.run_portable_tests import PUBLIC_TEST_FILES, load_selection
 
 
 COPY_DIRS = [
@@ -38,14 +39,7 @@ COPY_FILES = [
     "CONTRIBUTING.md",
     "requirements.txt",
 ]
-PUBLIC_PORTABLE_TESTS = frozenset({
-    "test_browser_iab_smoke.py",
-    "test_public_candidate_smoke.py",
-    "test_public_repo_gate.py",
-    "test_dev_environment.py",
-    "test_installed_wheel.py",
-    "test_prepared_candidate.py",
-})
+PUBLIC_PORTABLE_TESTS = PUBLIC_TEST_FILES
 TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".mjs", ".py", ".ps1", ".lock", ".toml", ".txt", ".yml", ".yaml"}
 SANITIZERS = [
     (re.compile(r"\b[A-Z0-9._%+\-]+@tribunais\.org\.pt\b", re.IGNORECASE), "court@example.test"),
@@ -108,6 +102,7 @@ def _portable_test_manifest(source_root: Path) -> list[str] | None:
     for name in names:
         if name not in PUBLIC_PORTABLE_TESTS or not (source_root / "tests" / name).is_file():
             raise ValueError("Unsupported or missing public portable test file: " + name)
+    load_selection(source_root)
     return names
 
 
@@ -118,6 +113,7 @@ def _copy_portable_tests(source_root: Path, target_root: Path, names: list[str] 
     for name in names:
         _copy_and_sanitize_file(source_root / "tests" / name, target_root / "tests" / name)
     shutil.copy2(source_root / "tests" / "portable-suite.txt", target_root / "tests" / "portable-suite.txt")
+    shutil.copy2(source_root / "tests" / "portable-groups.json", target_root / "tests" / "portable-groups.json")
 
 
 def _reset_target(target: Path) -> None:
@@ -588,6 +584,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
     def test_browser_js_guides_metadata_date_confirmation_without_writes(self):
         root = Path(__file__).resolve().parents[1]
         app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+        app_js += (root / "honorarios_app" / "static" / "review_guidance.js").read_text(encoding="utf-8")
         style_css = (root / "honorarios_app" / "static" / "style.css").read_text(encoding="utf-8")
         for text in [
             "source-review-wizard",
