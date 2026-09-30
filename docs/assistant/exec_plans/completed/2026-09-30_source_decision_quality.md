@@ -2,7 +2,7 @@
 
 ## Goal and authorization
 
-The user is dissatisfied with extraction, review usability and request quality, and explicitly authorized testing and improvements until the app works effectively. Compare the configured gpt-5.4-mini baseline with the requested gpt-5.6-terra and gpt-6.1-sol at high reasoning; verify the newly announced OpenAI Decisions API rather than assume access. Apply verified local improvements. New publication, live Gmail, main-app integration and destructive operations are outside this new scope.
+The user is dissatisfied with extraction, review usability and request quality, and explicitly authorized testing and improvements until the app works effectively. Compare the configured gpt-5.4-mini baseline with the requested gpt-5.6-terra and gpt-6.1-sol at high reasoning; verify the newly announced OpenAI Decisions API rather than assume access. Apply verified local improvements. The initial development scope excluded publication, live Gmail, main-app integration and destructive operations; the publication follow-up below records subsequent authorization.
 
 ## Provenance and preservation
 
@@ -60,4 +60,11 @@ The [official DevDay recap](https://openai.com/index/devday-2026-recap/) confirm
 - All 18 comparison calls and four bounded fictional browser calls completed. Their summed uncached token-price estimate is about USD0.2342, below the initial USD5 cap; no outstanding or uncertain call remains. Browser calls took 9.5–26.6 seconds. These are clean fictional sources, not a production-accuracy claim for private paperwork.
 - The owned synthetic server is stopped, its browser viewport reset and temporary tab blank. Runtime package versions remain pinned. No new plugin, installation, real Gmail action, main-app change or publication was performed.
 
-The authorized local improvement is complete. Publication of this new scope, testing private real documents and future main-app integration remain separately scoped. Decisions API integration is deferred until official public contract/account access and a measured benefit are established; this does not prevent use of the improved app.
+The authorized local improvement is complete. The user subsequently authorized publication of this new scope as recorded below. Testing private real documents and future main-app integration remain separately scoped. Decisions API integration is deferred until official public contract/account access and a measured benefit are established; this does not prevent use of the improved app.
+
+
+## Authorized publication follow-up, 2026-09-30
+
+After the validated improvement was applied locally, the user explicitly requested publication. [PR #60](https://github.com/Adel199223/honorarios-interpreting/pull/60) targets main from the integrated quality branch. The fetched approved baseline remains `f792c95`; no newer accepted work is missing. An independent final diff review found no new code/contract blockers. Tracked privacy checks passed 114 files/zero blockers and the pre-commit gate is configured.
+
+The earlier candidate/saved Full and browser acceptance cover unchanged application code. This publication changes current documentation status only; documentation routing and privacy checks are repeated. Merge is authorized when hosted checks for the current PR head pass and unresolved review blockers are absent. Use the PR's check/merge record to establish GitHub main availability; do not infer it from this pre-merge closeout text. Preserve saved branch/history, all configuration/data hashes and local acceptance beforeimages; public publication excludes private documents, provider settings, credentials and generated outputs.

@@ -10,7 +10,7 @@ Keep the plan current while working. Record actual outcomes, failed attempts, sk
 
 The [development foundation plan](completed/2026-09-30_development_foundation.md) is complete locally. Its authorized publication is tracked in [PR #59](https://github.com/Adel199223/honorarios-interpreting/pull/59). Create the next active plan when a substantial new development task starts.
 
-The [source decision quality plan](completed/2026-09-30_source_decision_quality.md) is complete locally, validated and applied to the saved app. That newer scope is unpublished; its completion does not imply GitHub main or main-app integration.
+The [source decision quality plan](completed/2026-09-30_source_decision_quality.md) is complete locally, validated and applied to the saved app. Its subsequently authorized publication is tracked in [PR #60](https://github.com/Adel199223/honorarios-interpreting/pull/60). Use that record for GitHub check/merge status; main-app integration remains separate.
 
 ## Complete and preserve
 
