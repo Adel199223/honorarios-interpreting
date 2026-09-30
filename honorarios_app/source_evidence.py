@@ -532,5 +532,3 @@ def _photo_metadata_date_source(candidate: dict[str, Any], metadata: dict[str, A
     if _ai_field_value(ai_recovery, "photo_metadata_date") == metadata_date:
         return "visible_google_photos_metadata"
     return "image_metadata"
-
-
