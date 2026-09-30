@@ -2079,6 +2079,7 @@ function renderAiRecovery(aiRecovery) {
 function openReviewDrawer() {
   const backdrop = $("#interpretation-review-drawer-backdrop");
   backdrop.classList.remove("hidden");
+  backdrop.setAttribute("aria-hidden", "false");
   document.body.dataset.interpretationReviewDrawer = "open";
 }
 
@@ -2093,6 +2094,7 @@ function focusDrawerPrepareButton() {
 function closeReviewDrawer() {
   const backdrop = $("#interpretation-review-drawer-backdrop");
   backdrop.classList.add("hidden");
+  backdrop.setAttribute("aria-hidden", "true");
   document.body.dataset.interpretationReviewDrawer = "closed";
 }
 
