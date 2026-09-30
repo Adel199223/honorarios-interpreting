@@ -8,7 +8,11 @@ import {
   questionAnswerExample,
   beginnerFoundLabels,
   beginnerNeededLabels,
-  guidedStepForState
+  guidedStepForState,
+  isWorkflowResponseCurrent,
+  awaitWorkflowResponse,
+  projectWorkflowGuidance,
+  profileFallbackNotice
 } from "./review_guidance.js";
 
 const state = {
@@ -18,6 +22,11 @@ const state = {
   batchSelectedIndex: null,
   batchPreflight: null,
   lastPrepared: null,
+  lastReview: null,
+  workflowRevision: 0,
+  workflowStale: false,
+  pendingPreparationRevision: null,
+  locallyRecordedPayload: "",
   aiStatus: null,
   googlePhotosStatus: null,
   gmailStatus: null,
@@ -327,6 +336,10 @@ function syncActionGates(action = state.currentNextSafeAction) {
         && Boolean($("#record_message_id")?.value.trim())
         && (!targetPayload || state.gmailCreateCompletedPayload !== targetPayload);
     }
+    if (state.pendingPreparationRevision !== null) {
+      enabled = false;
+      blockedReason = "Preparation is in progress. Wait for the reviewed result.";
+    }
     setActionGate(id, enabled, enabled ? actionDetail : blockedReason, actionState);
   });
   const hasReviewableIntake = Boolean(state.currentIntake);
@@ -342,6 +355,11 @@ function syncActionGates(action = state.currentNextSafeAction) {
 }
 
 function clearPreparedArtifacts(reason = "stale prepared result") {
+  const hadPreparedOrPending = Boolean(state.lastPrepared || state.pendingPreparationRevision !== null);
+  state.workflowRevision += 1;
+  state.workflowStale = state.workflowStale || hadPreparedOrPending;
+  state.pendingPreparationRevision = null;
+  state.locallyRecordedPayload = "";
   state.lastPrepared = null;
   state.draftLifecycle = null;
   state.gmailCreateInFlight = false;
@@ -370,10 +388,15 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
   }
   renderManualHandoffPacket(null);
   renderDraftLifecycle(null);
-  syncActionGates(null);
+  renderNextSafeAction(null);
   const message = String(reason || "").trim();
   if (message) {
     $("#prepare-results").setAttribute("data-stale-reason", message);
+  }
+  if (state.workflowStale) {
+    setStatus("stale", "Details changed. Review the request again before preparing or using a draft handoff.");
+    refreshHomeWorkflow();
+    renderGuidedStep("fix_blocker");
   }
 }
 
@@ -546,6 +569,7 @@ function showAlert(message, kind = "") {
 
 function renderNextSafeAction(action) {
   syncActionGates(action);
+  renderGuidedStep(action?.state || (state.workflowStale ? "fix_blocker" : "idle"));
   const targets = [
     {
       card: $("#next-safe-action"),
@@ -994,23 +1018,32 @@ function renderManualHandoffPacket(packet) {
   `;
 }
 
+function requestWorkflowJson(url, options, captured) {
+  return awaitWorkflowResponse(() => requestJson(url, options), captured, () => ({ revision: state.workflowRevision, prepared: state.lastPrepared }));
+}
+
 async function buildManualHandoffPacket() {
+  const capturedRevision = state.workflowRevision;
+  const capturedPrepared = state.lastPrepared;
   const target = preparedRecordTarget();
   if (!target?.draft_payload) {
     throw new Error("Prepare a PDF and Gmail draft payload before building the manual handoff packet.");
   }
-  const data = await requestJson("/api/gmail/manual-handoff", {
+  const data = await requestWorkflowJson("/api/gmail/manual-handoff", {
     method: "POST",
     body: JSON.stringify({
       payload: target.draft_payload,
       ...currentPreparedReviewFields(target.draft_payload),
     }),
-  });
+  }, { revision: capturedRevision, prepared: capturedPrepared });
+  if (!data) return null;
   state.lastManualHandoff = data;
   renderManualHandoffPacket(data);
   setStatus(data.status || "ready", data.message || "Manual handoff packet ready.");
   showAlert("Manual handoff packet ready to copy.", "recorded");
   syncActionGates();
+  refreshHomeWorkflow();
+  renderGuidedStep("review_gmail_draft_args");
   return data;
 }
 
@@ -1072,6 +1105,7 @@ function moveBatchIntake(fromIndex, toIndex) {
   const [item] = state.batchIntakes.splice(from, 1);
   state.batchIntakes.splice(to, 0, item);
   state.batchPreflight = null;
+  clearPreparedArtifacts("batch queue order changed");
   const selected = state.batchSelectedIndex;
   if (selected === from) {
     state.batchSelectedIndex = to;
@@ -1348,13 +1382,39 @@ function renderInlineAnswerPanel(questions) {
   `;
 }
 
+function currentWorkflowGuidance(data = {}) {
+  const target = preparedRecordTarget();
+  return projectWorkflowGuidance({
+    status: data.status || "idle",
+    hasPrepared: Boolean(target?.draft_payload),
+    handoffReady: Boolean(state.lastManualHandoff?.copyable_prompt),
+    recorded: Boolean(target?.draft_payload && state.locallyRecordedPayload === target.draft_payload),
+    stale: state.workflowStale,
+    preparing: state.pendingPreparationRevision === state.workflowRevision,
+  });
+}
+
+function refreshHomeWorkflow() {
+  const review = state.lastReview || {};
+  const target = preparedRecordTarget();
+  updateHomeReviewCard({
+    ...review,
+    intake: state.currentIntake || review.intake || review.effective_intake || {},
+    effective_intake: state.currentIntake || review.effective_intake || review.intake || {},
+    case_number: target?.case_number || state.currentIntake?.case_number || review.case_number || "",
+    service_date: target?.service_date || state.currentIntake?.service_date || review.service_date || "",
+    recipient: target?.recipient || state.currentIntake?.recipient_email || review.recipient || "",
+  });
+}
+
 function sourceSafetyLine(data = {}) {
+  const workflow = currentWorkflowGuidance(data);
   const status = String(data.status || "").replaceAll("_", " ") || "waiting";
-  const blocked = data.status && data.status !== "ready";
+  const blocked = workflow.phase === "review" ? data.status && data.status !== "ready" : workflow.phase === "stale";
   return `
     <div class="source-safety-line ${blocked ? "blocked" : "ready"}">
-      <strong>${blocked ? "Paused safely" : "Ready for preview"}</strong>
-      <span>No PDF, Gmail draft, or local record was created. Review status: ${escapeHtml(status)}.</span>
+      <strong>${workflow.phase === "review" ? blocked ? "Paused safely" : "Ready for preview" : escapeHtml(workflow.headline)}</strong>
+      <span>${escapeHtml(workflow.safety)}${workflow.phase === "review" ? ` Review status: ${escapeHtml(status)}.` : ""}</span>
     </div>
   `;
 }
@@ -1388,10 +1448,11 @@ function renderBeginnerQuestionFocus(questions, extraActions = "") {
 }
 
 function renderBeginnerOutcomeBanner(data, intake, questions) {
+  const workflow = currentWorkflowGuidance(data);
   const status = String(data.status || "review");
   const foundLabels = beginnerFoundLabels(data, intake);
   const neededLabels = beginnerNeededLabels(questions);
-  const statusClass = status === "ready" ? "ready" : status === "error" ? "error" : questions.length ? "blocked" : "info";
+  const statusClass = ["ready", "prepared", "recorded"].includes(status) ? "ready" : status === "error" ? "error" : questions.length || workflow.phase === "stale" ? "blocked" : "info";
   let headline = "I found the source details and stopped for review before creating anything.";
   if (questions.length) {
     headline = `I found ${foundLabels.length ? humanList(foundLabels.slice(0, 3)) : "some details"}, but I still need ${questions.length} answer${questions.length === 1 ? "" : "s"} before PDF creation.`;
@@ -1407,7 +1468,10 @@ function renderBeginnerOutcomeBanner(data, intake, questions) {
   const foundText = foundLabels.length
     ? `Found: ${humanList(foundLabels.slice(0, 5))}.`
     : "Found: source evidence that still needs review.";
-  const neededText = neededLabels.length
+  if (workflow.phase !== "review") headline = workflow.headline;
+  const neededText = workflow.phase !== "review"
+    ? workflow.needed
+    : neededLabels.length
     ? `Still needed: ${humanList(neededLabels.slice(0, 5))}.`
     : (status === "ready" ? "Still needed: preview the PDF before any draft step." : "Still needed: review the next safe action.");
   return `
@@ -1415,15 +1479,16 @@ function renderBeginnerOutcomeBanner(data, intake, questions) {
       <span>What happened</span>
       <strong>${escapeHtml(headline)}</strong>
       <p>${escapeHtml(foundText)} ${escapeHtml(neededText)}</p>
-      <small>No PDF, Gmail draft, or local record was created.</small>
+      <small>${escapeHtml(workflow.safety)}</small>
     </div>
   `;
 }
 
 function renderBeginnerReviewSummary(data) {
-  const questions = Array.isArray(data.questions) ? data.questions : [];
+  const workflow = currentWorkflowGuidance(data);
+  const questions = workflow.phase === "review" && Array.isArray(data.questions) ? data.questions : [];
   const intake = reviewIntakeForDisplay(data);
-  const readyForPdf = data.status === "ready" && questions.length === 0;
+  const readyForPdf = workflow.phase === "review" && data.status === "ready" && questions.length === 0;
   const recipient = data.recipient || intake.recipient_email || "";
   const servicePlace = intake.service_place || "";
   const profile = intake.auto_profile?.profile_key || intake.service_profile_key || "";
@@ -1438,7 +1503,7 @@ function renderBeginnerReviewSummary(data) {
   ].filter(Boolean).join("");
   const needs = questions.length
     ? questions.map((question) => `<li><strong>${escapeHtml(String(question.number || ""))}.</strong> ${escapeHtml(question.question || "")}</li>`).join("")
-    : `<li>${escapeHtml(data.status === "ready" ? "No missing review questions." : "Upload or review the source to see the next question.")}</li>`;
+    : `<li>${escapeHtml(workflow.phase !== "review" ? workflow.needed : data.status === "ready" ? "No missing review questions." : "Upload or review the source to see the next question.")}</li>`;
   const readyCta = readyForPdf
     ? `
       <div class="beginner-ready-cta">
@@ -1450,6 +1515,21 @@ function renderBeginnerReviewSummary(data) {
         <button type="button" class="mini-button" data-open-review-drawer-focus-prepare="true">Review draft and PDF step</button>
       </div>
     `
+    : ["prepared", "handoff_ready", "recorded"].includes(workflow.phase)
+    ? `<div class="beginner-ready-cta">
+        <div><span>Prepared</span><strong>Review the PDF and draft handoff</strong><p>${escapeHtml(workflow.needed)}</p></div>
+        <button type="button" class="mini-button" data-open-review-drawer-focus-handoff="true">Review PDF and handoff</button>
+      </div>`
+    : "";
+  const fallback = profileFallbackNotice(data, intake);
+  const fallbackNotice = fallback && workflow.phase === "review"
+    ? `<div class="source-attention-card attention-review" data-profile-fallback-notice="true">
+        <div class="result-header"><strong>Check the automatic profile fallback</strong><span class="status-chip info">${escapeHtml(fallback.confidence)} confidence</span></div>
+        <p>${escapeHtml(fallback.reason)}</p>
+        <div>Profile: <strong>${escapeHtml(fallback.profile)}</strong></div>
+        <div>Payment entity: <strong>${escapeHtml(fallback.paymentEntity)}</strong></div>
+        <div>Recipient: <strong>${escapeHtml(fallback.recipient)}</strong></div>
+      </div>`
     : "";
   const questionFocus = renderBeginnerQuestionFocus(questions, renderMetadataDateActions(intake, questions));
   return `
@@ -1457,13 +1537,14 @@ function renderBeginnerReviewSummary(data) {
       <div class="source-review-title">
         <div>
           <span>Review this source</span>
-          <strong>${questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : "Ready for the next step"}</strong>
+          <strong>${workflow.phase !== "review" ? escapeHtml(workflow.headline) : questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : "Ready for the next step"}</strong>
         </div>
-        <span class="status-chip ${questions.length ? "blocked" : data.status === "ready" ? "ready" : "info"}">${questions.length ? "Needs review" : escapeHtml(String(data.status || "review"))}</span>
+        <span class="status-chip ${questions.length ? "blocked" : statusChipClass(data.status)}">${questions.length ? "Needs review" : escapeHtml(String(data.status || "review"))}</span>
       </div>
       ${renderBeginnerOutcomeBanner(data, intake, questions)}
       ${sourceSafetyLine(data)}
       ${questionFocus}
+      ${fallbackNotice}
       ${readyCta}
     </div>
     <details class="beginner-found-details">
@@ -1486,6 +1567,10 @@ function renderBeginnerReviewSummary(data) {
 }
 
 function updateHomeReviewCard(data) {
+  const workflow = currentWorkflowGuidance(data);
+  if (workflow.phase !== "review") {
+    data = { ...data, status: workflow.status, message: workflow.headline, questions: [] };
+  }
   const card = $("#interpretation-review-home-result");
   const status = data.status || "idle";
   if (status !== "idle") {
@@ -1497,7 +1582,7 @@ function updateHomeReviewCard(data) {
   const questions = data.questions?.length ? `<div>${data.questions.length} numbered question${data.questions.length === 1 ? "" : "s"} need an answer.</div>` : "";
 
   card.className = `result-card ${["ready", "prepared", "recorded"].includes(status) ? "ready" : ""}`.trim();
-  if (["duplicate", "active_draft", "set_aside", "blocked", "needs_info"].includes(status)) {
+  if (["duplicate", "active_draft", "set_aside", "blocked", "needs_info", "stale"].includes(status)) {
     card.className = `result-card blocked`;
   }
   if (status === "error") {
@@ -1509,7 +1594,7 @@ function updateHomeReviewCard(data) {
         <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(data.message || "Review the recovered details before creating the PDF.")}</p>
       </div>
-      <span class="status-chip ${status === "ready" ? "ready" : status === "error" ? "error" : status === "idle" ? "info" : "blocked"}">${escapeHtml(status.replaceAll("_", " "))}</span>
+      <span class="status-chip ${statusChipClass(status)}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>
     ${renderBeginnerReviewSummary(data)}
     ${recipient}
@@ -2539,10 +2624,13 @@ async function createGmailApiDraft() {
     $("#record_thread_id").value = data.thread_id || data.confirmation?.thread_id || "";
     $("#record_status").value = "active";
     state.gmailCreateCompletedPayload = target.draft_payload;
+    state.locallyRecordedPayload = target.draft_payload;
     state.lastGmailCreateConfirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
     renderGmailApiResult(data, "created");
     setStatus("recorded", "Gmail draft created and recorded locally. Review and send it manually in Gmail.");
     showAlert("Gmail draft created and duplicate protection updated.", "recorded");
+    refreshHomeWorkflow();
+    renderGuidedStep("review_gmail_draft_args");
     await loadReference();
     return data;
   } finally {
@@ -4299,6 +4387,25 @@ async function addCurrentIntakeToBatch() {
   }
 }
 
+function beginPreparation() {
+  clearPreparedArtifacts("preparation started");
+  state.workflowStale = false;
+  state.pendingPreparationRevision = state.workflowRevision;
+  syncActionGates(null);
+  refreshHomeWorkflow();
+  renderGuidedStep("prepare_pdf");
+  return state.workflowRevision;
+}
+
+function finishPreparationWait(capturedRevision) {
+  if (state.pendingPreparationRevision !== capturedRevision) return;
+  state.pendingPreparationRevision = null;
+  state.workflowStale = true;
+  syncActionGates(null);
+  refreshHomeWorkflow();
+  renderGuidedStep("fix_blocker");
+}
+
 async function prepareBatchIntakes() {
   if (!state.batchIntakes.length) {
     throw new Error("Add at least one ready request to the batch queue first.");
@@ -4309,22 +4416,32 @@ async function prepareBatchIntakes() {
   }
   const packetMode = currentBatchPacketMode();
   const intakes = state.batchIntakes.map(cloneIntake);
-  const data = await requestJson("/api/prepare", {
-    method: "POST",
-    body: JSON.stringify({
-      intakes,
-      render_previews: true,
-      packet_mode: packetMode,
-      preflight_review: state.batchPreflight?.preflight_review || null,
-    }),
-  });
-  state.lastPrepared = data;
-  const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
-  setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared ${modeText}.`);
-  showAlert("", "");
-  renderPrepared(data);
-  openReviewDrawer();
-  await loadReference();
+  const capturedRevision = beginPreparation();
+  try {
+    const data = await requestWorkflowJson("/api/prepare", {
+      method: "POST",
+      body: JSON.stringify({
+        intakes,
+        render_previews: true,
+        packet_mode: packetMode,
+        preflight_review: state.batchPreflight?.preflight_review || null,
+      }),
+    }, { revision: capturedRevision });
+    if (!data) return null;
+    state.lastPrepared = data;
+    const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
+    setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared ${modeText}.`);
+    showAlert("", "");
+    renderPrepared(data);
+    openReviewDrawer();
+    await loadReference();
+    return data;
+  } catch (error) {
+    if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;
+    throw error;
+  } finally {
+    finishPreparationWait(capturedRevision);
+  }
 }
 
 async function preflightBatchIntakes(options = {}) {
@@ -4336,10 +4453,13 @@ async function preflightBatchIntakes(options = {}) {
   const packetMode = currentBatchPacketMode();
   const intakes = state.batchIntakes.map(cloneIntake);
   const requestSignature = batchPreflightSignature(packetMode, intakes);
-  const data = await requestJson("/api/prepare/preflight", {
+  const capturedRevision = state.workflowRevision;
+  const capturedPrepared = state.lastPrepared;
+  const data = await requestWorkflowJson("/api/prepare/preflight", {
     method: "POST",
     body: JSON.stringify({ intakes, packet_mode: packetMode }),
-  });
+  }, { revision: capturedRevision, prepared: capturedPrepared });
+  if (!data || requestSignature !== batchPreflightSignature(currentBatchPacketMode(), state.batchIntakes)) return null;
   state.batchPreflight = { ...data, request_signature: requestSignature };
   renderBatchPreflight();
   renderNextSafeAction(data.next_safe_action || null);
@@ -4360,6 +4480,8 @@ async function preflightBatchIntakes(options = {}) {
 
 function applyReview(data, options = {}) {
   clearPreparedArtifacts("review changed");
+  state.workflowStale = false;
+  state.lastReview = data;
   if (data.effective_intake || data.intake) {
     state.currentIntake = data.effective_intake || data.intake;
     fillFormFromIntake(state.currentIntake);
@@ -4400,7 +4522,8 @@ async function prepareIntake(options = {}) {
     await buildIntakeFromProfile();
   }
   mergeFormIntoCurrentIntake();
-  const requestPayload = { intakes: [state.currentIntake], render_previews: true };
+  const requestIntake = cloneIntake(state.currentIntake);
+  const requestPayload = { intakes: [requestIntake], render_previews: true };
   if (options.correctionMode) {
     requestPayload.correction_mode = true;
     requestPayload.correction_reason = ($("#correction_reason").value || "").trim();
@@ -4409,39 +4532,52 @@ async function prepareIntake(options = {}) {
     }
   }
   const preflightPayload = {
-    intakes: [cloneIntake(state.currentIntake)],
+    intakes: [cloneIntake(requestIntake)],
     packet_mode: false,
   };
   if (requestPayload.correction_mode) {
     preflightPayload.correction_mode = true;
     preflightPayload.correction_reason = requestPayload.correction_reason;
   }
-  const preflight = await requestJson("/api/prepare/preflight", {
-    method: "POST",
-    body: JSON.stringify(preflightPayload),
-  });
-  renderNextSafeAction(preflight.next_safe_action || null);
-  if (preflight.status !== "ready" || !preflight.preflight_review) {
-    const message = preflight.message || "Run a current ready preflight before preparing artifacts.";
-    setStatus(preflight.status || "blocked", message);
-    showAlert(message, "blocked");
+  const capturedRevision = beginPreparation();
+  try {
+    const preflight = await requestWorkflowJson("/api/prepare/preflight", {
+      method: "POST",
+      body: JSON.stringify(preflightPayload),
+    }, { revision: capturedRevision });
+    if (!preflight) return null;
+    renderNextSafeAction(preflight.next_safe_action || null);
+    if (preflight.status !== "ready" || !preflight.preflight_review) {
+      const message = preflight.message || "Run a current ready preflight before preparing artifacts.";
+      setStatus(preflight.status || "blocked", message);
+      showAlert(message, "blocked");
+      openReviewDrawer();
+      throw new Error(message);
+    }
+    requestPayload.preflight_review = preflight.preflight_review;
+    const data = await requestWorkflowJson("/api/prepare", {
+      method: "POST",
+      body: JSON.stringify(requestPayload),
+    }, { revision: capturedRevision });
+    if (!data) return null;
+    state.lastPrepared = data;
+    setStatus(data.status, "PDF and Gmail draft payload prepared. Review before using Gmail _create_draft.");
+    showAlert("", "");
+    renderPrepared(data);
     openReviewDrawer();
-    throw new Error(message);
+    await loadReference();
+    return data;
+  } catch (error) {
+    if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;
+    throw error;
+  } finally {
+    finishPreparationWait(capturedRevision);
   }
-  requestPayload.preflight_review = preflight.preflight_review;
-  const data = await requestJson("/api/prepare", {
-    method: "POST",
-    body: JSON.stringify(requestPayload),
-  });
-  state.lastPrepared = data;
-  setStatus(data.status, "PDF and Gmail draft payload prepared. Review before using Gmail _create_draft.");
-  showAlert("", "");
-  renderPrepared(data);
-  openReviewDrawer();
-  await loadReference();
 }
 
 function renderPrepared(data) {
+  state.pendingPreparationRevision = null;
+  state.workflowStale = false;
   const items = data.items || [];
   const packet = data.packet || null;
   const first = items[0];
@@ -4534,6 +4670,7 @@ function renderPrepared(data) {
     });
   }
   syncActionGates();
+  refreshHomeWorkflow();
 }
 
 function renderPreparedPacketContents(items) {
@@ -4578,7 +4715,13 @@ function draftRecordPayloadFromForm() {
   };
 }
 
-async function finishDraftRecord(data) {
+async function finishDraftRecord(data, context) {
+  if (context && !isWorkflowResponseCurrent(context.revision, state.workflowRevision, context.prepared, state.lastPrepared)) {
+    await loadReference();
+    showAlert("The earlier draft was recorded locally. Review the changed current request before using another handoff.", "recorded");
+    return data;
+  }
+  state.locallyRecordedPayload = context?.payload || preparedRecordTarget()?.draft_payload || "";
   setStatus(data.status, `Recorded Gmail draft ${data.draft_id}.`);
   const superseded = data.superseded_drafts?.length ? ` Superseded: ${data.superseded_drafts.join(", ")}.` : "";
   const blockerCount = Number(data.recorded_duplicate_count || 0);
@@ -4589,6 +4732,8 @@ async function finishDraftRecord(data) {
     ? ` The duplicate index now protects ${blockerCount} duplicate blocker${blockerCount === 1 ? "" : "s"}${duplicateKeys.length ? `: ${duplicateKeys.join("; ")}` : ""}.`
     : " The duplicate index now protects this case/date.";
   showAlert(`Draft recorded locally.${blockerText}${superseded}`, "recorded");
+  refreshHomeWorkflow();
+  renderGuidedStep("review_gmail_draft_args");
   await loadReference();
   return data;
 }
@@ -4600,25 +4745,29 @@ async function recordPreparedDraftFromForm() {
     gmail_handoff_reviewed: true,
     ...currentPreparedReviewFields(payloadPath),
   };
+  const context = { revision: state.workflowRevision, prepared: state.lastPrepared, payload: payloadPath };
   const data = await requestJson("/api/drafts/record", {
     method: "POST",
     body: JSON.stringify(removeEmpty(payload)),
   });
-  return finishDraftRecord(data);
+  return finishDraftRecord(data, context);
 }
 
 async function recordDraft() {
   const payload = draftRecordPayloadFromForm();
+  const context = { revision: state.workflowRevision, prepared: state.lastPrepared, payload: payload.payload };
   const data = await requestJson("/api/drafts/status", {
     method: "POST",
     body: JSON.stringify(removeEmpty(payload)),
   });
-  return finishDraftRecord(data);
+  return finishDraftRecord(data, context);
 }
 
 function resetReview({ closeDrawer = true } = {}) {
   state.currentIntake = null;
   clearPreparedArtifacts("review reset");
+  state.workflowStale = false;
+  state.lastReview = null;
   state.draftLifecycle = null;
   state.googlePhotosPicker = null;
   $("#intake-form").reset();
@@ -4772,6 +4921,15 @@ function bindActions() {
     if (!button) return;
     openReviewDrawer();
     window.requestAnimationFrame(() => focusDrawerPrepareButton());
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-review-drawer-focus-handoff]");
+    if (!button) return;
+    openReviewDrawer();
+    window.requestAnimationFrame(() => {
+      const panel = !$("#pdf-preview-panel")?.classList.contains("hidden") ? $("#pdf-preview-panel") : $("#prepare-results");
+      panel?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   });
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-confirm-metadata-service-date]");
@@ -5428,6 +5586,7 @@ function bindActions() {
     state.batchIntakes = [];
     state.batchSelectedIndex = null;
     state.batchPreflight = null;
+    clearPreparedArtifacts("batch queue cleared");
     $("#batch-packet-mode").checked = false;
     renderBatchQueue();
     setStatus("idle", "Batch queue cleared.");
@@ -5442,6 +5601,7 @@ function bindActions() {
   });
   packetMode.addEventListener("change", () => {
     state.batchPreflight = null;
+    clearPreparedArtifacts("batch packet mode changed");
     renderBatchPreflight();
     syncActionGates();
   });
@@ -5467,6 +5627,7 @@ function bindActions() {
     const removedIndex = Number(button.dataset.removeBatchIndex);
     state.batchIntakes.splice(removedIndex, 1);
     state.batchPreflight = null;
+    clearPreparedArtifacts("batch queue item removed");
     if (state.batchSelectedIndex === removedIndex) {
       state.batchSelectedIndex = state.batchIntakes.length ? Math.min(removedIndex, state.batchIntakes.length - 1) : null;
     } else if (state.batchSelectedIndex !== null && state.batchSelectedIndex > removedIndex) {
