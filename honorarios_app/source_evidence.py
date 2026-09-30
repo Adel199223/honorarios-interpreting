@@ -155,9 +155,18 @@ def _values_match(left: Any, right: Any) -> bool:
 
 def _ai_source_for_field(field: str, value: Any, raw_visible_text: str, metadata_date: str) -> tuple[str, str, str]:
     if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
-        return "openai_and_photo_metadata", "high", "AI recovered the service date and it matches the image metadata date."
-    confidence = "high" if _text_contains_value(raw_visible_text, value) else "medium"
-    return "openai_ocr", confidence, "OpenAI OCR recovered this value from the uploaded source."
+        return "openai_and_photo_metadata", "medium", "AI suggested this service date and it matches the capture date. Agreement does not confirm when the service happened; check the source and confirm the date."
+    if _text_contains_value(raw_visible_text, value):
+        return "openai_ocr", "medium", "AI read this value in its recovered text. That text is from the same AI response, not independent confirmation; check the original source."
+    return "openai_ocr", "low", "AI suggested this value without a matching excerpt in its recovered text. It may be inferred; check and correct it against the original source."
+
+
+def _independent_source_text(candidate: dict[str, Any], raw_visible_text: str) -> str:
+    # Later reviews reparse source_text, which includes AI OCR. A repeated AI
+    # claim must not become independent evidence merely by matching a pattern.
+    text = str(candidate.get("source_text") or "")
+    ai_text = str(raw_visible_text or "").strip()
+    return text.replace(ai_text, "").strip() if ai_text else text
 
 
 def build_field_evidence(
@@ -189,6 +198,7 @@ def build_field_evidence(
         seen_fields.add("profile_key")
 
     raw_visible_text = str(ai_recovery.get("raw_visible_text") or "")
+    independent_text = _independent_source_text(candidate, raw_visible_text)
     metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
 
     def add(field: str, value: Any, *, source: str, confidence: str, reason: str, raw_value: Any = "", excerpt: str = "") -> None:
@@ -217,17 +227,28 @@ def build_field_evidence(
 
     if metadata_date:
         metadata_source = _photo_metadata_date_source(candidate, metadata, ai_recovery)
+        ai_metadata = metadata_source == "openai_ocr"
+        metadata_verified = bool(metadata.get("exif_date") or metadata.get("visible_metadata_date")) and not ai_metadata
         add(
             "photo_metadata_date",
             metadata_date,
             source=metadata_source,
-            confidence="high",
+            confidence="high" if metadata_verified else "medium",
             reason=(
-                "Visible Google Photos metadata supplied the capture date used for review."
+                "AI read a possible capture date. Check the original metadata; a capture date does not confirm the service date."
+                if ai_metadata
+                else "Visible Google Photos metadata supplied a capture date, not confirmation of the service date."
                 if metadata_source == "visible_google_photos_metadata"
-                else "Image metadata supplied the capture date used for review."
+                else "Image metadata supplied a capture date, not confirmation of the service date."
+                if metadata_verified
+                else "A capture-date candidate was supplied for review. Check its origin and confirm whether the service happened then."
             ),
         )
+
+    if str(candidate.get("service_date_source") or "") in {
+        "user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed",
+    }:
+        add("service_date", candidate.get("service_date"), source="user_confirmed", confidence="high", reason="You explicitly supplied or confirmed the service date. Source, conflict and duplicate checks still apply.")
 
     deterministic_sources = {
         "case_number": "deterministic_text",
@@ -251,6 +272,14 @@ def build_field_evidence(
         if field in {"transport_destination", "km_one_way"}:
             deterministic_value = deterministic_fields.get(field)
         if deterministic_value not in (None, "") and _values_match(value, deterministic_value):
+            ai_value = _ai_field_value(ai_recovery, field)
+            if ai_recovery.get("status") == "ok" and not _text_contains_value(independent_text, deterministic_value):
+                if _text_contains_value(raw_visible_text, deterministic_value):
+                    source, confidence, reason = _ai_source_for_field(field, value, raw_visible_text, metadata_date)
+                    add(field, value, source=source, confidence=confidence, reason=reason, excerpt=_line_excerpt(raw_visible_text, deterministic_value))
+                    continue
+                if ai_value and _values_match(value, normalize_case_number(ai_value) if field == "case_number" else ai_value):
+                    continue
             source = deterministic_sources[field]
             if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
                 source = "document_text_and_photo_metadata"
@@ -258,7 +287,7 @@ def build_field_evidence(
                 field,
                 value,
                 source=source,
-                confidence="high",
+                confidence="medium" if source == "known_destination" else "high",
                 reason=deterministic_reasons[field],
                 raw_value=deterministic_fields.get("raw_case_number", "") if field == "case_number" else "",
                 excerpt=_line_excerpt(str(candidate.get("source_text") or ""), deterministic_value),
@@ -309,8 +338,8 @@ def build_field_evidence(
                 field,
                 value,
                 source="service_profile",
-                confidence="medium" if profile_source != "auto_profile" else "high",
-                reason=f"Service profile {profile_key} supplied this default.",
+                confidence="low" if profile_source == "fallback_profile" else "medium",
+                reason=f"Service profile {profile_key} supplied this default. A recurring profile does not confirm this source; check the value before preparing.",
             )
 
     return evidence
@@ -522,13 +551,13 @@ def fold_match_text(value: Any) -> str:
 
 
 def _photo_metadata_date_source(candidate: dict[str, Any], metadata: dict[str, Any], ai_recovery: dict[str, Any]) -> str:
-    metadata_date = str(candidate.get("photo_metadata_date") or "").strip()
+    metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
     if not metadata_date:
         return "image_metadata"
     if str(metadata.get("exif_date") or "").strip() == metadata_date:
         return "image_metadata"
-    if str(metadata.get("visible_metadata_date") or "").strip() == metadata_date:
-        return "visible_google_photos_metadata"
     if _ai_field_value(ai_recovery, "photo_metadata_date") == metadata_date:
+        return "openai_ocr"
+    if str(metadata.get("visible_metadata_date") or "").strip() == metadata_date:
         return "visible_google_photos_metadata"
     return "image_metadata"

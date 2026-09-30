@@ -98,6 +98,20 @@ console.log(JSON.stringify({
     g.profileFallbackNotice({recipient:'reviewed@example.test',source_evidence:{auto_profile:{mode:'auto_fallback',reason:'No confident match.'}}},{}),
     g.profileFallbackNotice({}, {auto_profile:{mode:'explicit_profile',profile_key:'kept'}}),
     g.profileFallbackNotice({}, {auto_profile:{mode:'auto_fallback',reason:'<fictional evidence>'}})
+  ],
+  facts: g.beginnerReviewFacts({source_evidence:{field_evidence:[
+    {field:'case_number',value:'123/26.0SYNTH',source:'openai_ocr',confidence:'medium'},
+    {field:'payment_entity',value:'Fictional Court',source:'service_profile',confidence:'medium'},
+    {field:'service_place',value:'Fictional Office',source:'openai_ocr',confidence:'low'},
+    {field:'recipient_email',value:'court@example.test',source:'visible_email',confidence:'high'}
+  ]}}, {case_number:'123/26.0SYNTH',photo_metadata_date:'2026-09-28',payment_entity:'Fictional Court',service_place:'Fictional Office',recipient_email:'court@example.test'}),
+  origins: [
+    g.reviewFactOrigin('service_date','2026-09-28',{}, {service_date_source:'photo_metadata_user_confirmed'}),
+    g.reviewFactOrigin('case_number','123/26.0SYNTH',{source_evidence:{field_evidence:[{field:'case_number',value:'old value',source:'deterministic_text'}]}}),
+    g.reviewFactOrigin('case_number','123/26.0SYNTH',{source_evidence:{field_evidence:[{field:'case_number',value:'123/26.0SYNTH',source:'openai_ocr',confidence:'high'}]}}),
+    g.reviewFactOrigin('payment_entity',''),
+    g.reviewFactOrigin('service_date','2026-09-28',{source_evidence:{field_evidence:[{field:'service_date',value:'2026-09-28',source:'openai_ocr',status:'conflicts_with_metadata'}]}}),
+    g.reviewFactOrigin('recipient_email','typed@example.test')
   ]
 }));
 """
@@ -169,3 +183,21 @@ console.log(JSON.stringify({
         self.assertEqual(ambiguous["recipient"], "reviewed@example.test")
         self.assertIsNone(explicit)
         self.assertEqual(literal["reason"], "<fictional evidence>")
+
+    def test_key_fact_summary_covers_payment_and_preserves_unverified_ai_origins(self):
+        facts = self.result["facts"]
+        self.assertEqual([fact["field"] for fact in facts], ["case_number", "service_date", "payment_entity", "service_place", "recipient_email"])
+        self.assertEqual([fact["origin"]["kind"] for fact in facts], ["ai", "metadata", "default", "ai", "source"])
+        self.assertEqual(facts[0]["origin"]["label"], "AI-read · check source")
+        self.assertEqual(facts[3]["origin"]["label"], "AI suggestion · check source")
+        self.assertEqual(facts[1]["value"], "2026-09-28")
+        self.assertIn("needs confirmation", facts[1]["origin"]["label"])
+
+    def test_summary_does_not_call_unknown_corrected_or_old_ai_values_confirmed(self):
+        manual, changed, old_ai, missing, conflict, typed = self.result["origins"]
+        self.assertEqual(manual["kind"], "manual")
+        self.assertEqual(changed, {"kind": "unknown", "label": "Check this value"})
+        self.assertEqual(typed, changed, "Absence of AI provenance is not proof of manual confirmation.")
+        self.assertEqual(old_ai, {"kind": "ai", "label": "AI-read · check source"})
+        self.assertEqual(missing["kind"], "missing")
+        self.assertEqual(conflict["kind"], "conflict")

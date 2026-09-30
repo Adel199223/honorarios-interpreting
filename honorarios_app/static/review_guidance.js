@@ -93,6 +93,50 @@ export function profileFallbackNotice(data = {}, intake = {}) {
   };
 }
 
+export function reviewFactOrigin(field, value, data = {}, intake = {}) {
+  if (!String(value || "").trim()) return { kind: "missing", label: "Needs an answer" };
+  if (field === "service_date" && ["user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed"].includes(intake.service_date_source)) {
+    return { kind: "manual", label: "You confirmed this date" };
+  }
+  const evidence = data.review_evidence || data.source_evidence || {};
+  const fields = Array.isArray(evidence.field_evidence)
+    ? evidence.field_evidence
+    : Object.entries(evidence.field_evidence || {}).map(([key, entry]) => ({ field: key, ...entry }));
+  const entry = fields.find(item => item.field === field && String(item.value || "").trim().toLowerCase() === String(value).trim().toLowerCase());
+  if (entry?.status === "conflicts_with_metadata") return { kind: "conflict", label: "Date conflict · answer the question" };
+  const source = String(entry?.source || "");
+  if (source.startsWith("openai")) {
+    return { kind: "ai", label: entry.confidence === "low" ? "AI suggestion · check source" : "AI-read · check source" };
+  }
+  if (["deterministic_text", "document_text", "visible_email", "document_text_and_photo_metadata"].includes(source)) {
+    return { kind: "source", label: "From source text · check it" };
+  }
+  if (source === "user_confirmed") return { kind: "manual", label: "You confirmed this date" };
+  if (source === "service_profile") return { kind: "default", label: "Profile default · check it" };
+  if (source === "known_destination") return { kind: "default", label: "Saved place/distance · check it" };
+  if (["image_metadata", "visible_google_photos_metadata"].includes(source)) {
+    return { kind: "metadata", label: "Capture date · needs confirmation" };
+  }
+  return { kind: "unknown", label: "Check this value" };
+}
+
+export function beginnerReviewFacts(data = {}, intake = {}) {
+  const serviceDate = data.service_date || intake.service_date || "";
+  const values = [
+    ["case_number", "Case number", data.case_number || intake.case_number],
+    ["service_date", "Service date", serviceDate || intake.photo_metadata_date],
+    ["payment_entity", "Payment entity", intake.payment_entity],
+    ["service_place", "Service place", intake.service_place],
+    ["recipient_email", "Recipient email", data.recipient || intake.recipient_email],
+  ];
+  return values.map(([field, label, value]) => ({
+    field, label, value: value || "",
+    origin: field === "service_date" && !serviceDate && intake.photo_metadata_date
+      ? { kind: "metadata", label: "Photo date · needs confirmation" }
+      : reviewFactOrigin(field, value, data, intake),
+  }));
+}
+
 export function todayIsoDate() {
   const date = new Date();
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
