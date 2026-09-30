@@ -2,9 +2,9 @@
 
 ## Current development foundation: completed locally, 2026-09-30
 
-The user's approved development foundation is complete and applied to the usual saved fee-app checkout. New publication, production LegalPDF integration, real providers and private-data operations remain separately scoped.
+The user's approved development foundation is complete and applied to the usual saved fee-app checkout. The user subsequently authorized publication and merge; [PR #59](https://github.com/Adel199223/honorarios-interpreting/pull/59) is the authoritative current publication/merge record. Production LegalPDF integration, real providers and private-data operations remain separately scoped.
 
-- Published baseline: PR #58 merged at `bb9b1cf`; the newer development foundation is local and unpublished.
+- Published baseline: PR #58 merged at `bb9b1cf`; the newer development foundation is tracked in PR #59. Check that PR's current merge and hosted-check status before treating it as GitHub main. Publication preflight repeated Full successfully after an AST-equivalent cleanup of five test-file endings.
 - Authoring branch: `codex/fee-development-foundation-20260930`, based on that baseline and the saved interface recovery. Final tested application code is `94c3931`. The original checkout retains `codex/beginner-guided-intake-ux`, its history and private runtime; verified public files were applied with exact beforeimages rather than switching/resetting that checkout.
 - Final Full validation passed 164 public synthetic tests and four isolated source/proof/adapter/fake-Gmail workflows in the assembled review build and independently in the saved checkout. Offline wheel, environment/lock/export, syntax and documentation routing checks passed. Launch preflight passed at port 8878.
 - Focused groups: quick 71, intake 59, PDF 6, email 15, UI 30, package 26, integration 16; default remains full. The old 60-case monolith is split by responsibility. Runtime versions and pins remain the verified baseline.
@@ -12,7 +12,7 @@ The user's approved development foundation is complete and applied to the usual 
 - Concrete bugs repaired: unavailable auto-profile fallback, uploaded EXIF-only date confirmation bypass, stale home/preparation guidance and late preparation/handoff responses. Initial failures/tooling limitations and repairs are preserved in the completed plan/evidence.
 - All 11 protected local config/data hashes remain unchanged. Public-file application was byte-verified; exact beforeimages, application/browser receipts, proof images and logs are retained in ignored task evidence. The owned synthetic server is stopped and its temporary browser tab reset to blank.
 - Start new development with [the runbook](../agent.md), [plan lifecycle](assistant/exec_plans/PLANS.md), [validation](validation.md), [user guide](user-guide.md) and [workflow checklist](workflow-acceptance.md). The [completed foundation plan](assistant/exec_plans/completed/2026-09-30_development_foundation.md) is acceptance/history, not an unfinished continuation request. Create a new active plan for substantial new work.
-- Deferred: new publication, real documents/providers, production main-app caller/UI/process ownership and installed-distribution private-default runtime. No additional plugin, installation or Codex setting change was justified.
+- Deferred: real documents/providers, production main-app caller/UI/process ownership and installed-distribution private-default runtime. No additional plugin, installation or Codex setting change was justified.
 
 The earlier preparation and May handoffs below are preserved history.
 

@@ -8,7 +8,7 @@ Create one Markdown file under `active/` named `YYYY-MM-DD_scope.md`. Include th
 
 Keep the plan current while working. Record actual outcomes, failed attempts, skipped capabilities and remaining work. A checkpoint commit or passing unit suite is progress; it is not proof of browser, PDF or live-provider acceptance.
 
-The [development foundation plan](completed/2026-09-30_development_foundation.md) is complete locally. Create the next active plan when a substantial new development task starts; publication remains separate.
+The [development foundation plan](completed/2026-09-30_development_foundation.md) is complete locally. Its authorized publication is tracked in [PR #59](https://github.com/Adel199223/honorarios-interpreting/pull/59). Create the next active plan when a substantial new development task starts.
 
 ## Complete and preserve
 

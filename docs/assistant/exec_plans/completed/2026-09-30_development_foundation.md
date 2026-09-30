@@ -82,3 +82,9 @@ No real providers, Gmail, private data import, dependency upgrade or main-app in
 Failed checks retained: the first uploaded source hit the unavailable fallback profile; the photo check exposed the EXIF-only confirmation gap; the first assembled UI group found two source-text expectations made obsolete by the extraction/guard wrapper. Concrete bugs were fixed and the stale assertions replaced with snapshot/order and actual-function behavior checks. A preview locator deadline/tooling binding issue recovered with fresh supported observations. Final required checks pass.
 
 Deferred acceptance is explicit: real documents/providers, production main-app caller/UI/process ownership, installed private-default runtime and new publication. These do not block starting local feature development from the source checkout.
+
+## Publication authorization and preflight: 2026-09-30
+
+The user subsequently authorized publishing this completed foundation to GitHub. [PR #59](https://github.com/Adel199223/honorarios-interpreting/pull/59) tracks the update against `main`, based on PR #58 / `bb9b1cf`. Its live merge/check status, not this earlier local completion record, establishes publication completion. Merge is authorized after the final hosted checks pass.
+
+Prepublication checks found five extra blank lines at the ends of split public test modules. Only those endings were normalized; Python AST equivalence was verified. Full was repeated successfully at `35a4a77`: 164 public synthetic tests, offline wheel/environment checks and four isolated workflows. Application/browser source hashes remain identical to the accepted build. Public content and documentation routing checks passed; private files, provider operations and main-app integration remain excluded. Exact beforeimages and the final publication/merge/application receipt are retained in ignored local task evidence.
