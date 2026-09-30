@@ -61,3 +61,24 @@ Use isolated checkpoints and exact local beforeimages. Do not rewrite the origin
 - Browser acceptance found and repaired an unavailable automatic profile selection. Further observed issues are being repaired before final acceptance: stale home guidance after preparation, weak fallback visibility, awaited-response invalidation, and EXIF capture dates bypassing the existing confirmation requirement.
 - Focused worker validation passed all named groups and Full (153 public synthetic tests plus four isolated smokes); this is preliminary worker evidence, not the final root/application acceptance. Its bounded implementation was integrated in checkpoint `9b4de2f`.
 - Failed attempts retained: initial browser binding timeout recovered through the same supported tool; a preview locator deadline expired while generation was in progress, then fresh visible state confirmed the completed preview. AX summary controls required their actual accessibility targets rather than guessed DOM roles. These tooling observations do not establish app failures.
+
+## Completion: 2026-09-30
+
+The authorized local development foundation is complete. Its final tested application code is checkpoint `94c3931`; publication is separate and has not occurred for this update.
+
+| Requirement | Actual acceptance |
+| --- | --- |
+| Recover saved interface | Original fifteen-file patch recovered on PR #58 baseline; original branch/history retained, exact local beforeimages available. |
+| Actual beginner journey | Fictional PDF with and without service date and an EXIF-dated JPEG reviewed in the browser. Numbered answers, explicit capture-date confirmation, Portuguese draft, PDF preview and manual handoff passed. Case-only photo answers remain paused. |
+| PDF acceptance | Final rendered fictional request manually inspected: matching case/service/closing dates, entity/travel/payment wording, one-page layout, legibility and no clipping. |
+| Freshness/usability | Attachment changes cleared the prior preview/handoff and showed stale guidance; reset cleared visible client status while keeping stored files. Disconnection blocked writing actions. Desktop 1280 and mobile 390 review, no mobile horizontal overflow, keyboard Tab/Enter answer action verified. |
+| Tests and isolation | All named groups exercised; final assembled Full validation passed 164 public synthetic tests, offline installed wheel, environment/lock/export/docs/syntax checks and all four isolated source/proof/adapter/fake-Gmail smokes. Saved-checkout Full independently passed the same 164 and four smokes. Quick 71, intake 59, PDF 6, email 15, UI 30, package 26 and integration 16 are the final focused-group sizes. |
+| Modernization | Pure source evidence and browser guidance/response-binding modules extracted. Snapshot and late success/error tests guard preparation and handoff. Existing routes/payloads/adapter/Gmail boundaries and dependency pins remain intact. |
+| Harness/guidance | Small lifecycle, acceptance checklist, user guide and routing map present; all 15 routed documents and their local links checked. Beforeimages and publication history preserved. |
+| Applied local build | 48 public files applied and byte-verified before closure; original saved branch retained, 11 protected local config/data hashes unchanged. Launch preflight passed at port 8878. Final closure only updates documentation paths/status; application-code hashes remain the tested build. |
+
+No real providers, Gmail, private data import, dependency upgrade or main-app integration was performed. Browser review used an owned isolated synthetic server, which was stopped afterward; its temporary tab was reset to blank and viewport override cleared. Exact beforeimages, application/browser receipts, proof images and validation logs remain in ignored local task evidence.
+
+Failed checks retained: the first uploaded source hit the unavailable fallback profile; the photo check exposed the EXIF-only confirmation gap; the first assembled UI group found two source-text expectations made obsolete by the extraction/guard wrapper. Concrete bugs were fixed and the stale assertions replaced with snapshot/order and actual-function behavior checks. A preview locator deadline/tooling binding issue recovered with fresh supported observations. Final required checks pass.
+
+Deferred acceptance is explicit: real documents/providers, production main-app caller/UI/process ownership, installed private-default runtime and new publication. These do not block starting local feature development from the source checkout.

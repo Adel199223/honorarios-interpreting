@@ -1,17 +1,20 @@
 # Next Thread Handoff
 
-## Current development foundation: 2026-09-30
+## Current development foundation: completed locally, 2026-09-30
 
-The user approved completing the fee app's development foundation: recover the saved guided interface on the published setup, verify the beginner workflow, add focused public test groups and business-rule coverage, make bounded code extractions, and keep development/user guidance coherent. New publication, main-app integration, live providers and private data operations are outside this scope.
+The user's approved development foundation is complete and applied to the usual saved fee-app checkout. New publication, production LegalPDF integration, real providers and private-data operations remain separately scoped.
 
-- Published baseline: PR #58 merged into GitHub `main` at `bb9b1cf`. Its locked environment/CI preparation is complete; those checks did not publish or accept the saved beginner interface.
-- Current foundation branch: `codex/fee-development-foundation-20260930`, starting from that published baseline. Recovery checkpoint `7a4d066` contains the saved interface work. The original saved branch/private runtime are preserved.
-- Follow [the active plan](assistant/exec_plans/active/2026-09-30_development_foundation.md), [plan lifecycle](assistant/exec_plans/PLANS.md), [validation](validation.md), [workflow acceptance](workflow-acceptance.md), and [beginner guide](user-guide.md). The environment pins and adapter/Gmail/review contracts remain unchanged.
-- Current acceptance: pending final foundation tests, actual browser interactions, rendered synthetic PDF review and safe application to the saved checkout. Do not use earlier setup results as acceptance of these changes. Record completed/failed/skipped checks here when they actually run; retain the plan in `active/` until its objective is complete.
-- This foundation is local and unpublished. Plugins, Codex settings and dependency versions are unchanged; no additional installation was justified by the assessment.
-- Deferred: real documents/providers, production main-app caller/UI/process ownership, installed-distribution private-default runtime setup, and any new publication.
+- Published baseline: PR #58 merged at `bb9b1cf`; the newer development foundation is local and unpublished.
+- Authoring branch: `codex/fee-development-foundation-20260930`, based on that baseline and the saved interface recovery. Final tested application code is `94c3931`. The original checkout retains `codex/beginner-guided-intake-ux`, its history and private runtime; verified public files were applied with exact beforeimages rather than switching/resetting that checkout.
+- Final Full validation passed 164 public synthetic tests and four isolated source/proof/adapter/fake-Gmail workflows in the assembled review build and independently in the saved checkout. Offline wheel, environment/lock/export, syntax and documentation routing checks passed. Launch preflight passed at port 8878.
+- Focused groups: quick 71, intake 59, PDF 6, email 15, UI 30, package 26, integration 16; default remains full. The old 60-case monolith is split by responsibility. Runtime versions and pins remain the verified baseline.
+- Actual fictional browser acceptance passed PDF/photo upload, missing numbered answers, explicit EXIF service-date confirmation, visible low-confidence profile fallback, Portuguese draft/PDF preview and manual handoff. The final rendered PDF was manually inspected. Attachment changes clear stale controls, reset clears client state while retaining stored files, disconnection blocks writing actions, and desktop/mobile keyboard review passed. No real provider/Gmail calls or real draft records were made.
+- Concrete bugs repaired: unavailable auto-profile fallback, uploaded EXIF-only date confirmation bypass, stale home/preparation guidance and late preparation/handoff responses. Initial failures/tooling limitations and repairs are preserved in the completed plan/evidence.
+- All 11 protected local config/data hashes remain unchanged. Public-file application was byte-verified; exact beforeimages, application/browser receipts, proof images and logs are retained in ignored task evidence. The owned synthetic server is stopped and its temporary browser tab reset to blank.
+- Start new development with [the runbook](../agent.md), [plan lifecycle](assistant/exec_plans/PLANS.md), [validation](validation.md), [user guide](user-guide.md) and [workflow checklist](workflow-acceptance.md). The [completed foundation plan](assistant/exec_plans/completed/2026-09-30_development_foundation.md) is acceptance/history, not an unfinished continuation request. Create a new active plan for substantial new work.
+- Deferred: new publication, real documents/providers, production main-app caller/UI/process ownership and installed-distribution private-default runtime. No additional plugin, installation or Codex setting change was justified.
 
-The earlier preparation and May handoffs below are preserved history. Current continuation starts with this foundation section and the active plan.
+The earlier preparation and May handoffs below are preserved history.
 
 ## Current preparation: 2026-09-30
 
