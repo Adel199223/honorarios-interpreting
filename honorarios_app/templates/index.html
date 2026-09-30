@@ -12,7 +12,7 @@
       <aside class="sidebar">
         <div class="sidebar-brand">
           <div class="brand-glyph" aria-hidden="true"></div>
-          <p class="eyebrow">Guided Translation</p>
+          <p class="eyebrow">Guided Interpretation</p>
           <h1>LegalPDF Honorários</h1>
         </div>
 
@@ -49,9 +49,9 @@
         </details>
 
         <div class="sidebar-card">
-          <p class="sidebar-card-label">Draft-only Gmail</p>
-          <strong>Uses `_create_draft` only.</strong>
-          <p class="sidebar-card-meta">No email is sent automatically.</p>
+          <p class="sidebar-card-label">Email safety</p>
+          <strong>Creates Gmail drafts only.</strong>
+          <p class="sidebar-card-meta">You review and send manually in Gmail.</p>
         </div>
       </aside>
 
@@ -61,12 +61,38 @@
             <div>
               <p class="eyebrow">New Job</p>
               <h2>LegalPDF Honorários</h2>
-              <p id="topbar-status">Choose an interpretation profile, review the request, then create the PDF and Gmail draft payload.</p>
+              <p id="topbar-status">Upload a source, review what was found, answer only what is missing, then preview before any draft step.</p>
             </div>
-            <div class="panel-actions">
-              <button class="ghost-button" id="refresh-reference" type="button">Refresh</button>
-              <a class="ghost-button" href="/api/reference" target="_blank" rel="noreferrer">JSON</a>
-            </div>
+            <details class="panel-actions technical-actions-menu">
+              <summary class="ghost-button technical-actions-summary">Advanced</summary>
+              <div class="technical-actions-content">
+                <button class="ghost-button" id="refresh-reference" type="button">Refresh app data</button>
+                <a class="ghost-button advanced-toolbar-link" href="/api/reference" target="_blank" rel="noreferrer">Open JSON reference</a>
+                <details class="app-status-details advanced-status-details">
+                  <summary>
+                    <span>App status</span>
+                    <small>Technical readiness checks are available here.</small>
+                  </summary>
+                  <div class="status-strip-stack">
+                    <div class="compact-gmail-strip">
+                      <div>
+                        <strong>Live mode: using your real local profiles, duplicate index, and Gmail draft log.</strong>
+                        <p id="gmail-api-status-summary">Checking Manual Draft Handoff and local Gmail Draft API status...</p>
+                      </div>
+                      <span class="status-chip info" id="gmail-api-status-pill">checking</span>
+                    </div>
+
+                    <div class="compact-gmail-strip ai-status-strip">
+                      <div>
+                        <strong>OpenAI OCR / Autofill</strong>
+                        <p id="ai-status-summary">Checking local OpenAI recovery status...</p>
+                      </div>
+                      <span class="status-chip info" id="ai-status-pill">checking</span>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </details>
           </div>
 
           <div class="server-connection-banner hidden" id="server-connection-banner" role="status" aria-live="polite">
@@ -77,23 +103,15 @@
             <span class="status-chip blocked" id="server-connection-chip">disconnected</span>
           </div>
 
-          <div class="compact-gmail-strip">
-            <div>
-              <strong>Live mode: using your real local profiles, duplicate index, and Gmail draft log.</strong>
-              <p id="gmail-api-status-summary">Checking Manual Draft Handoff and local Gmail Draft API status...</p>
-            </div>
-            <span class="status-chip info" id="gmail-api-status-pill">checking</span>
-          </div>
+          <ol class="guided-intake-steps" aria-label="Guided intake steps">
+            <li class="is-current"><span>1</span><strong>Upload source</strong><small>Photo, screenshot, or PDF</small></li>
+            <li><span>2</span><strong>Review what was found</strong><small>Check recovered facts</small></li>
+            <li><span>3</span><strong>Answer questions</strong><small>Fill only missing details</small></li>
+            <li><span>4</span><strong>Preview PDF</strong><small>Inspect before Gmail</small></li>
+            <li><span>5</span><strong>Draft email</strong><small>Draft-only, never send</small></li>
+          </ol>
 
-          <div class="compact-gmail-strip ai-status-strip">
-            <div>
-              <strong>OpenAI OCR / Autofill</strong>
-              <p id="ai-status-summary">Checking local OpenAI recovery status...</p>
-            </div>
-            <span class="status-chip info" id="ai-status-pill">checking</span>
-          </div>
-
-          <div class="task-switcher" role="tablist" aria-label="Job type">
+          <div class="task-switcher hidden beginner-hidden" role="tablist" aria-label="Job type">
             <button type="button" class="task-button inactive">Translation</button>
             <button type="button" class="task-button active">Interpretation</button>
           </div>
@@ -106,9 +124,70 @@
                   <h2>Start Interpretation Request</h2>
                 </div>
               </div>
-              <p class="panel-copy">Upload a local notification PDF or photo, recover the obvious details, then review the numbered questions before generating anything.</p>
+              <p class="panel-copy">Upload a local notification PDF or photo, review what the app found, then answer only the missing details before generating anything.</p>
+              <div class="review-source-change-hint">
+                <p>Source reviewed. Continue in Review Case Details, or change the source if this was the wrong file.</p>
+                <button type="button" class="mini-button" id="change-source">Change source</button>
+              </div>
 
-              <form id="intake-form" class="form-grid compact-grid">
+              <form class="upload-form unified-source-form" id="source-upload-form">
+                <label for="source-file">Add source file</label>
+                <input id="source-file" name="file" type="file" accept="application/pdf,.pdf,image/*">
+                <button type="submit">Review source</button>
+                <p class="field-hint">Choose one local notification PDF, photo, or screenshot, then click Review source. The app stops for review before any PDF or Gmail draft step.</p>
+              </form>
+              <div class="source-drop-zone" id="source-drop-zone" tabindex="0" role="button" aria-describedby="source-drop-status">
+                <div>
+                  <strong>Or drop/paste a source here</strong>
+                  <p>The app will read the visible details and stop for review before any PDF or Gmail draft step.</p>
+                </div>
+                <span class="status-chip info">Local only</span>
+              </div>
+              <p class="field-hint" id="source-drop-status">Click the drop area, then press Ctrl+V to review a copied screenshot.</p>
+              <details class="secondary-upload-options">
+                <summary>Other source options</summary>
+                <p class="field-hint">Best result: upload the original or downloaded photo when you can. Use this section only for a selected Google Photos item, or when a screenshot includes visible metadata such as date, location, or filename; the app will still ask you to confirm the service date before PDF creation.</p>
+                <div class="upload-grid primary-upload-grid">
+                  <form class="upload-form" id="notification-upload-form">
+                    <label for="notification-file">Notification PDF only</label>
+                    <input id="notification-file" name="file" type="file" accept="application/pdf,.pdf">
+                    <button type="submit">Recover PDF</button>
+                  </form>
+                  <form class="upload-form" id="photo-upload-form">
+                    <label for="photo-file">Photo / Screenshot only</label>
+                    <input id="photo-file" name="file" type="file" accept="image/*">
+                    <button type="submit">Recover photo</button>
+                  </form>
+                </div>
+                <form class="upload-form" id="google-photos-upload-form">
+                  <div class="google-photos-form-header">
+                    <label for="google-photos-file">Google Photos selected-photo import</label>
+                    <span class="status-chip info" id="google-photos-status-pill">checking</span>
+                  </div>
+                  <div class="google-photos-actions">
+                    <button type="button" id="google-photos-oauth-start">Connect Google Photos OAuth</button>
+                    <button type="button" id="google-photos-picker-start">Open Google Photos Picker</button>
+                  </div>
+                  <div class="field google-photos-session-field">
+                    <label for="google-photos-session-id">Picker Session</label>
+                    <input id="google-photos-session-id" autocomplete="off" placeholder="Created after opening the Picker">
+                  </div>
+                  <div class="google-photos-actions">
+                    <button type="button" id="google-photos-picker-check">Check Picker selection</button>
+                    <button type="button" id="google-photos-picker-import">Import Picker selection</button>
+                  </div>
+                  <input id="google-photos-file" name="file" type="file" accept="image/*">
+                  <textarea id="google-photos-metadata" rows="3" placeholder="Paste visible Google Photos metadata, filename, or date text here. Example: Apr 15&#10;20260415_205459.jpg"></textarea>
+                  <button type="submit">Import selected Google Photos photo</button>
+                  <p class="field-hint" id="google-photos-status-summary">OAuth Picker is not connected in this standalone app yet. Connect OAuth when credentials are configured, or import one downloaded photo with pasted visible metadata.</p>
+                  <div class="result-card compact-result hidden" id="google-photos-picker-result"></div>
+                </form>
+              </details>
+
+              <details class="advanced-intake-fields">
+                <summary>Show advanced intake fields</summary>
+                <p class="field-hint">Recovered values appear here for correction. Missing or uncertain values stay blank until you answer the review questions.</p>
+                <form id="intake-form" class="form-grid compact-grid">
                 <div class="field">
                   <label for="personal_profile_id">Personal profile</label>
                   <select id="personal_profile_id"></select>
@@ -133,7 +212,7 @@
                 </div>
                 <div class="field">
                   <label for="service_period_label">Period Label</label>
-                  <input id="service_period_label" autocomplete="off" placeholder="morning">
+                  <input id="service_period_label" autocomplete="off" placeholder="Optional, e.g. morning">
                 </div>
                 <div class="field">
                   <label>Time Period</label>
@@ -144,19 +223,19 @@
                 </div>
                 <div class="field">
                   <label for="payment_entity">Payment Entity</label>
-                  <input id="payment_entity" autocomplete="off" placeholder="Tribunal Judicial de Serpa">
+                  <input id="payment_entity" autocomplete="off" placeholder="Needs answer when not recovered">
                 </div>
                 <div class="field">
                   <label for="recipient_email">Court Email</label>
-                  <input id="recipient_email" autocomplete="off" placeholder="court@example.test">
+                  <input id="recipient_email" autocomplete="off" placeholder="Needs recipient after review">
                 </div>
                 <div class="field">
                   <label for="service_place">Service Location</label>
-                  <input id="service_place" autocomplete="off" placeholder="Posto Territorial de Serpa">
+                  <input id="service_place" autocomplete="off" placeholder="Recovered from source or answer">
                 </div>
                 <div class="field">
                   <label for="km_one_way">KM (One Way)</label>
-                  <input id="km_one_way" inputmode="decimal" autocomplete="off" placeholder="34">
+                  <input id="km_one_way" inputmode="decimal" autocomplete="off" placeholder="Recovered from profile or answer">
                 </div>
                 <div class="field field-wide">
                   <label for="source_text">Source Text / Notes</label>
@@ -170,70 +249,23 @@
                     <option value="off">Off</option>
                   </select>
                 </div>
-              </form>
-
-              <div class="source-drop-zone" id="source-drop-zone" tabindex="0" role="button" aria-describedby="source-drop-status">
-                <div>
-                  <strong>Drop or paste a notification PDF, photo, or screenshot here</strong>
-                  <p>The app will detect PDF vs image, recover Source Evidence, and stop for review before any PDF or Gmail draft step.</p>
-                </div>
-                <span class="status-chip info">Local only</span>
-              </div>
-              <p class="field-hint" id="source-drop-status">Drop files here or use the upload controls below. Click this area, then press Ctrl+V to recover a copied screenshot.</p>
-
-              <div class="upload-grid">
-                <form class="upload-form" id="notification-upload-form">
-                  <label for="notification-file">Notification PDF</label>
-                  <input id="notification-file" name="file" type="file" accept="application/pdf,.pdf">
-                  <button type="submit">Recover from notification PDF</button>
                 </form>
-                <form class="upload-form" id="photo-upload-form">
-                  <label for="photo-file">Photo / Screenshot</label>
-                  <input id="photo-file" name="file" type="file" accept="image/*">
-                  <button type="submit">Recover from photo or screenshot</button>
-                </form>
-                <form class="upload-form" id="google-photos-upload-form">
-                  <div class="google-photos-form-header">
-                    <label for="google-photos-file">Google Photos selected-photo import</label>
-                    <span class="status-chip info" id="google-photos-status-pill">checking</span>
-                  </div>
-                  <div class="google-photos-actions">
-                    <button type="button" id="google-photos-oauth-start">Connect Google Photos OAuth</button>
-                    <button type="button" id="google-photos-picker-start">Open Google Photos Picker</button>
-                  </div>
-                  <div class="field google-photos-session-field">
-                    <label for="google-photos-session-id">Picker Session</label>
-                    <input id="google-photos-session-id" autocomplete="off" placeholder="Created after opening the Picker">
-                  </div>
-                  <div class="google-photos-actions">
-                    <button type="button" id="google-photos-picker-check">Check Picker selection</button>
-                    <button type="button" id="google-photos-picker-import">Import Picker selection</button>
-                  </div>
-                  <input id="google-photos-file" name="file" type="file" accept="image/*">
-                  <textarea id="google-photos-metadata" rows="3" placeholder="Paste visible Google Photos metadata, filename, or date text here. Example: Apr 15&#10;20260415_205459.jpg"></textarea>
-                  <button type="submit">Import selected Google Photos photo</button>
-                  <p class="field-hint" id="google-photos-status-summary">OAuth Picker is not connected in this standalone app yet. Connect OAuth when credentials are configured, or import one downloaded photo with pasted visible metadata.</p>
-                  <div class="result-card compact-result hidden" id="google-photos-picker-result"></div>
-                </form>
-              </div>
+              </details>
 
-              <form class="upload-form supporting-attachment-form" id="supporting-attachment-form">
-                <div class="result-header">
-                  <div>
-                    <strong>Supporting proof / declarations</strong>
-                    <p>Add declarations or other proof files after the source is recovered. They stay as draft attachments and never create PDFs or Gmail actions by themselves.</p>
+              <details class="supporting-attachment-details">
+                <summary>Supporting proof / declarations <span>Optional</span></summary>
+                <form class="upload-form supporting-attachment-form" id="supporting-attachment-form">
+                  <p>Add declarations or other proof files after the source is recovered. They stay as draft attachments and never create PDFs or Gmail actions by themselves.</p>
+                  <input id="supporting-attachment-file" name="file" type="file" multiple accept="application/pdf,image/*,.pdf">
+                  <div class="button-row compact-button-row">
+                    <button type="submit">Add supporting attachments</button>
                   </div>
-                  <span class="status-chip info">Optional</span>
-                </div>
-                <input id="supporting-attachment-file" name="file" type="file" multiple accept="application/pdf,image/*,.pdf">
-                <div class="button-row compact-button-row">
-                  <button type="submit">Add supporting attachments</button>
-                </div>
-                <div class="supporting-attachment-list" id="supporting-attachment-list">No supporting attachments yet.</div>
-              </form>
+                  <div class="supporting-attachment-list" id="supporting-attachment-list">No supporting attachments yet.</div>
+                </form>
+              </details>
             </section>
 
-            <section class="panel workspace-panel workspace-panel-interpretation" id="interpretation-seed-panel">
+            <section class="panel workspace-panel workspace-panel-interpretation beginner-review-panel hidden" id="interpretation-seed-panel">
               <div class="panel-header">
                 <div>
                   <p class="eyebrow">Interpretation</p>
@@ -241,33 +273,49 @@
                 </div>
                 <span class="status-chip info" id="status-pill">idle</span>
               </div>
-              <p class="panel-copy" id="review-status">Upload a notification or start a blank request to begin.</p>
+              <p class="panel-copy" id="review-status">Upload a source or enter details manually to begin.</p>
               <div class="result-card next-safe-action-card hidden" id="next-safe-action">
                 <div class="result-header">
                   <div>
-                    <strong>Suggested Next Step</strong>
-                    <p>Recommended next step. This is not a separate task; it explains why the app paused, what you can do now, and what remains blocked.</p>
+                    <strong>Next safe action</strong>
+                    <p>Complete this step first. PDF, Gmail draft, and local record actions stay blocked until review passes.</p>
                   </div>
                   <span class="status-chip info" id="next-safe-action-chip">Waiting</span>
                 </div>
                 <div id="next-safe-action-body"></div>
               </div>
-              <div class="result-card empty-state" id="interpretation-review-home-result">Upload a notification PDF or screenshot to recover the case details, or start a blank request.</div>
-              <div class="result-card hidden" id="source-evidence">
-                <div class="result-header">
+              <div class="result-card empty-state" id="interpretation-review-home-result">
+                <div class="beginner-review-summary">
                   <div>
-                    <strong>Source Evidence</strong>
-                    <p>Recovered filename, Profile Decision, metadata date, extracted fields, and preview appear here.</p>
+                    <strong>What I found</strong>
+                    <p>Upload a notification PDF or screenshot to review the case details.</p>
                   </div>
-                  <span class="status-chip info">Source</span>
+                  <div>
+                    <strong>What I still need</strong>
+                    <p>The app will ask numbered questions before any PDF or Gmail draft step.</p>
+                  </div>
                 </div>
-                <div id="source-evidence-body"></div>
+              </div>
+              <div class="result-card hidden" id="source-evidence">
+                <details class="source-evidence-details">
+                  <summary>
+                    <span>Show detailed Source Evidence</span>
+                    <small>OCR confidence, profile decision, preview, and hashes</small>
+                  </summary>
+                  <div class="result-header">
+                    <div>
+                      <strong>Source Evidence</strong>
+                      <p>Recovered filename, Profile Decision, metadata date, extracted fields, and preview appear here.</p>
+                    </div>
+                    <span class="status-chip info">Source</span>
+                  </div>
+                  <div id="source-evidence-body"></div>
+                </details>
               </div>
               <div class="result-card hidden" id="alert"></div>
-              <div class="result-card hidden" id="questions"></div>
             </section>
 
-            <section class="panel workspace-panel batch-queue-panel" id="batch-queue-panel">
+            <section class="panel workspace-panel batch-queue-panel advanced-workflow-panel hidden" id="batch-queue-panel">
               <div class="panel-header">
                 <div>
                   <p class="eyebrow">Batch</p>
@@ -317,11 +365,13 @@
 
             <section class="panel workspace-panel workspace-action-rail interpretation-action-rail">
               <div class="workspace-action-buttons simple-action-buttons">
-                <button type="button" class="primary-button" id="review-intake">Review details</button>
-                <button type="button" id="build-profile">Start blank request</button>
+                <button type="button" id="review-intake" class="primary-button hidden">Review recovered details</button>
+                <button type="button" id="build-profile">Enter details manually</button>
                 <details class="action-overflow-menu">
-                  <summary>...</summary>
+                  <summary>Advanced</summary>
                   <div class="action-overflow-content">
+                    <p class="action-overflow-hint">Batch tools and direct PDF generation stay hidden here until needed.</p>
+                    <button type="button" id="toggle-advanced-workflow">Show batch tools</button>
                     <button type="button" id="prepare-intake">Generate PDF + Payload</button>
                   </div>
                 </details>
@@ -918,8 +968,8 @@
         <div class="result-card next-safe-action-card hidden" id="drawer-next-safe-action">
           <div class="result-header">
             <div>
-              <strong>Suggested Next Step</strong>
-              <p>Recommended next step. This is not a separate task; it explains why the app paused, what you can do now, and what remains blocked.</p>
+              <strong>Next safe action</strong>
+              <p>Complete this step first. PDF, Gmail draft, and local record actions stay blocked until review passes.</p>
             </div>
             <span class="status-chip info" id="drawer-next-safe-action-chip">Waiting</span>
           </div>
@@ -960,6 +1010,13 @@
             <span class="status-chip info">Review</span>
           </div>
           <pre id="draft-text">The Portuguese draft will appear here before the PDF is created.</pre>
+          <div class="drawer-review-actions">
+            <div>
+              <strong>Ready to create the PDF?</strong>
+              <p>Check the draft text above first. Gmail handoff and local recording appear after a prepared payload exists.</p>
+            </div>
+            <button type="button" class="primary-button" id="drawer-prepare-intake-inline">Create fee-request PDF</button>
+          </div>
         </div>
 
         <div class="result-card hidden" id="pdf-preview-panel">
@@ -1094,7 +1151,7 @@
           </div>
         </details>
 
-        <div class="result-card">
+        <div class="result-card" id="manual-record-card">
           <div class="result-header">
             <div>
               <strong>Manual Draft Handoff</strong>
@@ -1163,7 +1220,7 @@
           </form>
         </div>
         <div class="form-actions drawer-action-row">
-          <button type="button" id="interpretation-clear-review">Start blank request</button>
+          <button type="button" id="interpretation-clear-review">Clear review</button>
           <button type="button" id="interpretation-close-review-footer">Close</button>
           <button type="button" id="record-draft">Record draft</button>
           <button type="button" class="primary-button" id="drawer-prepare-intake">Create fee-request PDF</button>

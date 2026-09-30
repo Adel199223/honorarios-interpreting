@@ -25,7 +25,7 @@ Use the intake drop zone for local screenshots/photos/PDFs when you want the fas
 
 Use `Supporting proof / declarations` when a job has a declaration or proof image/PDF that should travel with the final Gmail draft. The app validates those files as PDF/image only, stores them under the local source artifact root, adds their absolute paths to `additional_attachment_files`, and inserts the custom email body that mentions the documento(s) comprovativo(s). Multi-file drag/drop treats the first file as the source and any extra files as supporting proof, still without preparing PDFs, recording drafts, or calling Gmail.
 
-Use the `Suggested Next Step` card as the daily workflow guide. It is computed from the same review/preflight responses as the backend. It is not a separate task; it should explain why the app paused, what is allowed now, and whether to answer numbered questions, set aside a translation source, stop for a duplicate, enter correction mode, prepare the PDF, or review Gmail `_create_draft` arguments before recording IDs.
+Use the `Next safe action` card as the daily workflow guide. It is computed from the same review/preflight responses as the backend. It should lead with the one action to do next, such as answering numbered questions, setting aside a translation source, stopping for a duplicate, entering correction mode, preparing the PDF, or reviewing Gmail `_create_draft` arguments before recording IDs. The longer reason stays in the collapsed details.
 
 Use the left-sidebar `Reset workspace` button when you want to clear the visible browser state and start fresh. It resets the current intake form, upload forms, prepared payload preview, correction fields, draft lifecycle card, and Batch Queue. It does not delete generated PDFs, draft payload files, duplicate-index records, draft-log records, reference data, or Gmail drafts. If the topbar says the local server is disconnected or stale, restart the app and reload before continuing; the banner blocks prepare, Gmail, upload, record, status, and reference-write actions, while `Reset workspace` remains available for clearing only client-side state.
 
@@ -152,7 +152,7 @@ Use `--browser-click-through` when you want a real browser to verify the profile
 python scripts/local_app_smoke.py --base-url http://127.0.0.1:8765 --browser-click-through --json
 ```
 
-This check deliberately stops before artifact-writing preparation, `Record draft`, and any Gmail action. It also verifies the `Suggested Next Step` surface in the review drawer and the browser `Check batch preflight` card. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
+This check deliberately stops before artifact-writing preparation, `Record draft`, and any Gmail action. It also verifies the `Next safe action` surface in the review drawer and the browser `Check batch preflight` card. It can report a blocker if Python Playwright is unavailable; that is a tooling blocker, not a Gmail workflow failure.
 
 Successful browser smoke checks finish by resetting the workspace, so synthetic smoke cases and queued test requests are cleared from the open browser tab. The Python browser smoke clicks `Reset workspace`; the Browser/IAB runner verifies that control is present and then reloads the local app because the IAB adapter can be inconsistent with sidebar link activation.
 

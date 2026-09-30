@@ -82,17 +82,38 @@ function statusChipClass(status) {
 }
 
 const HISTORY_STATUS_FILTERS = ["all", "active", "drafted", "sent", "superseded", "trashed", "not_found"];
+const QUESTION_ACTION_EXAMPLE = "Answer 3 questions before PDF creation";
+const NEXT_SAFE_ACTION_LABEL = "Next safe action";
+const GUIDED_STEP_BY_STATE = {
+  idle: 1,
+  answer_questions: 3,
+  set_aside_translation: 2,
+  stop_duplicate_sent: 2,
+  choose_correction_mode: 2,
+  fix_blocker: 2,
+  prepare_pdf: 4,
+  prepare_batch: 4,
+  review_gmail_draft_args: 5,
+};
 
 const SAFE_ACTION_GATES = {
   "apply-numbered-answers": {
     states: ["answer_questions"],
-    reason: "Answer the numbered questions before continuing.",
+    reason: "Answer the numbered questions before PDF creation.",
+  },
+  "home-apply-numbered-answers": {
+    states: ["answer_questions"],
+    reason: "Answer the numbered questions before PDF creation.",
   },
   "prepare-intake": {
     states: ["prepare_pdf"],
     reason: "Review a ready interpretation request before generating the PDF.",
   },
   "drawer-prepare-intake": {
+    states: ["prepare_pdf"],
+    reason: "Review a ready interpretation request before generating the PDF.",
+  },
+  "drawer-prepare-intake-inline": {
     states: ["prepare_pdf"],
     reason: "Review a ready interpretation request before generating the PDF.",
   },
@@ -147,6 +168,7 @@ const SERVER_GATED_SELECTORS = [
   "#refresh-reference",
   "#review-intake",
   "#build-profile",
+  "#source-upload-form button[type=submit]",
   "#notification-upload-form button[type=submit]",
   "#photo-upload-form button[type=submit]",
   "#google-photos-upload-form button[type=submit]",
@@ -233,10 +255,16 @@ function syncServerConnectionGates() {
   });
 }
 
+function syncDrawerProgressiveDisclosure(action = state.currentNextSafeAction) {
+  const workflowState = String(action?.state || "idle");
+  document.body.dataset.drawerWorkflowState = workflowState;
+}
+
 function syncActionGates(action = state.currentNextSafeAction) {
   state.currentNextSafeAction = action || null;
   const actionState = String(action?.state || "idle");
   const actionDetail = String(action?.detail || "");
+  syncDrawerProgressiveDisclosure(action);
   Object.entries(SAFE_ACTION_GATES).forEach(([id, gate]) => {
     let enabled = (gate.states || []).includes(actionState);
     let blockedReason = gate.reason;
@@ -249,8 +277,8 @@ function syncActionGates(action = state.currentNextSafeAction) {
     if (id === "prepare-replacement-draft") {
       enabled = enabled && Boolean($("#correction_reason")?.value.trim());
     }
-    if (id === "apply-numbered-answers") {
-      enabled = enabled && Boolean($("#numbered-answers")?.value.trim());
+    if (id === "apply-numbered-answers" || id === "home-apply-numbered-answers") {
+      enabled = enabled && Boolean(numberedAnswersText());
     }
     if (id === "record-parsed-prepared-draft") {
       const handoffReviewed = Boolean($("#gmail_handoff_reviewed")?.checked);
@@ -300,6 +328,16 @@ function syncActionGates(action = state.currentNextSafeAction) {
     }
     setActionGate(id, enabled, enabled ? actionDetail : blockedReason, actionState);
   });
+  const hasReviewableIntake = Boolean(state.currentIntake);
+  setActionGate(
+    "review-intake",
+    hasReviewableIntake,
+    hasReviewableIntake
+      ? "Review recovered details before any PDF or Gmail draft step."
+      : "Upload a source first, or use Enter details manually.",
+    hasReviewableIntake ? actionState : "idle",
+  );
+  $("#review-intake")?.classList.toggle("hidden", !hasReviewableIntake);
 }
 
 function clearPreparedArtifacts(reason = "stale prepared result") {
@@ -440,13 +478,42 @@ function fillFormFromIntake(intake) {
     personal_profile_id: intake.personal_profile_id,
     profile: intake.service_profile_key,
   };
+  const clearWhenMissing = new Set([
+    "case_number",
+    "service_date",
+    "photo_metadata_date",
+    "service_period_label",
+    "service_start_time",
+    "service_end_time",
+    "payment_entity",
+    "recipient_email",
+    "service_place",
+    "km_one_way",
+    "source_text",
+  ]);
   Object.entries(values).forEach(([id, value]) => {
     const input = $(`#${id}`);
-    if (input && value !== undefined && value !== null && value !== "") {
+    if (!input) return;
+    if (value !== undefined && value !== null && value !== "") {
       input.value = value;
+    } else if (clearWhenMissing.has(id)) {
+      input.value = "";
     }
   });
   renderSupportingAttachmentList();
+}
+
+function renderGuidedStep(stateName = "idle") {
+  const step = GUIDED_STEP_BY_STATE[String(stateName || "idle")] || 2;
+  document.querySelectorAll(".guided-intake-steps li").forEach((item, index) => {
+    const current = index + 1 === step;
+    item.classList.toggle("is-current", current);
+    if (current) {
+      item.setAttribute("aria-current", "step");
+    } else {
+      item.removeAttribute("aria-current");
+    }
+  });
 }
 
 function mergeFormIntoCurrentIntake() {
@@ -482,17 +549,11 @@ function showAlert(message, kind = "") {
   setCard($("#alert"), message, kind);
 }
 
-function showQuestions(data) {
-  const box = $("#questions");
-  if (!data.questions || !data.questions.length) {
-    box.className = "result-card hidden";
-    box.innerHTML = "";
-    return;
-  }
-  box.className = "result-card blocked";
-  box.innerHTML = data.questions.map((question) => (
-    `<div><strong>${question.number}.</strong> ${escapeHtml(question.question)} <span>${escapeHtml(question.answer_hint)}</span></div>`
-  )).join("");
+function friendlyQuestionTitle(action) {
+  const detail = String(action?.detail || "");
+  const match = detail.match(/(\d+)\s+numbered question/i);
+  const countText = match ? `${match[1]} question${match[1] === "1" ? "" : "s"}` : "the questions";
+  return `Answer ${countText} before PDF creation`;
 }
 
 function renderNextSafeAction(action) {
@@ -525,33 +586,39 @@ function renderNextSafeAction(action) {
     const targetButton = action.button_id
       ? `<div class="button-row compact-button-row"><button type="button" class="mini-button" data-next-action-target="${escapeHtml(action.button_id)}">Take me there</button></div>`
       : "";
-    const whyText = action.why || "This suggested step explains why the app paused here and keeps risky actions gated until the review state changes.";
-    const allowedText = action.allowed_next || action.title || "Review the current state before continuing.";
+    const friendlyTitle = action.state === "answer_questions"
+      ? friendlyQuestionTitle(action)
+      : (action.title || NEXT_SAFE_ACTION_LABEL);
+    const whyText = action.why || "This step must be reviewed before creating files or Gmail draft data.";
+    const allowedText = action.allowed_next || friendlyTitle || "Review the current state before continuing.";
     const blockedText = action.blocked
       ? "PDF creation, Gmail draft creation, and local draft recording stay blocked until this step is resolved."
       : "Email sending is still blocked by design; any later Gmail or local record step must use reviewed draft-only data.";
+    const detailText = action.detail || "Review the current state before continuing.";
     body.className = "next-safe-action-body";
     body.innerHTML = `
-      <p class="safe-action-helper">This is the app's Suggested Next Step. It is not a separate task; it points to the next thing to review, answer, or click.</p>
-      <div class="safe-action-summary-grid">
-        <div>
-          <span>Recommended next step</span>
-          <strong>${escapeHtml(action.title || "Suggested next step")}</strong>
-        </div>
-        <div>
-          <span>Why this appears</span>
-          <p>${escapeHtml(whyText)}</p>
-        </div>
-        <div>
-          <span>What is allowed now</span>
-          <p>${escapeHtml(allowedText)}</p>
-        </div>
-        <div>
-          <span>Still blocked</span>
-          <p>${escapeHtml(blockedText)}</p>
-        </div>
+      <div class="safe-action-primary">
+        <span>Do this next</span>
+        <strong>${escapeHtml(friendlyTitle)}</strong>
+        <p>${escapeHtml(detailText)}</p>
       </div>
-      <p>${escapeHtml(action.detail || "Review the current state before continuing.")}</p>
+      <details class="safe-action-details">
+        <summary>Why this is blocked</summary>
+        <div class="safe-action-summary-grid">
+          <div>
+            <span>Reason</span>
+            <p>${escapeHtml(whyText)}</p>
+          </div>
+          <div>
+            <span>Allowed now</span>
+            <p>${escapeHtml(allowedText)}</p>
+          </div>
+          <div>
+            <span>Still blocked</span>
+            <p>${escapeHtml(blockedText)}</p>
+          </div>
+        </div>
+      </details>
       ${targetButton}
     `;
   });
@@ -1244,9 +1311,306 @@ function renderDraftLifecycle(data) {
   }
 }
 
+function displayValue(value, fallback = "Needs answer") {
+  const text = String(value || "").trim();
+  return text || fallback;
+}
+
+function beginnerField(label, value, confidence = "") {
+  const empty = !String(value || "").trim();
+  return `<li class="${empty ? "needs-answer" : "found"}"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(displayValue(value))}${confidence ? ` <span class="field-confidence">${escapeHtml(confidence)}</span>` : ""}</li>`;
+}
+
+function shortDateLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return text;
+  const date = new Date(`${text}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return text;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function humanList(items) {
+  const clean = items.map((item) => String(item || "").trim()).filter(Boolean);
+  if (!clean.length) return "";
+  if (clean.length === 1) return clean[0];
+  if (clean.length === 2) return `${clean[0]} and ${clean[1]}`;
+  return `${clean.slice(0, -1).join(", ")}, and ${clean[clean.length - 1]}`;
+}
+
+function reviewIntakeForDisplay(data = {}) {
+  return data.effective_intake || data.intake || data.candidate_intake || state.currentIntake || {};
+}
+
+function questionNeedsServiceDate(questions) {
+  return questions.some((question) => ["service_date", "service_date_source"].includes(String(question.field || "")));
+}
+
+function renderMetadataDateActions(intake, questions) {
+  const metadataDate = String(intake.photo_metadata_date || "").trim();
+  if (!metadataDate || !questionNeedsServiceDate(questions) || String(intake.service_date || "").trim()) {
+    return "";
+  }
+  const label = shortDateLabel(metadataDate);
+  return `
+    <div class="date-confirmation-actions" data-date-confirmation-actions="true">
+      <strong>Is ${escapeHtml(label)} the service date?</strong>
+      <p>The photo metadata suggests this date. Confirm it only if the interpreting service happened then.</p>
+      <div class="button-row compact-button-row">
+        <button type="button" class="mini-button primary-mini-button" data-confirm-metadata-service-date="${escapeHtml(metadataDate)}">Use ${escapeHtml(label)}</button>
+        <button type="button" class="mini-button" data-focus-date-answer="true">Enter another date</button>
+        <button type="button" class="mini-button" data-not-sure-date="true">Not sure yet</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderInlineAnswerPanel(questions) {
+  if (!questions.length) return "";
+  const placeholder = questions.slice(0, 4).map(questionAnswerExample).join("\n") || "1. short answer";
+  return `
+    <div class="inline-answer-panel">
+      <label for="home-numbered-answers">Type your numbered answers</label>
+      <textarea id="home-numbered-answers" rows="3" placeholder="${escapeHtml(placeholder)}"></textarea>
+      <div class="button-row compact-button-row">
+        <button type="button" id="home-apply-numbered-answers" disabled aria-disabled="true">Apply answers</button>
+        <button type="button" class="mini-button" data-open-review-drawer="true">More details</button>
+      </div>
+      <p class="field-hint">Short answers are enough. The app will rerun the normal duplicate and draft-safety checks after applying them.</p>
+    </div>
+  `;
+}
+
+function sourceSafetyLine(data = {}) {
+  const status = String(data.status || "").replaceAll("_", " ") || "waiting";
+  const blocked = data.status && data.status !== "ready";
+  return `
+    <div class="source-safety-line ${blocked ? "blocked" : "ready"}">
+      <strong>${blocked ? "Paused safely" : "Ready for preview"}</strong>
+      <span>No PDF, Gmail draft, or local record was created. Review status: ${escapeHtml(status)}.</span>
+    </div>
+  `;
+}
+
+function questionFieldLabel(question) {
+  const field = String(question?.field || "").trim();
+  const labels = {
+    addressee: "recipient",
+    case_number: "case number",
+    claim_transport: "transport decision",
+    closing_city: "closing city",
+    closing_date: "closing date",
+    entities_differ: "whether payment and service entities differ",
+    payment_entity: "payment entity",
+    recipient_email: "recipient email",
+    service_date: "service date",
+    service_date_source: "service date confirmation",
+    service_entity: "service entity",
+    service_entity_type: "service entity type",
+    service_place: "service place",
+    transport: "transport decision",
+    transport_destination: "transport destination",
+    "transport.destination": "transport destination",
+    destination_name: "transport destination",
+    km_one_way: "one-way kilometers",
+    "transport.km_one_way": "one-way kilometers",
+  };
+  if (labels[field]) return labels[field];
+  const questionText = String(question?.question || "").toLowerCase();
+  if (questionText.includes("transport destination")) return "transport destination";
+  if (questionText.includes("kilometer") || questionText.includes("quilómetro")) return "one-way kilometers";
+  if (questionText.includes("closing line")) return "closing city";
+  const number = String(question?.number || "").trim();
+  return number ? `question ${number}` : "missing information";
+}
+
+function questionAnswerExample(question) {
+  const number = String(question?.number || "").trim() || "1";
+  const field = String(question?.field || "").trim();
+  const examples = {
+    addressee: "Tribunal Judicial de Beja",
+    case_number: "398/24.5T8BJA",
+    claim_transport: "yes",
+    closing_city: "Beja",
+    closing_date: todayIsoDate(),
+    entities_differ: "no",
+    payment_entity: "Tribunal Judicial de Beja",
+    recipient_email: "court@example.test",
+    service_date: "2026-05-08",
+    service_date_source: "yes, use the photo date",
+    service_entity: "GNR Beringel",
+    service_entity_type: "gnr",
+    service_place: "Beringel",
+    transport: "yes, 34 km",
+    transport_destination: "Beja",
+    "transport.destination": "Beja",
+    destination_name: "Beja",
+    km_one_way: "39",
+    "transport.km_one_way": "39",
+  };
+  const questionText = String(question?.question || "").toLowerCase();
+  let example = examples[field] || "";
+  if (!example && questionText.includes("transport destination")) example = "Beja";
+  if (!example && (questionText.includes("kilometer") || questionText.includes("quilómetro"))) example = "39";
+  if (!example && questionText.includes("closing line")) example = "Beja";
+  return `${number}. ${example || "short answer"}`;
+}
+
+function beginnerFoundLabels(data, intake) {
+  const labels = [];
+  if (data.case_number || intake.case_number) labels.push("case number");
+  if (data.service_date || intake.service_date) labels.push("service date");
+  if (!data.service_date && !intake.service_date && intake.photo_metadata_date) {
+    labels.push(`photo metadata date (${shortDateLabel(intake.photo_metadata_date)})`);
+  }
+  if (intake.service_place) labels.push("service place");
+  if (data.recipient || intake.recipient_email) labels.push("recipient");
+  if (intake.auto_profile?.profile_key || intake.service_profile_key) labels.push("service profile suggestion");
+  return labels;
+}
+
+function beginnerNeededLabels(questions) {
+  const labels = [];
+  questions.forEach((question) => {
+    const label = questionFieldLabel(question);
+    if (label && !labels.includes(label)) labels.push(label);
+  });
+  return labels;
+}
+
+function renderBeginnerQuestionFocus(questions, extraActions = "") {
+  if (!questions.length) return "";
+  const items = questions.map((question) => `
+    <li>
+      <span>${escapeHtml(String(question.number || ""))}</span>
+      <div>
+        <strong>${escapeHtml(questionFieldLabel(question))}</strong>
+        <p>${escapeHtml(question.question || "Answer this missing detail.")}</p>
+        <small>Example: ${escapeHtml(questionAnswerExample(question))}</small>
+      </div>
+    </li>
+  `).join("");
+  return `
+    <section class="beginner-question-focus" aria-label="Answer missing questions">
+      <div class="beginner-question-focus-header">
+        <span>Do this now</span>
+        <strong>Answer these questions</strong>
+        <p>Short answers are enough. Questions first; evidence stays below.</p>
+      </div>
+      <ol class="beginner-question-list">
+        ${items}
+        <li class="is-answer-box">${renderInlineAnswerPanel(questions)}</li>
+      </ol>
+      ${extraActions}
+    </section>
+  `;
+}
+
+function renderBeginnerOutcomeBanner(data, intake, questions) {
+  const status = String(data.status || "review");
+  const foundLabels = beginnerFoundLabels(data, intake);
+  const neededLabels = beginnerNeededLabels(questions);
+  const statusClass = status === "ready" ? "ready" : status === "error" ? "error" : questions.length ? "blocked" : "info";
+  let headline = "I found the source details and stopped for review before creating anything.";
+  if (questions.length) {
+    headline = `I found ${foundLabels.length ? humanList(foundLabels.slice(0, 3)) : "some details"}, but I still need ${questions.length} answer${questions.length === 1 ? "" : "s"} before PDF creation.`;
+  } else if (status === "ready") {
+    headline = "I found enough reviewed details to move to PDF preview.";
+  } else if (status === "set_aside") {
+    headline = "This source may not be an in-person interpreting request, so I set it aside before creating anything.";
+  } else if (["duplicate", "active_draft"].includes(status)) {
+    headline = "This request may already exist, so I stopped before creating another PDF or draft.";
+  } else if (status === "error") {
+    headline = "I could not review this source yet. Check the message below and try again.";
+  }
+  const foundText = foundLabels.length
+    ? `Found: ${humanList(foundLabels.slice(0, 5))}.`
+    : "Found: source evidence that still needs review.";
+  const neededText = neededLabels.length
+    ? `Still needed: ${humanList(neededLabels.slice(0, 5))}.`
+    : (status === "ready" ? "Still needed: preview the PDF before any draft step." : "Still needed: review the next safe action.");
+  return `
+    <div class="beginner-outcome-banner ${statusClass}">
+      <span>What happened</span>
+      <strong>${escapeHtml(headline)}</strong>
+      <p>${escapeHtml(foundText)} ${escapeHtml(neededText)}</p>
+      <small>No PDF, Gmail draft, or local record was created.</small>
+    </div>
+  `;
+}
+
+function renderBeginnerReviewSummary(data) {
+  const questions = Array.isArray(data.questions) ? data.questions : [];
+  const intake = reviewIntakeForDisplay(data);
+  const readyForPdf = data.status === "ready" && questions.length === 0;
+  const recipient = data.recipient || intake.recipient_email || "";
+  const servicePlace = intake.service_place || "";
+  const profile = intake.auto_profile?.profile_key || intake.service_profile_key || "";
+  const metadataDate = intake.photo_metadata_date || "";
+  const found = [
+    beginnerField("Case", data.case_number || intake.case_number),
+    beginnerField("Service date", data.service_date || intake.service_date || metadataDate, intake.service_date ? "" : metadataDate ? "needs confirmation" : ""),
+    beginnerField("Service place", servicePlace),
+    beginnerField("Recipient", recipient),
+    profile ? beginnerField("Profile", profile) : "",
+    beginnerField("Status", String(data.status || "").replaceAll("_", " ")),
+  ].filter(Boolean).join("");
+  const needs = questions.length
+    ? questions.map((question) => `<li><strong>${escapeHtml(String(question.number || ""))}.</strong> ${escapeHtml(question.question || "")}</li>`).join("")
+    : `<li>${escapeHtml(data.status === "ready" ? "No missing review questions." : "Upload or review the source to see the next question.")}</li>`;
+  const readyCta = readyForPdf
+    ? `
+      <div class="beginner-ready-cta">
+        <div>
+          <span>Ready</span>
+          <strong>Review draft text and create fee-request PDF</strong>
+          <p>Open the draft preview, check the Portuguese text, then use the existing guarded PDF button.</p>
+        </div>
+        <button type="button" class="mini-button" data-open-review-drawer-focus-prepare="true">Review draft and PDF step</button>
+      </div>
+    `
+    : "";
+  const questionFocus = renderBeginnerQuestionFocus(questions, renderMetadataDateActions(intake, questions));
+  return `
+    <div class="source-review-wizard">
+      <div class="source-review-title">
+        <div>
+          <span>Review this source</span>
+          <strong>${questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : "Ready for the next step"}</strong>
+        </div>
+        <span class="status-chip ${questions.length ? "blocked" : data.status === "ready" ? "ready" : "info"}">${questions.length ? "Needs review" : escapeHtml(String(data.status || "review"))}</span>
+      </div>
+      ${renderBeginnerOutcomeBanner(data, intake, questions)}
+      ${sourceSafetyLine(data)}
+      ${questionFocus}
+      ${readyCta}
+    </div>
+    <details class="beginner-found-details">
+      <summary>
+        <span>Show recovered details</span>
+        <small>What I found and what still needs review</small>
+      </summary>
+      <div class="beginner-review-summary">
+        <div>
+          <strong>What I found</strong>
+          <ul>${found}</ul>
+        </div>
+        <div>
+          <strong>What I still need</strong>
+          <ul>${needs}</ul>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
 function updateHomeReviewCard(data) {
   const card = $("#interpretation-review-home-result");
   const status = data.status || "idle";
+  if (status !== "idle") {
+    showHomeReviewPanel();
+  }
   const title = data.case_number ? `${data.case_number} · ${data.service_date || "date pending"}` : status.replaceAll("_", " ");
   const recipient = data.recipient ? `<div>Recipient: <code>${escapeHtml(data.recipient)}</code></div>` : "";
   const duplicate = data.duplicate?.draft_id ? `<div>Existing draft: <code>${escapeHtml(data.duplicate.draft_id)}</code></div>` : "";
@@ -1267,6 +1631,7 @@ function updateHomeReviewCard(data) {
       </div>
       <span class="status-chip ${status === "ready" ? "ready" : status === "error" ? "error" : status === "idle" ? "info" : "blocked"}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>
+    ${renderBeginnerReviewSummary(data)}
     ${recipient}
     ${duplicate}
     ${questions}
@@ -1371,6 +1736,8 @@ function renderSourceEvidence(data) {
   const body = $("#source-evidence-body");
   const reviewEvidence = data?.review_evidence || null;
   if (!data?.source && !reviewEvidence) {
+    const details = box.querySelector(".source-evidence-details");
+    if (details) details.open = false;
     box.className = "result-card hidden";
     body.innerHTML = "";
     return;
@@ -1422,21 +1789,21 @@ function renderSourceEvidence(data) {
     ${sourceAttention}
     <div class="source-evidence-layout">
       <div class="source-evidence-list">
-        <div><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>
-        <div><span>Case</span><code>${escapeHtml(evidence.case_number || "not recovered")}</code></div>
-        <div><span>Raw case</span><code>${escapeHtml(evidence.raw_case_number || "")}</code></div>
-        <div><span>Profile Decision</span><code>${escapeHtml(profileSummary)}</code></div>
-        <div><span>Profile reason</span><code>${escapeHtml(profileDecision.reason || profileDecision.suggestion_reason || "")}</code></div>
-        <div><span>Service date</span><code>${escapeHtml(evidence.service_date || "needs review")}</code></div>
-        <div><span>Metadata date</span><code>${escapeHtml(evidence.photo_metadata_date || metadata.exif_date || metadata.visible_metadata_date || "")}</code></div>
-        <div><span>Recipient</span><code>${escapeHtml(evidence.recipient_email || "profile/default")}</code></div>
-        <div><span>AI Recovery</span><code>${escapeHtml(evidence.ai_status || "not attempted")}</code></div>
-        <div><span>AI Schema</span><code>${escapeHtml(evidence.ai_schema_name || "")}</code></div>
-        <div><span>AI Prompt</span><code>${escapeHtml(evidence.ai_prompt_version || "")}</code></div>
-        <div><span>Warnings</span><code>${escapeHtml(warnings.join("; ") || "none")}</code></div>
-        <div><span>Rendered pages</span><strong>${escapeHtml(evidence.rendered_page_count || renderedPageUrls.length || 0)}</strong></div>
-        <div><span>Questions</span><strong>${escapeHtml(evidence.question_count || 0)}</strong></div>
-        <div><span>SHA-256</span><code>${escapeHtml((source.sha256 || "").slice(0, 16))}</code></div>
+        <div class="source-evidence-row"><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>
+        <div class="source-evidence-row"><span>Case</span><code>${escapeHtml(evidence.case_number || "not recovered")}</code></div>
+        <div class="source-evidence-row"><span>Raw case</span><code>${escapeHtml(evidence.raw_case_number || "")}</code></div>
+        <div class="source-evidence-row"><span>Profile Decision</span><code>${escapeHtml(profileSummary)}</code></div>
+        <div class="source-evidence-row"><span>Profile reason</span><code>${escapeHtml(profileDecision.reason || profileDecision.suggestion_reason || "")}</code></div>
+        <div class="source-evidence-row"><span>Service date</span><code>${escapeHtml(evidence.service_date || "needs review")}</code></div>
+        <div class="source-evidence-row"><span>Metadata date</span><code>${escapeHtml(evidence.photo_metadata_date || metadata.exif_date || metadata.visible_metadata_date || "")}</code></div>
+        <div class="source-evidence-row"><span>Recipient</span><code>${escapeHtml(evidence.recipient_email || "needs answer")}</code></div>
+        <div class="source-evidence-row"><span>AI Recovery</span><code>${escapeHtml(evidence.ai_status || "not attempted")}</code></div>
+        <div class="source-evidence-row"><span>AI Schema</span><code>${escapeHtml(evidence.ai_schema_name || "")}</code></div>
+        <div class="source-evidence-row"><span>AI Prompt</span><code>${escapeHtml(evidence.ai_prompt_version || "")}</code></div>
+        <div class="source-evidence-row"><span>Warnings</span><code>${escapeHtml(warnings.join("; ") || "none")}</code></div>
+        <div class="source-evidence-row"><span>Rendered pages</span><strong>${escapeHtml(evidence.rendered_page_count || renderedPageUrls.length || 0)}</strong></div>
+        <div class="source-evidence-row"><span>Questions</span><strong>${escapeHtml(evidence.question_count || 0)}</strong></div>
+        <div class="source-evidence-row"><span>SHA-256</span><code>${escapeHtml((source.sha256 || "").slice(0, 16))}</code></div>
         ${proposal}
       </div>
       <div>${preview}</div>
@@ -1489,10 +1856,60 @@ function openReviewDrawer() {
   document.body.dataset.interpretationReviewDrawer = "open";
 }
 
+function focusDrawerPrepareButton() {
+  const card = $("#interpretation-review-summary-card");
+  const button = $("#drawer-prepare-intake-inline") || $("#drawer-prepare-intake");
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!button) return;
+  if (typeof button.focus === "function") button.focus({ preventScroll: true });
+}
+
 function closeReviewDrawer() {
   const backdrop = $("#interpretation-review-drawer-backdrop");
   backdrop.classList.add("hidden");
   document.body.dataset.interpretationReviewDrawer = "closed";
+}
+
+function hasMeaningfulNumberedAnswer(value) {
+  return /^\s*\d+\s*[\).:\-]?\s*\S+/m.test(String(value || ""));
+}
+
+function numberedAnswersText(sourceSelector = "") {
+  const preferred = sourceSelector ? document.querySelector(sourceSelector) : null;
+  if (preferred) {
+    const text = String(preferred.value || "").trim();
+    return hasMeaningfulNumberedAnswer(text) ? text : "";
+  }
+  const homeBox = $("#home-numbered-answers");
+  const drawerBox = $("#numbered-answers");
+  const values = [homeBox?.value, drawerBox?.value].map((value) => String(value || "").trim());
+  return values.find(hasMeaningfulNumberedAnswer) || "";
+}
+
+function focusHomeAnswerBox() {
+  const box = $("#home-numbered-answers");
+  if (!box) return false;
+  box.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (!box.value.trim()) {
+    box.value = "1. ";
+    syncActionGates();
+  }
+  box.focus();
+  return true;
+}
+
+function toggleAdvancedWorkflow() {
+  const panel = $("#batch-queue-panel");
+  const button = $("#toggle-advanced-workflow");
+  if (!panel) return;
+  const opening = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !opening);
+  if (button) {
+    button.textContent = opening ? "Hide batch tools" : "Show batch tools";
+  }
+  if (opening) {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function renderServerConnectionStatus() {
@@ -1588,6 +2005,39 @@ function setDropStatus(message, kind = "info") {
   status.className = `field-hint source-drop-status ${kind}`.trim();
 }
 
+function showHomeReviewPanel() {
+  const panel = $("#interpretation-seed-panel");
+  if (panel) panel.classList.remove("hidden");
+  const shell = document.querySelector(".simple-task-shell");
+  if (shell) {
+    shell.classList.add("has-review");
+    shell.classList.toggle("source-review", state.currentReviewOrigin === "source");
+    shell.classList.toggle("manual-review", state.currentReviewOrigin === "manual");
+  }
+}
+
+function hideHomeReviewPanel() {
+  const panel = $("#interpretation-seed-panel");
+  if (panel) panel.classList.add("hidden");
+  const shell = document.querySelector(".simple-task-shell");
+  if (shell) {
+    shell.classList.remove("has-review", "source-review", "manual-review");
+  }
+  state.currentReviewOrigin = "";
+}
+
+function focusHomeReviewCard() {
+  const panel = $("#interpretation-seed-panel");
+  const card = $("#interpretation-review-home-result");
+  if (!panel || !card) return;
+  showHomeReviewPanel();
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  card.setAttribute("tabindex", "-1");
+  if (typeof card.focus === "function") {
+    card.focus({ preventScroll: true });
+  }
+}
+
 function getClipboardSourceFile(event) {
   const clipboard = event.clipboardData;
   if (!clipboard) return null;
@@ -1636,6 +2086,7 @@ async function uploadSource(sourceKind, options = {}) {
     if (sourceKind === "google_photos") throw new Error("Choose a Google Photos image first.");
     throw new Error("Choose a photo or screenshot first.");
   }
+  state.currentReviewOrigin = "source";
   clearPreparedArtifacts("source changed");
   const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
   const visibleText = [$("#source_text").value.trim(), googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
@@ -1664,12 +2115,17 @@ async function uploadSource(sourceKind, options = {}) {
   if (data.review?.intake) {
     data.review.intake = state.currentIntake;
   }
+  if (data.review) {
+    data.review.source_evidence = data.source_evidence || null;
+    data.review.candidate_intake = state.currentIntake;
+  }
   state.lastProfileProposal = data.profile_proposal || null;
   fillFormFromIntake(state.currentIntake);
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
-  applyReview(data.review);
-  setDropStatus(`Recovered ${file.name || "dropped source"} as ${sourceKind === "notification_pdf" ? "notification PDF" : "photo/screenshot"}.`, "ready");
+  applyReview(data.review, { openDrawer: false });
+  setDropStatus(`Recovered ${file.name || "dropped source"}. Review what I found below before any PDF or Gmail draft step.`, "ready");
+  focusHomeReviewCard();
   return data;
 }
 
@@ -2268,9 +2724,10 @@ async function importGooglePhotosPickerSelection() {
   renderGooglePhotosPickerResult({
     ...data,
     status: "imported",
-    message: "Google Photos image imported for review.",
+    message: "Google Photos image imported. Review what I found below before any PDF or Gmail draft step.",
   });
-  applyReview(data.review);
+  applyReview(data.review, { openDrawer: false });
+  focusHomeReviewCard();
   return data;
 }
 
@@ -3818,7 +4275,8 @@ function removeEmpty(value) {
   return value;
 }
 
-async function buildIntakeFromProfile() {
+async function buildIntakeFromProfile(options = {}) {
+  state.currentReviewOrigin = "manual";
   const payload = removeEmpty(collectProfilePayload());
   if (!payload.profile) {
     payload.profile = "court_mp_generic";
@@ -3831,12 +4289,12 @@ async function buildIntakeFromProfile() {
   });
   state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody);
   fillFormFromIntake(state.currentIntake);
-  applyReview(data.review);
+  applyReview(data.review, options);
 }
 
-async function reviewIntake() {
+async function reviewIntake(options = {}) {
   if (!state.currentIntake) {
-    await buildIntakeFromProfile();
+    await buildIntakeFromProfile(options);
     return;
   }
   mergeFormIntoCurrentIntake();
@@ -3844,15 +4302,16 @@ async function reviewIntake() {
     method: "POST",
     body: JSON.stringify({ intake: state.currentIntake }),
   });
-  applyReview(data);
+  applyReview(data, options);
+  return data;
 }
 
-async function applyNumberedAnswers() {
+async function applyNumberedAnswers(options = {}) {
   if (!state.currentIntake) {
     await buildIntakeFromProfile();
   }
   mergeFormIntoCurrentIntake();
-  const answers = $("#numbered-answers").value.trim();
+  const answers = numberedAnswersText(options.sourceSelector || "");
   if (!answers) {
     throw new Error("Paste numbered answers before applying them.");
   }
@@ -3862,13 +4321,48 @@ async function applyNumberedAnswers() {
   });
   state.currentIntake = data.intake || state.currentIntake;
   fillFormFromIntake(state.currentIntake);
-  applyReview(data);
+  applyReview(data, { openDrawer: options.openDrawer });
   const applied = data.applied_fields?.length
     ? data.applied_fields.join(", ")
     : "no matching fields";
   showAlert(`Applied numbered answers: ${applied}.`, data.status === "ready" ? "recorded" : "blocked");
-  openReviewDrawer();
+  if (options.openDrawer === false) {
+    focusHomeReviewCard();
+  } else {
+    openReviewDrawer();
+  }
   return data;
+}
+
+async function confirmMetadataServiceDate(dateValue) {
+  const serviceDate = String(dateValue || state.currentIntake?.photo_metadata_date || "").trim();
+  if (!serviceDate) {
+    throw new Error("No photo metadata date is available to confirm.");
+  }
+  if (!state.currentIntake) {
+    await buildIntakeFromProfile();
+  }
+  state.currentIntake = {
+    ...(state.currentIntake || {}),
+    service_date: serviceDate,
+    service_date_source: "photo_metadata_user_confirmed",
+  };
+  fillFormFromIntake(state.currentIntake);
+  const data = await reviewIntake({ openDrawer: false });
+  focusHomeReviewCard();
+  showAlert(`Confirmed ${shortDateLabel(serviceDate)} as the service date.`, data?.status === "ready" ? "recorded" : "blocked");
+  return data;
+}
+
+function focusDateAnswerBox() {
+  if (focusHomeAnswerBox()) return;
+  openReviewDrawer();
+  const box = $("#numbered-answers");
+  if (!box) return;
+  if (!box.value.trim()) {
+    box.value = "1. ";
+  }
+  box.focus();
 }
 
 async function activeCheck() {
@@ -3978,7 +4472,7 @@ async function preflightBatchIntakes(options = {}) {
   return data;
 }
 
-function applyReview(data) {
+function applyReview(data, options = {}) {
   clearPreparedArtifacts("review changed");
   if (data.effective_intake || data.intake) {
     state.currentIntake = data.effective_intake || data.intake;
@@ -3989,8 +4483,8 @@ function applyReview(data) {
     renderSourceEvidence(data);
   }
   setStatus(data.status, data.message);
-  showQuestions(data);
   renderNextSafeAction(data.next_safe_action || null);
+  renderGuidedStep(data.next_safe_action?.state || data.status || "idle");
   const alertNeeded = ["duplicate", "active_draft", "set_aside", "error"].includes(data.status);
   showAlert(alertNeeded ? data.message : "", data.status === "error" ? "error" : "blocked");
   updateHomeReviewCard(data);
@@ -4010,7 +4504,7 @@ function applyReview(data) {
     renderDraftLifecycle(state.draftLifecycle);
   }
 
-  if (["ready", "needs_info", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
+  if (options.openDrawer !== false && ["ready", "needs_info", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
     openReviewDrawer();
   }
 }
@@ -4070,6 +4564,7 @@ function renderPrepared(data) {
   $("#gmail_handoff_reviewed").checked = false;
   renderManualHandoffPacket(null);
   renderNextSafeAction(data.next_safe_action || null);
+  renderGuidedStep(data.next_safe_action?.state || "review_gmail_draft_args");
   const previewPanel = $("#pdf-preview-panel");
   const previewBox = $("#pdf-preview");
   const packetPreviews = packet
@@ -4243,6 +4738,7 @@ function resetReview({ closeDrawer = true } = {}) {
   $("#intake-form").reset();
   $("#notification-upload-form").reset();
   $("#photo-upload-form").reset();
+  $("#source-upload-form").reset();
   $("#google-photos-upload-form").reset();
   $("#supporting-attachment-form").reset();
   renderSourceEvidence(null);
@@ -4261,10 +4757,11 @@ function resetReview({ closeDrawer = true } = {}) {
   $("#draft-text").textContent = "The Portuguese draft will appear here before the PDF is created.";
   $("#recipient-summary").textContent = "Recipient appears here after review.";
   $("#interpretation-review-home-result").className = "result-card empty-state";
-  $("#interpretation-review-home-result").textContent = "Upload a notification PDF or screenshot to recover the case details, or start a blank request.";
+  $("#interpretation-review-home-result").textContent = "Upload a notification PDF or screenshot to review the case details, or enter details manually.";
+  hideHomeReviewPanel();
   showAlert("", "");
-  showQuestions({});
-  setStatus("idle", "Upload a notification or start a blank request to begin.");
+  renderGuidedStep("idle");
+  setStatus("idle", "Upload a source or enter details manually to begin.");
   if (closeDrawer) closeReviewDrawer();
 }
 
@@ -4286,7 +4783,7 @@ function resetWorkspace() {
   renderBatchQueue();
   renderBatchPreflight();
   showPanel("new-job");
-  setStatus("idle", "Workspace reset. Upload a notification or start a blank request to begin.");
+  setStatus("idle", "Workspace reset. Upload a source or enter details manually to begin.");
   showAlert("Workspace reset. Batch queue cleared.", "recorded");
   closeReviewDrawer();
 }
@@ -4353,10 +4850,62 @@ function bindActions() {
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-next-action-target]");
     if (!button) return;
+    if (button.dataset.nextActionTarget === "apply-numbered-answers" && focusHomeAnswerBox()) {
+      return;
+    }
     const target = document.getElementById(button.dataset.nextActionTarget || "");
     if (!target) return;
+    if (button.dataset.nextActionTarget === "apply-numbered-answers" || target.closest("#interpretation-review-drawer")) {
+      openReviewDrawer();
+    }
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     if (typeof target.focus === "function") target.focus({ preventScroll: true });
+  });
+  document.addEventListener("input", (event) => {
+    if (event.target?.id === "home-numbered-answers") {
+      syncActionGates();
+    }
+  });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("#home-apply-numbered-answers");
+    if (!button) return;
+    try {
+      await applyNumberedAnswers({ sourceSelector: "#home-numbered-answers", openDrawer: false });
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-review-drawer]");
+    if (!button) return;
+    openReviewDrawer();
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-review-drawer-focus-prepare]");
+    if (!button) return;
+    openReviewDrawer();
+    window.requestAnimationFrame(() => focusDrawerPrepareButton());
+  });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-confirm-metadata-service-date]");
+    if (!button) return;
+    try {
+      await confirmMetadataServiceDate(button.dataset.confirmMetadataServiceDate || "");
+    } catch (error) {
+      showAlert(error.message, "blocked");
+    }
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-focus-date-answer]");
+    if (!button) return;
+    focusDateAnswerBox();
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-not-sure-date]");
+    if (!button) return;
+    openReviewDrawer();
+    showAlert("No problem. Check the source or enter the correct date in the numbered answers when you know it.", "blocked");
   });
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-copy-diagnostic-command]");
@@ -4762,6 +5311,18 @@ function bindActions() {
   };
   $("#duplicate-list").addEventListener("click", handleHistoryDraftAction);
   $("#draft-log-list").addEventListener("click", handleHistoryDraftAction);
+  $("#source-upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const file = $("#source-file").files?.[0];
+      if (!file) throw new Error("Choose a PDF, photo, or screenshot first.");
+      await recoverLocalSourceFile(file, "chosen source file");
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+      updateHomeReviewCard({ status: "blocked", message: error.message });
+    }
+  });
   $("#notification-upload-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -4898,7 +5459,8 @@ function bindActions() {
   });
   $("#build-profile").addEventListener("click", async () => {
     try {
-      await buildIntakeFromProfile();
+      await buildIntakeFromProfile({ openDrawer: false });
+      focusHomeReviewCard();
     } catch (error) {
       setStatus("error", error.message);
       showAlert(error.message, "error");
@@ -4907,13 +5469,15 @@ function bindActions() {
   });
   $("#review-intake").addEventListener("click", async () => {
     try {
-      await reviewIntake();
+      await reviewIntake({ openDrawer: false });
+      focusHomeReviewCard();
     } catch (error) {
       setStatus("error", error.message);
       showAlert(error.message, "error");
       updateHomeReviewCard({ status: "error", message: error.message });
     }
   });
+  $("#toggle-advanced-workflow").addEventListener("click", toggleAdvancedWorkflow);
   $("#apply-numbered-answers").addEventListener("click", async () => {
     try {
       await applyNumberedAnswers();
@@ -4932,6 +5496,14 @@ function bindActions() {
     }
   });
   $("#drawer-prepare-intake").addEventListener("click", async () => {
+    try {
+      await prepareIntake();
+    } catch (error) {
+      setStatus("blocked", error.message);
+      showAlert(error.message, "blocked");
+    }
+  });
+  $("#drawer-prepare-intake-inline").addEventListener("click", async () => {
     try {
       await prepareIntake();
     } catch (error) {
@@ -4975,7 +5547,14 @@ function bindActions() {
     setStatus("idle", "Batch queue cleared.");
     showAlert("Batch queue cleared.", "recorded");
   });
-  $("#batch-packet-mode").addEventListener("change", () => {
+  const packetMode = $("#batch-packet-mode");
+  const packetModeCard = document.querySelector('label[for="batch-packet-mode"]');
+  packetModeCard.addEventListener("click", (event) => {
+    event.preventDefault();
+    packetMode.checked = !packetMode.checked;
+    packetMode.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  packetMode.addEventListener("change", () => {
     state.batchPreflight = null;
     renderBatchPreflight();
     syncActionGates();
@@ -5159,6 +5738,7 @@ function bindActions() {
     }
   });
   $("#interpretation-clear-review").addEventListener("click", resetReview);
+  $("#change-source").addEventListener("click", resetWorkspace);
   $("#interpretation-close-review").addEventListener("click", closeReviewDrawer);
   $("#interpretation-close-review-footer").addEventListener("click", closeReviewDrawer);
   $("#interpretation-review-drawer-backdrop").addEventListener("click", (event) => {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 import os
 import re
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ AI_RECOVERY_FIELD_NAMES = [
     "raw_case_number",
     "case_number",
     "service_date",
+    "photo_metadata_date",
     "source_document_timestamp",
     "court_email",
     "payment_entity",
@@ -51,6 +53,7 @@ AI_RECOVERY_RESPONSE_FORMAT = {
                         "raw_case_number": {"type": "string"},
                         "case_number": {"type": "string"},
                         "service_date": {"type": "string"},
+                        "photo_metadata_date": {"type": "string"},
                         "source_document_timestamp": {"type": "string"},
                         "court_email": {"type": "string"},
                         "payment_entity": {"type": "string"},
@@ -241,8 +244,9 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         "Return strict JSON only. Do not invent missing values. Preserve accents. "
         "If the source looks like translation work or mentions word counts, include those phrases in translation_indicators.\n\n"
         "The uploaded image may be rotated, sideways, cropped, partially visible, or a Google Photos screenshot with a right-side "
-        "metadata panel. Inspect all orientations and use visible Google Photos metadata only as photo/capture-date evidence, "
-        "not as the service date unless the document text agrees or the service date is otherwise explicit.\n\n"
+        "metadata panel. Inspect all orientations and put visible Google Photos capture dates in photo_metadata_date as "
+        "YYYY-MM-DD when the year is visible or inferable from a filename such as 20260508_123723.jpg. Use that only as "
+        "photo/capture-date evidence, not as service_date unless the document text agrees or the service date is otherwise explicit.\n\n"
         "Return this JSON shape:\n"
         "{\n"
         '  "raw_visible_text": "all visible OCR text, preserving useful line breaks",\n'
@@ -250,6 +254,7 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         '    "raw_case_number": "",\n'
         '    "case_number": "",\n'
         '    "service_date": "YYYY-MM-DD if explicitly visible as service/diligence/metadata date",\n'
+        '    "photo_metadata_date": "YYYY-MM-DD if visible Google Photos/photo metadata shows a capture date",\n'
         '    "source_document_timestamp": "",\n'
         '    "court_email": "",\n'
         '    "payment_entity": "",\n'
@@ -278,12 +283,28 @@ def _content_item_for_source(content: bytes, source_kind: str, filename: str, co
             "filename": filename or "source.pdf",
             "file_data": f"data:application/pdf;base64,{encoded}",
         }
-    mime = content_type.strip() or "image/jpeg"
+    mime = _openai_image_mime_type(content, filename, content_type)
     return {
         "type": "input_image",
         "image_url": f"data:{mime};base64,{encoded}",
         "detail": "high",
     }
+
+
+def _openai_image_mime_type(content: bytes, filename: str, content_type: str) -> str:
+    normalized = (content_type or "").split(";", 1)[0].strip().lower()
+    if normalized.startswith("image/"):
+        return normalized
+    guessed, _encoding = mimetypes.guess_type(filename or "")
+    if guessed and guessed.startswith("image/"):
+        return guessed
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
 
 
 def _content_items_for_source(

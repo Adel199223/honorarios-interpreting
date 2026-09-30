@@ -146,9 +146,38 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         page = response.text
         for text in [
             "LegalPDF Honorários",
+            "Guided Interpretation",
             "Start Interpretation Request",
+            "guided-intake-steps",
+            "Upload source",
+            "Review what was found",
+            "Answer questions",
+            "Preview PDF",
+            "Draft email",
+            "advanced-intake-fields",
+            "Show advanced intake fields",
+            "advanced-workflow-panel",
+            "Advanced",
+            "Batch tools and direct PDF generation stay hidden here until needed.",
+            "Show batch tools",
+            "What I found",
+            "What I still need",
+            "beginner-review-panel hidden",
+            "technical-actions-menu",
+            "advanced-status-details",
+            "Refresh app data",
+            "Open JSON reference",
             "Reset workspace",
-            "Drop or paste a notification PDF, photo, or screenshot here",
+            "Add source file",
+            "Review source",
+            "Choose one local notification PDF, photo, or screenshot, then click Review source.",
+            "Source reviewed. Continue in Review Case Details",
+            "Change source",
+            "Recover PDF",
+            "Recover photo",
+            "Or drop/paste a source here",
+            "Other source options",
+            "Best result: upload the original or downloaded photo when you can.",
             "Supporting proof / declarations",
             "Add supporting attachments",
             "Review Interpretation Request",
@@ -191,14 +220,137 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Public GitHub Readiness",
             "Run tracked Git gate",
             "Gmail Draft API",
+            "Email safety",
+            "Creates Gmail drafts only.",
+            "You review and send manually in Gmail.",
             "Draft-only Gmail",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, page)
+        self.assertNotIn("Uses `_create_draft` only.", page)
+        self.assertNotIn('id="questions"', page)
+        self.assertIn('class="panel workspace-panel batch-queue-panel advanced-workflow-panel hidden"', page)
+        self.assertIn('id="review-intake" class="primary-button hidden"', page)
+        self.assertIn('class="app-status-details advanced-status-details"', page)
+        style_css = Path(__file__).resolve().parents[1].joinpath("honorarios_app", "static", "style.css").read_text(encoding="utf-8")
+        self.assertIn(".technical-actions-content .app-status-details", style_css)
+        self.assertNotIn('<details class="app-status-details">', page)
+        self.assertIn('class="secondary-upload-options"', page)
+        self.assertIn('class="supporting-attachment-details"', page)
+        self.assertIn("Review recovered details", page)
+        self.assertIn("Enter details manually", page)
+        self.assertIn("Clear review", page)
+        app_js = Path(__file__).resolve().parents[1].joinpath("honorarios_app", "static", "app.js").read_text(encoding="utf-8")
+        self.assertIn('$("#review-intake")?.classList.toggle("hidden", !hasReviewableIntake)', app_js)
+        self.assertIn(".simple-task-shell:not(.has-review) .advanced-intake-fields", style_css)
+        self.assertIn(".simple-task-shell:not(.has-review) .supporting-attachment-details", style_css)
+        self.assertLess(page.index('id="source-upload-form"'), page.index('id="source-drop-zone"'))
+        self.assertLess(page.index('id="source-drop-zone"'), page.index('class="upload-grid primary-upload-grid"'))
+        self.assertNotIn("Guided Translation", page)
+        self.assertNotIn("not a separate task", page)
         self.assertNotIn("_send_email", page)
         self.assertNotIn("_send_draft", page)
         self.assertNotIn("messages.send", page)
         self.assertNotIn("drafts.send", page)
+
+    def test_browser_js_guides_metadata_date_confirmation_without_writes(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
+        style_css = (root / "honorarios_app" / "static" / "style.css").read_text(encoding="utf-8")
+        for text in [
+            "source-review-wizard",
+            "Review this source",
+            "What happened",
+            "I found",
+            "Still needed:",
+            "beginner-found-details",
+            "Show recovered details",
+            "function renderBeginnerQuestionFocus",
+            "beginner-question-focus",
+            "Answer these questions",
+            "Type your numbered answers",
+            "Questions first; evidence stays below.",
+            'case_number: "case number"',
+            'claim_transport: "transport decision"',
+            'case_number: "398/24.5T8BJA"',
+            'claim_transport: "yes"',
+            "transport destination",
+            "one-way kilometers",
+            "Is ${escapeHtml(label)} the service date?",
+            "No PDF, Gmail draft, or local record was created.",
+            "Review draft text and create fee-request PDF",
+            "Open the draft preview, check the Portuguese text, then use the existing guarded PDF button.",
+            "data-open-review-drawer-focus-prepare",
+            "focusDrawerPrepareButton",
+            '"drawer-prepare-intake-inline"',
+            "function syncDrawerProgressiveDisclosure",
+            "document.body.dataset.drawerWorkflowState",
+            "data-confirm-metadata-service-date",
+            "photo_metadata_user_confirmed",
+            "data-focus-date-answer",
+            "data-not-sure-date",
+            "function showHomeReviewPanel",
+            "function hideHomeReviewPanel",
+            "details.open = false",
+            'shell.classList.add("has-review")',
+            'shell.classList.remove("has-review", "source-review", "manual-review")',
+            "focusHomeReviewCard",
+            "applyReview(data.review, { openDrawer: false })",
+            "applyNumberedAnswers({ sourceSelector: \"#home-numbered-answers\", openDrawer: false })",
+            "hideHomeReviewPanel();",
+            "function applyReview(data, options = {})",
+            "options.openDrawer !== false",
+            "Review what I found below before any PDF or Gmail draft step.",
+            "home-numbered-answers",
+            "home-apply-numbered-answers",
+            "function renderInlineAnswerPanel",
+            "function hasMeaningfulNumberedAnswer",
+            "function numberedAnswersText",
+            "function renderGuidedStep",
+            'shell.classList.toggle("source-review", state.currentReviewOrigin === "source")',
+            'state.currentReviewOrigin = "source"',
+            'state.currentReviewOrigin = "manual"',
+            "target.closest(\"#interpretation-review-drawer\")",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, app_js)
+        for css in [
+            ".source-review-wizard",
+            ".source-review-title",
+            ".beginner-found-details",
+            ".beginner-found-details > summary",
+            ".beginner-question-focus",
+            ".beginner-question-list",
+            ".beginner-question-list li",
+            "grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));",
+            ".beginner-question-list li.is-answer-box",
+            ".beginner-outcome-banner",
+            ".source-safety-line",
+            ".simple-task-shell.has-review #interpretation-seed-panel",
+            ".simple-task-shell.has-review #interpretation-intake-panel",
+            ".simple-task-shell.has-review.source-review #source-upload-form",
+            ".simple-task-shell.has-review.source-review #build-profile",
+            ".review-source-change-hint",
+            ".date-confirmation-actions",
+            ".beginner-ready-cta",
+            ".primary-mini-button",
+            ".inline-answer-panel",
+            ".drawer-review-actions",
+            'body[data-drawer-workflow-state="answer_questions"] #draft-lifecycle-panel',
+            'body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #manual-handoff-card',
+            'body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #manual-record-card',
+            'body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #record-draft',
+        ]:
+            with self.subTest(css=css):
+                self.assertIn(css, style_css)
+        mobile_tail = style_css.rsplit("@media (max-width: 760px)", 1)[1]
+        self.assertIn(".beginner-ready-cta", mobile_tail)
+        self.assertIn(".review-source-change-hint button", mobile_tail)
+        self.assertIn("flex-direction: column;", mobile_tail)
+        self.assertIn(".beginner-ready-cta button", mobile_tail)
+        self.assertIn("width: 100%;", mobile_tail)
+        self.assertNotIn("_send_email", app_js)
+        self.assertNotIn("_send_draft", app_js)
 
     def test_health_endpoint_is_read_only_and_secret_free(self):
         client = self.make_client()
@@ -835,12 +987,12 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "browser_health_check",
             "setSyntheticInputFile",
             "setInputFiles",
-            "#photo-file",
-            "#notification-file",
+            "#source-file",
             "#supporting-attachment-file",
-            "#photo-upload-form button[type=submit]",
-            "#notification-upload-form button[type=submit]",
+            "#source-upload-form button[type=submit]",
             "#supporting-attachment-form button[type=submit]",
+            "openSupportingAttachmentDetails",
+            ".supporting-attachment-details > summary",
             "browser_photo_upload_evidence",
             "browser_pdf_upload_evidence",
             "browser_supporting_attachment_upload_evidence",
@@ -1058,8 +1210,8 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         self.assertIn("if not prepare_replacement or prepare_packet:", flow_py)
         self.assertIn('wait_for(state="attached"', flow_value_block)
         self.assertNotIn('wait_for(state="visible"', flow_value_block)
-        self.assertNotIn('driver.expect_text("Suggested Next Step")', flow_homepage_block)
-        self.assertLess(flow_packet_block.index("_close_review_drawer_if_open()"), flow_packet_block.index('driver.check("#batch-packet-mode")'))
+        self.assertNotIn('driver.expect_text("Next safe action")', flow_homepage_block)
+        self.assertLess(flow_packet_block.index("_close_review_drawer_if_open()"), flow_packet_block.index('driver.click(\'label[for="batch-packet-mode"]\')'))
         self.assertNotIn("get_by_text(text, exact=False).wait_for", flow_expect_text_block)
         self.assertNotIn("get_by_text(text, exact=False).first().wait_for", flow_expect_text_block)
         self.assertNotIn("get_by_text(text, exact=False).first.wait_for", flow_expect_text_block)
@@ -1195,6 +1347,11 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "Gabinete Médico-Legal de Beja",
             "Hospital José Joaquim Fernandes",
             "número de palavras",
+            "_openai_image_mime_type",
+            "mimetypes.guess_type",
+            "data:{mime};base64",
+            "image/png",
+            "image/webp",
         ]:
             with self.subTest(text=text):
                 self.assertIn(text, ai_recovery)

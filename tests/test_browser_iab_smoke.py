@@ -53,6 +53,51 @@ class BrowserIabSmokeSourceTests(unittest.TestCase):
         cleanup_block = smoke_js.split("const finish = async () =>", 1)[1].split("return report(baseUrl, checks);", 1)[0]
         self.assertIn("(runnerCreatedTab || runnerBorrowedBlankTab)", cleanup_block)
 
+    def test_upload_smoke_covers_beginner_guided_review_flow(self):
+        smoke_js = self.smoke_source()
+
+        for text in [
+            "guided-intake-steps",
+            "What happened",
+            "Show recovered details",
+            "Answer these questions",
+            "Answer questions",
+            "expectSelectorHidden(tab, \"#review-intake\"",
+            "expectSelectorHidden(tab, \".advanced-intake-fields\"",
+            "expectSelectorHidden(tab, \".supporting-attachment-details\"",
+            "function expectSelectorHidden",
+            "expectButtonEnabled(tab, \"#review-intake\"",
+            "Answer the numbered questions before PDF creation",
+            "Beginner review panel should stay hidden until a source or review action reveals it.",
+            "#interpretation-seed-panel",
+            "#build-profile",
+            "#home-numbered-answers",
+            "#home-apply-numbered-answers",
+            "Review draft text and create fee-request PDF",
+            "[data-open-review-drawer-focus-prepare]",
+            "#interpretation-review-summary-card",
+            "#drawer-prepare-intake-inline",
+            "#manual-record-card",
+            "#drawer-prepare-intake",
+            'expectSelectorHidden(tab, "#manual-handoff-card"',
+            'expectSelectorHidden(tab, "#manual-record-card"',
+            'expectSelectorHidden(tab, "#record-draft"',
+            "#source-file",
+            "#source-upload-form button[type=submit]",
+            'expectSelectorHidden(tab, "#build-profile"',
+            "#interpretation-review-home-result",
+            "#source-evidence",
+            "const sourceUploadOnly",
+            "profile-proposal-card",
+            ".action-overflow-menu > summary",
+            "#toggle-advanced-workflow",
+            "openSupportingAttachmentDetails",
+            ".supporting-attachment-details > summary",
+        ]:
+            with self.subTest(text=text):
+                self.assertIn(text, smoke_js)
+        self.assertNotIn('attachedLocator(tab, "#questions"', smoke_js)
+
     def test_blank_tab_cleanup_timeout_can_fall_back_to_verified_blank_state(self):
         smoke_js = self.smoke_source()
 

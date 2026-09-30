@@ -111,7 +111,7 @@ python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --sou
 1. Keep hardening Browser/IAB smoke around real daily UI paths.
 2. Keep growing the LegalPDF adapter caller shim toward the future real LegalPDF caller, keeping source upload, numbered answers, prepared-review token binding, and stale-token rejection executable only against isolated/synthetic state.
 3. Continue testing real Gmail draft creation cautiously, keeping verification read-only and send actions forbidden.
-4. Improve UX explanations for `Suggested Next Step` and duplicate/correction states if they confuse daily use.
+4. Keep tightening `Next safe action` and duplicate/correction explanations if they confuse daily use.
 
 ## Private Data Rules
 

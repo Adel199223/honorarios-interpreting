@@ -135,6 +135,29 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNOREC
 ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 EU_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
 COMPACT_DATE_RE = re.compile(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?\d{6})?\b")
+VISIBLE_MONTH_DATE_RE = re.compile(
+    r"\b("
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|"
+    r"jan(?:eiro)?|fev(?:ereiro)?|mar(?:co|ço)?|abr(?:il)?|mai(?:o)?|jun(?:ho)?|jul(?:ho)?|"
+    r"ago(?:sto)?|set(?:embro)?|out(?:ubro)?|nov(?:embro)?|dez(?:embro)?"
+    r")\s+(\d{1,2})(?:,?\s+(20\d{2}))?\b",
+    re.IGNORECASE,
+)
+VISIBLE_MONTHS = {
+    "jan": 1, "january": 1, "janeiro": 1,
+    "feb": 2, "february": 2, "fev": 2, "fevereiro": 2,
+    "mar": 3, "march": 3, "marco": 3, "março": 3,
+    "apr": 4, "april": 4, "abr": 4, "abril": 4,
+    "may": 5, "mai": 5, "maio": 5,
+    "jun": 6, "june": 6, "junho": 6,
+    "jul": 7, "july": 7, "julho": 7,
+    "aug": 8, "august": 8, "ago": 8, "agosto": 8,
+    "sep": 9, "sept": 9, "september": 9, "set": 9, "setembro": 9,
+    "oct": 10, "october": 10, "out": 10, "outubro": 10,
+    "nov": 11, "november": 11, "novembro": 11,
+    "dec": 12, "december": 12, "dez": 12, "dezembro": 12,
+}
 LEGALPDF_APPLY_REPORT_ID_RE = re.compile(r"^legalpdf-import-apply-[A-Za-z0-9_.-]+$")
 AUTO_PROFILE_VALUES = {"", "auto", "auto_detect", "auto-detect", "court_mp_generic"}
 LEGALPDF_ADAPTER_CONTRACT_VERSION = "2026-05-10.optional-gmail-boundary.v4"
@@ -568,13 +591,34 @@ def extract_first_date(text: str) -> str:
 
 def extract_visible_metadata_date(text: str) -> str:
     compact = COMPACT_DATE_RE.search(text or "")
-    if not compact:
+    if compact:
+        year, month, day = compact.groups()
+        try:
+            return datetime(int(year), int(month), int(day)).date().isoformat()
+        except ValueError:
+            return ""
+    month_match = VISIBLE_MONTH_DATE_RE.search(text or "")
+    if not month_match:
         return ""
-    year, month, day = compact.groups()
+    month_name, day, year = month_match.groups()
+    month = VISIBLE_MONTHS.get(fold_match_text(month_name))
+    if not month:
+        return ""
     try:
-        return datetime(int(year), int(month), int(day)).date().isoformat()
+        today = datetime.strptime(app_current_date(), "%Y-%m-%d").date()
+    except ValueError:
+        today = datetime.now().date()
+    inferred_year = int(year) if year else today.year
+    try:
+        candidate = datetime(inferred_year, int(month), int(day)).date()
     except ValueError:
         return ""
+    if not year and (candidate - today).days > 14:
+        try:
+            candidate = datetime(inferred_year - 1, int(month), int(day)).date()
+        except ValueError:
+            return ""
+    return candidate.isoformat()
 
 
 def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
@@ -816,12 +860,17 @@ def build_field_evidence(
         seen_fields.add(field)
 
     if metadata_date:
+        metadata_source = _photo_metadata_date_source(candidate, metadata, ai_recovery)
         add(
             "photo_metadata_date",
             metadata_date,
-            source="image_metadata",
+            source=metadata_source,
             confidence="high",
-            reason="Image metadata supplied the capture date used for review.",
+            reason=(
+                "Visible Google Photos metadata supplied the capture date used for review."
+                if metadata_source == "visible_google_photos_metadata"
+                else "Image metadata supplied the capture date used for review."
+            ),
         )
 
     deterministic_sources = {
@@ -941,6 +990,25 @@ def _attention_flag(code: str, severity: str, title: str, detail: str) -> dict[s
     }
 
 
+def _friendly_photo_metadata_detail(candidate: dict[str, Any], ai_recovery: dict[str, Any]) -> str:
+    metadata_date = str(candidate.get("photo_metadata_date") or "").strip()
+    if not metadata_date or str(candidate.get("service_date") or "").strip():
+        return ""
+    try:
+        parsed = datetime.strptime(metadata_date, "%Y-%m-%d")
+        date_label = f"{parsed.strftime('%B')} {parsed.day}"
+    except ValueError:
+        date_label = metadata_date
+    fields = ai_recovery.get("fields") if isinstance(ai_recovery, dict) else {}
+    locality = ""
+    if isinstance(fields, dict):
+        locality = str(fields.get("locality") or fields.get("service_place") or "").strip()
+    if not locality:
+        locality = str(candidate.get("service_place") or "").strip()
+    place_text = f" in {locality}" if locality else ""
+    return f"Photo metadata appears to be {date_label}{place_text}. Confirm whether this was the service date."
+
+
 def build_source_attention(
     *,
     candidate: dict[str, Any],
@@ -991,6 +1059,15 @@ def build_source_attention(
             str(review.get("message") or "The intake could not be reviewed safely."),
         ))
 
+    metadata_detail = _friendly_photo_metadata_detail(candidate, ai_recovery)
+    if metadata_detail:
+        flags.append(_attention_flag(
+            "photo_metadata_needs_confirmation",
+            "review",
+            "Confirm photo date",
+            metadata_detail,
+        ))
+
     if any(str(item.get("status") or "") == "conflicts_with_metadata" for item in field_evidence):
         flags.append(_attention_flag(
             "date_conflict",
@@ -1027,6 +1104,8 @@ def build_source_attention(
             "service_place": "service_place",
         }
         for ai_field, intake_field in critical_map.items():
+            if intake_field == "service_date" and metadata_detail:
+                continue
             if ai_field in missing_ai_fields and not str(candidate.get(intake_field) or "").strip():
                 critical_missing.append(intake_field)
         if critical_missing:
@@ -1096,6 +1175,9 @@ def _ai_recovery_text(ai_recovery: dict[str, Any]) -> str:
     indicators = ai_recovery.get("translation_indicators")
     if isinstance(indicators, list):
         parts.extend(str(item) for item in indicators if str(item).strip())
+    warnings = ai_recovery.get("warnings")
+    if isinstance(warnings, list):
+        parts.extend(str(item) for item in warnings if str(item).strip())
     return combine_text_parts(*parts)
 
 
@@ -1494,6 +1576,19 @@ def _service_date_source_for_ai(intake: dict[str, Any], date: str) -> str:
     return "document_text"
 
 
+def _photo_metadata_date_source(candidate: dict[str, Any], metadata: dict[str, Any], ai_recovery: dict[str, Any]) -> str:
+    metadata_date = str(candidate.get("photo_metadata_date") or "").strip()
+    if not metadata_date:
+        return "image_metadata"
+    if str(metadata.get("exif_date") or "").strip() == metadata_date:
+        return "image_metadata"
+    if str(metadata.get("visible_metadata_date") or "").strip() == metadata_date:
+        return "visible_google_photos_metadata"
+    if _ai_field_value(ai_recovery, "photo_metadata_date") == metadata_date:
+        return "visible_google_photos_metadata"
+    return "image_metadata"
+
+
 def _safe_ai_recovery_for_intake(ai_recovery: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "status",
@@ -1529,6 +1624,10 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         intake["raw_case_number"] = raw_case
         intake["source_case_number"] = raw_case
         intake["case_number"] = normalize_case_number(raw_case)
+
+    photo_metadata_date = _first_ai_field(ai_recovery, "photo_metadata_date", "metadata_date")
+    if photo_metadata_date and _looks_like_iso_date(photo_metadata_date) and not intake.get("photo_metadata_date"):
+        intake["photo_metadata_date"] = photo_metadata_date
 
     service_date = _first_ai_field(ai_recovery, "service_date")
     if service_date and _looks_like_iso_date(service_date) and not intake.get("service_date"):
@@ -1831,9 +1930,10 @@ def recover_source_upload(
         metadata = image_metadata_from_bytes(content)
     if visible_text.strip():
         extracted_text = "\n".join(part for part in [extracted_text, visible_text.strip()] if part)
-        visible_metadata_date = extract_visible_metadata_date(visible_text)
-        if source_kind == "photo" and visible_metadata_date:
-            metadata["visible_metadata_date"] = visible_metadata_date
+    visible_metadata_context = "\n".join(part for part in [filename, visible_text.strip()] if part)
+    visible_metadata_date = extract_visible_metadata_date(visible_metadata_context)
+    if source_kind == "photo" and visible_metadata_date:
+        metadata["visible_metadata_date"] = visible_metadata_date
 
     rendered_page_paths: list[Path] = []
     if source_kind == "notification_pdf" and text_is_weak_for_pdf_ocr(extracted_text):
@@ -1883,6 +1983,12 @@ def recover_source_upload(
         paths=paths,
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
+    if (
+        str(candidate.get("photo_metadata_date") or "").strip()
+        and not str(candidate.get("service_date") or "").strip()
+        and _photo_metadata_date_source(candidate, metadata, ai_recovery) == "visible_google_photos_metadata"
+    ):
+        candidate["photo_metadata_date_requires_confirmation"] = True
     if str(personal_profile_id or "").strip():
         candidate["personal_profile_id"] = str(personal_profile_id or "").strip()
     candidate["auto_profile"] = profile_decision
@@ -5266,10 +5372,11 @@ def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | No
         )
     if status == "needs_info":
         count = len(questions or [])
+        question_word = "question" if count == 1 else "questions"
         return next_safe_action(
             state="answer_questions",
-            title="Answer the numbered questions",
-            detail=f"Provide the missing value{'s' if count != 1 else ''} using short numbered replies, then apply the answers and review again.",
+            title=f"Answer {count} {question_word} before PDF creation",
+            detail=f"{count} numbered {question_word} need an answer. Provide short numbered replies, then apply the answers and review again.",
             button_id="apply-numbered-answers",
             blocked=True,
         )
