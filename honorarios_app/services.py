@@ -79,6 +79,7 @@ from scripts.source_parsing import explicit_service_places, service_date_evidenc
 from scripts.source_classification import detect_translation_source, format_translation_rejection
 
 from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
+from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing
 from .gmail_draft_api import (
     create_gmail_draft_from_payload,
     gmail_oauth_callback,
@@ -1040,6 +1041,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
         profile_key = str(profile_decision.get("profile_key") or "").strip()
         defaults = _service_profile_defaults(profile_key, profiles)
         reviewed_intake = deep_merge(defaults, remove_empty_values(reviewed_intake))
+        preserve_photo_routing(intake, reviewed_intake)
         reviewed_intake["service_profile_key"] = profile_key
         reviewed_intake.setdefault("closing_date", app_current_date())
     reviewed_intake["auto_profile"] = profile_decision
@@ -1546,6 +1548,11 @@ def recover_source_upload(
         paths=paths,
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
+    apply_photo_defaults(
+        candidate, preferences=load_photo_defaults(paths.ai_config), metadata=metadata,
+        ai_recovery=ai_recovery, directory=read_json_list(paths.court_emails),
+        explicit_profile=profile_decision.get('mode') == 'explicit_profile',
+    )
     if (
         str(candidate.get("photo_metadata_date") or "").strip()
         and not str(candidate.get("service_date") or "").strip()
@@ -4749,9 +4756,18 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
         return
 
     if field == "payment_entity":
+        if intake.get("photo_defaults_applied") and value != intake.get("payment_entity"):
+            for routing_field in ("addressee", "recipient_email", "court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"):
+                intake[routing_field] = ""
         intake["payment_entity"] = value
         if not str(intake.get("addressee") or "").strip():
             intake["addressee"] = _default_addressee(value)
+        return
+
+    if field == "recipient_email" and intake.get("photo_defaults_applied"):
+        for routing_field in ("court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"):
+            intake[routing_field] = ""
+        intake["recipient_email"] = value
         return
 
     if field == "service_place":
@@ -5040,6 +5056,10 @@ def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tup
     profile = selected_personal_profile(paths, intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
     generator_profile = profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
+    saved_closing_city = str(_legacy_profile_defaults(paths).get("default_closing_city") or "").strip()
+    if intake.get("photo_defaults_applied") and not str(effective.get("closing_city") or "").strip() and saved_closing_city:
+        effective["closing_city"] = saved_closing_city
+        provenance["applied"].append("closing_city")
     return effective, generator_profile, provenance
 
 

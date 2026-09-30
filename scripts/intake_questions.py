@@ -40,6 +40,12 @@ QUESTION_RULES = [
         "unless": "payment_entity_inferred",
     },
     {
+        "field": "recipient_email",
+        "question": "What is the email address for the court that should receive this request?",
+        "answer_hint": "Use the verified tribunais.org.pt court address.",
+        "when": "photo_recipient_missing",
+    },
+    {
         "field": "service_place",
         "question": "Which building and city did Polícia Judiciária use for this service?",
         "answer_hint": "Example: Posto da GNR de Ferreira do Alentejo.",
@@ -129,6 +135,11 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
         return True
     if condition == "claim_transport":
         return bool(intake.get("claim_transport"))
+    if condition == "photo_recipient_missing":
+        defaults = intake.get("photo_defaults_applied")
+        return isinstance(defaults, dict) and "routing_status" in defaults and not (
+            has_value(intake, "recipient_email") or has_value(intake, "court_email") or has_value(intake, "court_email_key")
+        )
     if condition == "service_date_conflict":
         return bool(service_date_conflict(intake)) and not service_date_conflict_is_confirmed(intake)
     if condition == "pj_host_building_missing":

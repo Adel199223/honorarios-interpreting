@@ -249,6 +249,22 @@ def build_field_evidence(
             ),
         )
 
+    photo_defaults = candidate.get("photo_defaults_applied") or {}
+    if isinstance(photo_defaults, dict):
+        for field in ("service_date", "payment_entity", "recipient_email"):
+            value = photo_defaults.get(field)
+            if value and _values_match(candidate.get(field), value) and not (
+                field == "service_date" and str(candidate.get("service_date_source") or "") in CONFIRMED_SERVICE_DATE_SOURCES
+            ):
+                reason = (
+                    "Your saved photo-date default uses the capture day as the interpreting day. You can edit an exception."
+                    if field == "service_date" else
+                    f"Your saved photo-city default selects the configured court/contact for {photo_defaults.get('photo_city', '')}. This is your default, not a payer stated on the document."
+                )
+                if field == "service_date" and photo_defaults.get("original_service_date"):
+                    reason += f" The source also suggested {photo_defaults['original_service_date']}; the photo default takes priority."
+                add(field, value, source="photo_default", confidence="medium", reason=reason)
+
     if str(candidate.get("service_date_source") or "").strip().lower() in CONFIRMED_SERVICE_DATE_SOURCES:
         add("service_date", candidate.get("service_date"), source="user_confirmed", confidence="high", reason="You explicitly supplied or confirmed the service date. Source, conflict and duplicate checks still apply.")
 

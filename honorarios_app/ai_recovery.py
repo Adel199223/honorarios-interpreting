@@ -24,12 +24,13 @@ DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_TIMEOUT_SECONDS = 90
 MAX_OUTPUT_TOKENS = 8192
 AI_RECOVERY_SCHEMA_NAME = "honorarios_source_recovery"
-AI_RECOVERY_PROMPT_VERSION = "honorarios-source-roles-v2"
+AI_RECOVERY_PROMPT_VERSION = "honorarios-source-photo-city-v3"
 AI_RECOVERY_FIELD_NAMES = [
     "raw_case_number",
     "case_number",
     "service_date",
     "photo_metadata_date",
+    "photo_metadata_city",
     "source_document_timestamp",
     "court_email",
     "payment_entity",
@@ -59,6 +60,7 @@ AI_RECOVERY_RESPONSE_FORMAT = {
                         "case_number": {"type": "string"},
                         "service_date": {"type": "string"},
                         "photo_metadata_date": {"type": "string"},
+                        "photo_metadata_city": {"type": "string"},
                         "source_document_timestamp": {"type": "string"},
                         "court_email": {"type": "string"},
                         "payment_entity": {"type": "string"},
@@ -265,6 +267,8 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         "A labour court in Faro is not the labour court in Beja. "
         "Return court_email only for a clearly identified court recipient; leave it empty for absent, conflicting "
         "or multiple possible recipients. Do not guess a recipient from context.\n\n"
+        "A police command or station header identifies the issuing/service entity, not the paying authority. "
+        "Leave payment_entity empty unless a court or actual payer is explicitly identified.\n\n"
         "Translation requires explicit translation work or a document word-count request. "
         "Ordinary phrases containing palavras, such as por outras palavras, are not translation indicators.\n\n"
         "The uploaded image may be rotated, sideways, cropped, partially visible, or a Google Photos screenshot with a right-side "
@@ -272,6 +276,11 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         "YYYY-MM-DD when the year is visible or inferable from a filename such as 20260508_123723.jpg. Use that only as "
         "photo/capture-date evidence, not as service_date unless document text explicitly confirms that the performed "
         "interpreting service occurred on that date.\n\n"
+        "photo_metadata_city is only the photo's capture city explicitly shown in the metadata/location panel. "
+        "Keep it separate from locality (the service place). Do not substitute the document header's district, "
+        "police command, nearby map labels, or service locality for the photo capture city. "
+        "If the capture city is absent or ambiguous, leave photo_metadata_city empty. "
+        "The application applies the user's saved defaults separately; do not invent a court or email for them.\n\n"
         "Return this JSON shape:\n"
         "{\n"
         '  "raw_visible_text": "all visible OCR text, preserving useful line breaks",\n'
@@ -280,6 +289,7 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         '    "case_number": "",\n'
         '    "service_date": "YYYY-MM-DD only for an explicitly performed service; otherwise empty",\n'
         '    "photo_metadata_date": "YYYY-MM-DD if visible Google Photos/photo metadata shows a capture date",\n'
+        '    "photo_metadata_city": "capture city explicitly shown in the photo metadata/location panel; otherwise empty",\n'
         '    "source_document_timestamp": "",\n'
         '    "court_email": "",\n'
         '    "payment_entity": "",\n'

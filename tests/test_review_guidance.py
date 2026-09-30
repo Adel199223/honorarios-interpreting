@@ -124,6 +124,14 @@ console.log(JSON.stringify({
   photoDateFacts: ['openai_ocr','image_metadata'].map(source => g.beginnerReviewFacts({source_evidence:{field_evidence:[
     {field:'photo_metadata_date',value:'2026-09-28',source,confidence:'medium'}
   ]}}, {photo_metadata_date:'2026-09-28'})[1]),
+  savedPhotoOrigins: [
+    g.reviewFactOrigin('service_date','2026-09-28',{}, {service_date_source:'photo_metadata',photo_defaults_applied:{service_date:'2026-09-28'}}),
+    g.reviewFactOrigin('payment_entity','Fictional Court',{}, {photo_defaults_applied:{payment_entity:'Fictional Court'}}),
+    g.reviewFactOrigin('recipient_email','court@example.test',{}, {photo_defaults_applied:{recipient_email:'court@example.test'}}),
+    g.reviewFactOrigin('service_date','2026-09-29',{}, {service_date_source:'user_confirmed',photo_defaults_applied:{service_date:'2026-09-28'}}),
+    g.reviewFactOrigin('payment_entity','Different Court',{}, {photo_defaults_applied:{payment_entity:'Fictional Court'}})
+  ],
+  savedPhotoFallback: g.profileFallbackNotice({}, {auto_profile:{mode:'auto_fallback',reason:'Confirm the missing payer.'},payment_entity:'Fictional Court',photo_defaults_applied:{routing_status:'applied',payment_entity:'Fictional Court',photo_city:'Fictional City'}}),
   retainedCapture,
   differentCapture: g.retainCaptureDateOrigin({...nextReview,intake:{...nextReview.intake,photo_metadata_date:'2026-09-29'}},originalReview),
   differentSource: g.retainCaptureDateOrigin({...nextReview,intake:{...nextReview.intake,source_sha256:'different-source-hash'}},originalReview),
@@ -137,6 +145,20 @@ console.log(JSON.stringify({
 
     def test_guided_progress_uses_review_states(self):
         self.assertEqual(self.result["stages"], [1, 3, 2, 4, 5, 2])
+
+    def test_saved_photo_defaults_are_not_labeled_as_document_proof_or_individual_confirmation(self):
+        origins = self.result['savedPhotoOrigins']
+        self.assertTrue(all(item['kind'] == 'default' for item in origins[:3]))
+        self.assertIn('photo-date default', origins[0]['label'])
+        self.assertIn('photo-city court default', origins[1]['label'])
+        self.assertEqual(origins[3]['kind'], 'manual')
+        self.assertNotEqual(origins[4]['kind'], 'default')
+
+    def test_photo_default_fallback_explains_actual_selection(self):
+        reason = self.result['savedPhotoFallback']['reason']
+        self.assertIn('Fictional City', reason)
+        self.assertIn('saved photo-city default', reason)
+        self.assertNotIn('missing payer', reason)
 
     def test_numbered_questions_keep_date_confirmation_and_safe_examples(self):
         self.assertEqual(self.result["labels"], ["one-way kilometers", "question 7"])

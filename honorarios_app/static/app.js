@@ -555,6 +555,29 @@ function mergeFormIntoCurrentIntake() {
   ].forEach((key) => {
     if (payload[key]) intake[key] = payload[key];
   });
+  if (intake.photo_defaults_applied) {
+    ["service_date", "payment_entity", "recipient_email"].forEach((key) => {
+      intake[key] = payload[key] || "";
+    });
+    if (intake.service_date !== state.currentIntake.service_date) {
+      intake.service_date_source = intake.service_date ? "user_confirmed" : "";
+      intake.photo_metadata_date_requires_confirmation = !intake.service_date;
+    }
+    if (intake.payment_entity !== state.currentIntake.payment_entity) {
+      intake.addressee = "";
+      intake.court_email = "";
+      intake.court_email_key = "";
+      intake.recipient_override_reason = "";
+      intake.court_email_override_reason = "";
+      if (intake.recipient_email === state.currentIntake.recipient_email) intake.recipient_email = "";
+    }
+    if (intake.recipient_email !== state.currentIntake.recipient_email) {
+      intake.court_email = "";
+      intake.court_email_key = "";
+      intake.recipient_override_reason = "";
+      intake.court_email_override_reason = "";
+    }
+  }
   if (payload.profile) {
     intake.service_profile_key = payload.profile;
   }

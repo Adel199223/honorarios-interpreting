@@ -104,6 +104,20 @@ def validate_recipient_consistency(intake: dict[str, Any], recipient: str, direc
 
 def resolve_recipient(intake: dict[str, Any], email_config: dict[str, Any], directory: list[dict[str, Any]]) -> tuple[str, str]:
     validate_explicit_email_fields(intake)
+    photo_policy = intake.get("photo_defaults_applied")
+    if isinstance(photo_policy, dict) and "routing_status" in photo_policy:
+        # A chosen city-court default/manual exception outranks unrelated source
+        # footer contacts. Never resurrect the generic email fallback here.
+        for key in ("recipient_email", "court_email"):
+            recipient = str(intake.get(key) or "").strip().lower()
+            if recipient:
+                validate_recipient_consistency(intake, recipient, directory)
+                return recipient, key
+        recipient = find_directory_email(intake, directory)
+        if recipient:
+            validate_recipient_consistency(intake, recipient, directory)
+            return recipient, "court_email_key"
+        raise IntakeError("The photo-city court recipient is missing. Enter the paying court's verified email address.")
     source_text = "\n".join(
         str(intake.get(key) or "")
         for key in ("source_text", "notes", "addressee", "service_place")

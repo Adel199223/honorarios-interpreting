@@ -84,10 +84,14 @@ export function projectWorkflowGuidance({ status = "idle", hasPrepared = false, 
 export function profileFallbackNotice(data = {}, intake = {}) {
   const decision = data.review_evidence?.auto_profile || data.source_evidence?.auto_profile || intake.auto_profile || {};
   if (decision.mode !== "auto_fallback") return null;
+  const photoCourt = intake.photo_defaults_applied;
+  const photoCourtApplied = photoCourt?.routing_status === "applied" && photoCourt.payment_entity === intake.payment_entity;
   return {
     confidence: decision.confidence || "low",
     profile: decision.profile_key || "No profile selected",
-    reason: decision.reason || "No confident service-profile match was found. Check the payment entity and recipient before preparing.",
+    reason: photoCourtApplied
+      ? `No recurring service profile matched. Your saved photo-city default selected the court for ${photoCourt.photo_city}. You can edit an exception.`
+      : decision.reason || "No confident service-profile match was found. Check the payment entity and recipient before preparing.",
     paymentEntity: intake.payment_entity || "Needs an answer",
     recipient: data.recipient || intake.recipient_email || "Needs an answer",
   };
@@ -97,6 +101,10 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   if (!String(value || "").trim()) return { kind: "missing", label: "Needs an answer" };
   if (field === "service_date" && ["user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed"].includes(intake.service_date_source)) {
     return { kind: "manual", label: "You confirmed this date" };
+  }
+  const photoDefault = intake.photo_defaults_applied?.[field];
+  if (photoDefault && String(photoDefault).trim().toLowerCase() === String(value).trim().toLowerCase()) {
+    return { kind: "default", label: field === "service_date" ? "Your photo-date default · editable" : "Your photo-city court default · editable" };
   }
   const evidence = data.review_evidence || data.source_evidence || {};
   const fields = Array.isArray(evidence.field_evidence)
@@ -112,6 +120,7 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
     return { kind: "source", label: "From source text · check it" };
   }
   if (source === "user_confirmed") return { kind: "manual", label: "You confirmed this date" };
+  if (source === "photo_default") return { kind: "default", label: "Your saved photo default · editable" };
   if (source === "service_profile") return { kind: "default", label: "Profile default · check it" };
   if (source === "known_destination") return { kind: "default", label: "Saved place/distance · check it" };
   if (["image_metadata", "visible_google_photos_metadata"].includes(source)) {

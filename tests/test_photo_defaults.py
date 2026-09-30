@@ -132,6 +132,37 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['review']['service_date'], CAPTURE_DATE)
         self.assertEqual(candidate['photo_defaults_applied']['service_date'], CAPTURE_DATE)
 
+    def test_photo_review_uses_already_saved_closing_city(self):
+        self.enable()
+        candidate = copy.deepcopy(self.upload()['candidate_intake'])
+        candidate.pop('closing_city', None)
+        profile = json.loads(self.paths.profile.read_text(encoding='utf-8'))
+        profile['default_closing_city'] = 'Configured Closing City'
+        write_json(self.paths.profile, profile)
+        review = review_intake(candidate, self.paths)
+        self.assertNotIn('closing_city', {q['field'] for q in review.get('questions', [])})
+        self.assertEqual(review['effective_intake']['closing_city'], 'Configured Closing City')
+
+    def test_city_directory_does_not_substitute_a_lone_specialized_court(self):
+        self.enable(mappings={})
+        write_json(self.paths.court_emails, [{'key':'fictional-labour', 'name':'Tribunal do Trabalho de Capture City', 'city':CAPTURE_CITY, 'email':CAPTURE_RECIPIENT}])
+        result = self.upload()
+        self.assertNotEqual(result['review']['status'], 'ready')
+        self.assertIn('payment_entity', self.question_fields(result))
+        self.assertFalse(result['candidate_intake'].get('recipient_email'))
+
+    def test_clearing_visible_recipient_removes_hidden_alternate_contact(self):
+        self.enable()
+        candidate = copy.deepcopy(self.upload(service_profile='example_interpreting')['candidate_intake'])
+        candidate.update(court_email=DEFAULT_RECIPIENT, court_email_key='example-court')
+        apply_answer_to_intake(candidate, 'recipient_email', 'updated-contact@' + COURT_DOMAIN)
+        candidate['recipient_email'] = ''
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'needs_info')
+        self.assertIn('recipient_email', {q['field'] for q in review['questions']})
+        self.assertFalse(review['intake'].get('court_email_key'))
+        self.assertFalse(review['intake'].get('court_email'))
+
     def test_exif_capture_date_works_without_ai_date(self):
         self.enable()
         result = self.upload(exif=True)
