@@ -45,6 +45,8 @@ Use the [integration readiness guide](docs/integration-readiness.md) for the bou
 
 ## Current development foundation
 
+Current development continues in [the source decision quality plan](docs/assistant/exec_plans/active/2026-09-30_source_decision_quality.md), from published main `f792c95` (PR #59 merged). It addresses contextual dates/locations, honest AI evidence and beginner review, with actual bounded tests of newer high-reasoning models. That scope is in progress and unpublished; the foundation acceptance below is historical.
+
 The published environment baseline is PR #58, merged at `bb9b1cf`. The development foundation starts from that baseline and recovers the saved guided interface locally. It adds focused public test groups, bounded code organization, the [plan lifecycle](docs/assistant/exec_plans/PLANS.md), [workflow acceptance checklist](docs/workflow-acceptance.md) and [beginner user guide](docs/user-guide.md).
 
 The guided path leads with one source upload, recovered-fact review, prominent numbered questions, Portuguese draft/PDF preview and Manual Draft Handoff. Advanced intake, batch, evidence and provider controls remain available behind explicit details. Capture-date suggestions are evidence and require service-date confirmation.

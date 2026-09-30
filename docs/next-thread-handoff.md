@@ -1,5 +1,15 @@
 # Next Thread Handoff
 
+## Current source decision quality: in progress, 2026-09-30
+
+The user explicitly authorized improving extraction, beginner review and generated request quality, including bounded paid tests of gpt-5.6-terra and gpt-6.1-sol at high reasoning. Work starts from published main `f792c95`, merged through PR #59. Follow [the active quality plan](assistant/exec_plans/active/2026-09-30_source_decision_quality.md); earlier foundation/preparation sections below are preserved history.
+
+- Authoring and parallel rule/test/review scopes use isolated quality worktrees. The saved checkout's branch/history and private records are preserved.
+- Concrete baseline defects include issue-date selection, date-format priority, court-city/profile mismatch, header/service-city confusion and interpreting phrases misclassified as translation.
+- A labelled fictional corpus, contextual source-rule corrections, honest evidence labels, five-fact review and bounded high-reasoning provider configuration are being validated. Passing earlier synthetic tests does not establish this new scope's acceptance.
+- OpenAI officially announced Decisions API in limited preview on September 29. Public endpoint/schema and account access are not established; do not invent an integration contract. Existing Responses structured extraction remains the implementation boundary.
+- Remaining: assemble independent changes, measure actual model output/usage/latency, run final Full, inspect fresh browser/PDF acceptance and safely apply verified public files plus intended local model/effort settings. New publication, live Gmail and main-app integration are outside this scope.
+
 ## Current development foundation: completed locally, 2026-09-30
 
 The user's approved development foundation is complete and applied to the usual saved fee-app checkout. The user subsequently authorized publication and merge; [PR #59](https://github.com/Adel199223/honorarios-interpreting/pull/59) is the authoritative current publication/merge record. Production LegalPDF integration, real providers and private-data operations remain separately scoped.
