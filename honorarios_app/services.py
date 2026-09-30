@@ -1498,8 +1498,9 @@ def recover_source_upload(
     if (
         str(candidate.get("photo_metadata_date") or "").strip()
         and not str(candidate.get("service_date") or "").strip()
-        and _photo_metadata_date_source(candidate, metadata, ai_recovery) == "visible_google_photos_metadata"
     ):
+        # EXIF and visible capture dates are source evidence. An uploaded photo
+        # without a document service date still needs the user's date choice.
         candidate["photo_metadata_date_requires_confirmation"] = True
     if str(personal_profile_id or "").strip():
         candidate["personal_profile_id"] = str(personal_profile_id or "").strip()
