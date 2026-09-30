@@ -28,6 +28,7 @@ from scripts.build_email_draft import (
     DEFAULT_EMAIL_CONFIG,
     build_email_payload,
     file_sha256,
+    resolve_email_body,
     resolve_recipient,
     validate_draft_payload,
 )
@@ -73,6 +74,8 @@ from scripts.prepare_honorarios import (
 )
 from scripts.record_gmail_draft import main as record_gmail_draft_main
 from scripts.request_identity import normalize_case_number, request_identity_key
+from scripts.entity_rules import classify_entity_type, source_mentions_pj_context
+from scripts.source_parsing import explicit_service_places, service_date_evidence
 from scripts.source_classification import detect_translation_source, format_translation_rejection
 
 from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
@@ -586,17 +589,8 @@ def parse_exif_date(value: Any) -> str:
 
 
 def extract_first_date(text: str) -> str:
-    iso = ISO_DATE_RE.search(text)
-    if iso:
-        return iso.group(1)
-    eu = EU_DATE_RE.search(text)
-    if not eu:
-        return ""
-    day, month, year = eu.groups()
-    try:
-        return datetime(int(year), int(month), int(day)).date().isoformat()
-    except ValueError:
-        return ""
+    """Compatibility entry point for contextual, mixed-format date parsing."""
+    return service_date_evidence(text).value
 
 
 def extract_visible_metadata_date(text: str) -> str:
@@ -636,7 +630,7 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
     source_text = text or ""
     case_match = CASE_NUMBER_RE.search(source_text)
     if case_match:
-        raw_case = case_match.group(1).strip().upper()
+        raw_case = case_match.group(1).strip().rstrip(".").upper()
         fields["raw_case_number"] = raw_case
         fields["source_case_number"] = raw_case
         fields["case_number"] = normalize_case_number(raw_case)
@@ -650,22 +644,55 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
     if email_match:
         fields["recipient_email"] = email_match.group(0).lower()
 
+    place_fields, _warning = _source_place_fields(source_text, paths)
+    fields.update(place_fields)
+    return fields
+
+
+def _source_place_fields(text: str, paths: AppPaths) -> tuple[dict[str, Any], str]:
+    explicit_places = explicit_service_places(text)
+    if len(explicit_places) > 1:
+        return {}, "Several physical service places appear in the source. Confirm the service building/city and travel destination before PDF creation."
+    destinations: list[dict[str, Any]] = []
     if resolve_json_path(paths.known_destinations).exists():
         try:
-            destinations = load_known_destinations(paths)
+            loaded = load_known_destinations(paths)
+            destinations = loaded if isinstance(loaded, list) else []
         except (IntakeError, json.JSONDecodeError):
-            destinations = []
-        normalized_text = source_text.casefold()
-        for destination in destinations if isinstance(destinations, list) else []:
-            examples = [destination.get("destination", ""), *(destination.get("institution_examples") or [])]
-            for example in examples:
-                if example and str(example).casefold() in normalized_text:
-                    fields.setdefault("service_place", str(example))
-                    fields.setdefault("transport_destination", str(destination.get("destination") or example))
-                    if destination.get("km_one_way") not in (None, ""):
-                        fields.setdefault("km_one_way", destination.get("km_one_way"))
-                    return fields
-    return fields
+            pass
+    location_text = explicit_places[0] if explicit_places else text
+    normalized_text = fold_match_text(location_text)
+    matches: list[tuple[dict[str, Any], str]] = []
+    for destination in destinations:
+        examples = [*(destination.get("institution_examples") or []), destination.get("destination", "")]
+        matched = next((str(example) for example in examples if example and re.search(r"(?<!\w)" + re.escape(fold_match_text(str(example))) + r"(?!\w)", normalized_text)), "")
+        if matched:
+            matches.append((destination, matched))
+    if len(matches) > 1:
+        return {}, "Several destination cities appear without one clear service location. Confirm the service building/city and travel destination before PDF creation."
+    fields: dict[str, Any] = {}
+    if explicit_places:
+        fields["service_place"] = explicit_places[0]
+        if source_mentions_pj_context({"source_text": text}):
+            fields.update(service_entity="Polícia Judiciária", service_entity_type="police", entities_differ=True)
+        else:
+            entity_type = classify_entity_type(explicit_places[0])
+            fields.update(service_entity=explicit_places[0], service_entity_type=entity_type)
+            if entity_type in {"gnr", "psp", "police", "other"}:
+                fields["entities_differ"] = True
+    if matches:
+        destination, matched = matches[0]
+        fields.setdefault("service_place", matched)
+        fields["transport_destination"] = str(destination.get("destination") or matched)
+        if destination.get("km_one_way") not in (None, ""):
+            fields["km_one_way"] = destination["km_one_way"]
+    return fields, ""
+
+
+def _source_rule_warnings(text: str, paths: AppPaths) -> list[str]:
+    date_warning = service_date_evidence(text).warning
+    _fields, place_warning = _source_place_fields(text, paths)
+    return [warning for warning in (date_warning, place_warning) if warning]
 
 
 def _ai_recovery_text(ai_recovery: dict[str, Any]) -> str:
@@ -686,6 +713,10 @@ def _ai_recovery_text(ai_recovery: dict[str, Any]) -> str:
 
 def _profile_signal_decision(evidence_text: str) -> dict[str, Any]:
     text = fold_match_text(evidence_text)
+    actual_places = explicit_service_places(evidence_text)
+    if len(actual_places) > 1:
+        return {"profile_key": "", "confidence": "low", "reason": "Several physical service places need confirmation; no service-profile defaults were applied.", "signals": [], "allow_fallback": False}
+    place_text = fold_match_text(actual_places[0]) if actual_places else text
     signals: list[str] = []
 
     def has_any(*needles: str) -> bool:
@@ -696,21 +727,30 @@ def _profile_signal_decision(evidence_text: str) -> dict[str, Any]:
     has_pj = has_any("policia judiciaria", "diretoria do sul", "inspetor", "inspector")
     has_gnr = has_any("guarda nacional republicana", "gnr", "posto territorial", "posto da gnr", "destacamento")
     has_trabalho = has_any("tribunal do trabalho", "juizo do trabalho", "juízo do trabalho", "litigios laborais", "litígios laborais")
-    has_medico = has_any("gabinete medico-legal", "gabinete médico-legal", "hospital jose joaquim fernandes", "medicina legal", "pericia medico", "perícia médico", "vitima", "vítima")
+    has_medico = has_any("gabinete medico-legal", "gabinete médico-legal", "hospital", "medicina legal", "pericia medico", "perícia médico")
     has_ferreira = has_any("ferreira do alentejo", "gafal")
-    has_beja = has_any("posto da gnr de beja", "gnr de beja", "ministerio publico de beja", "ministério público de beja", "jafar")
-    has_serpa = has_any("posto territorial de serpa", "serpa", "gdsrp")
-    has_beringel = has_any("beringel", "berinjel", "gcbja")
-    has_cuba = has_any("posto territorial da gnr de cuba", "gnr de cuba", "gacub")
+    def at_service_place(*needles: str) -> bool:
+        return any(re.search(r"(?<!\w)" + re.escape(fold_match_text(needle)) + r"(?!\w)", place_text) for needle in needles)
 
-    if has_pj and has_medico:
+    has_beja = at_service_place("beja", "jafar")
+    has_serpa = at_service_place("serpa", "gdsrp")
+    has_beringel = at_service_place("beringel", "berinjel", "gcbja")
+    has_cuba = at_service_place("cuba", "gacub")
+    has_ferreira = at_service_place("ferreira do alentejo", "gafal")
+    if not actual_places and sum((has_beja, has_serpa, has_beringel, has_cuba, has_ferreira)) > 1:
+        return {"profile_key": "", "confidence": "low", "reason": "Several cities appear without one clear service location. Confirm the service building/city before applying profile defaults.", "signals": signals, "allow_fallback": False}
+
+    if has_pj and has_medico and has_beja:
         return {"profile_key": "pj_medico_legal_beja", "confidence": "high", "reason": "Polícia Judiciária evidence mentions a medical-legal/hospital service.", "signals": signals}
     if has_pj and has_gnr and has_ferreira:
         return {"profile_key": "pj_gnr_ferreira", "confidence": "high", "reason": "Polícia Judiciária evidence mentions the GNR host building in Ferreira do Alentejo.", "signals": signals}
     if has_pj and has_gnr and has_beja:
         return {"profile_key": "pj_gnr_beja", "confidence": "high", "reason": "Polícia Judiciária evidence mentions the GNR host building in Beja.", "signals": signals}
     if has_trabalho:
-        return {"profile_key": "beja_trabalho", "confidence": "high", "reason": "Evidence points to the Tribunal/Juízo do Trabalho de Beja.", "signals": signals}
+        beja_labour = re.search(r"\b(?:tribunal|juizo)\s+(?:do|de)\s+trabalho\s+(?:de|em)\s+beja\b", text)
+        if beja_labour:
+            return {"profile_key": "beja_trabalho", "confidence": "high", "reason": "Evidence names the Tribunal/Juízo do Trabalho de Beja.", "signals": signals}
+        return {"profile_key": "", "confidence": "low", "reason": "The labour court is outside the known Beja pattern or its city is missing. Choose the correct payment/service profile; no locality-specific defaults were applied.", "signals": signals, "allow_fallback": False}
     if has_gnr and has_beringel:
         return {"profile_key": "gnr_beringel_beja_mp", "confidence": "high", "reason": "GNR evidence mentions Beringel, which uses Beja Ministério Público payment.", "signals": signals}
     if has_gnr and has_ferreira:
@@ -719,6 +759,8 @@ def _profile_signal_decision(evidence_text: str) -> dict[str, Any]:
         return {"profile_key": "gnr_serpa_judicial", "confidence": "high", "reason": "GNR evidence mentions Serpa.", "signals": signals}
     if has_gnr and has_cuba:
         return {"profile_key": "gnr_cuba", "confidence": "high", "reason": "GNR evidence mentions Cuba.", "signals": signals}
+    if has_pj or actual_places:
+        return {"profile_key": "", "confidence": "low", "reason": "The physical service location does not match a known service/payment pattern. Confirm the payment entity and recipient; no profile defaults were applied.", "signals": signals, "allow_fallback": False}
     return {"profile_key": "", "confidence": "low", "reason": "No confident service-profile match was found.", "signals": signals}
 
 
@@ -763,12 +805,13 @@ def choose_service_profile(
             "auto_applied": True,
         }
 
-    fallback_key = "court_mp_generic" if "court_mp_generic" in profiles else ""
+    allow_fallback = suggestion.get("allow_fallback", True)
+    fallback_key = "court_mp_generic" if allow_fallback and "court_mp_generic" in profiles else ""
     fallback_reason = str(suggestion.get("reason") or "No confident service-profile match was found.")
-    if not fallback_key and len(profiles) == 1:
+    if allow_fallback and not fallback_key and len(profiles) == 1:
         fallback_key = next(iter(profiles))
         fallback_reason += f" Only available service profile {fallback_key!r} was used as a fallback; review its payment entity and recipient before preparing."
-    elif not fallback_key:
+    elif allow_fallback and not fallback_key:
         fallback_reason += " Several service profiles are available; choose one explicitly or answer the missing payment and service questions. No profile defaults were applied."
 
     return {
@@ -1009,6 +1052,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     metadata = {}
     if str(candidate.get("photo_metadata_date") or "").strip():
         metadata["visible_metadata_date"] = str(candidate.get("photo_metadata_date") or "").strip()
+    source_warnings = _source_rule_warnings(str(candidate.get("source_text") or ""), paths)
     profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
     field_evidence = build_field_evidence(
         candidate=candidate,
@@ -1042,10 +1086,10 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
             profile_decision=profile_decision,
             profile_proposal=profile_proposal,
             field_evidence=field_evidence,
-            warnings=[],
+            warnings=source_warnings,
         ),
         "profile_proposal": profile_proposal,
-        "warnings": [],
+        "warnings": source_warnings,
         "rendered_page_urls": [],
         "rendered_page_count": 0,
     }
@@ -1118,6 +1162,7 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
     raw_visible_text = str(ai_recovery.get("raw_visible_text") or "").strip()
     if raw_visible_text:
         intake["source_text"] = combine_text_parts(str(intake.get("source_text") or ""), raw_visible_text)
+    date_evidence = service_date_evidence(str(intake.get("source_text") or ""))
 
     raw_case = _first_ai_field(ai_recovery, "raw_case_number", "source_case_number", "case_number").upper()
     if raw_case and not intake.get("case_number"):
@@ -1130,9 +1175,15 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         intake["photo_metadata_date"] = photo_metadata_date
 
     service_date = _first_ai_field(ai_recovery, "service_date")
-    if service_date and _looks_like_iso_date(service_date) and not intake.get("service_date"):
-        intake["service_date"] = service_date
-        intake["service_date_source"] = _service_date_source_for_ai(intake, service_date)
+    if date_evidence.value and not intake.get("service_date"):
+        intake["service_date"] = date_evidence.value
+        intake["service_date_source"] = _service_date_source_for_ai(intake, date_evidence.value)
+    if service_date and service_date != date_evidence.value:
+        warnings = intake["ai_recovery"].setdefault("warnings", [])
+        warnings.append("The AI-suggested date was not supported by one clear service date in the visible text. Check or confirm the service date before PDF creation.")
+    if date_evidence.needs_confirmation and "user_confirmed" not in str(intake.get("service_date_source") or ""):
+        intake.pop("service_date", None)
+        intake.pop("service_date_source", None)
 
     source_timestamp = _first_ai_field(ai_recovery, "source_document_timestamp", "document_timestamp")
     if source_timestamp and not intake.get("source_document_timestamp"):
@@ -1520,7 +1571,8 @@ def recover_source_upload(
 
     source_warnings = [
         *[str(item) for item in metadata.get("warnings", []) if str(item).strip()],
-        *[str(item) for item in ai_recovery.get("warnings", []) if str(item).strip()],
+        *[str(item) for item in candidate.get("ai_recovery", {}).get("warnings", []) if str(item).strip()],
+        *_source_rule_warnings(combined_text, paths),
     ]
     source_attention = build_source_attention(
         candidate=candidate,
@@ -5708,8 +5760,8 @@ def underlying_requests_for_packet(items: list[dict[str, Any]]) -> list[dict[str
     return requests
 
 
-def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[str, Any]) -> str:
-    default_body = str(email_config.get("body") or "")
+def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[str, Any], *, signature_name: str = "") -> str:
+    default_body = resolve_email_body({}, email_config, signature_name=signature_name)
     signature = "Example Interpreter"
     if "Melhores cumprimentos," in default_body:
         signature = default_body.split("Melhores cumprimentos,", 1)[1].strip() or signature
@@ -5749,6 +5801,7 @@ def build_packet_result(
     court_directory: list[dict[str, Any]],
     render_previews: bool,
     preview_warning: str,
+    signature_name: str = "",
 ) -> dict[str, Any]:
     packet_sources: list[Path] = []
     for item in items:
@@ -5767,7 +5820,8 @@ def build_packet_result(
     packet_intake["service_period_label"] = "packet"
     packet_intake.pop("additional_attachment_files", None)
     packet_intake["underlying_requests"] = underlying_requests_for_packet(items)
-    packet_intake["email_body"] = str(packet_intake.get("packet_email_body") or "").strip() or default_packet_email_body(items, email_config)
+    custom_packet_body = str(packet_intake.get("packet_email_body") or "")
+    packet_intake["email_body"] = custom_packet_body if custom_packet_body.strip() else default_packet_email_body(items, email_config, signature_name=signature_name)
 
     payload = build_email_payload(packet_intake, packet_pdf, email_config, court_directory)
     payload_errors = validate_draft_payload(payload)
@@ -6130,6 +6184,7 @@ def prepare_intakes(
             court_directory=court_directory,
             render_previews=effective_render_previews,
             preview_warning=preview_warning,
+            signature_name=build_rendered_request(effective_intakes[0], generator_profiles[0]).signature_name,
         )
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"

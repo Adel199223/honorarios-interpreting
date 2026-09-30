@@ -644,7 +644,7 @@ const latePrepare = { result: ignoredPrepare, requests: requests.length, rendere
 console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
 """
         result = subprocess.run(['node', '--input-type=module', '-'], input=script, text=True,
-                                capture_output=True, timeout=20, check=True, cwd=root)
+                                encoding='utf-8', capture_output=True, timeout=20, check=True, cwd=root)
         data = json.loads(result.stdout)
         snapshot = data['snapshot']
         self.assertEqual([item['url'] for item in snapshot['requests']], ['/api/prepare/preflight', '/api/prepare'])
@@ -809,3 +809,50 @@ console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
         self.assertIn("browser_answer_questions=args.browser_answer_questions", main_call_block)
         self.assertIn("browser_apply_history=args.browser_apply_history", main_call_block)
         self.assertIn("browser_recent_work_reconciliation=args.browser_recent_work_reconciliation", main_call_block)
+
+    def test_visible_key_facts_escape_values_and_edit_shortcuts_only_focus_existing_fields(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / "honorarios_app/static/app.js").read_text(encoding="utf-8")
+        functions = []
+        for name in ("escapeHtml", "displayValue", "renderBeginnerFacts", "focusReviewCorrection"):
+            match = re.search(r"function " + name + r"\([^\n]*\) \{.*?\n\}", app_js, re.DOTALL)
+            self.assertIsNotNone(match, name)
+            functions.append(match.group(0))
+        module_url = (root / "honorarios_app/static/review_guidance.js").as_uri()
+        script = "import { beginnerReviewFacts } from " + json.dumps(module_url) + ";\n"
+        script += "\n".join(functions) + """
+const details = {open:false};
+const focused = [], lookups = [];
+const allowed = ['case_number','service_date','payment_entity','service_place','recipient_email'];
+const inputs = Object.fromEntries(allowed.map(field => [field, {
+  closest(selector) { if (selector !== '.advanced-intake-fields') throw new Error('Unexpected target'); return details; },
+  scrollIntoView() {}, focus() { focused.push(field); }
+}]));
+const document = {getElementById(field) { lookups.push(field); return inputs[field]; }};
+const injection = '<img src=x onerror="alert(1)">';
+const intake = {case_number:'123/26.0SYNTH',service_date:'2026-09-28',service_date_source:'user_confirmed',payment_entity:injection,service_place:'Fictional Office',recipient_email:'court@example.test'};
+const before = JSON.stringify(intake);
+const data = {source_evidence:{field_evidence:[{field:'payment_entity',value:injection,source:'openai_ocr',confidence:'low'}]}};
+const html = renderBeginnerFacts(data, intake);
+const edited = allowed.map(focusReviewCorrection);
+const invalid = focusReviewCorrection('source_file');
+console.log(JSON.stringify({html,edited,invalid,focused,lookups,opened:details.open,intakeUnchanged:before===JSON.stringify(intake)}));
+"""
+        result = subprocess.run(["node", "--input-type=module", "-"], input=script, text=True,
+                                encoding="utf-8", capture_output=True, timeout=20, check=True, cwd=root)
+        data = json.loads(result.stdout)
+        html = data["html"]
+        self.assertIn('aria-label="Check key facts"', html)
+        self.assertIn("AI suggestion · check source", html)
+        self.assertIn("You confirmed this date", html)
+        self.assertIn("&lt;img src=x", html)
+        self.assertNotIn("<img", html)
+        self.assertEqual(html.count("data-review-correct-field="), 5)
+        self.assertIn('aria-label="Edit recipient email"', html)
+        fields = ["case_number", "service_date", "payment_entity", "service_place", "recipient_email"]
+        self.assertEqual(data["edited"], [True] * 5)
+        self.assertFalse(data["invalid"])
+        self.assertEqual(data["focused"], fields)
+        self.assertEqual(data["lookups"], fields)
+        self.assertTrue(data["opened"])
+        self.assertTrue(data["intakeUnchanged"], "Edit shortcuts must not change, review or prepare values themselves.")

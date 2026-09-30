@@ -4,6 +4,9 @@ import json
 import subprocess
 import unittest
 
+from honorarios_app.services import apply_answer_to_intake
+from scripts.generate_pdf import get_service_date_value
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -51,6 +54,11 @@ try {
 const input = {status:'ready',hasPrepared:true,handoffReady:true,recorded:true,stale:true};
 const inputBefore = JSON.stringify(input);
 const staleProjection = g.projectWorkflowGuidance(input);
+const originalCapture = {field:'photo_metadata_date',value:'2026-09-28',source:'image_metadata',confidence:'high',reason:'EXIF capture date'};
+const originalReview = {intake:{source_sha256:'fictional-source-hash',photo_metadata_date:'2026-09-28'},source_evidence:{field_evidence:[originalCapture]}};
+const nextReview = {status:'ready',intake:{source_sha256:'fictional-source-hash',photo_metadata_date:'2026-09-28'},review_evidence:{field_evidence:[{...originalCapture,source:'openai_ocr',confidence:'medium'}],attention:{status:'ready',flags:[{code:'date_conflict_resolved'}]}}};
+const originInputsBefore = JSON.stringify([originalReview,nextReview]);
+const retainedCapture = g.retainCaptureDateOrigin(nextReview,originalReview);
 console.log(JSON.stringify({
   stages: ['idle','answer_questions','set_aside_translation','prepare_pdf',
     'review_gmail_draft_args','unknown'].map(g.guidedStepForState),
@@ -98,11 +106,33 @@ console.log(JSON.stringify({
     g.profileFallbackNotice({recipient:'reviewed@example.test',source_evidence:{auto_profile:{mode:'auto_fallback',reason:'No confident match.'}}},{}),
     g.profileFallbackNotice({}, {auto_profile:{mode:'explicit_profile',profile_key:'kept'}}),
     g.profileFallbackNotice({}, {auto_profile:{mode:'auto_fallback',reason:'<fictional evidence>'}})
-  ]
+  ],
+  facts: g.beginnerReviewFacts({source_evidence:{field_evidence:[
+    {field:'case_number',value:'123/26.0SYNTH',source:'openai_ocr',confidence:'medium'},
+    {field:'payment_entity',value:'Fictional Court',source:'service_profile',confidence:'medium'},
+    {field:'service_place',value:'Fictional Office',source:'openai_ocr',confidence:'low'},
+    {field:'recipient_email',value:'court@example.test',source:'visible_email',confidence:'high'}
+  ]}}, {case_number:'123/26.0SYNTH',photo_metadata_date:'2026-09-28',payment_entity:'Fictional Court',service_place:'Fictional Office',recipient_email:'court@example.test'}),
+  origins: [
+    g.reviewFactOrigin('service_date','2026-09-28',{}, {service_date_source:'photo_metadata_user_confirmed'}),
+    g.reviewFactOrigin('case_number','123/26.0SYNTH',{source_evidence:{field_evidence:[{field:'case_number',value:'old value',source:'deterministic_text'}]}}),
+    g.reviewFactOrigin('case_number','123/26.0SYNTH',{source_evidence:{field_evidence:[{field:'case_number',value:'123/26.0SYNTH',source:'openai_ocr',confidence:'high'}]}}),
+    g.reviewFactOrigin('payment_entity',''),
+    g.reviewFactOrigin('service_date','2026-09-28',{source_evidence:{field_evidence:[{field:'service_date',value:'2026-09-28',source:'openai_ocr',status:'conflicts_with_metadata'}]}}),
+    g.reviewFactOrigin('recipient_email','typed@example.test')
+  ],
+  photoDateFacts: ['openai_ocr','image_metadata'].map(source => g.beginnerReviewFacts({source_evidence:{field_evidence:[
+    {field:'photo_metadata_date',value:'2026-09-28',source,confidence:'medium'}
+  ]}}, {photo_metadata_date:'2026-09-28'})[1]),
+  retainedCapture,
+  differentCapture: g.retainCaptureDateOrigin({...nextReview,intake:{...nextReview.intake,photo_metadata_date:'2026-09-29'}},originalReview),
+  differentSource: g.retainCaptureDateOrigin({...nextReview,intake:{...nextReview.intake,source_sha256:'different-source-hash'}},originalReview),
+  unverifiedCapture: g.retainCaptureDateOrigin(nextReview,{...originalReview,source_evidence:{field_evidence:[{...originalCapture,source:'openai_ocr',confidence:'medium'}]}}),
+  originsPreserveInputs: originInputsBefore === JSON.stringify([originalReview,nextReview])
 }));
 """
         result = subprocess.run(["node", "--input-type=module", "-"], input=script,
-                                text=True, capture_output=True, check=True, cwd=ROOT)
+                                text=True, encoding="utf-8", capture_output=True, check=True, cwd=ROOT)
         cls.result = json.loads(result.stdout)
 
     def test_guided_progress_uses_review_states(self):
@@ -110,7 +140,7 @@ console.log(JSON.stringify({
 
     def test_numbered_questions_keep_date_confirmation_and_safe_examples(self):
         self.assertEqual(self.result["labels"], ["one-way kilometers", "question 7"])
-        self.assertEqual(self.result["examples"][0], "3. yes, use the photo date")
+        self.assertEqual(self.result["examples"][0], "3. document")
         self.assertEqual(self.result["examples"][1], "4. " + self.result["today"])
         self.assertEqual(self.result["examples"][2], "5. court@example.test")
         self.assertEqual(self.result["titles"], ["Answer 1 question before PDF creation",
@@ -123,6 +153,14 @@ console.log(JSON.stringify({
         self.assertNotIn("service date", labels)
         self.assertTrue(any(value.startswith("photo metadata date (") for value in labels))
         self.assertEqual(self.result["needsDate"], [True, False])
+
+    def test_date_confirmation_example_is_accepted_without_switching_to_capture_date(self):
+        intake = {"service_date": "2026-09-26", "photo_metadata_date": "2026-09-28", "service_date_source": "document_text"}
+        answer = self.result["examples"][0].split(".", 1)[1].strip()
+        apply_answer_to_intake(intake, "service_date_source", answer)
+        self.assertEqual(intake["service_date_source"], "document_text_user_confirmed")
+        self.assertEqual(get_service_date_value(intake), "2026-09-26")
+        self.assertEqual(intake["photo_metadata_date"], "2026-09-28")
 
     def test_labels_are_deduplicated_and_literals_remain_text(self):
         self.assertEqual(self.result["needed"], ["service date", "recipient email"])
@@ -169,3 +207,41 @@ console.log(JSON.stringify({
         self.assertEqual(ambiguous["recipient"], "reviewed@example.test")
         self.assertIsNone(explicit)
         self.assertEqual(literal["reason"], "<fictional evidence>")
+
+    def test_key_fact_summary_covers_payment_and_preserves_unverified_ai_origins(self):
+        facts = self.result["facts"]
+        self.assertEqual([fact["field"] for fact in facts], ["case_number", "service_date", "payment_entity", "service_place", "recipient_email"])
+        self.assertEqual([fact["origin"]["kind"] for fact in facts], ["ai", "metadata", "default", "ai", "source"])
+        self.assertEqual(facts[0]["origin"]["label"], "AI-read · check source")
+        self.assertEqual(facts[3]["origin"]["label"], "AI suggestion · check source")
+        self.assertEqual(facts[1]["value"], "2026-09-28")
+        self.assertIn("needs confirmation", facts[1]["origin"]["label"])
+
+    def test_summary_does_not_call_unknown_corrected_or_old_ai_values_confirmed(self):
+        manual, changed, old_ai, missing, conflict, typed = self.result["origins"]
+        self.assertEqual(manual["kind"], "manual")
+        self.assertEqual(changed, {"kind": "unknown", "label": "Check this value"})
+        self.assertEqual(typed, changed, "Absence of AI provenance is not proof of manual confirmation.")
+        self.assertEqual(old_ai, {"kind": "ai", "label": "AI-read · check source"})
+        self.assertEqual(missing["kind"], "missing")
+        self.assertEqual(conflict["kind"], "conflict")
+
+    def test_photo_date_candidate_retains_ai_origin_until_service_date_confirmation(self):
+        ai_date, metadata_date = self.result["photoDateFacts"]
+        self.assertEqual(ai_date["origin"], {"kind": "ai", "label": "AI-read photo date · needs confirmation"})
+        self.assertEqual(metadata_date["origin"], {"kind": "metadata", "label": "Photo date · needs confirmation"})
+        self.assertEqual(ai_date["value"], metadata_date["value"])
+
+    def test_manual_rerun_retains_known_capture_origin_without_restoring_stale_review(self):
+        result = self.result["retainedCapture"]
+        self.assertEqual(result["review_evidence"]["field_evidence"][0]["source"], "image_metadata")
+        self.assertEqual(result["review_evidence"]["attention"], {"status": "ready", "flags": [{"code": "date_conflict_resolved"}]})
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(self.result["originsPreserveInputs"])
+
+    def test_changed_source_date_or_unverified_origin_does_not_inherit_old_metadata(self):
+        for key in ("differentCapture", "differentSource", "unverifiedCapture"):
+            with self.subTest(key=key):
+                fields = self.result[key]["review_evidence"]["field_evidence"]
+                self.assertEqual(fields[0]["source"], "openai_ocr")
+                self.assertEqual(fields[0]["confidence"], "medium")

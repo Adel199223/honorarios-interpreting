@@ -16,7 +16,8 @@ TRANSLATION_PATTERNS = [
     r"documento\s+traduzido",
     r"numero\s+de\s+palavras",
     r"n[uú]mero\s+de\s+palavras",
-    r"\bpalavras\b",
+    r"\b\d+(?:[.,]\d+)?\s+palavras\b",
+    r"\b(?:contagem|total|quantidade)\s+(?:de\s+)?palavras\b",
 ]
 
 

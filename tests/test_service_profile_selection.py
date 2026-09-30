@@ -26,7 +26,7 @@ class ServiceProfileSelectionTests(unittest.TestCase):
         self.assertFalse(decision["auto_applied"])
 
     def test_only_available_profile_is_a_visible_low_confidence_fallback(self):
-        decision = self.choose({"example_interpreting": {"defaults": {}}}, text="Tribunal do Trabalho")
+        decision = self.choose({"example_interpreting": {"defaults": {}}}, text="Synthetic interpreting source")
         self.assertEqual(decision["profile_key"], "example_interpreting")
         self.assertEqual(decision["mode"], "auto_fallback")
         self.assertEqual(decision["confidence"], "low")
@@ -40,13 +40,13 @@ class ServiceProfileSelectionTests(unittest.TestCase):
         self.assertIn("No profile defaults were applied", decision["reason"])
 
     def test_confident_available_match_remains_automatic(self):
-        decision = self.choose({"beja_trabalho": {"defaults": {}}, "example": {"defaults": {}}}, text="Tribunal do Trabalho")
+        decision = self.choose({"beja_trabalho": {"defaults": {}}, "example": {"defaults": {}}}, text="Tribunal do Trabalho de Beja")
         self.assertEqual(decision["profile_key"], "beja_trabalho")
         self.assertEqual(decision["mode"], "auto_applied")
         self.assertTrue(decision["auto_applied"])
 
     def test_explicit_choice_is_kept_even_with_conflicting_evidence(self):
-        decision = self.choose({"beja_trabalho": {"defaults": {}}, "example": {"defaults": {}}}, requested="example", text="Tribunal do Trabalho")
+        decision = self.choose({"beja_trabalho": {"defaults": {}}, "example": {"defaults": {}}}, requested="example", text="Tribunal do Trabalho de Beja")
         self.assertEqual(decision["profile_key"], "example")
         self.assertEqual(decision["suggested_profile_key"], "beja_trabalho")
         self.assertEqual(decision["mode"], "explicit_profile")

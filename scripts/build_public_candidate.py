@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.generate_pdf import ROOT
 from scripts.public_release_gate import analyze_public_readiness
 from scripts.public_repo_gate import analyze_tracked
-from scripts.run_portable_tests import PUBLIC_TEST_FILES, load_selection
+from scripts.run_portable_tests import PUBLIC_EVALUATION_FILES, PUBLIC_TEST_FILES, load_selection
 
 
 COPY_DIRS = [
@@ -112,6 +112,8 @@ def _copy_portable_tests(source_root: Path, target_root: Path, names: list[str] 
     # Never copy the whole tests directory: it can contain ignored local regressions.
     for name in names:
         _copy_and_sanitize_file(source_root / "tests" / name, target_root / "tests" / name)
+    for relative in PUBLIC_EVALUATION_FILES:
+        _copy_and_sanitize_file(source_root / relative, target_root / relative)
     shutil.copy2(source_root / "tests" / "portable-suite.txt", target_root / "tests" / "portable-suite.txt")
     shutil.copy2(source_root / "tests" / "portable-groups.json", target_root / "tests" / "portable-groups.json")
 
@@ -234,7 +236,7 @@ def _write_synthetic_runtime_files(target_root: Path) -> None:
     _write_json(target_root / "config" / "email.example.json", {
         "default_to": "court@example.test",
         "subject": "Requerimento de honorários",
-        "body": "Bom dia,\n\nVenho por este meio requerer o pagamento dos honorários devidos.\n\nPoderão encontrar o requerimento em anexo.\n\nMelhores cumprimentos,\n\nExample Interpreter",
+        "body": "Bom dia,\n\nVenho por este meio requerer o pagamento dos honorários devidos.\n\nPoderão encontrar o requerimento em anexo.\n\nMelhores cumprimentos,\n\n{{signature_name}}",
         "draft_only": True,
         "allowed_gmail_tool": "_create_draft",
         "forbidden_gmail_tools": ["_send_email", "_send_draft"],

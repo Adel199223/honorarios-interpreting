@@ -12,8 +12,8 @@ HOST_BUILDING_RE = re.compile(
     r"\bhospital\b|\bgabinete\b|\binstituto\b|medico legal|medico-legal"
 )
 HOST_LOCALITY_RE = re.compile(
-    r"(?:\bde\b|\bem\b|\bno\b|\bna\b|\s-)\s+"
-    r"(beja|ferreira do alentejo|cuba|moura|serpa|beringel|pedrogao|pedrago|vidigueira)\b"
+    r"(?:\bde\b|\bem\b|\bno\b|\bna\b|[,\s]-|,)\s+"
+    r"(?P<locality>[a-z][a-z' -]{1,70})\s*$"
 )
 NON_COURT_PLACE_CLUE_RE = re.compile(
     r"\bposto\b|\besquadra\b|\bdestacamento\b|\bhospital\b|\bgabinete\b|"
@@ -98,12 +98,21 @@ def has_pj_host_building(intake: dict[str, Any]) -> bool:
         str(intake.get("service_place_phrase") or ""),
     ]
     for candidate in candidates:
-        normalized = normalize_text(candidate).strip()
+        normalized = normalize_text(candidate).strip(" .,:;")
         if not normalized:
             continue
         if not HOST_BUILDING_RE.search(normalized):
             continue
-        if not HOST_LOCALITY_RE.search(normalized):
+        locality_match = HOST_LOCALITY_RE.search(normalized)
+        if not locality_match:
+            continue
+        locality = locality_match.group("locality").strip()
+        # A saint/building name alone is not a city. Prefer the last explicit
+        # locality connector in names such as Hospital do Espírito Santo de Évora.
+        locality = re.split(r"\b(?:de|em|no|na)\s+", locality)[-1].strip()
+        if locality.startswith(("sao ", "santa ", "santo ")) or locality in {"gnr", "psp", "policia judiciaria", "servico", "interpretacao"}:
+            continue
+        if re.search(r"\b(?:ilegivel|desconhecid[oa]|indefinid[oa])\b|nao (?:legivel|indicado|informado)", locality):
             continue
         if re.fullmatch(r"(policia judiciaria|pj|diretoria(?: do sul)?)", normalized):
             continue
@@ -172,13 +181,22 @@ def build_service_place_clause(intake: dict[str, Any], service_entity: str) -> s
     if explicit_phrase:
         return explicit_phrase
 
-    normalized = normalize_text(service_entity).strip()
+    physical_place = str(intake.get("service_place") or "").strip()
+    location = physical_place or service_entity
+    clause = _location_clause(location)
+    if physical_place and normalize_text(physical_place) != normalize_text(service_entity) and source_mentions_pj_context(intake):
+        return f"em diligência da Polícia Judiciária realizada {clause}"
+    return clause
+
+
+def _location_clause(location: str) -> str:
+    normalized = normalize_text(location).strip()
     if normalized.startswith(("em ", "no ", "na ", "nos ", "nas ")):
-        return service_entity
+        return location
     if normalized.startswith("esquadra"):
-        return f"na {service_entity}"
-    if normalized.startswith(("posto", "tribunal", "ministerio publico")):
-        return f"no {service_entity}"
+        return f"na {location}"
+    if normalized.startswith(("posto", "tribunal", "ministerio publico", "hospital", "gabinete", "instituto", "edificio")):
+        return f"no {location}"
     if normalized.startswith(("gnr", "psp")):
-        return f"na {service_entity}"
-    return f"em {service_entity}"
+        return f"na {location}"
+    return f"em {location}"

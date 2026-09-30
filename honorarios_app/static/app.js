@@ -12,7 +12,9 @@ import {
   isWorkflowResponseCurrent,
   awaitWorkflowResponse,
   projectWorkflowGuidance,
-  profileFallbackNotice
+  profileFallbackNotice,
+  beginnerReviewFacts,
+  retainCaptureDateOrigin
 } from "./review_guidance.js";
 
 const state = {
@@ -615,7 +617,7 @@ function renderNextSafeAction(action) {
         <p>${escapeHtml(detailText)}</p>
       </div>
       <details class="safe-action-details">
-        <summary>Why this is blocked</summary>
+        <summary>${blocked ? "Why this is blocked" : "About this step"}</summary>
         <div class="safe-action-summary-grid">
           <div>
             <span>Reason</span>
@@ -1343,6 +1345,38 @@ function beginnerField(label, value, confidence = "") {
   return `<li class="${empty ? "needs-answer" : "found"}"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(displayValue(value))}${confidence ? ` <span class="field-confidence">${escapeHtml(confidence)}</span>` : ""}</li>`;
 }
 
+function renderBeginnerFacts(data, intake) {
+  const rows = beginnerReviewFacts(data, intake).map((fact) => `
+    <li class="review-fact-row">
+      <div>
+        <strong>${escapeHtml(fact.label)}</strong>
+        <span class="review-fact-value">${escapeHtml(displayValue(fact.value))}</span>
+        <small class="review-fact-origin ${escapeHtml(fact.origin.kind)}">${escapeHtml(fact.origin.label)}</small>
+      </div>
+      <button type="button" class="mini-button" data-review-correct-field="${escapeHtml(fact.field)}" aria-label="Edit ${escapeHtml(fact.label.toLowerCase())}">Edit</button>
+    </li>
+  `).join("");
+  return `
+    <section class="beginner-key-facts" aria-label="Check key facts">
+      <strong>Check key facts</strong>
+      <p>AI-read values and suggestions still need checking against the original source. Payment entity and recipient can differ from the service place.</p>
+      <ul>${rows}</ul>
+      <small>Edit a detail, then use Review recovered details to check the request again.</small>
+    </section>
+  `;
+}
+
+function focusReviewCorrection(field) {
+  if (!["case_number", "service_date", "payment_entity", "service_place", "recipient_email"].includes(field)) return false;
+  const input = document.getElementById(field);
+  const details = input?.closest(".advanced-intake-fields");
+  if (!input || !details) return false;
+  details.open = true;
+  input.scrollIntoView({ behavior: "smooth", block: "center" });
+  input.focus({ preventScroll: true });
+  return true;
+}
+
 function reviewIntakeForDisplay(data = {}) {
   return data.effective_intake || data.intake || data.candidate_intake || state.currentIntake || {};
 }
@@ -1544,6 +1578,7 @@ function renderBeginnerReviewSummary(data) {
       ${renderBeginnerOutcomeBanner(data, intake, questions)}
       ${sourceSafetyLine(data)}
       ${questionFocus}
+      ${renderBeginnerFacts(data, intake)}
       ${fallbackNotice}
       ${readyCta}
     </div>
@@ -1676,7 +1711,7 @@ function renderSourceAttention(attention) {
       <div class="result-header compact-result-header">
         <div>
           <strong>Review Attention</strong>
-          <p>These flags summarize what needs human review before PDF or Gmail draft work.</p>
+          <p>${safeStatus === "ready" ? "The recorded choice is resolved. Continue with the normal PDF and draft-safety checks." : "These flags summarize what needs human review before PDF or Gmail draft work."}</p>
         </div>
         <span class="status-chip ${attentionChipClass(safeStatus)} attention-severity">${escapeHtml(status)}</span>
       </div>
@@ -4480,6 +4515,7 @@ async function preflightBatchIntakes(options = {}) {
 }
 
 function applyReview(data, options = {}) {
+  data = retainCaptureDateOrigin(data, state.lastReview || {});
   clearPreparedArtifacts("review changed");
   state.workflowStale = false;
   state.lastReview = data;
@@ -4912,6 +4948,11 @@ function bindActions() {
       setStatus("blocked", error.message);
       showAlert(error.message, "blocked");
     }
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-review-correct-field]");
+    if (!button) return;
+    focusReviewCorrection(button.dataset.reviewCorrectField || "");
   });
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-open-review-drawer]");

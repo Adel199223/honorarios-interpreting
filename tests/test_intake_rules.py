@@ -19,10 +19,19 @@ from honorarios_app.services import (
 )
 
 from scripts.check_duplicate import main as check_duplicate
+from scripts.intake_questions import missing_questions
 from scripts.generate_pdf import IntakeError, find_duplicate_record, get_service_date_value
 
 
 class IntakeRulesTests(unittest.TestCase):
+    def test_conflict_question_shows_both_dates_and_accepts_explicit_choices(self):
+        intake = {'service_date': '2026-09-26', 'photo_metadata_date': '2026-09-28',
+                  'service_date_source': 'document_text'}
+        question = next(q for q in missing_questions(intake) if q['field'] == 'service_date_source')
+        self.assertIn('2026-09-26', question['question'])
+        self.assertIn('2026-09-28', question['question'])
+        self.assertIn('document or metadata', question['answer_hint'])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='honorarios-intake-rules-')
         self.addCleanup(temporary.cleanup)

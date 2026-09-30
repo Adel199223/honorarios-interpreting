@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from scripts.check_dev_environment import evaluate_environment
 from scripts.runtime_doctor import main as doctor_main
-from scripts.run_portable_tests import copy_portable_checkout
+from scripts.run_portable_tests import PUBLIC_EVALUATION_FILES, copy_portable_checkout
 from scripts.public_release_gate import _iter_scannable_files, _matches_existing_paths
 
 
@@ -74,6 +74,10 @@ class DevelopmentEnvironmentTests(unittest.TestCase):
         (source / 'tests/portable-groups.json').write_text((project_tests / 'portable-groups.json').read_text(encoding='utf-8'), encoding='utf-8')
         for name in names:
             (source / 'tests' / name).write_text('# Synthetic public fixture\n', encoding='utf-8')
+        for relative in PUBLIC_EVALUATION_FILES:
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{}', encoding='utf-8')
         (source / 'tests/test_private.py').write_text('do not copy')
         (source / 'config/profile.json').write_text('private synthetic sentinel')
         (source / 'config/ai.local.json').write_text('private synthetic sentinel')

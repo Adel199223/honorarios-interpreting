@@ -520,7 +520,7 @@ pre {
 .simple-task-shell.has-review.source-review #source-drop-zone,
 .simple-task-shell.has-review.source-review #source-drop-status,
 .simple-task-shell.has-review.source-review .secondary-upload-options,
-.simple-task-shell.has-review.source-review .advanced-intake-fields,
+.simple-task-shell.has-review.source-review .advanced-intake-fields:not([open]),
 .simple-task-shell.has-review.source-review #build-profile {
   display: none;
 }
@@ -1834,6 +1834,61 @@ body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #record-draft {
 .field-confidence {
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.beginner-key-facts {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid rgba(117, 218, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(4, 14, 24, 0.72);
+}
+
+.beginner-key-facts p,
+.beginner-key-facts > small {
+  margin: 0;
+  color: var(--muted);
+}
+
+.beginner-key-facts ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.review-fact-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(2, 10, 18, 0.6);
+}
+
+.review-fact-row > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.review-fact-value {
+  overflow-wrap: anywhere;
+}
+
+.review-fact-origin {
+  color: var(--muted);
+}
+
+.review-fact-origin.ai,
+.review-fact-origin.default,
+.review-fact-origin.metadata,
+.review-fact-origin.conflict {
+  color: #ffd08a;
 }
 
 pre {

@@ -7,7 +7,7 @@ This is the standalone LegalPDF Honorários project. Develop the interpreting fe
 1. Read the local `AGENTS.md` when present. It is intentionally ignored and contains operational and private-data guardrails.
 2. Read [current handoff](docs/next-thread-handoff.md), then [app knowledge](APP_KNOWLEDGE.md).
 3. Use the [environment guide](docs/development-environment.md) and [validation guide](docs/validation.md) for setup and checks.
-4. Read the latest [completed foundation plan](docs/assistant/exec_plans/completed/2026-09-30_development_foundation.md). Use the [small plan lifecycle](docs/assistant/exec_plans/PLANS.md) for substantial changes.
+4. Review the latest completed scope in the documentation map: [source decision quality](docs/assistant/exec_plans/completed/2026-09-30_source_decision_quality.md). The [completed foundation plan](docs/assistant/exec_plans/completed/2026-09-30_development_foundation.md) is historical acceptance. Use the [small plan lifecycle](docs/assistant/exec_plans/PLANS.md) for substantial changes.
 5. For workflow work, use the [acceptance checklist](docs/workflow-acceptance.md) and [beginner user guide](docs/user-guide.md). For integration work, read [integration readiness](docs/integration-readiness.md) and the existing [adapter contract](docs/legalpdf-adapter-contract.md).
 
 The machine-readable documentation map is [docs/assistant/manifest.json](docs/assistant/manifest.json).

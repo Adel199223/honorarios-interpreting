@@ -11,10 +11,10 @@ from typing import Any
 
 try:
     from scripts.entity_rules import normalize_text, resolve_entities
-    from scripts.generate_pdf import ROOT, IntakeError, get_service_date_value, load_json, resolve_json_path
+    from scripts.generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
 except ModuleNotFoundError:
     from entity_rules import normalize_text, resolve_entities
-    from generate_pdf import ROOT, IntakeError, get_service_date_value, load_json, resolve_json_path
+    from generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
 
 
 DEFAULT_EMAIL_CONFIG = ROOT / "config" / "email.json"
@@ -235,7 +235,21 @@ def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
     return errors
 
 
-def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: dict[str, Any], directory: list[dict[str, Any]]) -> dict[str, Any]:
+def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, signature_name: str = "") -> str:
+    # A request-specific body remains verbatim. Configured bodies opt into the
+    # selected PDF signature only by containing this exact template token.
+    if intake.get("email_body"):
+        return str(intake["email_body"])
+    body = str(email_config.get("body") or "")
+    if "{{signature_name}}" in body:
+        signature = str(signature_name or "").strip()
+        if not signature:
+            raise IntakeError("The email body template requires the selected profile signature_name.")
+        return body.replace("{{signature_name}}", signature)
+    return body
+
+
+def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: dict[str, Any], directory: list[dict[str, Any]], *, signature_name: str = "") -> dict[str, Any]:
     recipient, recipient_source = resolve_recipient(intake, email_config, directory)
     absolute_pdf = pdf_path.resolve()
     if not absolute_pdf.exists():
@@ -249,7 +263,7 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
     attachment_path_strings = [str(path) for path in attachment_paths]
     attachment_hashes = {str(path): file_sha256(path) for path in attachment_paths}
     subject = str(email_config.get("subject") or "Requerimento de honorários")
-    body = str(intake.get("email_body") or email_config.get("body") or "")
+    body = resolve_email_body(intake, email_config, signature_name=signature_name)
     has_custom_body = bool(str(intake.get("email_body") or "").strip())
     gmail_create_draft_ready = True
     gmail_create_draft_blocker = ""
@@ -302,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("intake", type=Path, help="Path to intake JSON.")
     parser.add_argument("--pdf", required=True, type=Path, help="Generated PDF to attach.")
     parser.add_argument("--email-config", type=Path, default=DEFAULT_EMAIL_CONFIG, help="Path to email config JSON.")
+    parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE, help="Generator profile used to resolve an opt-in email signature template.")
     parser.add_argument("--court-emails", type=Path, default=DEFAULT_COURT_EMAILS, help="Path to known court email directory.")
     parser.add_argument("--output", type=Path, help="Output draft payload JSON path.")
     args = parser.parse_args(argv)
@@ -310,7 +325,11 @@ def main(argv: list[str] | None = None) -> int:
         intake = load_json(args.intake)
         email_config = load_json(args.email_config)
         directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
-        payload = build_email_payload(intake, args.pdf, email_config, directory)
+        signature_name = ""
+        if not intake.get("email_body") and "{{signature_name}}" in str(email_config.get("body") or ""):
+            profile = load_json(args.profile)
+            signature_name = str(profile.get("signature_name") or profile.get("applicant_name") or "")
+        payload = build_email_payload(intake, args.pdf, email_config, directory, signature_name=signature_name)
         output_path = args.output or default_output_path(args.pdf)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -9,6 +9,10 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+from pypdf import PdfReader
+
+from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
+from honorarios_app.services import AppPaths, prepare_intakes
 from scripts.build_email_draft import build_email_payload, resolve_recipient, validate_draft_payload
 from scripts.generate_pdf import IntakeError, find_duplicate_record
 from scripts.record_gmail_draft import main as record_draft
@@ -96,6 +100,69 @@ class EmailRulesTests(unittest.TestCase):
                 record = find_duplicate_record(intake, index, strict=True)
                 self.assertEqual(record['status'], 'drafted')
                 self.assertEqual(record['draft_id'], 'synthetic-draft')
+
+
+class SelectedSignatureEmailTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='honorarios-selected-signature-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        create_synthetic_runtime(self.root)
+        self.paths = AppPaths(**runtime_path_overrides(self.root))
+        store = json.loads(self.paths.personal_profiles.read_text(encoding='utf-8'))
+        selected = copy.deepcopy(store['profiles'][0])
+        selected.update(id='selected', first_name='Pessoa', last_name='Fictícia A',
+                        document_name_override='Pessoa Fictícia A')
+        store['profiles'].append(selected)
+        self.paths.personal_profiles.write_text(json.dumps(store), encoding='utf-8')
+        defaults = json.loads(self.paths.service_profiles.read_text(encoding='utf-8'))['example_interpreting']['defaults']
+        self.intake = {**defaults, 'case_number': '710/26.0TSTXX', 'service_date': '2026-09-26',
+                       'closing_date': '2026-09-30', 'personal_profile_id': 'selected'}
+
+    def payload(self, item):
+        return json.loads(Path(item['draft_payload']).read_text(encoding='utf-8'))
+
+    def test_default_email_and_actual_pdf_share_selected_signature(self):
+        before = self.paths.email_config.read_bytes()
+        prepared = prepare_intakes([self.intake], self.paths)
+        item = prepared['items'][0]
+        payload = self.payload(item)
+        text = '\n'.join(page.extract_text() for page in PdfReader(item['pdf']).pages)
+        self.assertIn('Pessoa Fictícia A', text)
+        self.assertTrue(payload['body'].endswith('Pessoa Fictícia A'))
+        self.assertNotIn('Example Interpreter', payload['body'])
+        self.assertNotIn('{{signature_name}}', payload['body'])
+        self.assertEqual(payload['gmail_create_draft_args']['body'], payload['body'])
+        self.assertEqual(validate_draft_payload(payload), [])
+        self.assertFalse(payload['send_allowed'])
+        self.assertEqual(self.paths.email_config.read_bytes(), before)
+
+    def test_explicit_configured_and_request_bodies_remain_verbatim(self):
+        configured = '  Texto explicitamente configurado.\nMelhores cumprimentos,\nAssinatura da Equipa\n'
+        config = json.loads(self.paths.email_config.read_text(encoding='utf-8'))
+        config['body'] = configured
+        self.paths.email_config.write_text(json.dumps(config), encoding='utf-8')
+        before = self.paths.email_config.read_bytes()
+        prepared = prepare_intakes([self.intake], self.paths)
+        self.assertEqual(self.payload(prepared['items'][0])['body'], configured)
+        custom = '  Corpo individual e assinatura explícita.\nOutra Pessoa\n'
+        prepared = prepare_intakes([{**self.intake, 'case_number': '711/26.0TSTXX', 'email_body': custom}], self.paths)
+        self.assertEqual(self.payload(prepared['items'][0])['body'], custom)
+        self.assertEqual(self.paths.email_config.read_bytes(), before)
+
+    def test_packet_default_uses_selected_signature_and_custom_packet_stays_verbatim(self):
+        intakes = [self.intake, {**self.intake, 'case_number': '711/26.0TSTXX'}]
+        prepared = prepare_intakes(intakes, self.paths, packet_mode=True)
+        packet = self.payload(prepared['packet'])
+        self.assertTrue(packet['body'].endswith('Pessoa Fictícia A'))
+        self.assertEqual(len(packet['underlying_requests']), 2)
+        self.assertEqual(validate_draft_payload(packet), [])
+        self.assertFalse(packet['send_allowed'])
+        custom = '  Pacote com assinatura escolhida.\nAssinatura da Equipa\n'
+        intakes[0] = {**self.intake, 'case_number': '712/26.0TSTXX', 'packet_email_body': custom}
+        intakes[1]['case_number'] = '713/26.0TSTXX'
+        prepared = prepare_intakes(intakes, self.paths, packet_mode=True)
+        self.assertEqual(self.payload(prepared['packet'])['body'], custom)
 
 
 if __name__ == '__main__':

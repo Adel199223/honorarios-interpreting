@@ -142,7 +142,13 @@ def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
         if not rule_applies(rule, intake):
             continue
         if rule.get("when") == "service_date_conflict":
-            questions.append({**rule, "number": len(questions) + 1})
+            questions.append({**rule, "number": len(questions) + 1,
+                "question": (
+                    f"The document service date is {intake.get('service_date')} and the photo capture date is "
+                    f"{intake.get('photo_metadata_date')}. On which date did you actually provide the interpreting service?"
+                ),
+                "answer_hint": "Give the actual date in YYYY-MM-DD, or answer document or metadata.",
+            })
             continue
         if rule.get("when") == "pj_host_building_missing":
             questions.append({**rule, "number": len(questions) + 1})

@@ -62,31 +62,124 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual(service["status"], "applied")
         self.assertEqual(self.attention(field_evidence=entries)["status"], "ready")
 
+    def test_confirmed_date_difference_is_resolved_attention_with_both_dates_retained(self):
+        for origin in ("user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed"):
+            with self.subTest(origin=origin):
+                candidate = {"service_date": "2026-09-26", "photo_metadata_date": "2026-09-28", "service_date_source": origin}
+                entries = self.fields(candidate=candidate, metadata={"exif_date": "2026-09-28"})
+                before = copy.deepcopy(entries)
+                attention = self.attention(candidate=candidate, field_evidence=entries)
+                self.assertEqual(attention["status"], "ready")
+                self.assertEqual(attention["flag_count"], 1)
+                flag = attention["flags"][0]
+                self.assertEqual((flag["code"], flag["severity"]), ("date_conflict_resolved", "info"))
+                self.assertIn("2026-09-26", flag["detail"])
+                self.assertIn("2026-09-28", flag["detail"])
+                self.assertIn("no further date answer", flag["detail"])
+                service = next(entry for entry in entries if entry["field"] == "service_date")
+                self.assertEqual(service["conflicts_with"], {"field": "photo_metadata_date", "value": "2026-09-28"})
+                self.assertEqual(entries, before, "Resolving attention must retain the original conflict ledger.")
+
+    def test_date_confirmation_does_not_resolve_other_blockers_or_a_changed_date(self):
+        candidate = {"service_date": "2026-09-26", "photo_metadata_date": "2026-09-28", "service_date_source": "user_confirmed_exception"}
+        entries = self.fields(candidate=candidate, metadata={"exif_date": "2026-09-28"})
+        for status in ("needs_info", "duplicate", "active_draft", "set_aside", "error"):
+            with self.subTest(status=status):
+                attention = self.attention(candidate=candidate, review={"status": status}, field_evidence=entries)
+                self.assertEqual(attention["status"], "blocked")
+                self.assertEqual(attention["flags"][0]["severity"], "blocked")
+                self.assertEqual(attention["flags"][-1]["code"], "date_conflict_resolved")
+        for changed in ({**candidate, "service_date": "2026-09-25"}, {**candidate, "service_date_source": "document_text"}):
+            with self.subTest(changed=changed):
+                attention = self.attention(candidate=changed, field_evidence=entries)
+                self.assertEqual(attention["status"], "blocked")
+                self.assertEqual(attention["flags"][0]["code"], "date_conflict")
+
     def test_metadata_origin_distinguishes_exif_visible_and_ai_recovered_metadata(self):
-        for metadata, ai, source in (
-            ({"exif_date": "2026-09-20", "visible_metadata_date": "2026-09-20"}, {}, "image_metadata"),
-            ({"visible_metadata_date": "2026-09-20"}, {}, "visible_google_photos_metadata"),
-            ({}, {"fields": {"photo_metadata_date": "2026-09-20"}}, "visible_google_photos_metadata"),
-            ({}, {}, "image_metadata"),
+        for metadata, ai, source, confidence in (
+            ({"exif_date": "2026-09-20", "visible_metadata_date": "2026-09-20"}, {}, "image_metadata", "high"),
+            ({"visible_metadata_date": "2026-09-20"}, {}, "visible_google_photos_metadata", "high"),
+            ({}, {"fields": {"photo_metadata_date": "2026-09-20"}}, "openai_ocr", "medium"),
+            ({"visible_metadata_date": "2026-09-20"}, {"fields": {"photo_metadata_date": "2026-09-20"}}, "openai_ocr", "medium"),
+            ({}, {}, "image_metadata", "medium"),
         ):
             with self.subTest(source=source, metadata=metadata):
                 entry = self.fields(candidate={"photo_metadata_date": "2026-09-20"}, metadata=metadata, ai_recovery=ai)[0]
                 self.assertEqual(entry["source"], source)
-                self.assertEqual(entry["confidence"], "high")
+                self.assertEqual(entry["confidence"], confidence)
 
     def test_ai_provenance_uses_visible_values_and_does_not_claim_rejected_values(self):
         entries = self.fields(candidate={"payment_entity": "Synthetic Polícia", "recipient_email": "kept@example.test"}, ai_recovery={"status": "ok", "raw_visible_text": "SYNTHETIC POLICIA", "fields": {"payment_entity": "Synthetic Polícia", "court_email": "other@example.test"}})
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["field"], "payment_entity")
         self.assertEqual(entries[0]["source"], "openai_ocr")
-        self.assertEqual(entries[0]["confidence"], "high")
+        self.assertEqual(entries[0]["confidence"], "medium")
         self.assertEqual(entries[0]["excerpt"], "SYNTHETIC POLICIA")
+        self.assertIn("not independent confirmation", entries[0]["reason"])
 
-    def test_ai_date_matching_image_metadata_is_high_confidence_evidence(self):
+    def test_ai_date_matching_image_metadata_is_not_confirmed_service_date(self):
         entries = self.fields(candidate={"service_date": "2026-09-20", "photo_metadata_date": "2026-09-20"}, ai_recovery={"status": "ok", "fields": {"service_date": "2026-09-20"}})
         service = next(entry for entry in entries if entry["field"] == "service_date")
         self.assertEqual(service["source"], "openai_and_photo_metadata")
-        self.assertEqual(service["confidence"], "high")
+        self.assertEqual(service["confidence"], "medium")
+        self.assertIn("does not confirm when the service happened", service["reason"])
+
+    def test_ai_inferred_payment_place_and_recipient_stay_low_and_reviewable(self):
+        candidate = {"payment_entity": "Fictional Court", "service_place": "Fictional Office", "recipient_email": "court@example.test"}
+        entries = self.fields(candidate=candidate, ai_recovery={"status": "ok", "raw_visible_text": "Interpretation requested", "fields": {**candidate, "court_email": candidate["recipient_email"]}})
+        self.assertEqual({entry["field"] for entry in entries}, set(candidate))
+        for entry in entries:
+            self.assertEqual(entry["confidence"], "low")
+            self.assertIn("may be inferred", entry["reason"])
+
+    def test_reparsing_ai_ocr_does_not_promote_its_case_email_or_date(self):
+        values = {"case_number": "123/26.0SYNTH", "service_date": "2026-09-20", "recipient_email": "court@example.test"}
+        text = "Case 123/26.0SYNTH\nService: 20/09/2026\ncourt@example.test"
+        entries = self.fields(candidate={**values, "source_text": text}, deterministic_fields=values, ai_recovery={"status": "ok", "raw_visible_text": text, "fields": {**values, "court_email": values["recipient_email"]}})
+        self.assertEqual(len(entries), 3)
+        self.assertTrue(all(entry["source"] == "openai_ocr" and entry["confidence"] == "medium" for entry in entries))
+
+    def test_independent_document_text_retains_its_provenance_despite_matching_ai(self):
+        ai_text = "Possible process 123/26.0SYNTH"
+        entries = self.fields(candidate={"case_number": "123/26.0SYNTH", "source_text": "Document process: 123/26.0SYNTH\n\n" + ai_text}, deterministic_fields={"case_number": "123/26.0SYNTH"}, ai_recovery={"status": "ok", "raw_visible_text": ai_text, "fields": {"case_number": "123/26.0SYNTH"}})
+        self.assertEqual(entries[0]["source"], "deterministic_text")
+        self.assertEqual(entries[0]["confidence"], "high")
+
+    def test_explicit_unknown_service_place_is_source_evidence_without_a_saved_reference(self):
+        place = "Posto da GNR de Faro"
+        text = "Diligência de interpretação realizada no Posto da GNR de Faro em 26/09/2026."
+        candidate = {"service_place": place, "source_text": text}
+        deterministic = {"service_place": place}
+        entry = self.fields(candidate=candidate, deterministic_fields=deterministic, profiles={})[0]
+        self.assertEqual(entry["source"], "document_text")
+        self.assertEqual(entry["confidence"], "high")
+        self.assertIn("physical service place in the source text", entry["reason"])
+        self.assertNotIn("known destination", entry["reason"])
+        self.assertEqual(entry["excerpt"], text)
+        ai_entry = self.fields(candidate=candidate, deterministic_fields=deterministic, profiles={},
+                               ai_recovery={"status": "ok", "raw_visible_text": text, "fields": {"service_place": place}})[0]
+        self.assertEqual(ai_entry["source"], "openai_ocr")
+        self.assertEqual(ai_entry["confidence"], "medium", "Reparsing the same AI text cannot confirm an unknown place.")
+
+    def test_patterns_found_only_in_ai_text_remain_ai_even_if_structured_fields_are_missing(self):
+        text = "Process 123/26.0SYNTH\ncourt@example.test"
+        fields = {"case_number": "123/26.0SYNTH", "recipient_email": "court@example.test"}
+        entries = self.fields(candidate={**fields, "source_text": text}, deterministic_fields=fields, ai_recovery={"status": "ok", "raw_visible_text": text, "fields": {}})
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(all(entry["source"] == "openai_ocr" and entry["confidence"] == "medium" for entry in entries))
+
+    def test_explicit_date_confirmation_is_distinct_from_ai_and_profile_defaults(self):
+        for origin in ("user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed"):
+            with self.subTest(origin=origin):
+                entries = self.fields(candidate={"service_date": "2026-09-20", "service_date_source": origin}, ai_recovery={"status": "ok", "fields": {"service_date": "2026-09-20"}})
+                self.assertEqual(entries[0]["source"], "user_confirmed")
+                self.assertIn("explicitly supplied or confirmed", entries[0]["reason"])
+
+    def test_ai_conflicts_and_domain_blockers_do_not_disappear_with_new_confidence_labels(self):
+        entries = self.fields(candidate={"service_date": "2026-09-20", "photo_metadata_date": "2026-09-21"}, ai_recovery={"status": "ok", "fields": {"service_date": "2026-09-20"}}, metadata={"exif_date": "2026-09-21"})
+        attention = self.attention(field_evidence=entries, review={"status": "duplicate"})
+        self.assertEqual(attention["status"], "blocked")
+        self.assertEqual([flag["code"] for flag in attention["flags"]], ["duplicate_request", "date_conflict"])
 
     def test_nested_transport_defaults_are_explained_without_inventing_values(self):
         entries = self.fields(candidate={"transport": {"destination": "Example City", "km_one_way": 12}}, profile_decision={"profile_key": "example", "mode": "auto_applied"}, profiles={"example": {"defaults": {"transport": {"destination": "Example City", "km_one_way": 12}, "payment_entity": "Unused Court"}}})
@@ -94,7 +187,8 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual(by_field["transport_destination"]["value"], "Example City")
         self.assertEqual(by_field["km_one_way"]["value"], 12)
         self.assertEqual(by_field["km_one_way"]["source"], "service_profile")
-        self.assertEqual(by_field["km_one_way"]["confidence"], "high")
+        self.assertEqual(by_field["km_one_way"]["confidence"], "medium")
+        self.assertIn("does not confirm this source", by_field["km_one_way"]["reason"])
         self.assertNotIn("payment_entity", by_field)
 
     def test_review_blockers_remain_blockers_even_with_successful_ai(self):
