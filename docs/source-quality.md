@@ -24,6 +24,12 @@ All 18 requests completed; the summed uncached token-price estimate was USD0.158
 
 The requested gpt-6.1-sol high setting passed and its cost is small for this workflow. This small clean-image set does not demonstrate that it is more accurate than either alternative. Improved instructions and deterministic rules are part of the result; it is not a model-only improvement. Fictional decision fixtures and provider-free replay checks are separate from actual vision/OCR measurement. Production accuracy on private documents remains unmeasured.
 
+## Applied local acceptance
+
+Final candidate and saved-checkout Full passed 256 public synthetic tests and four isolated workflows. The 39 labelled decision cases pass with zero false-ready decisions or missing required questions; 64 focused quality tests include boundary regressions. These replay fixtures evaluate source decisions rather than broad OCR accuracy.
+
+Actual fictional browser checks covered a native PDF without a provider call, a sideways photo with high-reasoning extraction, performed/capture-date confirmation, and an unreadable-date PDF that asked instead of guessing. The generated one-page request and its manual handoff were inspected. PDF physical hosts and new default email signatures retain the selected request details; literal custom email bodies remain unchanged. Corrections invalidate stale prepared files. See the [completed plan](assistant/exec_plans/completed/2026-09-30_source_decision_quality.md) for failed attempts and evidence limits.
+
 ## Decisions API
 
 OpenAI's September 29 announcement describes Decisions API as a limited preview for choosing from predefined answers using text/image context. It could later help classify interpreting vs translation or choose which question to ask. No public endpoint/schema or this account's preview access was established during this work. The app therefore continues using the tested Responses interface; do not invent a Decisions endpoint or add it solely because it was announced.
