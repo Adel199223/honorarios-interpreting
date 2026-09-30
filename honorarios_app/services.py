@@ -79,7 +79,8 @@ from scripts.source_parsing import explicit_service_places, service_date_evidenc
 from scripts.source_classification import detect_translation_source, format_translation_rejection
 
 from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
-from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing
+from .source_cases import source_case_rows, valid_source_case
+from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gmail_draft_api import (
     create_gmail_draft_from_payload,
     gmail_oauth_callback,
@@ -1011,6 +1012,9 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     This wrapper gives manual/pasted review the same proactive help without
     saving reference data or skipping the normal duplicate/PDF/Gmail guards.
     """
+    intake = copy.deepcopy(intake)
+    reconcile_photo_venue_edit(intake)
+    _normalize_source_case_confirmation(intake)
     profiles = _load_available_service_profiles(paths)
     requested_profile = _requested_service_profile_from_intake(intake)
     existing_auto = intake.get("auto_profile")
@@ -1167,7 +1171,7 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
     date_evidence = service_date_evidence(str(intake.get("source_text") or ""))
 
     raw_case = _first_ai_field(ai_recovery, "raw_case_number", "source_case_number", "case_number").upper()
-    if raw_case and not intake.get("case_number"):
+    if raw_case and not intake.get("case_number") and valid_source_case(raw_case):
         intake["raw_case_number"] = raw_case
         intake["source_case_number"] = raw_case
         intake["case_number"] = normalize_case_number(raw_case)
@@ -1358,6 +1362,53 @@ def store_supporting_attachment_upload(
         "message": "Supporting attachment uploaded for review. No PDF, Gmail draft, or local draft record was created.",
         "send_allowed": False,
     }
+
+
+def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    candidate = result['candidate_intake']
+    rows = source_case_rows(result['extracted_text'], result['ai_recovery']) if result['source']['source_kind'] == 'photo' else []
+    if not rows:
+        existing_case = str(candidate.get('case_number') or '')
+        rows = [{'case_number': existing_case, 'raw_case_number': str(candidate.get('raw_case_number') or existing_case)}]
+    case_candidates = []
+    for row in rows:
+        child = copy.deepcopy(candidate)
+        child.update(case_number=row['case_number'], raw_case_number=row['raw_case_number'],
+                     source_case_number=row['raw_case_number'])
+        child['source_case_numbers'] = [item['case_number'] for item in rows if item['case_number']]
+        if not row['case_number']:
+            child['case_number_requires_confirmation'] = True
+        child_review = review_intake(child, paths)
+        child = copy.deepcopy(child_review.get('effective_intake') or child)
+        evidence = build_field_evidence(
+            candidate=child, deterministic_fields=extract_candidate_fields(result['extracted_text'], paths),
+            metadata=result['source']['metadata'], ai_recovery=result['ai_recovery'],
+            profile_decision=child.get('auto_profile') or {}, profiles=_load_available_service_profiles(paths),
+        )
+        proposal = build_profile_proposal(child, child.get('auto_profile') or {}, _load_available_service_profiles(paths))
+        attention = build_source_attention(candidate=child, review=child_review, ai_recovery=result['ai_recovery'],
+            profile_decision=child.get('auto_profile') or {}, profile_proposal=proposal,
+            field_evidence=evidence, warnings=result['source_evidence'].get('warnings') or [])
+        child_review['review_evidence'] = {**copy.deepcopy(result['source_evidence']),
+            'case_number': child.get('case_number', ''), 'raw_case_number': child.get('raw_case_number', ''),
+            'question_count': len(child_review.get('questions') or []), 'field_evidence': evidence,
+            'attention': attention, 'profile_proposal': proposal}
+        child_review['profile_proposal'] = proposal
+        case_candidates.append({'candidate_intake': child, 'review': child_review})
+    result['case_count'] = len(case_candidates)
+    result['case_candidates'] = case_candidates
+    result['candidate_intake'] = case_candidates[0]['candidate_intake']
+    result['review'] = case_candidates[0]['review']
+    # Preserve source-upload evidence while making the selected case coherent.
+    evidence = copy.deepcopy(case_candidates[0]['review']['review_evidence'])
+    selected = result['candidate_intake']
+    evidence.update(case_number=selected.get('case_number', ''), raw_case_number=selected.get('raw_case_number', ''),
+                    case_count=len(case_candidates), case_numbers=selected.get('source_case_numbers', []),
+                    question_count=len(result['review'].get('questions') or []),
+                    field_evidence=case_candidates[0]['review']['review_evidence']['field_evidence'])
+    result['source_evidence'] = evidence
+    result['profile_proposal'] = case_candidates[0]['review']['profile_proposal']
+    return result
 
 
 def artifact_root(root_key: str, paths: AppPaths) -> Path:
@@ -1591,7 +1642,7 @@ def recover_source_upload(
         warnings=source_warnings,
     )
 
-    return {
+    result = {
         "status": "uploaded",
         "source": {
             "source_kind": source_kind,
@@ -1633,6 +1684,7 @@ def recover_source_upload(
         },
         "send_allowed": False,
     }
+    return _review_source_cases(result, paths)
 
 
 def read_json_list(path: Path) -> list[dict[str, Any]]:
@@ -4770,6 +4822,14 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
         intake["recipient_email"] = value
         return
 
+    if field in {'service_place', 'service_entity'} and (intake.get('photo_defaults_applied') or {}).get('service_place'):
+        intake[field] = value
+        other = 'service_entity' if field == 'service_place' else 'service_place'
+        if not str(intake.get(other) or '').strip():
+            intake[other] = value
+        reconcile_photo_venue_edit(intake)
+        return
+
     if field == "service_place":
         intake["service_place"] = value
         if not str(intake.get("service_place_phrase") or "").strip():
@@ -5052,7 +5112,17 @@ def generator_profile_for_intake(paths: AppPaths, intake: dict[str, Any] | None 
     return profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
 
 
+def _normalize_source_case_confirmation(intake: dict[str, Any]) -> None:
+    if intake.get('case_number_requires_confirmation') or 'source_case_numbers' in intake:
+        value = valid_source_case(intake.get('case_number'))
+        intake['case_number'] = value
+        intake['case_number_requires_confirmation'] = not bool(value)
+
+
 def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    intake = copy.deepcopy(intake)
+    reconcile_photo_venue_edit(intake)
+    _normalize_source_case_confirmation(intake)
     profile = selected_personal_profile(paths, intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
     generator_profile = profile_to_generator_profile(profile, _legacy_profile_defaults(paths))

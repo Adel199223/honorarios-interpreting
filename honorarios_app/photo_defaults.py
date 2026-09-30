@@ -9,6 +9,7 @@ from typing import Any
 
 from scripts.entity_rules import classify_entity_type, normalize_text
 from scripts.generate_pdf import IntakeError
+from scripts.source_parsing import explicit_service_places
 
 ROUTING_FIELDS = ('payment_entity', 'addressee', 'recipient_email', 'court_email',
                   'court_email_key', 'recipient_override_reason', 'court_email_override_reason')
@@ -78,7 +79,8 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
         return
     date_enabled = preferences.get('capture_date_is_service_date') is True
     city_enabled = preferences.get('photo_city_court') is True
-    if not date_enabled and not city_enabled:
+    venue_enabled = preferences.get('missing_venue_is_city_court') is True
+    if not date_enabled and not city_enabled and not venue_enabled:
         return
     fields = ai_recovery.get('fields') or {} if ai_recovery.get('status') == 'ok' else {}
     applied: dict[str, Any] = {}
@@ -103,7 +105,7 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
             applied['date_status'] = 'ambiguous' if dates else 'missing'
             warnings.append('Your photo-date default needs one unambiguous capture date. Enter the actual date to continue.')
 
-    if not city_enabled:
+    if not city_enabled and not venue_enabled:
         return
     cities = {_city_key(value): str(value).strip() for value in
               (metadata.get('photo_metadata_city'), metadata.get('visible_metadata_city'), fields.get('photo_metadata_city'))
@@ -113,9 +115,50 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
     # A profile deliberately selected by the user is a per-request exception.
     # Automatic/source guesses cannot supersede the user's standing city policy.
     if explicit_profile:
-        applied['routing_status'] = 'selected_profile'
+        if city_enabled:
+            applied['routing_status'] = 'selected_profile'
         return
     selected, status = _city_court(city, preferences, directory) if city else ({}, 'ambiguous_city' if cities else 'missing_city')
+    # Only absent source venues use this policy. Automatic profile guesses and
+    # a bare capture city are not evidence of a physical service building.
+    source_places = explicit_service_places(str(intake.get('source_text') or ''))
+    ai_place = str(fields.get('service_place') or '').strip()
+    building = re.search(r'\b(tribunal|ju[ií]zo|esquadra|posto|hospital|gabinete|diretoria|instala[cç][oõ]es)\b', ai_place, re.IGNORECASE)
+    stations = re.findall(r'^\s*((?:Esquadra|Posto(?: Territorial)?)(?: da (?:PSP|GNR))? de [^\n]+)',
+                          str(intake.get('source_text') or ''), re.IGNORECASE | re.MULTILINE)
+    stations = list({_city_key(label): label for label in stations}.values())
+    # A specifically named station on an appointment is supplied venue evidence;
+    # a police command/district header alone still is not a physical venue.
+    if venue_enabled and not source_places and len(stations) == 1:
+        host = stations[0].strip().rstrip('.')
+        if city and _city_key(host).endswith(' de ' + _city_key(city)):
+            host = host[:-len(city)].capitalize() + city
+        intake.update(service_place=host, service_entity=str(fields.get('service_entity') or host),
+                      service_entity_type=classify_entity_type(host),
+                      service_place_phrase=f'em diligência realizada {"na" if host.lower().startswith("esquadra") else "no"} {host}')
+        intake['source_station_place'] = host
+        building = True
+    elif venue_enabled and not source_places and len(stations) > 1:
+        applied['venue_status'] = 'ambiguous_source_venue'
+        intake.update(service_place='', service_entity='', service_entity_type='', service_place_phrase='')
+        warnings.append('Several named source stations appear. Confirm the actual service venue before continuing.')
+    if venue_enabled and not source_places and not building and not stations:
+        applied['venue_status'] = status
+        if selected:
+            place = selected['payment_entity']
+            intake.update(service_place=place, service_entity=place, service_entity_type='court',
+                          service_place_phrase=f'em diligência realizada no {place}', entities_differ=False)
+            applied['service_place'] = place
+            transport = dict(intake.get('transport') or {})
+            if _city_key(transport.get('destination')) != _city_key(city):
+                transport.pop('km_one_way', None)
+            transport['destination'] = city
+            intake['transport'] = transport
+        else:
+            intake.update(service_place='', service_entity='', service_entity_type='', service_place_phrase='')
+            warnings.append('Your missing-venue default needs a unique capture-city court. Enter the service building and city to continue.')
+    if not city_enabled:
+        return
     # Route as a group, so a stale profile address/key cannot restore another court.
     for field in ROUTING_FIELDS:
         intake[field] = ''
@@ -143,3 +186,36 @@ def preserve_photo_routing(original: dict[str, Any], merged: dict[str, Any]) -> 
     if 'routing_status' in applied:
         for field in ROUTING_FIELDS:
             merged[field] = original.get(field, '')
+    if 'service_place' in applied or 'venue_status' in applied:
+        for field in ('service_place', 'service_place_phrase', 'service_entity', 'service_entity_type', 'entities_differ'):
+            merged[field] = original.get(field, '')
+
+
+def reconcile_photo_venue_edit(intake: dict[str, Any]) -> None:
+    """Drop dependent default venue fields when the user edits one of them."""
+    applied = intake.get('photo_defaults_applied') or {}
+    default = applied.get('service_place') if isinstance(applied, dict) else ''
+    if not default:
+        return
+    place = str(intake.get('service_place', default) or '').strip()
+    entity = str(intake.get('service_entity', default) or '').strip()
+    previous = str(intake.get('photo_venue_last_value') or default)
+    if place == previous and entity == previous:
+        return
+    aliases_changed = False
+    if place != previous and entity == previous:
+        entity = place
+        aliases_changed = True
+    elif entity != previous and place == previous:
+        place = entity
+        aliases_changed = True
+    intake.update(service_place=place, service_entity=entity)
+    if intake.get('service_place_phrase') == f'em diligência realizada no {default}':
+        intake['service_place_phrase'] = ''
+    if not place and not entity:
+        intake.update(service_entity_type='', entities_differ=False)
+    elif aliases_changed or intake.get('service_entity_type') in ('court', '', None):
+        entity_type = classify_entity_type(entity or place)
+        intake.update(service_entity_type=entity_type, entities_differ=entity_type not in {'court', 'ministerio_publico'})
+    if place == entity:
+        intake['photo_venue_last_value'] = place

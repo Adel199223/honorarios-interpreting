@@ -117,6 +117,11 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
     if unless == "payment_entity_inferred" and entities["payment_entity"]:
         return False
     if unless == "service_entity_inferred":
+        photo_defaults = intake.get('photo_defaults_applied') or {}
+        if isinstance(photo_defaults, dict) and (photo_defaults.get('service_place') or 'venue_status' in photo_defaults) and not any(
+            has_value(intake, field) for field in ('service_place', 'service_entity', 'service_place_phrase')
+        ):
+            return True
         if source_mentions_pj_context(intake) and not has_pj_host_building(intake):
             return False
         has_explicit_service_entity = (

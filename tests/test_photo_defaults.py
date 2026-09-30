@@ -418,6 +418,32 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertTrue(venue_evidence)
         self.assertTrue(any(item.get('source') == 'photo_default' for item in venue_evidence))
 
+    def test_named_station_heading_survives_missing_ai_venue_field(self):
+        self.enable(venue=True)
+        result = self.upload(visible_text=f'POLICIA DE SEGURANCA PUBLICA\nESQUADRA DE Capture City\nProcesso {CASE_NUMBER}',
+            ai_fields={'service_place': '', 'service_entity': 'Polícia de Segurança Pública — Esquadra de Capture City', 'locality': CAPTURE_CITY})
+        self.assertEqual(result['candidate_intake']['service_place'], 'Esquadra de Capture City')
+        self.assertEqual(result['candidate_intake']['service_entity_type'], 'psp')
+        self.assertNotIn('service_place', result['candidate_intake']['photo_defaults_applied'])
+        self.assertEqual(result['candidate_intake']['payment_entity'], CAPTURE_COURT)
+
+    def test_multiple_station_headings_need_venue_choice(self):
+        self.enable(venue=True)
+        result = self.upload(visible_text=f'ESQUADRA DE Capture City\nPOSTO DA GNR DE Other City\nProcesso {CASE_NUMBER}',
+            ai_fields={'service_place': '', 'service_entity': '', 'service_entity_type': '', 'locality': ''})
+        self.assertEqual(result['review']['status'], 'needs_info')
+        self.assertIn('service_entity', self.question_fields(result))
+        self.assertFalse(result['candidate_intake'].get('service_place'))
+
+    def test_repeated_venue_corrections_update_dependent_place_and_type(self):
+        self.enable(venue=True)
+        candidate = copy.deepcopy(self.missing_venue_upload()['candidate_intake'])
+        apply_answer_to_intake(candidate, 'service_entity', 'Esquadra da PSP de Capture City')
+        apply_answer_to_intake(candidate, 'service_entity', 'Posto da GNR de Second City')
+        self.assertEqual(candidate['service_place'], 'Posto da GNR de Second City')
+        self.assertEqual(candidate['service_entity_type'], 'gnr')
+        self.assertFalse(candidate.get('service_place_phrase'))
+
     def test_missing_venue_policy_is_independent_of_photo_payer_policy(self):
         self.enable(city=False, venue=True)
         candidate = self.missing_venue_upload()['candidate_intake']

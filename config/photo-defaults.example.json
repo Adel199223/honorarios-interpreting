@@ -1,5 +1,6 @@
 {
   "capture_date_is_service_date": true,
   "photo_city_court": true,
+  "missing_venue_is_city_court": true,
   "city_courts": {}
 }

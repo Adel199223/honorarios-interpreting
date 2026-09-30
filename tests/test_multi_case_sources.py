@@ -338,6 +338,11 @@ class MultiCaseSourceTests(unittest.TestCase):
 
 
 class MultiCaseNormalizationTests(unittest.TestCase):
+    def test_administrative_label_does_not_hide_later_nuipc_on_same_line(self):
+        from honorarios_app.source_cases import source_case_rows
+        rows = source_case_rows(f'NPP: 990/26.0TSTXX NUIPC: {CASES[0]}', {})
+        self.assertEqual([row['case_number'] for row in rows], [CASES[0]])
+
     def test_strict_extraction_schema_requires_a_case_list(self):
         schema = ai.AI_RECOVERY_RESPONSE_FORMAT['format']['schema']
         self.assertIn('case_numbers', schema['required'])
