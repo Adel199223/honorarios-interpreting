@@ -187,6 +187,31 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertTrue(candidate['entities_differ'])
         self.assertEqual(result['review']['recipient'], CAPTURE_RECIPIENT)
 
+    def test_capture_city_overrides_automatic_profile_and_different_source_court(self):
+        self.enable()
+        profiles = json.loads(self.paths.service_profiles.read_text(encoding='utf-8'))
+        profile_court = 'Tribunal de Profile City'
+        profiles['example_interpreting']['defaults'].update(
+            payment_entity=profile_court, addressee=profile_court,
+            recipient_email='fictional-profile@' + COURT_DOMAIN,
+            court_email_key='example-court', court_email=DEFAULT_RECIPIENT)
+        write_json(self.paths.service_profiles, profiles)
+        source_court = 'Tribunal de Other Source City'
+        source_recipient = 'fictional-source@' + COURT_DOMAIN
+        text = SOURCE_TEXT + f'\n{profile_court}\n{source_court}\nEmail: {source_recipient}'
+        result = self.upload(visible_text=text, ai_fields={
+            'payment_entity': source_court, 'court_email': source_recipient,
+        })
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(candidate['addressee'], CAPTURE_COURT)
+        self.assertEqual(candidate['recipient_email'], CAPTURE_RECIPIENT)
+        self.assertFalse(candidate.get('court_email'))
+        self.assertFalse(candidate.get('court_email_key'))
+        self.assertEqual(result['review']['status'], 'ready')
+        self.assertEqual(result['review']['recipient'], CAPTURE_RECIPIENT)
+        self.assertIn(source_court, candidate['source_text'])
+
     def test_date_only_preference_does_not_replace_existing_court(self):
         self.enable(city=False)
         result = self.upload()
@@ -283,6 +308,39 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(review['payment_entity'], 'Example Court')
         self.assertEqual(review['recipient'], DEFAULT_RECIPIENT)
         self.assertEqual(review['intake']['service_date_source'], 'user_confirmed')
+
+    def test_cleared_photo_default_date_stays_missing_after_profile_review(self):
+        self.enable()
+        candidate = copy.deepcopy(self.upload()['candidate_intake'])
+        candidate.update(service_date='', photo_metadata_date_requires_confirmation=True)
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'needs_info')
+        self.assertEqual(review['intake'].get('service_date', ''), '')
+        self.assertTrue(review['intake']['photo_metadata_date_requires_confirmation'])
+        self.assertIn('service_date', {question['field'] for question in review['questions']})
+
+    def test_cleared_explicit_profile_recipient_stays_missing_after_profile_review(self):
+        self.enable()
+        candidate = copy.deepcopy(self.upload(service_profile='example_interpreting')['candidate_intake'])
+        candidate['recipient_email'] = ''
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'needs_info')
+        self.assertEqual(review['intake'].get('recipient_email', ''), '')
+        self.assertIn('recipient_email', {question['field'] for question in review['questions']})
+        self.assertNotIn('recipient', review)
+
+    def test_changed_payer_clears_previous_mapped_address_contact_and_key(self):
+        self.enable()
+        candidate = copy.deepcopy(self.upload()['candidate_intake'])
+        candidate.update(court_email=CAPTURE_RECIPIENT, court_email_key='capture-court')
+        apply_answer_to_intake(candidate, 'payment_entity', 'Example Court')
+        self.assertEqual(candidate['payment_entity'], 'Example Court')
+        self.assertNotIn(CAPTURE_COURT, candidate.get('addressee', ''))
+        for field in ('recipient_email', 'court_email', 'court_email_key'):
+            self.assertFalse(candidate.get(field), field)
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['intake']['payment_entity'], 'Example Court')
+        self.assertNotEqual(review.get('recipient'), CAPTURE_RECIPIENT)
 
     def test_manual_answer_resolves_unknown_photo_city_without_reapplying_default(self):
         self.enable()
