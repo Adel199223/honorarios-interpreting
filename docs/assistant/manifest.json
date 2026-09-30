@@ -11,6 +11,7 @@
   "plan_lifecycle": "docs/assistant/exec_plans/PLANS.md",
   "current_plan": "docs/assistant/exec_plans/active/2026-09-30_source_decision_quality.md",
   "workflow_acceptance": "docs/workflow-acceptance.md",
+  "source_quality": "docs/source-quality.md",
   "user_guide": "docs/user-guide.md",
   "historical_references": [
     "docs/web-app-roadmap.md",

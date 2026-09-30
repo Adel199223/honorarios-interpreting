@@ -32,6 +32,12 @@ The user is dissatisfied with extraction, review usability and request quality, 
 
 - Existing provider configuration reports gpt-5.4-mini; the app already uses Responses with strict structured output and store=False. Metadata access lists all three comparison candidates.
 - Provider-free probes exposed first-date selection, ISO-over-EU date selection, mismatched labour-court profile, header/service-city confusion, broad words/translation classification and unfamiliar PJ-host locality issues. These are concrete source-rule defects; current synthetic checks do not establish broad OCR accuracy.
+- All three requested candidates completed the same six fictional image-only cases with the corrected prompt: 18/18 critical-field checks passed, estimated aggregate token cost USD0.1584 before cache adjustments. The requested gpt-6.1-sol/high setting is retained; this small clean-image set does not establish model superiority. Recorded median times were 2.27/3.05/8.10 seconds; outliers reached 43 seconds.
+- Contextual rules, conservative AI/date merging, unknown locality handling, classification and trailing case punctuation were repaired. The independently labelled corpus now passes 39/39 cases with zero false-ready decisions or missing required questions; separate wrapped-date and procedural/place regressions extend the focused quality checks.
+- Initial integrated Full passed 225 tests/four isolated workflows. Subsequent actual browser review found wrapped OCR date labels, an invisible Edit field under source-review CSS, misleading unresolved date attention after explicit confirmation and an invalid conflict-answer example. Those were reproduced and repaired; final Full is still required after integration.
+- Actual sideways-photo recovery with gpt-6.1-sol/high found the critical fields; after wrapped-label repair it retains the performed date and asks only about its difference from EXIF capture date. Valid document confirmation, field correction focus, mobile width/keyboard navigation, PDF generation and manual handoff were observed. The one-page Portuguese PDF was rendered and manually inspected. No real Gmail call or local draft record was made.
+- A generated-PDF regression found missing physical host wording when PJ service_entity differed from service_place; the shared body clause now includes the host. New default email templates opt into the selected PDF signature through a token; literal/private/request-specific email bodies stay unchanged.
+- Final review found procedural date/context phrases mistaken for service places; seven durable reproductions and the parser fix pass. Explicit unknown-location evidence labels are being corrected before closing acceptance.
 
 ## Sources verified 2026-09-30
 
@@ -41,4 +47,4 @@ The user is dissatisfied with extraction, review usability and request quality, 
 - https://developers.openai.com/api/docs/guides/structured-outputs
 - https://developers.openai.com/api/docs/guides/evals
 
-Official Decisions API contract/access remains to be established. Community announcements are leads, not implementation authority.
+The [official DevDay recap](https://openai.com/index/devday-2026-recap/) confirms Decisions API was announced in limited preview. No public endpoint/schema or account preview access was established. Defer integration until those exist and a measured task benefits; this does not block the tested Responses improvements. See [source quality](../../../source-quality.md) for measured model results and verification sources.
