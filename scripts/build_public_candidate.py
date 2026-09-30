@@ -606,7 +606,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
             "transport destination",
             "one-way kilometers",
             "Is ${escapeHtml(label)} the service date?",
-            "No PDF, Gmail draft, or local record was created.",
+            "No PDF, Gmail draft, or local record was created by this review.",
             "Review draft text and create fee-request PDF",
             "Open the draft preview, check the Portuguese text, then use the existing guarded PDF button.",
             "data-open-review-drawer-focus-prepare",
@@ -1552,9 +1552,26 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
         prepare_body = app_js.split("async function prepareIntake", 1)[1].split("function renderPrepared", 1)[0]
 
-        preflight_index = prepare_body.index('requestJson("/api/prepare/preflight"')
-        prepare_index = prepare_body.index('requestJson("/api/prepare"')
+        snapshot_index = prepare_body.index('const requestIntake = cloneIntake(state.currentIntake)')
+        revision_index = prepare_body.index('const capturedRevision = beginPreparation()')
+        preflight_index = prepare_body.index('requestWorkflowJson("/api/prepare/preflight"')
+        binding_index = prepare_body.index('requestPayload.preflight_review = preflight.preflight_review')
+        prepare_index = prepare_body.index('requestWorkflowJson("/api/prepare"')
+        accepted_index = prepare_body.index('state.lastPrepared = data')
+        self.assertLess(snapshot_index, revision_index)
+        self.assertLess(revision_index, preflight_index)
         self.assertLess(preflight_index, prepare_index)
+        self.assertLess(preflight_index, binding_index)
+        self.assertLess(binding_index, prepare_index)
+        self.assertLess(prepare_index, accepted_index)
+        self.assertIn('intakes: [cloneIntake(requestIntake)]', prepare_body)
+        self.assertIn('const requestPayload = { intakes: [requestIntake], render_previews: true }', prepare_body)
+        self.assertEqual(prepare_body.count('}, { revision: capturedRevision })'), 2)
+        self.assertIn('if (!preflight) return null;', prepare_body[preflight_index:prepare_index])
+        self.assertIn('if (!data) return null;', prepare_body[prepare_index:accepted_index])
+        self.assertIn('if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;', prepare_body)
+        wrapper = app_js.split('function requestWorkflowJson', 1)[1].split('async function ', 1)[0]
+        self.assertIn('awaitWorkflowResponse(() => requestJson(url, options), captured', wrapper)
         self.assertIn("requestPayload.preflight_review = preflight.preflight_review", prepare_body)
         self.assertIn("preflightPayload.correction_reason = requestPayload.correction_reason", prepare_body)
         self.assertIn('packet_mode: false', prepare_body)

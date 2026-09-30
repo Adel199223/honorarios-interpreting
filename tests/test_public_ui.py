@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+import re
+import subprocess
 
 
 from scripts.local_app_smoke import run_smoke
@@ -148,7 +151,7 @@ class PublicUiTests(PublicCandidateSmokeTests):
             "transport destination",
             "one-way kilometers",
             "Is ${escapeHtml(label)} the service date?",
-            "No PDF, Gmail draft, or local record was created.",
+            "No PDF, Gmail draft, or local record was created by this review.",
             "Review draft text and create fee-request PDF",
             "Open the draft preview, check the Portuguese text, then use the existing guarded PDF button.",
             "data-open-review-drawer-focus-prepare",
@@ -550,12 +553,109 @@ class PublicUiTests(PublicCandidateSmokeTests):
         app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
         prepare_body = app_js.split("async function prepareIntake", 1)[1].split("function renderPrepared", 1)[0]
 
-        preflight_index = prepare_body.index('requestJson("/api/prepare/preflight"')
-        prepare_index = prepare_body.index('requestJson("/api/prepare"')
+        snapshot_index = prepare_body.index('const requestIntake = cloneIntake(state.currentIntake)')
+        revision_index = prepare_body.index('const capturedRevision = beginPreparation()')
+        preflight_index = prepare_body.index('requestWorkflowJson("/api/prepare/preflight"')
+        binding_index = prepare_body.index('requestPayload.preflight_review = preflight.preflight_review')
+        prepare_index = prepare_body.index('requestWorkflowJson("/api/prepare"')
+        accepted_index = prepare_body.index('state.lastPrepared = data')
+        self.assertLess(snapshot_index, revision_index)
+        self.assertLess(revision_index, preflight_index)
         self.assertLess(preflight_index, prepare_index)
+        self.assertLess(preflight_index, binding_index)
+        self.assertLess(binding_index, prepare_index)
+        self.assertLess(prepare_index, accepted_index)
+        self.assertIn('intakes: [cloneIntake(requestIntake)]', prepare_body)
+        self.assertIn('const requestPayload = { intakes: [requestIntake], render_previews: true }', prepare_body)
+        self.assertEqual(prepare_body.count('}, { revision: capturedRevision })'), 2)
+        self.assertIn('if (!preflight) return null;', prepare_body[preflight_index:prepare_index])
+        self.assertIn('if (!data) return null;', prepare_body[prepare_index:accepted_index])
+        self.assertIn('if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;', prepare_body)
+        wrapper = app_js.split('function requestWorkflowJson', 1)[1].split('async function ', 1)[0]
+        self.assertIn('awaitWorkflowResponse(() => requestJson(url, options), captured', wrapper)
         self.assertIn("requestPayload.preflight_review = preflight.preflight_review", prepare_body)
         self.assertIn("preflightPayload.correction_reason = requestPayload.correction_reason", prepare_body)
         self.assertIn('packet_mode: false', prepare_body)
+
+    def test_prepare_snapshot_survives_edits_and_late_responses_are_discarded(self):
+        root = Path(__file__).resolve().parents[1]
+        app_js = (root / 'honorarios_app/static/app.js').read_text(encoding='utf-8')
+        functions = []
+        for name, declaration in (('cloneIntake', 'function'), ('requestWorkflowJson', 'function'),
+                                  ('prepareIntake', 'async function')):
+            match = re.search(declaration + r' ' + name + r'\([^\n]*\) \{.*?\n\}', app_js, re.DOTALL)
+            self.assertIsNotNone(match, name)
+            functions.append(match.group(0))
+        module_url = (root / 'honorarios_app/static/review_guidance.js').as_uri()
+        script = 'import { awaitWorkflowResponse, isWorkflowResponseCurrent } from ' + json.dumps(module_url) + ';\n'
+        script += """
+let state, requests, rendered, transport;
+function reset() {
+  state = { currentIntake: { case_number: 'FICT-700', transport: { km_one_way: 12 } }, workflowRevision: 7, lastPrepared: null };
+  requests = []; rendered = [];
+}
+function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
+function mergeFormIntoCurrentIntake() {}
+function beginPreparation() { return state.workflowRevision; }
+function finishPreparationWait() {}
+async function buildIntakeFromProfile() { throw new Error('Unexpected profile construction'); }
+function requestJson(url, options) { requests.push({ url, payload: JSON.parse(options.body) }); return transport(url); }
+function renderNextSafeAction() {}
+function setStatus() {}
+function showAlert() {}
+function openReviewDrawer() {}
+function renderPrepared(data) { rendered.push(data); }
+async function loadReference() {}
+""" + '\n'.join(functions) + """
+const ready = { status: 'ready', preflight_review: { token: 'synthetic-reviewed-token' } };
+const prepared = { status: 'ready', items: [] };
+reset();
+const first = deferred();
+transport = url => url.endsWith('/preflight') ? first.promise : Promise.resolve(prepared);
+const preparing = prepareIntake();
+state.currentIntake.transport.km_one_way = 999;
+state.currentIntake.case_number = 'FICT-EDITED';
+first.resolve(ready);
+await preparing;
+const snapshot = { requests, current: state.currentIntake, preparedAccepted: state.lastPrepared === prepared, rendered: rendered.length };
+
+reset();
+const stalePreflight = deferred();
+transport = () => stalePreflight.promise;
+const beforeEdit = prepareIntake();
+state.workflowRevision += 1;
+stalePreflight.resolve(ready);
+const ignoredPreflight = await beforeEdit;
+const latePreflight = { result: ignoredPreflight, requests: requests.length, rendered: rendered.length, prepared: state.lastPrepared };
+
+reset();
+const stalePrepare = deferred();
+const enteredPrepare = deferred();
+transport = url => {
+  if (url.endsWith('/preflight')) return Promise.resolve(ready);
+  enteredPrepare.resolve(); return stalePrepare.promise;
+};
+const beforeSecondEdit = prepareIntake();
+await enteredPrepare.promise;
+state.workflowRevision += 1;
+stalePrepare.resolve(prepared);
+const ignoredPrepare = await beforeSecondEdit;
+const latePrepare = { result: ignoredPrepare, requests: requests.length, rendered: rendered.length, prepared: state.lastPrepared };
+console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
+"""
+        result = subprocess.run(['node', '--input-type=module', '-'], input=script, text=True,
+                                capture_output=True, timeout=20, check=True, cwd=root)
+        data = json.loads(result.stdout)
+        snapshot = data['snapshot']
+        self.assertEqual([item['url'] for item in snapshot['requests']], ['/api/prepare/preflight', '/api/prepare'])
+        for request in snapshot['requests']:
+            self.assertEqual(request['payload']['intakes'][0], {'case_number': 'FICT-700', 'transport': {'km_one_way': 12}})
+        self.assertEqual(snapshot['requests'][1]['payload']['preflight_review'], {'token': 'synthetic-reviewed-token'})
+        self.assertEqual(snapshot['current']['transport']['km_one_way'], 999)
+        self.assertTrue(snapshot['preparedAccepted'])
+        self.assertEqual(snapshot['rendered'], 1)
+        self.assertEqual(data['latePreflight'], {'result': None, 'requests': 1, 'rendered': 0, 'prepared': None})
+        self.assertEqual(data['latePrepare'], {'result': None, 'requests': 2, 'rendered': 0, 'prepared': None})
 
 
     def test_browser_js_routes_one_click_recording_through_strict_prepared_endpoint(self):
