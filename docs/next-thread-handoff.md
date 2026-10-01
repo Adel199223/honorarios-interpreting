@@ -1,6 +1,16 @@
 # Next Thread Handoff
 
-## Current source-photo email grouping — 2026-10-01
+## Current grouped-email live acceptance — 2026-10-01
+
+After the local grouping acceptance below, the user explicitly authorized one replacement draft and clarified that creation must go through the app's normal browser screens from photo upload onward. This bounded live acceptance is complete; the grouping scope remains unpublished. See the subsequent-acceptance section of the [source-email plan](assistant/exec_plans/completed/2026-10-01_source_email_groups.md).
+
+- Normal controls uploaded the supplied five-case photo and performed one fresh successful read with the existing saved connection/model. The app recovered all five references and applied the saved date/court/email defaults and single shared-trip owner. No source replay was used in this run.
+- **Prepare replacement email for this photo**, with a correction reason, prepared all five separate PDFs and one email. Every PDF was inspected through **PDF to inspect**; all five texts and rendered pixels matched the previously reviewed copies. The exact recipient, subject, body and attachment list were checked before ticking the handoff checklist and clicking **Create Gmail Draft**.
+- Exactly one actual Gmail create POST succeeded. The app recorded one active group and five child duplicate records, each with its own PDF/path/hash/claims; five earlier local drafts and their child records were superseded with history preserved. The other source and all unrelated records stayed unchanged. Earlier individual drafts remain in Gmail: no remote trash/delete or send action was taken.
+- The app's **Verify created draft** succeeded. A narrowly scoped read-only raw MIME check of the returned draft matched its recipient/subject/body and all five PDF bytes; it has `DRAFT` and no `SENT`. Independent local record/protected-file audit passed. Only the authorized history files and normal existing-connection token refresh changed protected files. Private identities, documents and receipts remain ignored and local.
+- This is acceptance of the reviewed five-case workflow, not a general production-accuracy claim. No application code/model/dependency change or GitHub publication was needed for this operational run. Sending remains manual in Gmail.
+
+## Historical local source-photo email grouping — 2026-10-01
 
 The [source-email plan](assistant/exec_plans/completed/2026-10-01_source_email_groups.md) starts at published main `114229e` after PR #61 merged. The new candidate is `codex/fee-source-emails-20261001`; this grouping scope is local and unpublished. User-authorized work is short-name normal-browser re-testing followed by one email per photo with separate request PDFs. Existing actual Gmail drafts are unchanged; sending/replacing those drafts and publication of this new scope remain separate.
 
