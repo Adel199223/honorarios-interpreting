@@ -45,6 +45,7 @@ const listenerSource=(id,event='click')=>{
 };
 ['#check-active-drafts','#create-gmail-api-draft','#record-draft','#record-parsed-prepared-draft','#prepare-source-email-replacement'].forEach(id=>{app+='\n'+listenerSource(id);});
 app+='\n'+listenerSource('#saved-court-email','change');
+app+='\n'+listenerSource('#preflight-batch-intakes');
 app+='\n'+listenerSource('#batch-email-grouping','change')+'\n'+listenerSource('#prepared-email-member','change');
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
@@ -480,6 +481,31 @@ a.renderPrepared(packet);const packetTarget=a.preparedRecordTarget().draft_paylo
 console.log(JSON.stringify({packetTarget,disabled,rejected,reset,cleared:a.preparedRecordTarget()===null,args:element('#prepared-email-target-args').textContent}));
 """)
         self.assertEqual(result,{'packetTarget':'/fictional/packet.json','disabled':True,'rejected':True,'reset':'/fictional/alpha.json','cleared':True,'args':''})
+
+    def test_batch_preflight_handler_keeps_ready_action_and_blockers_in_batch_workspace(self):
+        for status in ('ready', 'blocked'):
+            with self.subTest(status=status):
+                result=self.run_js("const status="+json.dumps(status)+";"+"""
+a.state.batchIntakes=photoRows();context.document.body.dataset.interpretationReviewDrawer='open';
+let focused='',batchVisible=false,scrolled=false;
+element('#prepare-batch-intakes').focus=()=>{focused='prepare'};
+element('#batch-preflight-result').focus=()=>{focused='result'};
+element('#batch-preflight-result').scrollIntoView=()=>{scrolled=true};
+element('#batch-queue-panel').classList.remove=name=>{if(name==='hidden')batchVisible=true};
+routeOverrides['/api/prepare/preflight']={status,message:status==='ready'?'All queued requests are ready.':'Fictional recipient needs review.',
+ preflight_review:status==='ready'?{token:'fictional-preflight'}:null,next_safe_action:{state:status==='ready'?'prepare_batch':'fix_blocker'},
+ blockers:status==='blocked'?[{message:'Fictional recipient needs review.'}]:[]};
+await element('#preflight-batch-intakes').listeners.click();
+console.log(JSON.stringify({focused,batchVisible,scrolled,drawer:context.document.body.dataset.interpretationReviewDrawer,
+ disabled:element('#prepare-batch-intakes').disabled,result:element('#batch-preflight-result').innerHTML,calls}));
+""")
+                self.assertEqual(result['drawer'],'closed')
+                self.assertTrue(result['batchVisible'])
+                self.assertTrue(result['scrolled'])
+                self.assertEqual(result['focused'],'prepare' if status=='ready' else 'result')
+                self.assertEqual(result['disabled'],status!='ready')
+                self.assertIn('All queued requests are ready.' if status=='ready' else 'Fictional recipient needs review.',result['result'])
+                self.assertEqual([call['url'] for call in result['calls']],['/api/prepare/preflight'])
 
     def test_source_grouping_is_signed_without_combining_individual_pdfs(self):
         result=self.run_js("""

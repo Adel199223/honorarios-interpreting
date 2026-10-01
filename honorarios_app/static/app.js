@@ -5259,7 +5259,7 @@ async function addCurrentIntakeToBatch() {
   setStatus("ready", `${intake.case_number || "Request"} added to the batch queue.`);
   showAlert("Batch queue updated. Prepare the package when all related requests are queued.", "recorded");
   try {
-    await preflightBatchIntakes({ openDrawer: false, showResultAlert: false });
+    await preflightBatchIntakes({ focusResult: false, showResultAlert: false });
   } catch (_error) {
     renderBatchPreflight();
   }
@@ -5332,7 +5332,7 @@ async function preflightBatchIntakes(options = {}) {
   if (sourceCasesNeedQueueRefresh()) {
     throw new Error("Resolve and add all current source cases to the queue before checking the batch. This keeps every case and edit in the prepared PDFs.");
   }
-  const openDrawerAfter = options.openDrawer !== false;
+  const focusResult = options.focusResult !== false;
   const showResultAlert = options.showResultAlert !== false;
   const packetMode = currentBatchPacketMode();
   const emailGrouping = currentBatchEmailGrouping(packetMode);
@@ -5354,11 +5354,21 @@ async function preflightBatchIntakes(options = {}) {
     if (data.status === "blocked") {
       showAlert(data.message || "Batch preflight blocked.", "blocked");
     } else {
-      showAlert("Batch preflight clear. Review once more before preparing artifacts.", "recorded");
+      showAlert("Batch preflight clear. Select Prepare batch package to create the queued PDFs.", "recorded");
     }
   }
-  if (openDrawerAfter) {
-    openReviewDrawer();
+  if (focusResult) {
+    closeReviewDrawer();
+    $("#batch-queue-panel").classList.remove("hidden");
+    $("#toggle-advanced-workflow").textContent = "Hide batch tools";
+    const result = $("#batch-preflight-result");
+    result.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (hasCurrentReadyBatchPreflight()) {
+      $("#prepare-batch-intakes").focus();
+    } else {
+      result.setAttribute("tabindex", "-1");
+      result.focus({ preventScroll: true });
+    }
   }
   return data;
 }
