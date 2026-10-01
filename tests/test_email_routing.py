@@ -5,11 +5,17 @@ import copy
 import json
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
-from honorarios_app.services import AppPaths, preflight_intakes, prepare_intakes, review_intake
+from honorarios_app.services import (
+    AppPaths, extract_candidate_fields, merge_ai_recovery_into_intake, preflight_intakes,
+    prepare_intakes, recover_source_upload, review_intake,
+)
 from scripts.build_email_draft import expected_email_for_payment_entity, resolve_recipient, validate_draft_payload
 from scripts.generate_pdf import IntakeError
 
@@ -188,6 +194,68 @@ class EmailRoutingWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(IntakeError, 'Recipient does not match the payment entity'):
             prepare_intakes([self.intake], self.paths)
         self.assert_no_artifacts()
+
+    def upload(self, visible_text, *, replay=None, selected_profile_contact=''):
+        defaults = {**copy.deepcopy(self.intake), 'payment_entity': 'Unmapped Fictional Court',
+                    'addressee': 'Unmapped Fictional Court'}
+        if selected_profile_contact:
+            defaults['recipient_email'] = selected_profile_contact
+        self.paths.service_profiles.write_text(json.dumps({'fictional-contactless': {'defaults': defaults}}), encoding='utf-8')
+        photo = BytesIO()
+        Image.new('RGB', (400, 600), 'white').save(photo, format='JPEG')
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=replay or {'status': 'disabled', 'fields': {}}):
+            return recover_source_upload(filename='fictional-contact-source.jpg', content_type='image/jpeg',
+                                         content=photo.getvalue(), source_kind='photo', profile_name='fictional-contactless',
+                                         visible_text=visible_text, ai_recovery_mode='off', paths=self.paths)
+
+    def test_actual_upload_with_ambiguous_footer_and_unknown_payer_waits_for_manual_contact(self):
+        text = 'Processo 730/26.0TSTXX. Serviço de interpretação realizado em 2026-01-15. Contactos: ' + LOCAL_EMAIL + ' e ' + OTHER_EMAIL
+        result = self.upload(text)
+        candidate = result['candidate_intake']
+        self.assertFalse(candidate.get('recipient_email'))
+        self.assertEqual(result['review']['status'], 'error')
+        self.assertIn('Multiple court emails', result['review']['message'])
+        self.assertEqual(preflight_intakes([candidate], self.paths)['status'], 'blocked')
+        self.assert_no_artifacts()
+        manual = {**candidate, 'recipient_email': OTHER_EMAIL}
+        self.assertEqual(review_intake(manual, self.paths)['status'], 'ready')
+        self.assertEqual(preflight_intakes([manual], self.paths)['items'][0]['recipient'], OTHER_EMAIL)
+        self.assertFalse(candidate.get('recipient_email'), 'Manual review must not mutate the uploaded evidence.')
+
+    def test_replayed_ai_cannot_choose_first_of_ambiguous_footer_contacts(self):
+        text = 'Contactos: ' + LOCAL_EMAIL + ' e ' + OTHER_EMAIL
+        replay = {'status': 'ok', 'raw_visible_text': text, 'fields': {'court_email': LOCAL_EMAIL}}
+        result = self.upload('', replay=replay)
+        self.assertFalse(result['candidate_intake'].get('recipient_email'))
+        self.assertEqual(result['review']['status'], 'error')
+        self.assertIn('Multiple court emails', result['review']['message'])
+        self.assert_no_artifacts()
+
+    def test_deterministic_and_recovered_contacts_are_checked_together_before_selection(self):
+        replay = {'status': 'ok', 'raw_visible_text': 'Outra secretaria: ' + OTHER_EMAIL,
+                  'fields': {'court_email': OTHER_EMAIL}}
+        result = self.upload('Contacto: ' + LOCAL_EMAIL, replay=replay)
+        self.assertFalse(result['candidate_intake'].get('recipient_email'))
+        self.assertEqual(result['review']['status'], 'error')
+        self.assertIn('Multiple court emails', result['review']['message'])
+        self.assert_no_artifacts()
+
+    def test_unique_repeated_source_contact_remains_usable(self):
+        fields = extract_candidate_fields('Contacto ' + LOCAL_EMAIL + '\n' + LOCAL_EMAIL.upper(), self.paths)
+        self.assertEqual(fields['recipient_email'], LOCAL_EMAIL)
+        result = self.upload('Contacto ' + LOCAL_EMAIL)
+        self.assertEqual(result['candidate_intake']['recipient_email'], LOCAL_EMAIL)
+        self.assertEqual(result['review']['status'], 'ready')
+
+    def test_saved_profile_and_existing_manual_contact_survive_ambiguous_recovery(self):
+        text = 'Contactos ' + LOCAL_EMAIL + ' ' + OTHER_EMAIL
+        replay = {'status': 'ok', 'raw_visible_text': text, 'fields': {'court_email': OTHER_EMAIL}}
+        result = self.upload(text, replay=replay, selected_profile_contact=LOCAL_EMAIL)
+        self.assertEqual(result['candidate_intake']['recipient_email'], LOCAL_EMAIL)
+        self.assertEqual(result['review']['status'], 'ready')
+        intake = {'recipient_email': REGIONAL_EMAIL, 'source_text': text}
+        merge_ai_recovery_into_intake(intake, replay)
+        self.assertEqual(intake['recipient_email'], REGIONAL_EMAIL)
 
 
 if __name__ == '__main__':

@@ -643,9 +643,9 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
         fields["service_date"] = service_date
         fields["service_date_source"] = "document_text"
 
-    email_match = EMAIL_RE.search(source_text)
-    if email_match:
-        fields["recipient_email"] = email_match.group(0).lower()
+    source_emails = {email.lower() for email in EMAIL_RE.findall(source_text)}
+    if len(source_emails) == 1:
+        fields["recipient_email"] = next(iter(source_emails))
 
     place_fields, _warning = _source_place_fields(source_text, paths)
     fields.update(place_fields)
@@ -1197,7 +1197,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         intake["source_document_timestamp"] = source_timestamp
 
     court_email = _first_ai_field(ai_recovery, "court_email", "recipient_email")
-    if court_email and _looks_like_email(court_email):
+    source_emails = {email.lower() for email in EMAIL_RE.findall(str(intake.get('source_text') or ''))}
+    if len(source_emails) <= 1 and court_email and _looks_like_email(court_email):
         raw_text = raw_visible_text.casefold()
         existing_email = str(intake.get("recipient_email") or "").strip()
         if not existing_email or court_email.casefold() in raw_text:
@@ -1469,6 +1470,7 @@ def build_partial_intake_from_profile(
     extracted_text: str,
     metadata: dict[str, Any],
     paths: AppPaths,
+    contact_text: str | None = None,
 ) -> dict[str, Any]:
     profiles = _load_available_service_profiles(paths)
     selected_profile = str(profile_name or "").strip()
@@ -1492,6 +1494,10 @@ def build_partial_intake_from_profile(
         intake["source_text"] = extracted_text.strip()
 
     fields = extract_candidate_fields(extracted_text, paths)
+    # Consider both independent text and recovered visible text before choosing
+    # a source contact. Saved profile contacts are retained when sources conflict.
+    if contact_text is not None and len({email.lower() for email in EMAIL_RE.findall(contact_text)}) > 1:
+        fields.pop('recipient_email', None)
     extracted_service_date = str(fields.get("service_date") or "").strip()
     transport_destination = fields.pop("transport_destination", "")
     km_one_way = fields.pop("km_one_way", "")
@@ -1600,6 +1606,7 @@ def recover_source_upload(
         extracted_text=extracted_text,
         metadata=metadata,
         paths=paths,
+        contact_text=combine_text_parts(extracted_text, str(ai_recovery.get('raw_visible_text') or '')),
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
     apply_photo_defaults(
