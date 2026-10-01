@@ -30,6 +30,12 @@ The optional missing-venue rule uses the court in the capture city only when the
 
 If the app identifies a translation request, duplicate or existing draft, read the warning before continuing. The ordinary PDF path stays blocked until the problem is resolved. Corrections use the explicit correction workflow, not a second normal request.
 
+## Choose what to claim
+
+In **What does this request claim?**, choose **Interpreting + travel** (the normal default), **Interpreting only**, or **Travel only**. Choose travel only when you are asking for the trip without asking for interpreting fees, such as when you attended but no work took place. The PDF describes attendance without claiming that interpreting was performed, and omits the interpreting-service tax statement. Choosing interpreting only removes the travel claim and the need to answer travel-distance questions.
+
+These choices describe what you request; they do not decide whether the court owes a particular amount. Check the Portuguese draft and PDF after changing them. A request cannot proceed with neither claim selected.
+
 ## 3. Answer the missing questions
 
 Type short answers using the displayed question numbers, then click **Apply answers**. For example, answer a date question with `1. 2026-09-30` only when that is the confirmed service date. In the review drawer, the same action is labeled **Apply numbered answers**.
@@ -50,7 +56,11 @@ Changing the source or request details makes the old prepared result stale. Revi
 
 The review shows **Cases found in this source** when one photo contains several case references. Use **Review case** beside each row to check its facts and questions. Your field edits and unfinished numbered answers stay with that case when you switch. An unclear case remains visible until you correct it.
 
-When every case is ready, click **Add all cases to batch**. The app checks each case again before adding the whole source. If one needs attention, it opens that case and leaves the queue unchanged. Adding cases only updates the queue; it does not create PDFs.
+The **Travel for these source cases** controls start with **One shared trip** when the source's cases have matching visit facts. **Case that claims the shared trip** chooses the one PDF that includes travel. The first case is selected initially; the other cases retain their interpreting claims. This fits several cases handled during one journey. Choosing a travel-bearing claim on another case moves the shared trip to it. Check the previous owner's claim choice, especially if it previously claimed travel only.
+
+Choose **Separate trips** only when separate journeys really occurred, or **No travel** when none of these requests should claim travel. Conflicting visit facts pause a shared trip until corrected; the app does not combine all requests merely because their city and day match. The shared-trip check also applies when explicitly grouped cases are prepared or recorded in separate batches. Re-uploading the same photo retains its shared-trip marker. A different or cropped photo and older history without that marker cannot establish whether travel was already claimed; check them yourself.
+
+When every case is ready, click **Add all cases to batch** (the button includes the case count). The app checks each case again before adding the whole source. If one needs attention, it opens that case and leaves the queue unchanged. Adding cases only updates the queue; it does not create PDFs.
 
 To include another photo, queue the current reviewed request or all its cases first, then use **Change source**. The previous queue stays in place while the next source starts with empty recovered text and capture metadata. Bulk adding a multi-case source selects separate fee-request PDFs. Check that every expected case appears in **Batch Queue**, leave **Packet mode** unchecked, run **Check batch preflight**, then use **Prepare batch package**. Review each generated PDF before any email step.
 

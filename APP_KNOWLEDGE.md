@@ -45,7 +45,15 @@ Daily use is supported from the source checkout. Installed-wheel validation uses
 
 Use the [integration readiness guide](docs/integration-readiness.md) for the boundary and remaining acceptance criteria, not older roadmap feature inventories.
 
-## Current multi-case photo acceptance
+## Current claim choices and shared trips
+
+The [completed claim-options plan](docs/assistant/exec_plans/completed/2026-10-01_claim_options_shared_trip.md) adds interpreting-and-travel (normal default), interpreting-only and travel-only in ordinary review. Optional `claim_interpreting` defaults true for older callers; `claim_transport` retains its existing behavior. The generator rejects neither selected. Travel-only states attendance, requests solely transport, omits the interpreting-service tax wording and narrows the default email; explicit conflicting custom email text pauses.
+
+Multi-case sources with consistent visit facts default to one explicit travel group and a selectable owner. Separately selected trips and no travel remain available. A stable source-hash group protects re-uploaded identical sources; altered photos and unmarked older history need manual checking. Services and direct CLI validate group facts/ownership before artifacts. Draft/packet/index metadata retains the binding and optional draft creation/local recording rechecks active recorded owners. Prepared artifacts alone do not reserve a trip. The case/date/period duplicate key and freshness contracts stay intact.
+
+Final candidate and saved Full each passed 378 synthetic tests plus four isolated workflows. Real-source browser replay prepared six corrected requests with one shared travel claim; every rendered page and a fictional travel-only example passed root and independent inspection. Validated public files and touched docs are applied to the saved app, while private settings/records and dependency pins remain unchanged. Earlier per-case travel results are superseded with originals retained. This scope is complete locally and unpublished; no additional provider/Gmail action or main-app integration occurred. See the [current handoff](docs/next-thread-handoff.md) for exact evidence and boundaries.
+
+## Historical multi-case photo acceptance
 
 The [completed six-case plan](docs/assistant/exec_plans/completed/2026-09-30_six_case_photo_acceptance.md) extends the photo rules with the user's third preference: when a physical service venue is absent, use the capture-city court. An explicitly named source station or other physical host wins over that venue default. Defaults remain editable, distinct from source evidence and separately enabled in ignored preferences.
 

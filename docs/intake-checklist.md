@@ -121,6 +121,10 @@ For photographed documents:
 
 ## Transport Fields
 
+The optional `claim_interpreting` boolean defaults to `true` for compatibility. Together with `claim_transport`, it expresses three choices: both claims, interpreting only, or travel only. At least one claim must be selected. Travel-only means the request claims attendance travel; it does not by itself prove whether interpreting did or did not occur. Its PDF must not assert performed interpreting or include the existing service-specific IVA/IRS sentence.
+
+For several requests from one explicitly shared visit, assign the same optional `travel_group_id` to those requests and select exactly one transport claimant when travel is requested. Other requests normally keep interpreting only. The selected date, physical venue, itinerary and personal profile must agree. Separate visits remain separate groups even if their date/city matches. Existing case/date/period duplicate protection remains in force, independently of claim choice.
+
 If transport is claimed, confirm:
 
 - `claim_transport`: `true`.

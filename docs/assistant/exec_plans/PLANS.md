@@ -16,6 +16,8 @@ The [photo defaults plan](completed/2026-09-30_photo_defaults.md) is complete lo
 
 ## Complete and preserve
 
+The [claim-options plan](completed/2026-10-01_claim_options_shared_trip.md) is complete locally, applied and validated in the saved app. It adds the three claim modes, explicit shared-trip ownership and persistence safeguards, with normal browser acceptance, six corrected real PDFs and a fictional travel-only PDF. Full passed 378 synthetic tests and four isolated workflows in candidate and saved checkout. It remains unpublished; earlier same-visit travel results are superseded, with originals retained.
+
 The [six-case photo plan](completed/2026-09-30_six_case_photo_acceptance.md) is complete locally, applied and validated in the saved app. It adds per-case review/queueing and the missing-venue court preference, with bounded real-source/provider, actual browser and six rendered-PDF acceptance. It remains unpublished; its comparison and examples do not establish production accuracy. Create a new active plan for further substantial work.
 
 Move a plan to `completed/` only when the authorized objective and required checks are complete. Preserve its implementation history and limitations, then update the current handoff and documentation map to point to the next work. Local completion and publication are separate statuses; a completed local plan can still describe an unpublished change.
