@@ -37,6 +37,14 @@ Optional direct Gmail creation calls only `users.drafts.create` after current PD
 
 LegalPDF reference import previews and plans are read-only. Existing apply/restore paths require their exact confirmation phrase and reason, create backups, and write only this app's permitted reference files. They do not write to LegalPDF Translate.
 
+## Email recipients and prepared selection
+
+The normal review includes a saved court email picker beside the editable recipient. Selecting a contact clears stale contact aliases and exception reasons, then runs the existing review without changing payer or service venue. Routing independently validates the paying court; exact local matches precede broader aliases and equally plausible conflicting contacts pause. Source recovery selects a contact automatically only when the combined visible source text contains one unique email. Explicit saved or manual choices remain valid subject to payer checks.
+
+After preparation, **Email draft for** selects one immutable prepared case and shows its recipient and PDF. Copy, manual handoff, optional Gmail creation, returned-ID recording and lifecycle checks use that same prepared item. Changing selection clears per-target handoff/IDs/checklist and discards late results without changing PDFs or the manifest. A packet remains one target with existing all-child checks. Routes, payload contracts, signed freshness and draft-only behavior remain intact.
+
+The [completed email-routing plan](docs/assistant/exec_plans/completed/2026-10-01_email_routing.md) records final candidate and saved Full: 422 public synthetic tests and four isolated workflows each. Ordinary browser controls verified six selected-case handoffs, a saved-email mismatch pause and restoration. Every generated page matches the previously accepted text and rendered pixels; six local RFC email previews contain exactly their accepted original PDF bytes. Public files and touched docs are applied, with only the approved local court-directory addition/aliases; other protected settings and original results remain unchanged. This scope is complete locally and unpublished. No new provider call, actual Gmail creation/send/recording or main-app integration occurred.
+
 ## Current preparation status
 
 The September preparation work adds a pinned development environment, locked setup/validation commands, package checks, and concise documentation front doors. The preparation-only publication branch passed 89 portable synthetic tests (including actual installed-wheel checks), four isolated workflow smokes, and hosted Windows/GitHub Full validation. The original saved checkout passed 91 tests because it also retains separate local interface work. Publication and application evidence are recorded in the [current handoff](docs/next-thread-handoff.md).

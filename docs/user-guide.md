@@ -30,6 +30,12 @@ The optional missing-venue rule uses the court in the capture city only when the
 
 If the app identifies a translation request, duplicate or existing draft, read the warning before continuing. The ordinary PDF path stays blocked until the problem is resolved. Corrections use the explicit correction workflow, not a second normal request.
 
+## Choose the court email
+
+The paying court determines the email recipient, even when the interpreting took place at a police station. **Edit recipient email** opens the recipient field and **Choose a saved court email**. Select the saved court contact or enter a verified email manually, then let the app review it. The choice changes the email recipient; it does not change the paying court or service place. If they do not match, correct the request or supply a deliberate exception through the existing review rules.
+
+A precise local-court match takes priority over a broad comarca contact. Conflicting equally plausible contacts pause instead of choosing whichever is listed first. Your selected recipient takes priority over unrelated footer contacts. Clearing a required photo recipient still pauses for an answer.
+
 ## Choose what to claim
 
 In **What does this request claim?**, choose **Interpreting + travel** (the normal default), **Interpreting only**, or **Travel only**. Choose travel only when you are asking for the trip without asking for interpreting fees, such as when you attended but no work took place. The PDF describes attendance without claiming that interpreting was performed, and omits the interpreting-service tax statement. Choosing interpreting only removes the travel claim and the need to answer travel-distance questions.
@@ -66,9 +72,13 @@ To include another photo, queue the current reviewed request or all its cases fi
 
 Editing a case after queueing pauses batch preparation until you review the correction and add the updated case or source to the queue. Do not rely on an earlier green batch check after changing details. **Reset workspace** clears the whole visible queue when you want to start over.
 
-## 5. Prepare the email draft handoff
+## 5. Review the email and create a draft
 
-In **Manual Draft Handoff**, click **Build handoff packet**, check its recipient/body/attachments, then use **Copy handoff prompt**. Building or copying the packet does not create or send an email.
+After PDF preparation, use **Email draft for** to choose the case you want to draft. Check that its court email, email text and attachment name belong to that case. A packet is one email target. Changing the selected case clears its old copied handoff, returned Gmail IDs and review acknowledgement; the PDFs remain available.
+
+When the app reports that Gmail is connected, review the selected PDF and exact email details, tick the **Gmail handoff checklist**, then use **Create Gmail Draft**. This creates an unsent draft with the selected attachment; review it in Gmail and send it yourself. An error is not confirmation that a draft was created.
+
+When Gmail is disconnected, or you prefer the fallback, open **Manual Draft Handoff** and click **Build handoff packet**. Check its recipient/body/attachments, then use **Copy handoff prompt**. Building or copying the packet does not create or send an email.
 
 Check the email signature as well as the PDF signature. New default email templates use the selected personal profile's signature. Existing custom email wording stays as configured; an optional `{{signature_name}}` token makes a template follow the selected profile.
 

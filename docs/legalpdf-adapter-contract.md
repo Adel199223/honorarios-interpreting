@@ -153,3 +153,5 @@ python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --sou
 The flag is intentionally explicit because the full sequence prepares artifacts and records synthetic draft IDs, and the caller still refuses to continue unless `/api/health` attests an isolated synthetic runtime. Use the isolated smoke launcher for normal verification.
 
 Use that endpoint as the machine-readable source for future LegalPDF integration planning.
+
+Recipient routing keeps the existing intake fields and route contracts. Explicit `recipient_email`, `court_email` or `court_email_key` selection is checked against independent paying-court evidence and takes priority over unrelated footer contacts. A unique payer-directory match may report `recipient_source=payment_entity_directory`; equally ranked conflicting mappings block. Missing or deliberately cleared photo-recipient fields do not regain a generic fallback. Selecting a prepared email in the browser still uses that item's existing payload path and current signed review fields; it does not add a new caller endpoint.

@@ -16,6 +16,8 @@ The [photo defaults plan](completed/2026-09-30_photo_defaults.md) is complete lo
 
 ## Complete and preserve
 
+The [email-routing plan](completed/2026-10-01_email_routing.md) is complete locally, applied and validated in the saved app. It adds normal saved-contact selection and immutable prepared-case email selection, repairs payer/contact ambiguity and delayed callback handling, and verifies six local email previews with their accepted PDFs. Candidate and saved Full each passed 422 public synthetic tests and four isolated workflows. Only the approved local court-email directory changes were applied; no actual Gmail/provider action occurred. This scope remains unpublished.
+
 The [claim-options plan](completed/2026-10-01_claim_options_shared_trip.md) is complete locally, applied and validated in the saved app. It adds the three claim modes, explicit shared-trip ownership and persistence safeguards, with normal browser acceptance, six corrected real PDFs and a fictional travel-only PDF. Full passed 378 synthetic tests and four isolated workflows in candidate and saved checkout. It remains unpublished; earlier same-visit travel results are superseded, with originals retained.
 
 The [six-case photo plan](completed/2026-09-30_six_case_photo_acceptance.md) is complete locally, applied and validated in the saved app. It adds per-case review/queueing and the missing-venue court preference, with bounded real-source/provider, actual browser and six rendered-PDF acceptance. It remains unpublished; its comparison and examples do not establish production accuracy. Create a new active plan for further substantial work.
