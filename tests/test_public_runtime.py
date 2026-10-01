@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
 from honorarios_app.web import create_app
-from scripts.local_app_smoke import _post_expected_blocked_json, run_smoke
+from scripts.local_app_smoke import _post_expected_blocked_json, _synthetic_notification_pdf, run_smoke
 
 
 from test_public_candidate_smoke import PublicCandidateSmokeTests
@@ -701,6 +701,19 @@ class PublicRuntimeTests(PublicCandidateSmokeTests):
         self.assertIn("source_upload_photo_attention", {check["name"] for check in report["checks"]})
         self.assertIn("source_upload_pdf_evidence", {check["name"] for check in report["checks"]})
         self.assertEqual([item[1]["source_kind"] for item in seen_uploads], ["photo", "notification_pdf"])
+        self.assertTrue(all(item[1]['ai_recovery'] == 'off' for item in seen_uploads))
+
+    def test_synthetic_pdf_smoke_fixture_recovers_without_rendering_or_provider(self):
+        client = self.make_client()
+        with patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=AssertionError('Clear smoke fixture must not need rendering')), \
+             patch('honorarios_app.ai_recovery.OpenAI', side_effect=AssertionError('Synthetic smoke cannot call a provider')) as provider:
+            response = client.post('/api/sources/upload',
+                files={'file': ('fictional-smoke.pdf', _synthetic_notification_pdf('999/26.0SMOKE', '2026-05-04'), 'application/pdf')},
+                data={'source_kind': 'notification_pdf', 'profile': 'example_interpreting', 'ai_recovery': 'off'})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['candidate_intake']['case_number'], '999/26.0SMOKE')
+        self.assertEqual(response.json()['candidate_intake']['service_date'], '2026-05-04')
+        provider.assert_not_called()
 
 
     def test_local_app_smoke_runner_supporting_attachment_contract_is_injectable(self):

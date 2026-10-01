@@ -401,7 +401,7 @@ def _synthetic_notification_pdf(case_number: str, service_date: str, *, recipien
     output = BytesIO()
     document = canvas.Canvas(output)
     document.drawString(72, 720, f"NUIPC {raw_case}")
-    document.drawString(72, 700, f"Data/Hora da diligência: {day}/{month}/{year} 10:00")
+    document.drawString(72, 700, f"Serviço de interpretação realizado em {day}/{month}/{year} às 10:00")
     document.drawString(72, 680, "Local: Posto Territorial de Serpa")
     document.drawString(72, 660, f"Email: {recipient_email}")
     document.save()
@@ -1061,6 +1061,7 @@ def _run_source_upload_checks(
 
     photo_payload = {
         "source_kind": "photo",
+        "ai_recovery": "off",
         "profile": profile,
         "visible_metadata_text": f"Filename: {service_date.replace('-', '')}_100000.jpg\nDate: {service_date}",
     }
@@ -1095,6 +1096,7 @@ def _run_source_upload_checks(
     pdf_bytes = _synthetic_notification_pdf(case_number, service_date)
     pdf_payload = {
         "source_kind": "notification_pdf",
+        "ai_recovery": "off",
         "profile": profile,
         "visible_metadata_text": "",
     }
