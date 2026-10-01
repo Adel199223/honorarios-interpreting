@@ -206,7 +206,8 @@ def apply_saved_court_label(intake: dict[str, Any], preferences: dict[str, Any],
     intake.update(payment_entity=label, addressee=str(record.get('addressee') or f'Exmo. Senhor Juiz de Direito\n{label}'))
     for field in ('service_entity', 'service_place'):
         value = intake.get(field)
-        if same_ordinary_court(value) and grounded(value):
+        court_prefix = str(value or '').split(',', 1)[0].strip()
+        if same_ordinary_court(court_prefix) and grounded(court_prefix):
             before[field] = value
             intake[field] = label
     if 'service_place' in before:

@@ -21,7 +21,7 @@ from honorarios_app.services import (
     AppPaths, apply_answer_to_intake, apply_numbered_answers, recover_source_upload,
     prepare_intakes, review_intake, review_intake_with_profile_evidence,
 )
-from scripts.generate_pdf import IntakeError, build_rendered_request
+from scripts.generate_pdf import IntakeError, build_rendered_request, generate_pdf
 
 
 CASE_NUMBER = '710/26.0TSTXX'
@@ -87,6 +87,38 @@ class SavedCourtLabelTests(unittest.TestCase):
         self.assertEqual(candidate['service_place'], 'Rua Example, 12')
         self.assertEqual(candidate['service_entity'], 'Posto da GNR de Capture City')
         self.assertEqual(candidate['service_place_phrase'], 'na Rua Example, 12')
+
+    def test_grounded_court_with_address_suffix_uses_short_venue_in_actual_pdf(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = json.loads((root / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
+        candidate.update(self.candidate())
+        venue = 'Juizo de Competencia Generica de Capture City, Rua Example, 12, Capture City'
+        candidate.update(service_place=venue, service_entity=venue, service_entity_type='court', entities_differ=False)
+        candidate['source_text'] += '\n' + venue
+        original_text = candidate['source_text']
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+        self.assertEqual(candidate['service_place'], CAPTURE_COURT)
+        self.assertEqual(candidate['court_label_preference']['original_fields']['service_place'], venue)
+        self.assertEqual(candidate['source_text'], original_text)
+        profile = json.loads((root / 'config/profile.example.json').read_text(encoding='utf-8'))
+        with tempfile.TemporaryDirectory(prefix='fee-court-label-pdf-') as temporary:
+            target = Path(temporary) / 'fictional.pdf'
+            generate_pdf(build_rendered_request(candidate, profile), target)
+            text = '\n'.join(page.extract_text() or '' for page in PdfReader(target).pages)
+        self.assertIn(CAPTURE_COURT, text)
+        self.assertNotIn('Juizo de Competencia', text)
+        self.assertNotIn('Rua Example', text)
+
+    def test_other_court_and_specialized_venue_with_addresses_are_preserved(self):
+        for venue in ('Tribunal do Trabalho de Capture City, Rua Example, 12',
+                      'Juizo de Competencia Generica de Other City, Rua Example, 12',
+                      'Posto da GNR de Capture City, Rua Example, 12'):
+            with self.subTest(venue=venue):
+                candidate = self.candidate()
+                candidate.update(service_place=venue, service_entity=venue)
+                candidate['source_text'] += '\n' + venue
+                apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+                self.assertEqual(candidate['service_place'], venue)
 
 
 class PhotoDefaultTests(unittest.TestCase):
