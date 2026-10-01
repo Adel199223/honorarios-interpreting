@@ -1,8 +1,16 @@
 # Next Thread Handoff
 
+## Current GitHub checkpoint — 2026-10-01
+
+The completed source-photo email grouping and subsequent browser-to-Gmail acceptance are published for review in [PR #62](https://github.com/Adel199223/honorarios-interpreting/pull/62), targeting `main` from `codex/fee-source-emails-20261001`. The user explicitly authorized PR, final-head checks, merge when green and safe cleanup. The PR's actual head, hosted Windows Full result and merge state are the publication authority; earlier local-only boundaries below remain historical. No implementation work remains for this bounded milestone.
+
+Local candidate and saved-app validation passed 475 public synthetic tests and four isolated workflows; actual five-attachment creation was completed through ordinary app controls and verified unsent. Private configuration, documents and live evidence stay local. Sending and main-app integration remain separate.
+
+Cleanup is limited to integrated or patch-equivalent, clean obsolete worktrees/branches after preserving needed ignored evidence and guardrails with exact hashes. Keep the saved application checkout and side worktrees containing unfinished changes; retain local archival references for retired history and keep the clean `main` integration checkout. Do not reset the saved app or discard its private overlays to make Git status clean.
+
 ## Current grouped-email live acceptance — 2026-10-01
 
-After the local grouping acceptance below, the user explicitly authorized one replacement draft and clarified that creation must go through the app's normal browser screens from photo upload onward. This bounded live acceptance is complete; the grouping scope remains unpublished. See the subsequent-acceptance section of the [source-email plan](assistant/exec_plans/completed/2026-10-01_source_email_groups.md).
+After the local grouping acceptance below, the user explicitly authorized one replacement draft and clarified that creation must go through the app's normal browser screens from photo upload onward. This bounded live acceptance is complete; subsequent publication is governed by the GitHub checkpoint above. See the subsequent-acceptance section of the [source-email plan](assistant/exec_plans/completed/2026-10-01_source_email_groups.md).
 
 - Normal controls uploaded the supplied five-case photo and performed one fresh successful read with the existing saved connection/model. The app recovered all five references and applied the saved date/court/email defaults and single shared-trip owner. No source replay was used in this run.
 - **Prepare replacement email for this photo**, with a correction reason, prepared all five separate PDFs and one email. Every PDF was inspected through **PDF to inspect**; all five texts and rendered pixels matched the previously reviewed copies. The exact recipient, subject, body and attachment list were checked before ticking the handoff checklist and clicking **Create Gmail Draft**.
