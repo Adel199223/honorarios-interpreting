@@ -14,6 +14,7 @@ LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpret
 | Domain/CLI helpers | `scripts/`: authoritative PDF generation, classification, dates/questions, duplicate identity, recipient validation, packet preparation and local draft recording. |
 | Runtime isolation | `honorarios_app/runtime.py`: separates config/data/output paths and initializes disposable synthetic fixtures for checks. |
 | Optional providers | AI recovery, Google Photos and Gmail helpers: local configuration, secret-free status, guarded provider operations. |
+| Durable local state | `gmail_attempts.py` reserves Gmail creation before the provider call; `scripts/state_store.py` supplies atomic JSON replacement and local process locks. Pending attempts remain recoverable from Recent Work after restart. |
 | Future caller | `scripts/legalpdf_adapter_caller.py` and `/api/integration/adapter-contract`: versioned endpoint sequence and caller validation. |
 
 The browser and CLI share the domain rules. The services facade retains existing evidence exports so extraction does not change routes, payloads, dates, duplicate checks, recipients or freshness binding. Packaging must include the shared helpers, templates and static assets; an installed import alone is insufficient proof that the workflow works.
@@ -36,6 +37,12 @@ Source email grouping keeps individual PDF `items` and adds frozen `email_groups
 The normal sequence is source intake -> review -> numbered answers -> non-writing preflight -> PDF preparation and preview -> Manual Draft Handoff -> local recording of returned draft IDs. Missing Gmail OAuth does not block the manual handoff workflow.
 
 Optional direct Gmail creation calls only `users.drafts.create` after current PDF/payload review, duplicate checks and acknowledgement. Verification calls only `users.drafts.get`. The app does not send email or offer mailbox search/trash/delete operations. The user reviews and sends drafts manually.
+
+Draft creation now reserves each underlying case/date/period in an ignored local attempt journal before contacting Gmail. Lost responses block another create across concurrent requests, re-preparation and restart. Known returned IDs survive local-recording failures; recovery validates the original payload and attachment hashes and records locally without creating another draft. Uncertain attempts require explicit reconciliation. Original approved correction targets stay distinct from later conflicting history. The journal is private operational state and is intentionally preserved by existing reference backup/restore; current backup export does not include it. Preserve it separately for machine moves until a reviewed backup design can safely merge newer pending attempts.
+
+Prepared files use distinct versioned names. Personal-profile saves replace complete files atomically; an unreadable existing profile store stops instead of silently falling back and discarding secondary profiles. Selected IVA/IRS text controls the PDF. Capture-date extraction reads the original nested EXIF metadata and does not mistake modification time for capture time. Source references with fragmented suffixes remain unresolved. Exact destination matches take precedence over broader names, and deliberate field clears survive profile defaults.
+
+The local HTTP boundary accepts loopback Hosts and same-origin browser writes. Ordinary no-Origin CLI callers and existing OAuth GET callbacks remain supported; this is a local app, not an authenticated remotely hosted service.
 
 LegalPDF reference import previews and plans are read-only. Existing apply/restore paths require their exact confirmation phrase and reason, create backups, and write only this app's permitted reference files. They do not write to LegalPDF Translate.
 

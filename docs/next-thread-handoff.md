@@ -1,6 +1,17 @@
 # Next Thread Handoff
 
-## Current GitHub checkpoint — 2026-10-01
+## Current whole-app readiness audit — 2026-10-01
+
+The [readiness audit](assistant/exec_plans/completed/2026-10-01_app_readiness_audit.md) is complete locally and applied to the saved app. It starts from published main `668abdb` after [PR #62](https://github.com/Adel199223/honorarios-interpreting/pull/62) merged with passing final-head and main checks. The new audit branch is `codex/fee-app-readiness-audit-20261001`; these newer fixes are unpublished. The next useful step is the user's own trial. Do not repeat earlier live Gmail actions or retire preserved unfinished side work merely because this audit is complete.
+
+- Corrected nested photo capture dates, fragmented case references, exact distance selection, prepared-file overwrites, selected tax wording and unsupported AI-only recipient promotion.
+- Corrected delayed attachment/manual results, duplicate source reads, stale errors, deliberate clears and invalid manual-profile fallback. Batch preflight now leaves the batch action visible; the Gmail review checkbox precedes creation and connected setup is collapsed.
+- Durable local Gmail attempts protect timeout, concurrency, partial recording, restart and re-preparation. Recent Work supports local-only recovery and explicit uncertain-outcome reconciliation. Independent review rechecked correction scope, cross-workspace IDs and original artifact bindings. Atomic profile saves preserve complete data; unreadable existing stores stop rather than silently lose other profiles. Local browser Host/Origin checks reject unrelated-site writes.
+- Final candidate and saved-app Full each passed **529 public synthetic tests and four isolated workflows**, including installed-wheel/environment/docs/JavaScript checks. Root used ordinary browser controls for five cases, one shared trip, five PDFs in one email, an injected recording interruption, actual restart, recovery and fake verification. Every PDF page was inspected. Partial-history and uncertain no-draft recovery also passed; the user assisted with the IAB native confirmation after automation stalled.
+- All **84 protected settings, history and accepted-document entries**, saved branch and saved commit are unchanged. Exact public beforeimages and local audit report/screenshots/receipts stay ignored. The saved checkout retains its existing public overlays and unrelated local work. No new paid source read, real Gmail operation, email send, model/dependency change or main-app integration occurred.
+- Limits: synthetic reading replay does not establish OCR accuracy on all future photos. Missing capture-city evidence needs input; GPS-only lookup remains absent. Mixed translation/interpreting notices retain the existing set-aside policy. Preserve the ignored Gmail attempt journal separately during machine moves; current backup export omits it and ordinary restore preserves it. Further UI simplification is useful but not a blocker for the tested workflow.
+
+## Historical GitHub checkpoint before merge — 2026-10-01
 
 The completed source-photo email grouping and subsequent browser-to-Gmail acceptance are published for review in [PR #62](https://github.com/Adel199223/honorarios-interpreting/pull/62), targeting `main` from `codex/fee-source-emails-20261001`. The user explicitly authorized PR, final-head checks, merge when green and safe cleanup. The PR's actual head, hosted Windows Full result and merge state are the publication authority; earlier local-only boundaries below remain historical. No implementation work remains for this bounded milestone.
 
