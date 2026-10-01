@@ -3029,6 +3029,12 @@ function renderGmailApiResult(data, kind = "") {
   const confirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
   const status = confirmation.status || data.status || kind || "info";
   const chipKind = statusChipClass(status === "created" ? "ready" : status);
+  const creationConfirmed = status === "created" && Boolean(confirmation.draft_id);
+  const outcomeText = creationConfirmed
+    ? "Created as a Gmail draft only. Review and send manually in Gmail."
+    : ["blocked", "error"].includes(status)
+    ? "No Gmail draft creation was confirmed. Check Gmail before retrying if the request may have reached it."
+    : "This message does not confirm that a Gmail draft was created.";
   const duplicates = (
     confirmation.duplicate_records_created
     || data.duplicate_keys
@@ -3046,7 +3052,7 @@ function renderGmailApiResult(data, kind = "") {
     <div class="result-header compact-result-header">
       <div>
         <strong>${escapeHtml(data.message || status.replaceAll("_", " "))}</strong>
-        <p>Created as a Gmail draft only. Review and send manually in Gmail.</p>
+        <p>${escapeHtml(outcomeText)}</p>
       </div>
       <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>

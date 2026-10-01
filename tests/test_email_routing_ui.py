@@ -44,7 +44,7 @@ const listenerSource=(id,event='click')=>{
 app+='\n'+listenerSource('#saved-court-email','change');
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
-app+='\nloadReference=async()=>{referenceLoads+=1};this.api={state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,preparedRecordTarget,preparedTargetIntake,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow};';
+app+='\nloadReference=async()=>{referenceLoads+=1};this.api={state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,preparedRecordTarget,preparedTargetIntake,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow};';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
@@ -235,7 +235,23 @@ console.log(JSON.stringify({status:element('#status-pill').textContent,panel:ele
 """)
         self.assertEqual(result['status'],'blocked')
         self.assertIn('Selected request is already drafted',result['panel'])
+        self.assertIn('No Gmail draft creation was confirmed',result['panel'])
+        self.assertNotIn('Created as a Gmail draft only',result['panel'])
         self.assertEqual(result['alert'],'Selected request is already drafted')
+
+    def test_gmail_result_confirms_creation_only_after_created_response_with_draft_id(self):
+        result=self.run_js("""
+const cases=[{status:'blocked',message:'Google OAuth token exchange failed: invalid_grant - Bad Request'}, {status:'error',message:'Creation response could not be read'}, {status:'info',message:'Creating Gmail draft...'}, {status:'created'}, {status:'created',confirmation:{draft_id:'fictional-draft',message_id:'fictional-message'}}];
+const panels=cases.map(data=>{a.renderGmailApiResult(data);return element('#gmail-api-result').innerHTML;});console.log(JSON.stringify({panels,calls:calls.length}));
+""")
+        for panel in result['panels'][:4]:
+            self.assertNotIn('Created as a Gmail draft only',panel)
+        self.assertIn('invalid_grant',result['panels'][0])
+        self.assertIn('No Gmail draft creation was confirmed',result['panels'][0])
+        self.assertIn('if the request may have reached it',result['panels'][1])
+        self.assertIn('Created as a Gmail draft only',result['panels'][4])
+        self.assertIn('fictional-draft',result['panels'][4])
+        self.assertEqual(result['calls'],0)
 
     def test_record_clicks_report_prior_http_failure_without_blocking_new_target(self):
         for control,route in [('#record-draft','/api/drafts/status'),('#record-parsed-prepared-draft','/api/drafts/record')]:
