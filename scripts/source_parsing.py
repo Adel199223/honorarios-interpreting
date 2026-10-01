@@ -39,7 +39,8 @@ DOCUMENT_DATE_RE = re.compile(
 INTERPRETING_CONTEXT_RE = re.compile(r"\b(?:interprete|interpretacao|interpreting)\b")
 CANCELLED_DATE_RE = re.compile(
     r"\b(?:cancelad[oa]|anulad[oa]|adiad[oa]|suspens[oa]|sem efeito|"
-    r"nao (?:se )?(?:realizou|realizad[oa]|ocorreu|decorreu|compareceu))\b"
+    r"nao\s+(?:(?:se|foi|sera)\s+)?(?:realizou|realizad[oa]|ocorreu|decorreu|compareceu)|"
+    r"nao\s+(?:deve|devem|devera|deverao)\s+comparecer|dispensad[oa]s?\s+de\s+comparecer)\b"
 )
 OTHER_ATTENDEE_RE = re.compile(
     r"\b(?:arguid[oa]s?|testemunhas?|ofendid[oa]s?|assistentes?|demandad[oa]s?)\s+"

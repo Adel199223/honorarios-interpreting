@@ -1339,13 +1339,17 @@ def image_metadata_from_bytes(content: bytes) -> dict[str, Any]:
 MAX_PDF_TEXT_PAGES = 8
 
 
-def _pdf_text_and_page_count(content: bytes) -> tuple[str, int]:
+def _pdf_text_and_page_count(content: bytes) -> tuple[str, int, list[int]]:
     try:
         reader = PdfReader(BytesIO(content))
         pages = []
         for page in reader.pages[:MAX_PDF_TEXT_PAGES]:
             pages.append(page.extract_text() or "")
-        return "\n".join(pages).strip(), len(reader.pages)
+        # A readable first page cannot establish that a later scanned page was
+        # read. Page numbers/headers alone also do not constitute useful text.
+        unread_pages = [number for number, text in enumerate(pages, start=1)
+                        if len(re.sub(r"\s+", "", text)) < 20]
+        return "\n".join(pages).strip(), len(reader.pages), unread_pages
     except Exception as exc:  # pypdf raises several parser-specific exceptions.
         raise IntakeError("Uploaded notification PDF could not be read.") from exc
 
@@ -1636,8 +1640,9 @@ def recover_source_upload(
     extracted_text = ""
     metadata: dict[str, Any] = {}
     if source_kind == "notification_pdf":
-        extracted_text, page_count = _pdf_text_and_page_count(content)
-        metadata['pdf_page_count'] = page_count
+        extracted_text, page_count, unread_pages = _pdf_text_and_page_count(content)
+        metadata["pdf_page_count"] = page_count
+        metadata["pdf_pages_without_useful_text"] = unread_pages
         if page_count > MAX_PDF_TEXT_PAGES:
             raise IntakeError(
                 f"This notification has {page_count} pages, but this upload can review only the first {MAX_PDF_TEXT_PAGES} text pages. "
@@ -1653,7 +1658,8 @@ def recover_source_upload(
         metadata["visible_metadata_date"] = visible_metadata_date
 
     rendered_page_paths: list[Path] = []
-    if source_kind == "notification_pdf" and text_is_weak_for_pdf_ocr(extracted_text):
+    unread_pdf_pages = metadata.get("pdf_pages_without_useful_text") or []
+    if source_kind == "notification_pdf" and (unread_pdf_pages or text_is_weak_for_pdf_ocr(extracted_text)):
         if metadata['pdf_page_count'] > MAX_PDF_OCR_PAGES:
             raise IntakeError(
                 f"This notification has {metadata['pdf_page_count']} pages and needs image review, which covers only the first {MAX_PDF_OCR_PAGES} pages. "
@@ -1674,6 +1680,10 @@ def recover_source_upload(
             )
         if render_warnings:
             metadata.setdefault("warnings", []).extend(render_warnings)
+        if unread_pdf_pages and len(rendered_page_paths) != metadata["pdf_page_count"]:
+            raise IntakeError(
+                "This PDF contains pages without readable text, and not every page could be rendered for image review. "
+                "Upload a readable PDF, or enter the complete reviewed source text using manual intake. No request was prepared.")
 
     deterministic_fields = extract_candidate_fields(extracted_text, paths, source_kind=source_kind)
     ai_recovery = recover_source_with_openai(
@@ -1687,6 +1697,11 @@ def recover_source_upload(
         source_metadata=metadata,
         rendered_page_images=[str(path.resolve()) for path in rendered_page_paths],
     )
+    if unread_pdf_pages and (ai_recovery.get("status") != "ok" or not str(ai_recovery.get("raw_visible_text") or "").strip()):
+        raise IntakeError(
+            "This PDF contains pages without readable text, and AI image reading did not complete. "
+            "Enable AI reading and retry, upload a readable PDF, or enter the complete reviewed source text using manual intake. "
+            "No request was prepared.")
     profile_decision = choose_service_profile(
         requested_profile=profile_name,
         extracted_text=extracted_text,

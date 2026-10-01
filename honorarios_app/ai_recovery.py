@@ -187,7 +187,7 @@ def text_is_weak_for_pdf_ocr(text: str) -> bool:
     return not (has_case and evidence.candidates) or evidence.needs_confirmation
 
 
-def should_attempt_ai_recovery(source_kind: str, mode: str, extracted_text: str) -> bool:
+def should_attempt_ai_recovery(source_kind: str, mode: str, extracted_text: str, *, unread_pdf_pages: bool = False) -> bool:
     normalized = (mode or "auto").strip().lower()
     if normalized in {"off", "disabled", "false", "0", "no"}:
         return False
@@ -196,7 +196,7 @@ def should_attempt_ai_recovery(source_kind: str, mode: str, extracted_text: str)
     if source_kind == "photo":
         return True
     if source_kind == "notification_pdf":
-        return text_is_weak_for_pdf_ocr(extracted_text)
+        return unread_pdf_pages or text_is_weak_for_pdf_ocr(extracted_text)
     return False
 
 
@@ -428,7 +428,8 @@ def recover_source_with_openai(
     rendered_page_images: list[str] | None = None,
 ) -> dict[str, Any]:
     config = resolve_openai_config(config_path)
-    if not should_attempt_ai_recovery(source_kind, mode, deterministic_text):
+    if not should_attempt_ai_recovery(source_kind, mode, deterministic_text,
+                                     unread_pdf_pages=bool((source_metadata or {}).get("pdf_pages_without_useful_text"))):
         return {
             "status": "skipped",
             "attempted": False,

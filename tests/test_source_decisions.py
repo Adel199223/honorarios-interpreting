@@ -114,7 +114,9 @@ class NotificationDateTests(unittest.TestCase):
 
     def test_cancelled_or_negated_interpreting_dates_are_not_selected(self):
         for clause in ('Audiência cancelada', 'Audiência sem efeito', 'Audiência adiada',
-                       'A audiência não se realizou'):
+                       'A audiência não se realizou', 'A audiência não foi realizada',
+                       'O intérprete não deve comparecer', 'O intérprete não deverá comparecer',
+                       'O intérprete foi dispensado de comparecer'):
             with self.subTest(clause=clause):
                 evidence = self.evidence(f'Intérprete: Example Person.\n{clause} em 24-09-2026.\nData: 16-09-2026.')
                 self.assertFalse(evidence.value)

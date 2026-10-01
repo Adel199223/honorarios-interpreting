@@ -351,12 +351,12 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertIn('Do not use the issue date, signing/closing date, a future appointment', photo_prompt)
 
     def test_notification_beyond_read_coverage_stops_before_ocr_or_preparation(self):
-        for count, scanned, limit in ((9, False, 8), (4, True, 3)):
+        for count, scanned, limit in ((9, False, 8), (4, True, 3), (4, 'last', 3)):
             with self.subTest(page_count=count, scanned=scanned):
                 data = BytesIO()
                 document = canvas.Canvas(data)
                 for page_number in range(count):
-                    if scanned:
+                    if scanned is True or (scanned == 'last' and page_number == count - 1):
                         image = Image.new('RGB', (600, 850), 'white')
                         ImageDraw.Draw(image).text((40, 50), f'Fictional scanned page {page_number + 1}', fill='black')
                         document.drawImage(ImageReader(image), 0, 0, width=595, height=842)
@@ -388,6 +388,60 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['candidate_intake']['service_date'], '2026-09-24')
         self.assertEqual(result['source']['metadata']['pdf_page_count'], 8)
         self.assertEqual(provider.call_args.kwargs['rendered_page_images'], [])
+
+    @staticmethod
+    def hybrid_notification():
+        first = (f'Processo {CASE_NUMBER}\nNomeado interprete, deve comparecer em 24-09-2026.\n'
+                 'Tribunal de Example City. Fictional notification for a personally attended interpreting service.')
+        second = 'Interprete: Example Person. Nova audiencia designada para 25-09-2026.'
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        for index, line in enumerate(first.splitlines()):
+            document.drawString(40, 790 - index * 20, line)
+        document.showPage()
+        raster = Image.new('RGB', (600, 850), 'white')
+        ImageDraw.Draw(raster).multiline_text((40, 50), second, fill='black')
+        document.drawImage(ImageReader(raster), 0, 0, width=595, height=842)
+        document.showPage()
+        document.save()
+        return data.getvalue(), first, second
+
+    def test_hybrid_notification_reads_scanned_page_even_when_first_page_is_clear(self):
+        content, first, second = self.hybrid_notification()
+        self.assertFalse(should_attempt_ai_recovery('notification_pdf', 'auto', first))
+        recovery = {'status': 'ok', 'attempted': True, 'fields': {'service_date': '2026-09-24'},
+                    'raw_visible_text': first + '\n' + second, 'warnings': [], 'translation_indicators': []}
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
+            result = recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
+                content=content, source_kind='notification_pdf', paths=self.paths)
+        arguments = provider.call_args.kwargs
+        self.assertEqual(arguments['source_metadata']['pdf_pages_without_useful_text'], [2])
+        self.assertEqual(len(arguments['rendered_page_images']), 2)
+        self.assertEqual(result['review']['status'], 'needs_info')
+        self.assertFalse(result['candidate_intake'].get('service_date'))
+        self.assertIn('service_date', self.question_fields(result))
+
+    def test_hybrid_notification_cannot_prepare_from_only_readable_first_page_if_ai_fails(self):
+        content, _first, _second = self.hybrid_notification()
+        for status in ('skipped', 'unconfigured', 'unavailable', 'failed', 'ok'):
+            with self.subTest(status=status):
+                with patch('honorarios_app.services.recover_source_with_openai', return_value={
+                        'status': status, 'raw_visible_text': '', 'fields': {}}):
+                    with self.assertRaisesRegex(IntakeError, 'AI image reading did not complete'):
+                        recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
+                            content=content, source_kind='notification_pdf', paths=self.paths)
+                for directory in (self.paths.output_dir, self.paths.intake_output_dir, self.paths.manifest_dir):
+                    self.assertEqual(list(directory.glob('*')), [])
+
+    def test_hybrid_notification_requires_every_page_to_render_before_provider_call(self):
+        content, _first, _second = self.hybrid_notification()
+        with patch('honorarios_app.services.render_pdf_pages_for_source', return_value=([
+                self.root / 'fictional-page-1.png'], ['Fictional partial renderer failure.'])), \
+             patch('honorarios_app.services.recover_source_with_openai') as provider:
+            with self.assertRaisesRegex(IntakeError, 'not every page could be rendered'):
+                recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
+                    content=content, source_kind='notification_pdf', paths=self.paths)
+        provider.assert_not_called()
 
     def test_capture_city_selects_its_court_instead_of_district_or_service_city(self):
         self.enable(mappings={

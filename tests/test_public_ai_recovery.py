@@ -94,6 +94,31 @@ class AIRecoveryTests(unittest.TestCase):
             source + 'Serviço realizado em 2026-09-26. Documento emitido em 2026-09-30.'))
         self.assertFalse(ai.should_attempt_ai_recovery('notification_pdf', 'off', source))
 
+    def test_unread_pdf_pages_force_auto_recovery_without_overriding_off(self):
+        text = ('Processo 710/26.0TSTXX. Nomeado interprete, deve comparecer em 24-09-2026. '
+                'Tribunal de Example City. Fictional interpreting notification.')
+        calls = []
+
+        class Provider:
+            def __init__(self, **_options):
+                self.responses = self
+
+            def create(self, **request):
+                calls.append(request)
+                return SimpleNamespace(status='completed', output_text=json.dumps({
+                    'raw_visible_text': text + '\nSecond scanned page: another appointment on 25-09-2026.',
+                    'fields': {}, 'warnings': [], 'translation_indicators': []}))
+
+        self.assertFalse(ai.should_attempt_ai_recovery('notification_pdf', 'auto', text))
+        with patch.object(ai, 'OpenAI', Provider):
+            for mode in ('auto', 'off'):
+                result = ai.recover_source_with_openai(filename='fictional-hybrid.pdf', content_type='application/pdf',
+                    content=b'fictional-pdf', source_kind='notification_pdf', config_path=self.config,
+                    deterministic_text=text, mode=mode,
+                    source_metadata={'pdf_page_count': 2, 'pdf_pages_without_useful_text': [2]})
+                self.assertEqual(result['status'], 'ok' if mode == 'auto' else 'skipped')
+        self.assertEqual(len(calls), 1)
+
     def test_provider_and_client_creation_errors_never_echo_sensitive_messages(self):
         class Provider:
             def __init__(self, **_options):
