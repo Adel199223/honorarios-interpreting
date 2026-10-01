@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -19,10 +20,12 @@ try:
     from scripts.entity_rules import build_service_place_clause, has_pj_host_building, normalize_text, resolve_entities, source_mentions_pj_context
     from scripts.request_identity import normalize_case_number, normalize_period_label
     from scripts.source_classification import detect_translation_source, format_translation_rejection
+    from scripts.claim_options import ClaimError, validate_claims
 except ModuleNotFoundError:
     from entity_rules import build_service_place_clause, has_pj_host_building, normalize_text, resolve_entities, source_mentions_pj_context
     from request_identity import normalize_case_number, normalize_period_label
     from source_classification import detect_translation_source, format_translation_rejection
+    from claim_options import ClaimError, validate_claims
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -277,6 +280,8 @@ def build_transport_paragraph(intake: dict[str, Any], profile: dict[str, Any]) -
         km = float(km_one_way)
     except (TypeError, ValueError) as exc:
         raise IntakeError("transport.km_one_way must be a number") from exc
+    if not math.isfinite(km) or km <= 0:
+        raise IntakeError("transport.km_one_way must be a positive finite number")
 
     km_text = f"{km:g}"
     if round_trip_phrase == "cada_sentido":
@@ -284,13 +289,18 @@ def build_transport_paragraph(intake: dict[str, Any], profile: dict[str, Any]) -
     else:
         distance_text = f"{km_text} km para a ida e {km_text} km para a volta"
 
+    lead = "Mais requer" if intake.get('claim_interpreting', True) else "Requer"
     return (
-        "Mais requer o pagamento das despesas de transporte entre "
+        f"{lead} o pagamento das despesas de transporte entre "
         f"{origin} e {destination}, tendo percorrido {distance_text}."
     )
 
 
 def build_rendered_request(intake: dict[str, Any], profile: dict[str, Any]) -> RenderedRequest:
+    try:
+        interpreting, _transport = validate_claims(intake)
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
     translation_matches = detect_translation_source(intake)
     if translation_matches:
         raise IntakeError(format_translation_rejection(translation_matches))
@@ -325,14 +335,24 @@ def build_rendered_request(intake: dict[str, Any], profile: dict[str, Any]) -> R
     else:
         raise IntakeError("Missing required field: closing_date")
 
-    service_place_clause = build_service_place_clause(intake, service_entity)
-    service_period_clause = build_service_period_clause(intake)
-    service_paragraph = (
-        "Venho, por este meio, requerer o pagamento dos honorários devidos, "
-        "em virtude de ter sido nomeado intérprete no âmbito do processo acima "
-        f"identificado, no dia {format_numeric_date(service_date)}{service_period_clause}, "
-        f"{service_place_clause}."
-    )
+    if interpreting:
+        service_place_clause = build_service_place_clause(intake, service_entity)
+        service_period_clause = build_service_period_clause(intake)
+        service_paragraph = (
+            "Venho, por este meio, requerer o pagamento dos honorários devidos, "
+            "em virtude de ter sido nomeado intérprete no âmbito do processo acima "
+            f"identificado, no dia {format_numeric_date(service_date)}{service_period_clause}, "
+            f"{service_place_clause}."
+        )
+    else:
+        # A service/profile clause may assert that a diligence took place. Use
+        # only its physical venue for attendance without making that assertion.
+        venue = str(intake.get('service_place') or service_entity).strip()
+        location = build_service_place_clause({'service_place': venue}, venue)
+        service_paragraph = (
+            f"No dia {format_numeric_date(service_date)}, compareci na qualidade de "
+            f"intérprete {location}, no âmbito do processo acima identificado."
+        )
 
     return RenderedRequest(
         case_number=case_number,
@@ -341,7 +361,7 @@ def build_rendered_request(intake: dict[str, Any], profile: dict[str, Any]) -> R
         address=address,
         service_paragraph=service_paragraph,
         transport_paragraph=build_transport_paragraph(intake, profile),
-        vat_irs_phrase=require_text(profile, "vat_irs_phrase"),
+        vat_irs_phrase=require_text(profile, "vat_irs_phrase") if interpreting else '',
         payment_phrase=require_text(profile, "payment_phrase"),
         iban=iban,
         closing_phrase=str(intake.get("closing_phrase") or profile.get("default_closing_phrase") or "Pede deferimento,").strip(),
@@ -425,9 +445,10 @@ def generate_pdf(rendered: RenderedRequest, output_path: Path) -> None:
     if rendered.transport_paragraph:
         story.append(paragraph(rendered.transport_paragraph, base))
 
+    if rendered.vat_irs_phrase:
+        story.append(paragraph(rendered.vat_irs_phrase, base))
     story.extend(
         [
-            paragraph(rendered.vat_irs_phrase, base),
             paragraph(f"{rendered.payment_phrase} {rendered.iban}", block_style),
             Spacer(1, 26),
             paragraph(rendered.closing_phrase, base),

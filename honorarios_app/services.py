@@ -74,6 +74,7 @@ from scripts.prepare_honorarios import (
 )
 from scripts.record_gmail_draft import main as record_gmail_draft_main
 from scripts.request_identity import normalize_case_number, request_identity_key
+from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
 from scripts.entity_rules import classify_entity_type, source_mentions_pj_context
 from scripts.source_parsing import explicit_service_places, service_date_evidence
 from scripts.source_classification import detect_translation_source, format_translation_rejection
@@ -1378,6 +1379,8 @@ def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, A
         child['source_case_numbers'] = [item['case_number'] for item in rows if item['case_number']]
         if not row['case_number']:
             child['case_number_requires_confirmation'] = True
+        # Source rows must carry the selected effective profile before UI grouping.
+        child, _, _ = effective_intake_for_profile(child, paths)
         child_review = review_intake(child, paths)
         child = copy.deepcopy(child_review.get('effective_intake') or child)
         evidence = build_field_evidence(
@@ -4799,8 +4802,20 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
     if field == "claim_transport":
         claim = coerce_answer_bool(value)
         intake["claim_transport"] = claim
-        if not claim:
+        if not claim and not intake.get('travel_group_id'):
             intake.pop("transport", None)
+        return
+
+    if field == 'claim_interpreting':
+        intake[field] = coerce_answer_bool(value)
+        return
+
+    if field == 'claim_options':
+        choices = {'both': (True, True), 'interpreting-only': (True, False), 'travel-only': (False, True)}
+        flags = choices.get(value.lower())
+        if flags is None:
+            raise IntakeError('Choose both, interpreting-only, or travel-only.')
+        intake['claim_interpreting'], intake['claim_transport'] = flags
         return
 
     if field == "transport.km_one_way":
@@ -5381,6 +5396,7 @@ def _prepared_payload_request_identities(draft_payload: dict[str, Any]) -> list[
             "service_start_time": str(source.get("service_start_time") or "").strip(),
             "service_end_time": str(source.get("service_end_time") or "").strip(),
         }
+        identity.update({key: source[key] for key in ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding') if key in source})
         identities.append(identity)
 
     if not identities:
@@ -5417,6 +5433,10 @@ def _assert_gmail_create_duplicate_clear(
     paths: AppPaths,
 ) -> dict[str, Any]:
     identities = _prepared_payload_request_identities(draft_payload)
+    try:
+        validate_travel_payload_groups(identities, prior_requests=recorded_claims(paths))
+    except ClaimError as exc:
+        raise IntakeError('Gmail draft creation blocked before contacting Gmail: ' + str(exc)) from exc
     lifecycles: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     for identity in identities:
@@ -5792,8 +5812,10 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         email_config = load_json(paths.email_config)
         court_directory = read_json_list(paths.court_emails)
         rendered = build_rendered_request(effective_intake, profile)
+        resolve_email_body(effective_intake, email_config, signature_name=rendered.signature_name)
+        validate_shared_travel_groups([effective_intake], prior_requests=recorded_claims(paths))
         recipient, recipient_source = resolve_recipient(effective_intake, email_config, court_directory)
-    except (IntakeError, OSError, json.JSONDecodeError) as exc:
+    except (IntakeError, ClaimError, OSError, json.JSONDecodeError) as exc:
         return {
             "status": "error",
             "message": str(exc),
@@ -5843,8 +5865,8 @@ def underlying_requests_for_packet(items: list[dict[str, Any]]) -> list[dict[str
             "case_number": item.get("case_number", ""),
             "service_date": item.get("service_date", ""),
         }
-        for key in ("service_period_label", "service_start_time", "service_end_time"):
-            if item.get(key):
+        for key in ("service_period_label", "service_start_time", "service_end_time", 'claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding'):
+            if key in item:
                 request[key] = item[key]
         requests.append(request)
     return requests
@@ -5857,18 +5879,24 @@ def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[st
         signature = default_body.split("Melhores cumprimentos,", 1)[1].strip() or signature
     count = len(items)
     request_word = "requerimento" if count == 1 else "requerimentos"
+    fee_claim = any(item.get('claim_interpreting', True) for item in items)
+    travel_claim = any(item.get('claim_transport', False) for item in items)
+    scope = ('honorários e despesas de transporte' if travel_claim else 'honorários') if fee_claim else 'despesas de transporte'
     return (
         "Bom dia,\n\n"
-        "Venho por este meio, requerer o pagamento dos honorários devidos, "
-        "em virtude de ter sido nomeado intérprete.\n\n"
-        f"Poderão encontrar em anexo um pacote PDF com {count} {request_word} de honorários "
-        "correspondentes aos serviços identificados.\n\n"
+        f"Venho por este meio requerer o pagamento de {scope}, conforme os pedidos individuais anexos.\n\n"
+        f"Poderão encontrar em anexo um pacote PDF com {count} {request_word}.\n\n"
         "Melhores cumprimentos,\n\n"
         f"{signature}"
     )
 
 
 def validate_packet_recipients(intakes: list[dict[str, Any]], email_config: dict[str, Any], court_directory: list[dict[str, Any]]) -> str:
+    custom_body = str(intakes[0].get('packet_email_body') or '')
+    if custom_body.strip():
+        resolve_email_body({'claim_interpreting': any(intake.get('claim_interpreting', True) for intake in intakes),
+                            'claim_transport': any(intake.get('claim_transport', False) for intake in intakes),
+                            'email_body': custom_body}, email_config)
     recipients: list[str] = []
     for intake in intakes:
         recipient, _source = resolve_recipient(intake, email_config, court_directory)
@@ -5907,13 +5935,17 @@ def build_packet_result(
         raise IntakeError(str(exc)) from exc
 
     packet_intake = copy.deepcopy(intakes[0])
+    packet_intake['claim_interpreting'] = any(item.get('claim_interpreting', True) for item in items)
+    packet_intake['claim_transport'] = any(item.get('claim_transport', False) for item in items)
+    packet_intake.pop('travel_group_id', None)
+    packet_intake.pop('travel_group_binding', None)
     packet_intake["service_period_label"] = "packet"
     packet_intake.pop("additional_attachment_files", None)
     packet_intake["underlying_requests"] = underlying_requests_for_packet(items)
     custom_packet_body = str(packet_intake.get("packet_email_body") or "")
     packet_intake["email_body"] = custom_packet_body if custom_packet_body.strip() else default_packet_email_body(items, email_config, signature_name=signature_name)
 
-    payload = build_email_payload(packet_intake, packet_pdf, email_config, court_directory)
+    payload = build_email_payload(packet_intake, packet_pdf, email_config, court_directory, signature_name=signature_name)
     payload_errors = validate_draft_payload(payload)
     if payload_errors:
         raise IntakeError(f"Packet draft payload is not Gmail-ready: {'; '.join(payload_errors)}")
@@ -6015,13 +6047,21 @@ def preflight_item_summary(
         "send_allowed": False,
         "write_allowed": False,
     }
+    summary.update({key: intake.get(key, default) for key, default in (('claim_interpreting', True), ('claim_transport', False))})
+    if 'travel_group_id' in intake:
+        summary['travel_group_id'] = intake['travel_group_id']
     if key:
+        summary.update(claim_metadata(intake))
         summary["duplicate_key"] = {
             "case_number": key[0],
             "service_date": key[1],
             "service_period_label": key[2],
         }
     return summary
+
+
+def recorded_claims(paths: AppPaths) -> list[dict[str, Any]]:
+    return recorded_travel_requests(load_draft_log(paths.draft_log), read_json_list(paths.duplicate_index))
 
 
 def preflight_intakes(
@@ -6051,10 +6091,17 @@ def preflight_intakes(
     items: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     seen_keys: dict[tuple[str, str, str], str] = {}
+    group_error = ''
+    try:
+        validate_shared_travel_groups(effective_intakes, prior_requests=recorded_claims(paths))
+    except ClaimError as exc:
+        group_error = str(exc)
 
     for index, (intake_path, intake, generator_profile) in enumerate(zip(intake_paths, effective_intakes, generator_profiles), start=1):
         lifecycle = draft_lifecycle_for_intake(intake, paths)
         try:
+            if group_error:
+                raise IntakeError(group_error)
             key = validate_intake_before_generation(
                 intake_path,
                 intake,
@@ -6188,6 +6235,10 @@ def prepare_intakes(
     intake_paths = planned_intake_paths(effective_intakes, paths)
     seen_keys: dict[tuple[str, str, str], Path] = {}
     lifecycle_checks: list[dict[str, Any]] = []
+    try:
+        validate_shared_travel_groups(effective_intakes, prior_requests=recorded_claims(paths))
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
 
     if correction_mode:
         for intake in effective_intakes:

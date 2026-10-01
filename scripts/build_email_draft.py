@@ -12,9 +12,11 @@ from typing import Any
 try:
     from scripts.entity_rules import normalize_text, resolve_entities
     from scripts.generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
+    from scripts.claim_options import ClaimError, claim_metadata, profile_binding, validate_claims, validate_travel_payload_groups
 except ModuleNotFoundError:
     from entity_rules import normalize_text, resolve_entities
     from generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
+    from claim_options import ClaimError, claim_metadata, profile_binding, validate_claims, validate_travel_payload_groups
 
 
 DEFAULT_EMAIL_CONFIG = ROOT / "config" / "email.json"
@@ -220,6 +222,11 @@ def attachment_array_errors(value: Any, field_name: str) -> list[str]:
 
 def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    try:
+        children = payload.get('underlying_requests')
+        validate_travel_payload_groups(children if isinstance(children, list) and children else [payload])
+    except ClaimError as exc:
+        errors.append(str(exc))
     if payload.get("gmail_tool") != "_create_draft":
         errors.append("gmail_tool must be _create_draft.")
     if payload.get("draft_only") is not True:
@@ -250,10 +257,25 @@ def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
 
 
 def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, signature_name: str = "") -> str:
+    try:
+        interpreting, transport = validate_claims(intake)
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
     # A request-specific body remains verbatim. Configured bodies opt into the
     # selected PDF signature only by containing this exact template token.
     if intake.get("email_body"):
-        return str(intake["email_body"])
+        body = str(intake["email_body"])
+        if not interpreting and custom_transport_body_conflict(body):
+            raise IntakeError('Travel-only email_body requests interpreting fees or asserts performed interpreting. Edit the custom body to request only transport, or change the claim choice.')
+        return body
+    if not interpreting and transport:
+        signature = str(signature_name or '').strip()
+        if not signature:
+            raise IntakeError('The travel-only email requires the selected profile signature_name.')
+        return ('Bom dia,\n\nVenho por este meio requerer o pagamento das despesas de transporte '
+                'relativas à minha comparência na qualidade de intérprete.\n\n'
+                'Poderão encontrar o requerimento de despesas de transporte em anexo.\n\n'
+                f'Melhores cumprimentos,\n\n{signature}')
     body = str(email_config.get("body") or "")
     if "{{signature_name}}" in body:
         signature = str(signature_name or "").strip()
@@ -263,7 +285,21 @@ def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, 
     return body
 
 
-def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: dict[str, Any], directory: list[dict[str, Any]], *, signature_name: str = "") -> dict[str, Any]:
+def custom_transport_body_conflict(body: str) -> bool:
+    for sentence in re.split(r'[.!?\n]+', normalize_text(body)):
+        # Remove only an explicitly negated fee/work clause, never a whole sentence.
+        sentence = re.sub(r'\bnao\s+(?:requeiro|solicito|reclamo)\s+(?:o\s+)?(?:pagamento\s+(?:de|dos)\s+)?honorarios(?:\s+devidos)?', '', sentence)
+        sentence = re.sub(r'\bnao\s+prestei\s+(?:o\s+)?(?:servico\s+de\s+)?interpretacao\b', '', sentence)
+        if re.search(r'\b(?:pagamento|requerer|requeiro|solicito|solicitar)\b[^.!?\n]{0,120}\bhonorarios\b', sentence):
+            return True
+        if re.search(r'\bhonorarios\s+devidos\b|\bprestei\s+(?:o\s+)?(?:servico\s+de\s+)?interpretacao\b', sentence):
+            return True
+        if re.search(r'\b(?:servico\s+de\s+interpretacao|diligencia)\b[^.!?\n]{0,60}\b(?:realizad[oa]|prestad[oa])\b', sentence):
+            return True
+    return False
+
+
+def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: dict[str, Any], directory: list[dict[str, Any]], *, signature_name: str = "", personal_profile_key: str = "") -> dict[str, Any]:
     recipient, recipient_source = resolve_recipient(intake, email_config, directory)
     absolute_pdf = pdf_path.resolve()
     if not absolute_pdf.exists():
@@ -277,6 +313,8 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
     attachment_path_strings = [str(path) for path in attachment_paths]
     attachment_hashes = {str(path): file_sha256(path) for path in attachment_paths}
     subject = str(email_config.get("subject") or "Requerimento de honorários")
+    if intake.get('claim_interpreting', True) is False:
+        subject = 'Requerimento de despesas de transporte'
     body = resolve_email_body(intake, email_config, signature_name=signature_name)
     has_custom_body = bool(str(intake.get("email_body") or "").strip())
     gmail_create_draft_ready = True
@@ -316,6 +354,10 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
         "gmail_create_draft_blocker": gmail_create_draft_blocker,
         "safety_note": "Create a Gmail draft only. Do not send unless the user explicitly asks after reviewing.",
     }
+    try:
+        payload.update(claim_metadata(intake, personal_profile_key=personal_profile_key))
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
     if isinstance(intake.get("underlying_requests"), list):
         payload["underlying_requests"] = intake["underlying_requests"]
     return payload
@@ -340,10 +382,12 @@ def main(argv: list[str] | None = None) -> int:
         email_config = load_json(args.email_config)
         directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
         signature_name = ""
-        if not intake.get("email_body") and "{{signature_name}}" in str(email_config.get("body") or ""):
+        personal_profile_key = ''
+        if intake.get('travel_group_id') or (not intake.get("email_body") and (intake.get('claim_interpreting', True) is False or "{{signature_name}}" in str(email_config.get("body") or ""))):
             profile = load_json(args.profile)
             signature_name = str(profile.get("signature_name") or profile.get("applicant_name") or "")
-        payload = build_email_payload(intake, args.pdf, email_config, directory, signature_name=signature_name)
+            personal_profile_key = profile_binding(profile)
+        payload = build_email_payload(intake, args.pdf, email_config, directory, signature_name=signature_name, personal_profile_key=personal_profile_key)
         output_path = args.output or default_output_path(args.pdf)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

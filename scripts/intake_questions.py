@@ -10,9 +10,11 @@ from typing import Any
 try:
     from scripts.generate_pdf import ROOT, get_service_date_value, load_json, service_date_conflict, service_date_conflict_is_confirmed
     from scripts.entity_rules import has_pj_host_building, resolve_entities, source_mentions_non_court_service, source_mentions_pj_context
+    from scripts.claim_options import ClaimError, validate_claims
 except ModuleNotFoundError:
     from generate_pdf import ROOT, get_service_date_value, load_json, service_date_conflict, service_date_conflict_is_confirmed
     from entity_rules import has_pj_host_building, resolve_entities, source_mentions_non_court_service, source_mentions_pj_context
+    from claim_options import ClaimError, validate_claims
 
 
 QUESTION_RULES = [
@@ -154,6 +156,12 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
 
 def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
+    try:
+        validate_claims(intake)
+    except ClaimError:
+        questions.append({'field': 'claim_options', 'number': 1,
+            'question': 'What should this request claim? It cannot claim neither interpreting nor travel.',
+            'answer_hint': 'Choose both, interpreting-only, or travel-only.'})
     for rule in QUESTION_RULES:
         if not rule_applies(rule, intake):
             continue
