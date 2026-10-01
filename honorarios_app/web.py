@@ -30,6 +30,7 @@ from .services import (
     build_legalpdf_integration_checklist,
     diagnostics_status_payload,
     draft_lifecycle_for_intake,
+    draft_lifecycle_for_email_group,
     export_legalpdf_import_report,
     export_local_backup,
     google_photos_status_payload,
@@ -595,9 +596,11 @@ def create_app(**path_overrides: Any) -> FastAPI:
     @app.post("/api/drafts/active-check")
     async def api_drafts_active_check(payload: dict[str, Any]) -> dict[str, Any]:
         intake = payload.get("intake", payload)
-        if not isinstance(intake, dict):
+        if "underlying_requests" not in payload and not isinstance(intake, dict):
             raise HTTPException(status_code=400, detail="Request must include an intake object.")
         try:
+            if "underlying_requests" in payload:
+                return draft_lifecycle_for_email_group(payload["underlying_requests"], paths)
             return draft_lifecycle_for_intake(intake, paths)
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
@@ -690,6 +693,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 paths,
                 packet_mode=packet_mode,
                 correction_reason=correction_reason if correction_mode else "",
+                email_grouping=payload.get("email_grouping", "individual"),
             )
             return prepare_intakes(
                 intakes,
@@ -699,6 +703,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 allow_existing_draft=False,
                 correction_reason=correction_reason if correction_mode else "",
                 packet_mode=packet_mode,
+                email_grouping=payload.get("email_grouping", "individual"),
             )
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
@@ -738,6 +743,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 allow_existing_draft=False,
                 correction_reason=correction_reason if correction_mode else "",
                 packet_mode=bool(payload.get("packet_mode", False)),
+                email_grouping=payload.get("email_grouping", "individual"),
             )
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={

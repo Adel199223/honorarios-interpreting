@@ -227,6 +227,8 @@ def attachment_array_errors(value: Any, field_name: str) -> list[str]:
 
 def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    if payload.get('email_grouping') == 'source':
+        errors.extend(source_email_group_errors(payload))
     try:
         children = payload.get('underlying_requests')
         validate_travel_payload_groups(children if isinstance(children, list) and children else [payload])
@@ -259,6 +261,82 @@ def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
         if [str(item) for item in args_attachments] != [str(item) for item in attachment_files]:
             errors.append("gmail_create_draft_args.attachment_files must match attachment_files.")
     return errors
+
+
+def source_email_group_errors(payload: dict[str, Any]) -> list[str]:
+    """Check each grouped child before transport or either history file is written."""
+    errors: list[str] = []
+    children = payload.get('underlying_requests')
+    if not isinstance(children, list) or not children:
+        return ['Source email group requires a nonempty underlying_requests array.']
+    if not str(payload.get('email_group_id') or '').strip():
+        errors.append('Source email group requires email_group_id.')
+    source_hash = str(payload.get('source_sha256') or '')
+    profile = str(payload.get('personal_profile_id') or '')
+    recipient = str(payload.get('to') or '').strip().lower()
+    child_paths = payload.get('child_payload_paths')
+    if not isinstance(child_paths, list) or len(child_paths) != len(children):
+        errors.append('Source email group must retain one child_payload_path per request.')
+        child_paths = []
+    attachments = payload.get('attachment_files')
+    attachment_hashes = payload.get('attachment_sha256')
+    if not isinstance(attachments, list) or not all(isinstance(path, str) for path in attachments) or not isinstance(attachment_hashes, dict):
+        return errors + ['Source email group requires attachment_files array and attachment_sha256 object.']
+    identities: set[tuple[str, str, str]] = set()
+    pdfs: set[str] = set()
+    for index, child in enumerate(children):
+        if not isinstance(child, dict):
+            errors.append(f'Source email group child {index + 1} must be an object.')
+            continue
+        identity = (str(child.get('case_number') or '').strip(), str(child.get('service_date') or '').strip(), str(child.get('service_period_label') or '').strip())
+        if not identity[0] or not identity[1] or identity in identities:
+            errors.append(f'Source email group child {index + 1} has a missing or repeated request identity.')
+        identities.add(identity)
+        if (str(child.get('source_sha256') or '') != source_hash or
+                str(child.get('personal_profile_id') or '') != profile or
+                str(child.get('recipient') or '').strip().lower() != recipient):
+            errors.append(f'Source email group child {index + 1} has conflicting source, profile, or recipient.')
+        try:
+            raw_pdf = str(child.get('pdf') or '')
+            raw_payload = str(child.get('draft_payload') or '')
+            if not raw_pdf or not raw_payload:
+                raise ValueError('missing child PDF/payload path')
+            pdf = Path(raw_pdf).resolve()
+            child_path = Path(raw_payload).resolve()
+            expected = str(child.get('pdf_sha256') or '')
+            if str(pdf) in pdfs or str(pdf) not in attachments or not expected or file_sha256(pdf) != expected or attachment_hashes.get(str(pdf)) != expected:
+                raise ValueError('missing, repeated, changed, or unattached child PDF')
+            pdfs.add(str(pdf))
+            if index >= len(child_paths) or str(child_path) != child_paths[index]:
+                raise ValueError('child payload order does not match requests')
+            if file_sha256(child_path) != str(child.get('draft_payload_sha256') or ''):
+                raise ValueError('child payload changed')
+            data = json.loads(child_path.read_text(encoding='utf-8'))
+            if not isinstance(data, dict) or any(str(data.get(key) or '').strip() != identity[position] for position, key in enumerate(('case_number', 'service_date', 'service_period_label'))):
+                raise ValueError('child payload request identity changed')
+            hashes = data.get('attachment_sha256')
+            if str(data.get('to') or '').strip().lower() != recipient or str(pdf) not in (data.get('attachment_files') or []) or not isinstance(hashes, dict) or hashes.get(str(pdf)) != expected:
+                raise ValueError('child payload recipient or PDF changed')
+            if data.get('draft_only') is not True or data.get('send_allowed') is not False or data.get('gmail_create_draft_ready') is not True:
+                raise ValueError('child payload is not draft-ready')
+            for key in ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding'):
+                if child.get(key) != data.get(key):
+                    raise ValueError('child claim metadata changed')
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            errors.append(f'Source email group child {index + 1} is stale or invalid: {exc}. Prepare the group again.')
+    return errors
+
+
+def source_email_body(intakes: list[dict[str, Any]], *, signature_name: str) -> str:
+    if len(intakes) > 1 and any(str(intake.get('email_body') or '').strip() for intake in intakes):
+        raise IntakeError('Source email grouping cannot replace a custom per-request email_body. Choose individual emails to retain that text.')
+    fee = any(intake.get('claim_interpreting', True) for intake in intakes)
+    travel = any(intake.get('claim_transport', False) for intake in intakes)
+    scope = ('honorários e despesas de transporte' if travel else 'honorários') if fee else 'despesas de transporte'
+    return ('Bom dia,\n\n'
+            f'Venho por este meio requerer o pagamento de {scope}, conforme os pedidos individuais anexos.\n\n'
+            f'Poderão encontrar em anexo {len(intakes)} requerimentos, cada um num ficheiro PDF separado.\n\n'
+            f'Melhores cumprimentos,\n\n{signature_name}')
 
 
 def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, signature_name: str = "") -> str:

@@ -1,0 +1,36 @@
+# Source-photo email groups and short court acceptance
+
+## Goal and authorized scope
+
+Re-test the six previously supplied requests using ordinary browser controls and current short court preferences, then group requests from one source photo into one email with separate PDF attachments. Five requests from the same Serpa photo should produce one five-PDF email; the other photo should produce its own one-PDF email. Preserve the single shared-trip travel owner. This authorizes local implementation and the supplied-source review; it does not authorize sending, changing existing Gmail drafts, or publication of this new scope.
+
+## Provenance and boundaries
+
+Candidate branch `codex/fee-source-emails-20261001` starts at published main `114229e` (merged PR #61), in the existing owned review worktree. The user's saved checkout remains on its existing branch with cumulative local work preserved. Dependencies and credentials are unchanged. Source reads use the already authorized saved connection; replay is explicitly distinguished from fresh provider acceptance.
+
+Preserve individual PDFs, route IDs, submitted claim values, duplicate/shared-trip safeguards, safe rendering, reviewed freshness, draft-only Gmail behavior and legacy separate-email callers. Any new payload fields must be additive. No private source, settings, provider response, draft IDs or acceptance files may enter public fixtures/docs. All real artifact writes and copied history are isolated; Gmail and canonical history mutations are blocked.
+
+## Implementation and acceptance
+
+1. Retest both photos and reproduce any name-related issue through ordinary controls.
+2. Fix only ordinary local-court venue equivalence in shared-trip comparisons, preserving stored metadata and all other binding facts.
+3. Add backend source/recipient email grouping and exact child-PDF identity, bound into signed preflight/prepared review. Add grouped recording validation for every child.
+4. Make the normal browser default to source grouping and show each case/PDF in the selected email target. Keep packet PDF behavior separate.
+5. Run focused public synthetic regressions, final Full validation, and ordinary-control six-case acceptance. Inspect all PDFs and exact email attachment bytes. Preserve failed provider attempts; fresh AI success is a separate claim from cached review.
+6. Apply only verified touched files to the saved app with exact beforeimages; preserve private settings/history. Synchronize touched docs and provide reviewable local artifacts/proof. Leave publication and actual replacement Gmail drafts separately scoped.
+
+## Risks and rollback
+
+Do not combine different source hashes or mismatched recipients/profiles, infer visits from city/date, suppress duplicate warnings, discard old history, or attach one child's PDF to every grouped history record. Preserve exact saved-file beforeimages in ignored task evidence. A stale child PDF/payload must block all group actions before any external call or record write.
+
+## Progress
+
+- 2026-10-01: Ordinary controls correctly recover all six short payer names and court emails from the previously verified raw source readings. Moura replacement preparation succeeds locally. Serpa replacement preflight reproduces a conflict because its recorded full venue name differs from the new short name. Canonical histories and existing Gmail drafts remain untouched.
+- 2026-10-01: Fresh source reading failed, including a confirmed OpenAI HTTP 503 `server_is_overloaded` for one photo. Retained attempts precede bounded replay; provider acceptance remains unproven until a later successful fresh read.
+- 2026-10-01: A bounded retry after the overload succeeded for both photos using the existing saved model/connection. All six case references, capture dates, short court defaults and named police venue are correct. Later UI checks replay only these captured raw reads, with no further provider call.
+- 2026-10-01: The bounded venue-comparison fix passed 38 claim tests and was applied with an exact saved-file beforeimage. Ordinary correction controls then prepared each of the six PDFs against exact copies of existing history. Full PDF texts equal the previously reviewed short-name copies; all six rendered pages were inspected. Only one Serpa request contains travel. All canonical protected files and copied histories remained unchanged. Grouped-email implementation and its acceptance remain in progress.
+- 2026-10-01: Independent Astra review accepted the court fix and identified grouped manual-record lifecycle/coverage edges, including missing-period duplicate matching, mixed new/duplicate members and preserving uncovered siblings. Backend regressions/fixes are in progress. An initially suspected active-check HTTP error was not demonstrated and is not counted as a fixed failure.
+- 2026-10-01: First grouped-browser attempt exposed an old cached unversioned review-guidance module alongside the newly versioned main module. Startup stopped before any source read or preparation. A dependency cache-version correction is required before final normal-browser acceptance.
+
+- 2026-10-01: Local objective complete. Final candidate and saved-app Full each passed 475 public synthetic tests and four isolated workflows, including installed-wheel/environment/docs/JavaScript checks. Thirty-three new source-group regressions and final independent Astra review cover the recording/freshness edges. Ordinary saved-app controls prepared and validated the five-plus-one handoffs; local MIME verification confirms exact individual attachment bytes and unchanged body/recipient/subject (standard CRLF normalization). All six rendered pages match the manually reviewed pixel output exactly. Final record-alias hardening changes no already-accepted UI/preparation behavior and is covered by the final Full runs.
+- 2026-10-01: Public code/tests and touched docs are applied to the saved app with exact beforeimages, preserving its original branch/HEAD, unrelated work, private preferences, histories and existing Gmail draft PDFs. All provider attempts/failures and browser startup failure remain ignored evidence. Publication of this new branch, actual grouped replacement Gmail drafts, sending and main-app integration were not performed. Owned server/tab cleanup and final protected-hash checks are recorded in local closeout evidence.

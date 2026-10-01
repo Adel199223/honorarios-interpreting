@@ -310,6 +310,12 @@
                 <div class="button-row compact-button-row">
                   <button type="button" id="add-source-cases-to-batch" disabled aria-disabled="true">Add all reviewed cases to batch</button>
                 </div>
+                <div class="claim-choice-card" id="source-email-correction">
+                  <label for="source-correction-reason"><strong>Replace this photo's existing email</strong></label>
+                  <input id="source-correction-reason" placeholder="Explain the correction">
+                  <p class="field-hint">If these cases already have drafts, give a reason to prepare one replacement email with every request's separate PDF. Existing drafts stay in history until the replacement is created and recorded.</p>
+                  <button type="button" id="prepare-source-email-replacement">Prepare replacement email for this photo</button>
+                </div>
               </section>
               <div class="result-card next-safe-action-card hidden" id="next-safe-action">
                 <div class="result-header">
@@ -381,6 +387,14 @@
                   <strong>Generated requerimento PDF</strong>
                   <strong>Supporting attachments</strong>
                 </div>
+              </div>
+              <div class="field">
+                <label for="batch-email-grouping"><strong>Emails for queued requests</strong></label>
+                <select id="batch-email-grouping">
+                  <option value="source" selected>One email per photo</option>
+                  <option value="individual">Separate emails</option>
+                </select>
+                <small id="batch-email-grouping-note">Each request keeps its own PDF. Requests from the same photo go in one email to their reviewed recipient.</small>
               </div>
               <label class="checkbox-card packet-mode-card" for="batch-packet-mode">
                 <input type="checkbox" id="batch-packet-mode">
@@ -1067,15 +1081,18 @@
           <div id="pdf-preview"></div>
         </div>
 
-        <div id="prepare-results" class="result-stack"></div>
         <section class="result-card hidden" id="prepared-email-target-card">
           <label for="prepared-email-target"><strong>Email draft for</strong></label>
           <select id="prepared-email-target"></select>
           <p id="prepared-email-target-summary" class="field-hint"></p>
+          <div id="prepared-email-target-members"></div>
+          <label for="prepared-email-member">PDF to inspect</label>
+          <select id="prepared-email-member"></select>
           <div id="prepared-email-target-preview"></div>
           <strong>Exact draft args for this selection</strong>
           <pre id="prepared-email-target-args" class="draft-args"></pre>
         </section>
+        <div id="prepare-results" class="result-stack"></div>
         <div class="result-card packet-record-helper-template hidden">
           <strong>Packet draft recording helper</strong>
           <p>After `_create_draft` returns IDs, copy the packet record JSON or command so the packet draft and its underlying duplicate blockers are logged together.</p>
@@ -1208,7 +1225,7 @@
             <input type="checkbox" id="gmail_handoff_reviewed">
             <span>
               <strong>Gmail handoff checklist</strong>
-              <small>I reviewed the PDF preview and I used the exact `_create_draft` args shown above, including recipient, body, and attachments.</small>
+              <small>I reviewed every request's PDF preview and the exact `_create_draft` args shown above, including recipient, body, and all attachments.</small>
             </span>
           </label>
           <div class="gmail-response-parser">
@@ -1273,6 +1290,7 @@
       </section>
     </div>
 
+    <script type="importmap">{"imports":{"/static/review_guidance.js":"/static/review_guidance.js?v={{ asset_version }}"}}</script>
     <script type="module" src="/static/app.js?v={{ asset_version }}"></script>
   </body>
 </html>

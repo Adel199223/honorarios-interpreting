@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date
 import hashlib
 import json
+import re
 from typing import Any
 
 try:
@@ -67,6 +68,33 @@ def claim_metadata(intake: dict[str, Any], *, personal_profile_key: str = '') ->
     return metadata
 
 
+_CITY_NAME = r"[a-z]+(?:[-'][a-z]+)*(?: [a-z]+(?:[-'][a-z]+)*)*"
+_ORDINARY_LOCAL_COURTS = (
+    re.compile(rf'tribunal(?: judicial)? de (?P<city>{_CITY_NAME})'),
+    re.compile(rf'(?:tribunal judicial da comarca de {_CITY_NAME} (?:[-–—] )?)?'
+               rf'juizo de competencia generica de (?P<city>{_CITY_NAME})'),
+)
+_NON_CITY_COURT_WORDS = re.compile(
+    r'\b(?:e|tribunal|juizo|comarca|trabalho|familia|menores|comercio|execucao|'
+    r'instrucao|criminal|civil|civel|administrativo|fiscal|relacao|supremo|'
+    r'central|secao|seccao|instancia|posto|esquadra|gnr|psp|policia|edificio)\b'
+)
+
+
+def _venue_comparison_key(venue: str) -> tuple[str, str]:
+    """Recognise only ordinary local-court names; retain every stored value."""
+    normalized = ' '.join(normalize_text(venue).split())
+    for pattern in _ORDINARY_LOCAL_COURTS:
+        match = pattern.fullmatch(normalized)
+        if match and not _NON_CITY_COURT_WORDS.search(match['city']):
+            return 'ordinary_local_court', match['city']
+    return 'exact', venue
+
+
+def _binding_comparison_key(binding: list[str]) -> tuple[str, tuple[str, str], str, str, str]:
+    return binding[0], _venue_comparison_key(binding[1]), binding[2], binding[3], binding[4]
+
+
 def validate_shared_travel_groups(intakes: list[dict[str, Any]], *, personal_profile_key: str = '', prior_requests: list[dict[str, Any]] | None = None) -> None:
     groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     for intake in intakes:
@@ -74,7 +102,7 @@ def validate_shared_travel_groups(intakes: list[dict[str, Any]], *, personal_pro
         if metadata.get('travel_group_id'):
             groups.setdefault(metadata['travel_group_id'], []).append((intake, metadata))
     for group, members in groups.items():
-        bindings = {tuple(metadata['travel_group_binding']) for _, metadata in members}
+        bindings = {_binding_comparison_key(metadata['travel_group_binding']) for _, metadata in members}
         if len(bindings) != 1:
             raise ClaimError('Shared trip details conflict: every grouped request must have the same date, physical venue, destination, and personal profile. Correct the group or choose separate trips.')
         owners = [intake for intake, metadata in members if metadata['claim_transport']]
@@ -87,7 +115,7 @@ def validate_shared_travel_groups(intakes: list[dict[str, Any]], *, personal_pro
             if (not isinstance(binding, list) or len(binding) != 5
                     or not all(isinstance(value, str) for value in binding)
                     or not all(value.strip() for value in binding[:4])
-                    or tuple(binding) not in bindings or not isinstance(prior.get('claim_transport'), bool)):
+                    or _binding_comparison_key(binding) not in bindings or not isinstance(prior.get('claim_transport'), bool)):
                 raise ClaimError('An already recorded shared-trip claim has conflicting or unclear details. Review that record before preparing this visit.')
             if prior['claim_transport'] and owners and request_identity_key(prior) != request_identity_key(owners[0]):
                 raise ClaimError('Transport for this explicit shared trip is already recorded on another request. Keep this request interpreting-only or review the existing travel owner.')

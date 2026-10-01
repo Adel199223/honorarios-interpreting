@@ -70,13 +70,19 @@ When every case is ready, click **Add all cases to batch** (the button includes 
 
 To include another photo, queue the current reviewed request or all its cases first, then use **Change source**. The previous queue stays in place while the next source starts with empty recovered text and capture metadata. Bulk adding a multi-case source selects separate fee-request PDFs. Check that every expected case appears in **Batch Queue**, leave **Packet mode** unchecked, run **Check batch preflight**, then use **Prepare batch package**. Review each generated PDF before any email step.
 
+**One email per photo** keeps each case's own PDF and puts the requests from that photo in one email to their reviewed court recipient. Five cases in one photo produce five PDF attachments in one email; another photo gets its own email. Choose **Separate emails** when needed. Different recipients or personal profiles within one photo need correction or separate emails before preparation. Email grouping does not add travel to other cases.
+
+If those cases already have drafts, enter a reason under **Replace this photo's existing email**, then choose **Prepare replacement email for this photo**. The app reviews every case and prepares the complete photo email together. Existing drafts remain in history until a replacement is actually created and recorded. A correction cannot silently retire the other requests from an earlier grouped email.
+
 Editing a case after queueing pauses batch preparation until you review the correction and add the updated case or source to the queue. Do not rely on an earlier green batch check after changing details. **Reset workspace** clears the whole visible queue when you want to start over.
 
 ## 5. Review the email and create a draft
 
-After PDF preparation, use **Email draft for** to choose the case you want to draft. Check that its court email, email text and attachment name belong to that case. A packet is one email target. Changing the selected case clears its old copied handoff, returned Gmail IDs and review acknowledgement; the PDFs remain available.
+After PDF preparation, use **Email draft for** to choose the photo's email or an individual request. Check every listed case, its own PDF, the court email and the email text. A packet remains one email target with its combined PDF. Changing the selected email clears its old copied handoff, returned Gmail IDs and review acknowledgement; the PDFs remain available.
 
-When the app reports that Gmail is connected, review the selected PDF and exact email details, tick the **Gmail handoff checklist**, then use **Create Gmail Draft**. This creates an unsent draft with the selected attachment; review it in Gmail and send it yourself. An error is not confirmation that a draft was created.
+**Requests included in this email** lists every member and its claim choice. Use **PDF to inspect** to read each document before checking the handoff acknowledgement.
+
+When the app reports that Gmail is connected, review all selected PDFs and exact email details, tick the **Gmail handoff checklist**, then use **Create Gmail Draft**. This creates one unsent draft with all listed attachments; review it in Gmail and send it yourself. An error is not confirmation that a draft was created.
 
 When Gmail is disconnected, or you prefer the fallback, open **Manual Draft Handoff** and click **Build handoff packet**. Check its recipient/body/attachments, then use **Copy handoff prompt**. Building or copying the packet does not create or send an email.
 
@@ -84,7 +90,7 @@ Check the email signature as well as the PDF signature. New default email templa
 
 Use that exact prompt with your available Gmail draft tool or assistant to create an unsent draft. This external draft step is separate from preparing the PDF; if the draft tool is unavailable, keep the reviewed PDF and handoff packet until it is available. Direct Gmail OAuth is optional and is not required to review or prepare the document.
 
-After the draft tool returns its response, paste it into **Paste Gmail _create_draft response**. Confirm the **Gmail handoff checklist** only after reviewing the PDF and using the exact handoff, then click **Record parsed response + prepared payload**. This records the returned draft locally so the app can warn against duplicate requests; it does not send the email.
+After the draft tool returns its response, paste it into **Paste Gmail _create_draft response**. Confirm the **Gmail handoff checklist** only after reviewing every PDF and using the exact handoff, then click **Record parsed response + prepared payload**. For a grouped email, this records every case with its own PDF so the app can warn against duplicate requests; it does not send the email.
 
 Finally, open the draft in Gmail, check the recipient and attachments again, and send it yourself when satisfied. After sending, **Recent Work** can mark that request as manually sent.
 

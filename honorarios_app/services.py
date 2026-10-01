@@ -30,6 +30,7 @@ from scripts.build_email_draft import (
     file_sha256,
     resolve_email_body,
     resolve_recipient,
+    source_email_body,
     validate_draft_payload,
 )
 from scripts.build_packet_pdf import PacketError, build_packet_pdf
@@ -72,7 +73,7 @@ from scripts.prepare_honorarios import (
     render_png,
     validate_intake_before_generation,
 )
-from scripts.record_gmail_draft import main as record_gmail_draft_main
+from scripts.record_gmail_draft import main as record_gmail_draft_main, validate_superseded_request_coverage, validate_source_group_history
 from scripts.request_identity import normalize_case_number, request_identity_key
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
 from scripts.entity_rules import classify_entity_type, source_mentions_pj_context
@@ -4128,6 +4129,13 @@ def _target_payload_summary(target: dict[str, Any]) -> dict[str, Any]:
         },
         "packet_mode": bool(target.get("packet_mode")),
         "underlying_requests": list(target.get("underlying_requests") or []),
+        "email_grouping": str(target.get("email_grouping") or "individual"),
+        "group_id": str(target.get("group_id") or ""),
+        "source_sha256": str(target.get("source_sha256") or ""),
+        "personal_profile_id": str(target.get("personal_profile_id") or ""),
+        "member_indices": list(target.get("member_indices") or []),
+        "child_payload_sha256": {str(_resolve_optional_path(item)): _prepared_file_sha256(_resolve_optional_path(item), "child draft payload")
+                                 for item in target.get("child_payload_paths") or []},
     }
 
 
@@ -4138,6 +4146,7 @@ def _preflight_review_material(
     packet_mode: bool,
     correction_mode: bool,
     correction_reason: str,
+    email_grouping: str = "individual",
 ) -> dict[str, Any]:
     return {
         "version": PREPARED_REVIEW_VERSION,
@@ -4148,6 +4157,8 @@ def _preflight_review_material(
         "packet_mode": bool(packet_mode),
         "correction_mode": bool(correction_mode),
         "correction_reason": str(correction_reason or "").strip(),
+        "email_grouping": normalize_email_grouping(email_grouping),
+        "email_groups": source_email_group_plan(effective_intakes, recipients) if email_grouping == "source" and not packet_mode else [],
     }
 
 
@@ -4160,6 +4171,7 @@ def _preflight_review_from_material(material: dict[str, Any]) -> dict[str, Any]:
         "preflight_review_token": _signed_review_token("preflight", fingerprint),
         "request_count": len(material.get("effective_intakes") or []),
         "packet_mode": bool(material.get("packet_mode")),
+        "email_grouping": str(material.get("email_grouping") or "individual"),
         "correction_mode": bool(material.get("correction_mode")),
         "send_allowed": False,
         "write_allowed": False,
@@ -4173,6 +4185,7 @@ def _build_preflight_review(
     packet_mode: bool,
     correction_mode: bool,
     correction_reason: str,
+    email_grouping: str = "individual",
 ) -> dict[str, Any]:
     material = _preflight_review_material(
         effective_intakes=effective_intakes,
@@ -4180,6 +4193,7 @@ def _build_preflight_review(
         packet_mode=packet_mode,
         correction_mode=correction_mode,
         correction_reason=correction_reason,
+        email_grouping=email_grouping,
     )
     return _preflight_review_from_material(material)
 
@@ -4208,6 +4222,7 @@ def require_current_preflight_review(
     *,
     packet_mode: bool,
     correction_reason: str = "",
+    email_grouping: str = "individual",
 ) -> dict[str, Any]:
     requested = _extract_preflight_review_request(request_payload)
     if not requested["review_fingerprint"] or not requested["preflight_review_token"]:
@@ -4227,6 +4242,7 @@ def require_current_preflight_review(
         packet_mode=packet_mode,
         correction_mode=bool(str(correction_reason or "").strip()),
         correction_reason=correction_reason,
+        email_grouping=email_grouping,
     )
     if not hmac.compare_digest(requested["review_fingerprint"], current["review_fingerprint"]):
         raise IntakeError("Preflight is stale for the current request snapshot. Run preflight again before preparing artifacts.")
@@ -4244,8 +4260,10 @@ def _prepared_review_material(
     packet_mode: bool,
     correction_mode: bool,
     correction_reason: str,
+    email_grouping: str = "individual",
+    email_groups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    targets = [packet] if packet else items
+    targets = [packet] if packet else (email_groups if email_grouping == "source" else items)
     target_summaries = [_target_payload_summary(target) for target in targets if isinstance(target, dict)]
     return {
         "version": PREPARED_REVIEW_VERSION,
@@ -4254,6 +4272,7 @@ def _prepared_review_material(
         "effective_intakes": effective_intakes,
         "request_identities": [_intake_identity_payload(intake) for intake in effective_intakes],
         "packet_mode": bool(packet_mode),
+        "email_grouping": normalize_email_grouping(email_grouping),
         "correction_mode": bool(correction_mode),
         "correction_reason": str(correction_reason or "").strip(),
         "targets": target_summaries,
@@ -4275,6 +4294,7 @@ def _prepared_review_from_material(material: dict[str, Any]) -> dict[str, Any]:
         "pdf_paths": [str(target.get("pdf") or "") for target in targets],
         "request_count": len(material.get("effective_intakes") or []),
         "packet_mode": bool(material.get("packet_mode")),
+        "email_grouping": str(material.get("email_grouping") or "individual"),
         "correction_mode": bool(material.get("correction_mode")),
         "correction_reason": str(material.get("correction_reason") or "").strip(),
         "send_allowed": False,
@@ -4335,6 +4355,10 @@ def require_current_prepared_review(payload: dict[str, Any], payload_path: str |
         raise IntakeError("Prepared review is missing draft payload content evidence. Prepare the PDF again from the reviewed request.")
     if not hmac.compare_digest(_prepared_file_sha256(Path(payload_absolute), "draft payload"), expected_payload_hash):
         raise IntakeError("Prepared draft payload changed after review. Prepare the PDF again from the reviewed request.")
+
+    for raw_child, expected_hash in (target_summary.get("child_payload_sha256") or {}).items():
+        if not hmac.compare_digest(_prepared_file_sha256(Path(raw_child), "child draft payload"), str(expected_hash)):
+            raise IntakeError("Prepared child draft payload changed after review. Prepare the group again from the reviewed requests.")
 
     expected_attachment_hashes = target_summary.get("attachment_sha256") if isinstance(target_summary.get("attachment_sha256"), dict) else {}
     for raw_attachment in target_summary.get("attachment_files") or []:
@@ -5007,6 +5031,33 @@ def draft_lifecycle_for_intake(intake: dict[str, Any], paths: AppPaths) -> dict[
     }
 
 
+def draft_lifecycle_for_email_group(underlying_requests: Any, paths: AppPaths) -> dict[str, Any]:
+    if not isinstance(underlying_requests, list) or not underlying_requests or any(not isinstance(row, dict) for row in underlying_requests):
+        raise IntakeError("Email group active check requires a nonempty underlying_requests array of objects.")
+    checks = []
+    identities = set()
+    for row in underlying_requests:
+        identity = _intake_identity_payload(row)
+        key = request_identity_key(identity)
+        if not identity['case_number'] or not identity['service_date'] or key in identities:
+            raise IntakeError("Email group active check has missing or repeated request identities.")
+        identities.add(key)
+        checks.append({**identity, **draft_lifecycle_for_intake(identity, paths)})
+    active = {}
+    duplicates = []
+    for check in checks:
+        for draft in check['active_gmail_drafts']:
+            active[str(draft.get('draft_id') or '')] = draft
+        duplicates.extend(check['duplicate_records'])
+    blocked = any(check['status'] != 'clear' for check in checks)
+    replacement = blocked and all(check['status'] == 'clear' or check['replacement_allowed'] for check in checks)
+    return {"status": "blocked" if blocked else "clear", "message": "One or more group requests have an existing draft or duplicate blocker." if blocked else "All email group requests are clear.",
+            "member_checks": checks, "active_gmail_drafts": list(active.values()),
+            "duplicate": duplicates[0] if duplicates else None, "duplicate_records": duplicates,
+            "replacement_allowed": replacement, "can_prepare": not blocked, "can_create_new_draft": not blocked,
+            "needs_correction": blocked and replacement, "blocking_statuses": sorted(BLOCKING_DUPLICATE_STATUSES), "send_allowed": False}
+
+
 def next_safe_action(
     *,
     state: str,
@@ -5441,6 +5492,10 @@ def _assert_gmail_create_duplicate_clear(
 ) -> dict[str, Any]:
     identities = _prepared_payload_request_identities(draft_payload)
     try:
+        validate_superseded_request_coverage(identities, load_draft_log(paths.draft_log), _coerce_supersedes(request_payload.get('supersedes')))
+    except ValueError as exc:
+        raise IntakeError('Draft replacement blocked before contacting Gmail: ' + str(exc)) from exc
+    try:
         validate_travel_payload_groups(identities, prior_requests=recorded_claims(paths))
     except ClaimError as exc:
         raise IntakeError('Gmail draft creation blocked before contacting Gmail: ' + str(exc)) from exc
@@ -5555,18 +5610,20 @@ def _gmail_create_confirmation(
     }
 
 
+@contextlib.contextmanager
 def _gmail_create_lock_for_payload(draft_payload: dict[str, Any]):
     identities = [
         duplicate_key_payload(identity)
         for identity in _prepared_payload_request_identities(draft_payload)
     ]
-    key = json.dumps(identities, ensure_ascii=True, sort_keys=True)
+    keys = sorted({json.dumps(identity, ensure_ascii=True, sort_keys=True) for identity in identities})
     with _GMAIL_CREATE_LOCKS_GUARD:
-        lock = _GMAIL_CREATE_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _GMAIL_CREATE_LOCKS[key] = lock
-        return lock
+        locks = [_GMAIL_CREATE_LOCKS.setdefault(key, threading.Lock()) for key in keys]
+    # Overlapping grouped and individual requests must serialize on the same child identity.
+    with contextlib.ExitStack() as stack:
+        for lock in locks:
+            stack.enter_context(lock)
+        yield
 
 
 def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
@@ -5646,6 +5703,12 @@ def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str,
     raw_payload_path = payload.get("payload") or payload.get("draft_payload")
     prepared_review = require_current_prepared_review(payload, raw_payload_path, paths)
     payload_path, draft_payload = _load_prepared_draft_payload(raw_payload_path)
+    if draft_payload.get('email_grouping') == 'source':
+        if _coerce_supersedes(payload.get('supersedes')) and not prepared_review.get('correction_mode'):
+            raise IntakeError('Group replacement requires a prepared review created in correction mode.')
+        if prepared_review.get('correction_reason') and _gmail_correction_reason(payload) != prepared_review['correction_reason']:
+            raise IntakeError('Correction reason does not match the prepared review.')
+        _assert_gmail_create_duplicate_clear(request_payload=payload, draft_payload=draft_payload, paths=paths)
     args = draft_payload.get("gmail_create_draft_args")
     if not isinstance(args, dict):
         raise IntakeError("Prepared draft payload is missing gmail_create_draft_args.")
@@ -5879,6 +5942,99 @@ def underlying_requests_for_packet(items: list[dict[str, Any]]) -> list[dict[str
     return requests
 
 
+def normalize_email_grouping(value: Any = "individual") -> str:
+    if value not in ("individual", "source"):
+        raise IntakeError("email_grouping must be individual or source.")
+    return value
+
+
+def source_email_group_plan(intakes: list[dict[str, Any]], recipients: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Only an explicit source hash establishes email membership; empty hashes never merge."""
+    if len(intakes) != len(recipients):
+        raise IntakeError("Source email group recipient count does not match the requests.")
+    groups: list[dict[str, Any]] = []
+    by_source: dict[str, dict[str, Any]] = {}
+    for index, (intake, contact) in enumerate(zip(intakes, recipients)):
+        source = str(intake.get("source_sha256") or "").strip()
+        recipient = str(contact.get("recipient") or "").strip().lower()
+        profile = str(intake.get("personal_profile_id") or "").strip()
+        if not recipient:
+            raise IntakeError("Every source email group member needs a validated recipient.")
+        group = by_source.get(source) if source else None
+        if group and (group["recipient"] != recipient or group["personal_profile_id"] != profile):
+            raise IntakeError("Requests from the same source photo have different recipients or personal profiles. Align the selections or choose individual emails.")
+        if group is None:
+            group = {"source_sha256": source, "recipient": recipient, "personal_profile_id": profile,
+                     "member_indices": []}
+            groups.append(group)
+            if source:
+                by_source[source] = group
+        group["member_indices"].append(index)
+    for group in groups:
+        members = [intakes[index] for index in group["member_indices"]]
+        if len(members) > 1:
+            source_email_body(members, signature_name="")  # Validate custom-body handling before any writes.
+        group["group_id"] = "source-email-" + stable_json_hash({**group, "requests": [_intake_identity_payload(row) for row in members]})[:24]
+    return groups
+
+
+def build_source_email_groups(*, plans: list[dict[str, Any]], intakes: list[dict[str, Any]],
+                             items: list[dict[str, Any]], profiles: list[dict[str, Any]], paths: AppPaths) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for plan in plans:
+        indices = plan["member_indices"]
+        selected_items = [items[index] for index in indices]
+        child_payloads = [load_json(Path(item["draft_payload"])) for item in selected_items]
+        children: list[dict[str, Any]] = []
+        attachments: list[str] = []
+        for index, item, child_payload in zip(indices, selected_items, child_payloads):
+            errors = validate_draft_payload(child_payload)
+            if errors:
+                raise IntakeError("A source email group child is blocked: " + "; ".join(errors))
+            child = {key: child_payload.get(key, '') for key in ('case_number', 'service_date', 'service_period_label', 'service_start_time', 'service_end_time')}
+            child.update({key: child_payload[key] for key in ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding') if key in child_payload})
+            child.update(source_sha256=plan["source_sha256"], personal_profile_id=plan["personal_profile_id"],
+                         recipient=plan["recipient"], pdf=str(Path(item["pdf"]).resolve()),
+                         pdf_sha256=file_sha256(Path(item["pdf"])), draft_payload=str(Path(item["draft_payload"]).resolve()),
+                         draft_payload_sha256=file_sha256(Path(item["draft_payload"])))
+            children.append(child)
+            for attachment in child_payload["attachment_files"]:
+                if attachment not in attachments:
+                    attachments.append(attachment)
+        payload = copy.deepcopy(child_payloads[0])
+        # Claims live on each request; a group must never masquerade as one shared-trip owner.
+        for key in ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding'):
+            payload.pop(key, None)
+        if len(indices) > 1:
+            signature = build_rendered_request(intakes[indices[0]], profiles[indices[0]]).signature_name
+            payload['body'] = source_email_body([intakes[index] for index in indices], signature_name=signature)
+            payload['subject'] = ('Requerimentos de honorários' if any(intakes[index].get('claim_interpreting', True) for index in indices)
+                                  else 'Requerimentos de despesas de transporte')
+        payload.update(email_grouping='source', email_group_id=plan['group_id'], source_sha256=plan['source_sha256'],
+                       personal_profile_id=plan['personal_profile_id'], member_indices=indices,
+                       underlying_requests=children, child_payload_paths=[child['draft_payload'] for child in children],
+                       attachment_files=attachments, attachment_file_list=attachments,
+                       attachment_basenames=[Path(path).name for path in attachments],
+                       attachment_sha256={path: file_sha256(Path(path)) for path in attachments},
+                       additional_attachment_files=[path for path in attachments if path not in {child['pdf'] for child in children}])
+        payload['gmail_create_draft_args'] = {"to": payload['to'], "subject": payload['subject'], "body": payload['body'], "attachment_files": attachments}
+        errors = validate_draft_payload(payload)
+        if errors:
+            raise IntakeError("Source email group is blocked: " + "; ".join(errors))
+        payload_path = paths.draft_output_dir / f"{plan['group_id']}-{secrets.token_hex(4)}.draft.json"
+        payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        groups.append({**copy.deepcopy(plan), 'email_grouping': 'source', 'case_number': payload['case_number'],
+                       'service_date': payload['service_date'], 'service_period_label': payload['service_period_label'],
+                       'underlying_requests': children, 'child_payload_paths': payload['child_payload_paths'],
+                       'attachment_files': attachments, 'attachment_count': len(attachments),
+                       'attachment_sha256': payload['attachment_sha256'], 'pdf': children[0]['pdf'],
+                       'draft_payload': str(payload_path.resolve()), 'payload_path': str(payload_path.resolve()),
+                       'gmail_tool': '_create_draft', 'gmail_create_draft_args': payload['gmail_create_draft_args'],
+                       'subject': payload['subject'], 'body': payload['body'], 'draft_only': True, 'send_allowed': False,
+                       'gmail_create_draft_ready': True, 'gmail_create_draft_blocker': ''})
+    return groups
+
+
 def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[str, Any], *, signature_name: str = "") -> str:
     default_body = resolve_email_body({}, email_config, signature_name=signature_name)
     signature = "Example Interpreter"
@@ -6079,9 +6235,11 @@ def preflight_intakes(
     allow_existing_draft: bool = False,
     correction_reason: str = "",
     packet_mode: bool = False,
+    email_grouping: str = "individual",
 ) -> dict[str, Any]:
     if not intakes:
         raise IntakeError("At least one intake is required.")
+    email_grouping = normalize_email_grouping(email_grouping)
 
     normalized_correction_reason = str(correction_reason or "").strip()
     correction_mode = bool(normalized_correction_reason)
@@ -6101,7 +6259,15 @@ def preflight_intakes(
     group_error = ''
     try:
         validate_shared_travel_groups(effective_intakes, prior_requests=recorded_claims(paths))
-    except ClaimError as exc:
+        if correction_mode:
+            lifecycles = [draft_lifecycle_for_intake(intake, paths) for intake in effective_intakes]
+            if any(check['status'] != 'clear' and not check['replacement_allowed'] for check in lifecycles):
+                raise IntakeError('Correction mode cannot replace sent or non-replaceable requests.')
+            if not any(check['replacement_allowed'] for check in lifecycles):
+                raise IntakeError('Correction mode requires an existing active/drafted request in the reviewed batch.')
+            ids = sorted({draft_id for check in lifecycles for draft_id in _lifecycle_blocking_draft_ids(check)})
+            validate_superseded_request_coverage(effective_intakes, draft_log, ids)
+    except (ClaimError, IntakeError, ValueError) as exc:
         group_error = str(exc)
 
     for index, (intake_path, intake, generator_profile) in enumerate(zip(intake_paths, effective_intakes, generator_profiles), start=1):
@@ -6153,6 +6319,12 @@ def preflight_intakes(
             ))
 
     packet: dict[str, Any] | None = None
+    email_groups: list[dict[str, Any]] = []
+    if email_grouping == "source" and not packet_mode and not blockers:
+        try:
+            email_groups = source_email_group_plan(effective_intakes, [{"recipient": item["recipient"]} for item in items])
+        except IntakeError as exc:
+            blockers.append({"index": None, "message": str(exc), "send_allowed": False, "write_allowed": False})
     if packet_mode and not blockers:
         try:
             recipient = validate_packet_recipients(effective_intakes, email_config, court_directory)
@@ -6193,6 +6365,8 @@ def preflight_intakes(
         "write_allowed": False,
         "send_allowed": False,
         "packet_mode": bool(packet_mode),
+        "email_grouping": email_grouping,
+        "email_groups": email_groups,
         "correction_mode": correction_mode,
         "correction_reason": normalized_correction_reason,
         "items": items,
@@ -6214,6 +6388,7 @@ def preflight_intakes(
             packet_mode=bool(packet_mode),
             correction_mode=correction_mode,
             correction_reason=normalized_correction_reason,
+            email_grouping=email_grouping,
         )
     return result
 
@@ -6227,9 +6402,11 @@ def prepare_intakes(
     allow_existing_draft: bool = False,
     correction_reason: str = "",
     packet_mode: bool = False,
+    email_grouping: str = "individual",
 ) -> dict[str, Any]:
     if not intakes:
         raise IntakeError("At least one intake is required.")
+    email_grouping = normalize_email_grouping(email_grouping)
 
     normalized_correction_reason = str(correction_reason or "").strip()
     correction_mode = bool(normalized_correction_reason)
@@ -6251,11 +6428,18 @@ def prepare_intakes(
         for intake in effective_intakes:
             lifecycle = draft_lifecycle_for_intake(intake, paths)
             lifecycle_checks.append(lifecycle)
-            if not lifecycle["replacement_allowed"]:
+            if not lifecycle["replacement_allowed"] and lifecycle['status'] != 'clear':
                 raise IntakeError(
                     "Correction mode requires an existing active/drafted request for the same case/date/period, "
                     f"and cannot replace sent requests. {lifecycle['message']}"
                 )
+        if not any(lifecycle['replacement_allowed'] for lifecycle in lifecycle_checks):
+            raise IntakeError('Correction mode requires an existing active/drafted request in the reviewed batch.')
+        blocking_ids = sorted({draft_id for lifecycle in lifecycle_checks for draft_id in _lifecycle_blocking_draft_ids(lifecycle)})
+        try:
+            validate_superseded_request_coverage(effective_intakes, draft_log, blocking_ids)
+        except ValueError as exc:
+            raise IntakeError(str(exc)) from exc
 
     effective_allow_duplicate = bool(allow_duplicate or correction_mode)
     effective_allow_existing_draft = bool(allow_existing_draft or correction_mode)
@@ -6279,6 +6463,11 @@ def prepare_intakes(
 
     if packet_mode:
         validate_packet_recipients(effective_intakes, email_config, court_directory)
+
+    email_group_plans = []
+    if email_grouping == "source" and not packet_mode:
+        contacts = [{"recipient": resolve_recipient(intake, email_config, court_directory)[0]} for intake in effective_intakes]
+        email_group_plans = source_email_group_plan(effective_intakes, contacts)
 
     write_intake_files(effective_intakes, intake_paths)
 
@@ -6334,6 +6523,8 @@ def prepare_intakes(
             preview_warning=preview_warning,
             signature_name=build_rendered_request(effective_intakes[0], generator_profiles[0]).signature_name,
         )
+    email_groups = build_source_email_groups(plans=email_group_plans, intakes=effective_intakes, items=items,
+                                            profiles=generator_profiles, paths=paths) if email_group_plans else []
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"
     gmail_status = gmail_api_status(paths)
@@ -6345,6 +6536,8 @@ def prepare_intakes(
         packet_mode=bool(packet_mode),
         correction_mode=correction_mode,
         correction_reason=normalized_correction_reason,
+        email_grouping=email_grouping,
+        email_groups=email_groups,
     )
     prepared_review = _prepared_review_from_material(prepared_review_material)
     manifest = {
@@ -6355,6 +6548,8 @@ def prepare_intakes(
         "correction_mode": correction_mode,
         "correction_reason": normalized_correction_reason,
         "packet_mode": bool(packet_mode),
+        "email_grouping": email_grouping,
+        "email_groups": email_groups,
         "next_safe_action": prepared_next_safe_action(packet_mode=bool(packet_mode), gmail_status=gmail_status),
         "prepared_review": prepared_review,
         "prepared_review_material": prepared_review_material,
@@ -6423,7 +6618,7 @@ def _record_draft_once(payload: dict[str, Any], paths: AppPaths) -> None:
         args.extend(["--superseded-by", superseded_by])
     for draft_id in _coerce_supersedes(payload.get("supersedes")):
         args.extend(["--supersedes", draft_id])
-    notes = str(payload.get("notes") or "").strip()
+    notes = str(payload.get("correction_reason") or payload.get("reason") or payload.get("notes") or "").strip()
     if notes:
         args.extend(["--notes", notes])
 
@@ -6508,10 +6703,32 @@ def record_draft(
 ) -> dict[str, Any]:
     payload_path = str(payload.get("payload") or "").strip()
     status = str(payload.get("status") or "active").strip()
-    if payload_path and status in {"active", "drafted"}:
-        require_current_prepared_review(payload, payload_path, paths)
+    existing_sent_transition = status == 'sent' and any(row.get('draft_id') == payload.get('draft_id') for row in load_draft_log(paths.draft_log))
+    if not payload_path and status in {'active', 'drafted', 'sent'} and payload.get('draft_payload'):
+        alias = _resolve_optional_path(payload['draft_payload'])
+        if alias.is_file():
+            alias_data = load_json(alias)
+            if alias_data.get('email_grouping') == 'source':
+                # The compatibility alias must not bypass source-group review signing.
+                payload = {**payload, 'payload': str(alias)}
+                payload_path = str(alias)
+    if payload_path and (status in {"active", "drafted"} or (status == 'sent' and not existing_sent_transition and _load_draft_payload_for_response(payload).get('email_grouping') == 'source')):
+        review = require_current_prepared_review(payload, payload_path, paths)
         if require_handoff_reviewed_for_prepared_payload and not bool(payload.get("gmail_handoff_reviewed")):
             raise IntakeError("Review the PDF preview and exact Gmail draft args before local recording.")
+        _, draft_data = _load_prepared_draft_payload(payload_path)
+        if draft_data.get('email_grouping') == 'source':
+            superseded = _coerce_supersedes(payload.get('supersedes'))
+            if superseded and not review.get('correction_mode'):
+                raise IntakeError('Group replacement requires a prepared review created in correction mode.')
+            reason = _gmail_correction_reason(payload) or str(review.get('correction_reason') or '')
+            if review.get('correction_reason') and reason != review['correction_reason']:
+                raise IntakeError('Correction reason does not match the prepared review.')
+            try:
+                validate_source_group_history(draft_data, load_draft_log(paths.draft_log), read_json_list(paths.duplicate_index),
+                                              draft_id=str(payload.get('draft_id') or ''), supersedes=superseded, reason=reason, status=status)
+            except ValueError as exc:
+                raise IntakeError(str(exc)) from exc
 
     supersedes = _coerce_supersedes(payload.get("supersedes"))
     supersede_records: list[tuple[str, dict[str, Any]]] = []
@@ -6523,6 +6740,12 @@ def record_draft(
             if not old_record:
                 raise IntakeError(f"Cannot supersede unknown draft ID: {old_draft_id}")
             supersede_records.append((old_draft_id, old_record))
+
+        loaded_for_coverage = _load_draft_payload_for_response(payload)
+        try:
+            validate_superseded_request_coverage(_prepared_payload_request_identities(loaded_for_coverage or payload), draft_log, supersedes)
+        except ValueError as exc:
+            raise IntakeError(str(exc)) from exc
 
     _record_draft_once(payload, paths)
     superseded_drafts: list[str] = []
