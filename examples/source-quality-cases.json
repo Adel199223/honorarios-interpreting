@@ -1075,7 +1075,12 @@
       },
       "input": {
         "source_text": "Processo 710/26.0TSTXX. Serviço de interpretação realizado em 2026-09-26. Contactos: {{court_primary}} e {{court_other}}.",
-        "profile": "court_only"
+        "profile": "court_only",
+        "intake_overrides": {
+          "recipient_email": "",
+          "court_email": "",
+          "court_email_key": ""
+        }
       },
       "expected": {
         "candidate_fields": {

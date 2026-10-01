@@ -35,8 +35,8 @@ Then add only the details that are specific to the new source, such as a time pe
 Before generating a PDF, confirm these fields:
 
 - `case_number`: exact process number.
-- `service_date`: explicit service date in `YYYY-MM-DD`.
-- `photo_metadata_date`: image capture/service date in `YYYY-MM-DD` when the paper does not clearly state the service date.
+- `service_date`: selected interpreting date in `YYYY-MM-DD`, including the capture day when the saved photo-date default applies.
+- `photo_metadata_date`: actual image capture date in `YYYY-MM-DD`, kept separately from printed document dates.
 - `service_date_source`: one of `document_text`, `photo_metadata`, `document_text_and_photo_metadata`, `user_confirmed`, `user_confirmed_exception`, `document_text_user_confirmed`, or `photo_metadata_user_confirmed`.
 - `service_period_label`: optional label such as `morning` or `afternoon` when the same case has multiple services on the same date.
 - `service_start_time` and `service_end_time`: optional pair used when the declaration gives a specific time period.
@@ -92,7 +92,8 @@ It checks missing information, date conflicts, duplicates, PDF text content, dra
 
 When reading the source:
 
-- If the header is a court or Ministério Público and there is no separate GNR/PSP/police clue, infer that `payment_entity` and `service_entity` are the same.
+- If the saved photo-city court default applies, select the paying court/contact from the actual capture city. Automatic profiles and source court headers remain evidence and do not override this default; explicit profile choices and manual corrections remain exceptions.
+- Otherwise, if the header is a court or Ministério Público and there is no separate GNR/PSP/police clue, infer that `payment_entity` and `service_entity` are the same.
 - If the source mentions GNR, PSP, police, `posto`, `esquadra`, `destacamento`, `hospital`, `gabinete`, or another non-court service location, record that as `service_entity`.
 - If payment and service entities differ, set `entities_differ` to `true` and ensure the generated body explicitly mentions the service place.
 - For Polícia Judiciária sources, also record the local host building and city, such as `Posto da GNR de Ferreira do Alentejo` or `Gabinete Médico-Legal de Beja, Hospital José Joaquim Fernandes - Beja`. PJ commonly uses another building away from its own office, so `Polícia Judiciária` or `Diretoria` alone is not enough.
@@ -111,14 +112,18 @@ Canonical examples:
 
 For photographed documents:
 
-- Use `service_date` when the paper explicitly says the date the interpreting service happened.
-- Use `photo_metadata_date` as the priority signal when the visible image metadata gives the relevant date.
+- With the saved photo-date default enabled, use one unambiguous capture day for `service_date` and preserve any different printed date as evidence.
+- Without that preference, use an explicit performed-service date and ask before accepting an uploaded capture-only date.
 - Do not use printed appointment timestamps, procedural timestamps, closing dates, or document creation dates as the service date unless the user confirms.
-- If `service_date` and `photo_metadata_date` conflict and both seem plausible service dates, ask a numbered clarification question.
+- Ask when capture evidence is missing or competing, or when an unresolved document/capture conflict has no saved default or manual confirmation. A deliberately cleared date stays missing through review.
 - When the user confirms an exception, set `service_date_source` to `user_confirmed_exception`.
 - Put the reason in `notes`, for example: `User confirmed this exceptional case uses the printed 2026-02-12 timestamp instead of the 2026-02-16 photo metadata date.`
 
 ## Transport Fields
+
+The optional `claim_interpreting` boolean defaults to `true` for compatibility. Together with `claim_transport`, it expresses three choices: both claims, interpreting only, or travel only. At least one claim must be selected. Travel-only means the request claims attendance travel; it does not by itself prove whether interpreting did or did not occur. Its PDF must not assert performed interpreting or include the existing service-specific IVA/IRS sentence.
+
+For several requests from one explicitly shared visit, assign the same optional `travel_group_id` to those requests and select exactly one transport claimant when travel is requested. Other requests normally keep interpreting only. The selected date, physical venue, itinerary and personal profile must agree. Separate visits remain separate groups even if their date/city matches. Existing case/date/period duplicate protection remains in force, independently of claim choice.
 
 If transport is claimed, confirm:
 
@@ -162,9 +167,10 @@ python scripts/build_email_draft.py <intake-json> --pdf <generated-pdf>
 
 Recipient rules:
 
-- Use a court email found in the source text/image if one is present.
-- Otherwise use `court_email`, `recipient_email`, or a valid `court_email_key` from the intake if present. Unknown `court_email_key` values must fail instead of falling back.
-- Otherwise use `court@example.test`.
+- When the saved photo-city court default applies, use its verified court contact coherently with the selected payer/addressee. A source footer cannot replace that recipient. Missing or ambiguous city/contact information asks instead of using a general email fallback.
+- Without photo routing, use a court email found in the source text/image when it matches the paying authority, or use `court_email`, `recipient_email`, or a valid `court_email_key` from the intake. Unknown keys must fail instead of falling back.
+- A configured general recipient is a fallback only when the workflow permits it; `court@example.test` is a fictional fixture address, not a production court contact.
+- Changing the payer clears the old address/contact/key. A deliberately cleared photo-routing recipient remains missing through review, including explicit-profile mode.
 - The recipient should be the payment entity/court address, not necessarily the physical service entity.
 
 Create a Gmail draft only. Do not send. Draft payloads must validate before Gmail: `attachment_files` must be an array of absolute existing files, `gmail_create_draft_args` must be present, `draft_only` must be true, `send_allowed` must be false, and `gmail_create_draft_ready` must be true.
@@ -175,10 +181,10 @@ After draft creation, record the returned draft ID/message ID/thread ID in `data
 
 Ask the user instead of guessing:
 
-- Service date.
+- Service date when no unambiguous saved photo-date default or explicit confirmation supplies it.
 - Process number.
 - Whether to claim transport expenses.
 - Kilometers when no known destination matches.
-- Addressee when the photo does not identify the tribunal or Ministerio Publico.
+- Addressee when neither the confirmed source nor the saved capture-city court mapping supplies it.
 - Recipient/payment mismatch when the payment entity maps to a known court email but the intake points somewhere else. Ask or require `recipient_override_reason`.
 - Polícia Judiciária host building/city when the source shows PJ but does not identify the local place used for the service.

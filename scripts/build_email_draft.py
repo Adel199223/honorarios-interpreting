@@ -12,9 +12,11 @@ from typing import Any
 try:
     from scripts.entity_rules import normalize_text, resolve_entities
     from scripts.generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
+    from scripts.claim_options import ClaimError, claim_metadata, profile_binding, validate_claims, validate_travel_payload_groups
 except ModuleNotFoundError:
     from entity_rules import normalize_text, resolve_entities
     from generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
+    from claim_options import ClaimError, claim_metadata, profile_binding, validate_claims, validate_travel_payload_groups
 
 
 DEFAULT_EMAIL_CONFIG = ROOT / "config" / "email.json"
@@ -52,18 +54,18 @@ def find_directory_email(intake: dict[str, Any], directory: list[dict[str, Any]]
     key = str(intake.get("court_email_key") or "").strip().lower()
     if not key:
         return None
-    for record in directory:
-        if str(record.get("key") or "").lower() == key:
-            return str(record.get("email") or "").strip().lower()
+    matches = {str(record.get('email') or '').strip().lower() for record in directory
+               if str(record.get('key') or '').strip().lower() == key}
+    if matches:
+        if len(matches) != 1 or not next(iter(matches)):
+            raise IntakeError('Selected court_email_key has conflicting or missing saved emails. Correct that saved contact before preparing.')
+        return next(iter(matches))
     available = ", ".join(sorted(str(record.get("key") or "") for record in directory if record.get("key")))
     raise IntakeError(f"Unknown court_email_key: {key}. Available keys: {available}")
 
 
 def expected_email_for_payment_entity(intake: dict[str, Any], directory: list[dict[str, Any]]) -> str | None:
-    key = str(intake.get("court_email_key") or "").strip().lower()
-    if key:
-        return find_directory_email(intake, directory)
-
+    # A selected key is a recipient choice, not evidence of the independent payer.
     payment_entity = str(intake.get("payment_entity") or intake.get("addressee") or "").strip()
     if not payment_entity:
         return None
@@ -71,28 +73,35 @@ def expected_email_for_payment_entity(intake: dict[str, Any], directory: list[di
     if not payment_key:
         return None
 
+    matches: list[tuple[tuple[bool, int], str]] = []
     for record in directory:
         aliases = record.get("payment_entity_aliases") or []
         if not isinstance(aliases, list):
             continue
         for alias in aliases:
             alias_key = compact_entity(str(alias or ""))
-            if alias_key and (alias_key == payment_key or alias_key in payment_key):
+            if alias_key and f' {alias_key} ' in f' {payment_key} ':
                 email = str(record.get("email") or "").strip().lower()
-                return email or None
-    return None
+                matches.append(((alias_key == payment_key, len(alias_key.split())), email))
+    if not matches:
+        return None
+    best = max(score for score, _email in matches)
+    emails = {email for score, email in matches if score == best}
+    if len(emails) != 1 or not next(iter(emails)):
+        raise IntakeError('The paying court matches conflicting or incomplete saved contacts. Specify the local paying court, correct the contact aliases, or confirm an intentional recipient_override_reason with an explicit recipient.')
+    return next(iter(emails))
 
 
 def validate_recipient_consistency(intake: dict[str, Any], recipient: str, directory: list[dict[str, Any]]) -> None:
-    expected = expected_email_for_payment_entity(intake, directory)
-    if not expected or recipient == expected:
-        return
     override_reason = str(
         intake.get("recipient_override_reason")
         or intake.get("court_email_override_reason")
         or ""
     ).strip()
     if override_reason:
+        return
+    expected = expected_email_for_payment_entity(intake, directory)
+    if not expected or recipient == expected:
         return
     payment_entity = str(intake.get("payment_entity") or intake.get("addressee") or "").strip()
     raise IntakeError(
@@ -104,6 +113,25 @@ def validate_recipient_consistency(intake: dict[str, Any], recipient: str, direc
 
 def resolve_recipient(intake: dict[str, Any], email_config: dict[str, Any], directory: list[dict[str, Any]]) -> tuple[str, str]:
     validate_explicit_email_fields(intake)
+    selected = [(key, str(intake.get(key) or '').strip().lower()) for key in ('recipient_email', 'court_email')
+                if str(intake.get(key) or '').strip()]
+    directory_email = find_directory_email(intake, directory)
+    if directory_email:
+        selected.append(('court_email_key', directory_email))
+    # An explicit selection resolves footer ambiguity, but each populated choice
+    # must still agree with the independent payer unless intentionally overridden.
+    for _key, recipient in selected:
+        validate_recipient_consistency(intake, recipient, directory)
+    if selected:
+        override_reason = str(intake.get('recipient_override_reason') or intake.get('court_email_override_reason') or '').strip()
+        if len({recipient for _key, recipient in selected}) > 1 and not override_reason:
+            raise IntakeError('Explicit recipient fields and selected saved contact disagree. Clear the old contact or choose matching recipient fields before preparing.')
+        return selected[0][1], selected[0][0]
+    photo_policy = intake.get("photo_defaults_applied")
+    if isinstance(photo_policy, dict) and "routing_status" in photo_policy:
+        # A chosen city-court default/manual exception outranks unrelated source
+        # footer contacts. Never resurrect the generic email fallback here.
+        raise IntakeError("The photo-city court recipient is missing. Enter the paying court's verified email address.")
     source_text = "\n".join(
         str(intake.get(key) or "")
         for key in ("source_text", "notes", "addressee", "service_place")
@@ -119,16 +147,9 @@ def resolve_recipient(intake: dict[str, Any], email_config: dict[str, Any], dire
         validate_recipient_consistency(intake, recipient, directory)
         return recipient, "source_text"
 
-    for key in ("court_email", "recipient_email"):
-        value = str(intake.get(key) or "").strip().lower()
-        if value and COURT_EMAIL_RE.fullmatch(value):
-            validate_recipient_consistency(intake, value, directory)
-            return value, key
-
-    directory_email = find_directory_email(intake, directory)
-    if directory_email:
-        validate_recipient_consistency(intake, directory_email, directory)
-        return directory_email, "court_email_key"
+    payer_email = expected_email_for_payment_entity(intake, directory)
+    if payer_email:
+        return payer_email, 'payment_entity_directory'
 
     fallback = str(email_config.get("default_to") or "").strip().lower()
     if not fallback:
@@ -206,6 +227,11 @@ def attachment_array_errors(value: Any, field_name: str) -> list[str]:
 
 def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    try:
+        children = payload.get('underlying_requests')
+        validate_travel_payload_groups(children if isinstance(children, list) and children else [payload])
+    except ClaimError as exc:
+        errors.append(str(exc))
     if payload.get("gmail_tool") != "_create_draft":
         errors.append("gmail_tool must be _create_draft.")
     if payload.get("draft_only") is not True:
@@ -236,10 +262,25 @@ def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
 
 
 def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, signature_name: str = "") -> str:
+    try:
+        interpreting, transport = validate_claims(intake)
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
     # A request-specific body remains verbatim. Configured bodies opt into the
     # selected PDF signature only by containing this exact template token.
     if intake.get("email_body"):
-        return str(intake["email_body"])
+        body = str(intake["email_body"])
+        if not interpreting and custom_transport_body_conflict(body):
+            raise IntakeError('Travel-only email_body requests interpreting fees or asserts performed interpreting. Edit the custom body to request only transport, or change the claim choice.')
+        return body
+    if not interpreting and transport:
+        signature = str(signature_name or '').strip()
+        if not signature:
+            raise IntakeError('The travel-only email requires the selected profile signature_name.')
+        return ('Bom dia,\n\nVenho por este meio requerer o pagamento das despesas de transporte '
+                'relativas à minha comparência na qualidade de intérprete.\n\n'
+                'Poderão encontrar o requerimento de despesas de transporte em anexo.\n\n'
+                f'Melhores cumprimentos,\n\n{signature}')
     body = str(email_config.get("body") or "")
     if "{{signature_name}}" in body:
         signature = str(signature_name or "").strip()
@@ -249,7 +290,21 @@ def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, 
     return body
 
 
-def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: dict[str, Any], directory: list[dict[str, Any]], *, signature_name: str = "") -> dict[str, Any]:
+def custom_transport_body_conflict(body: str) -> bool:
+    for sentence in re.split(r'[.!?\n]+', normalize_text(body)):
+        # Remove only an explicitly negated fee/work clause, never a whole sentence.
+        sentence = re.sub(r'\bnao\s+(?:requeiro|solicito|reclamo)\s+(?:o\s+)?(?:pagamento\s+(?:de|dos)\s+)?honorarios(?:\s+devidos)?', '', sentence)
+        sentence = re.sub(r'\bnao\s+prestei\s+(?:o\s+)?(?:servico\s+de\s+)?interpretacao\b', '', sentence)
+        if re.search(r'\b(?:pagamento|requerer|requeiro|solicito|solicitar)\b[^.!?\n]{0,120}\bhonorarios\b', sentence):
+            return True
+        if re.search(r'\bhonorarios\s+devidos\b|\bprestei\s+(?:o\s+)?(?:servico\s+de\s+)?interpretacao\b', sentence):
+            return True
+        if re.search(r'\b(?:servico\s+de\s+interpretacao|diligencia)\b[^.!?\n]{0,60}\b(?:realizad[oa]|prestad[oa])\b', sentence):
+            return True
+    return False
+
+
+def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: dict[str, Any], directory: list[dict[str, Any]], *, signature_name: str = "", personal_profile_key: str = "") -> dict[str, Any]:
     recipient, recipient_source = resolve_recipient(intake, email_config, directory)
     absolute_pdf = pdf_path.resolve()
     if not absolute_pdf.exists():
@@ -263,6 +318,8 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
     attachment_path_strings = [str(path) for path in attachment_paths]
     attachment_hashes = {str(path): file_sha256(path) for path in attachment_paths}
     subject = str(email_config.get("subject") or "Requerimento de honorários")
+    if intake.get('claim_interpreting', True) is False:
+        subject = 'Requerimento de despesas de transporte'
     body = resolve_email_body(intake, email_config, signature_name=signature_name)
     has_custom_body = bool(str(intake.get("email_body") or "").strip())
     gmail_create_draft_ready = True
@@ -302,6 +359,10 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
         "gmail_create_draft_blocker": gmail_create_draft_blocker,
         "safety_note": "Create a Gmail draft only. Do not send unless the user explicitly asks after reviewing.",
     }
+    try:
+        payload.update(claim_metadata(intake, personal_profile_key=personal_profile_key))
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
     if isinstance(intake.get("underlying_requests"), list):
         payload["underlying_requests"] = intake["underlying_requests"]
     return payload
@@ -326,10 +387,12 @@ def main(argv: list[str] | None = None) -> int:
         email_config = load_json(args.email_config)
         directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
         signature_name = ""
-        if not intake.get("email_body") and "{{signature_name}}" in str(email_config.get("body") or ""):
+        personal_profile_key = ''
+        if intake.get('travel_group_id') or (not intake.get("email_body") and (intake.get('claim_interpreting', True) is False or "{{signature_name}}" in str(email_config.get("body") or ""))):
             profile = load_json(args.profile)
             signature_name = str(profile.get("signature_name") or profile.get("applicant_name") or "")
-        payload = build_email_payload(intake, args.pdf, email_config, directory, signature_name=signature_name)
+            personal_profile_key = profile_binding(profile)
+        payload = build_email_payload(intake, args.pdf, email_config, directory, signature_name=signature_name, personal_profile_key=personal_profile_key)
         output_path = args.output or default_output_path(args.pdf)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

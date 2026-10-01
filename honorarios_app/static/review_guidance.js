@@ -84,10 +84,14 @@ export function projectWorkflowGuidance({ status = "idle", hasPrepared = false, 
 export function profileFallbackNotice(data = {}, intake = {}) {
   const decision = data.review_evidence?.auto_profile || data.source_evidence?.auto_profile || intake.auto_profile || {};
   if (decision.mode !== "auto_fallback") return null;
+  const photoCourt = intake.photo_defaults_applied;
+  const photoCourtApplied = photoCourt?.routing_status === "applied" && photoCourt.payment_entity === intake.payment_entity;
   return {
     confidence: decision.confidence || "low",
     profile: decision.profile_key || "No profile selected",
-    reason: decision.reason || "No confident service-profile match was found. Check the payment entity and recipient before preparing.",
+    reason: photoCourtApplied
+      ? `No recurring service profile matched. Your saved photo-city default selected the court for ${photoCourt.photo_city}. You can edit an exception.`
+      : decision.reason || "No confident service-profile match was found. Check the payment entity and recipient before preparing.",
     paymentEntity: intake.payment_entity || "Needs an answer",
     recipient: data.recipient || intake.recipient_email || "Needs an answer",
   };
@@ -97,6 +101,13 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   if (!String(value || "").trim()) return { kind: "missing", label: "Needs an answer" };
   if (field === "service_date" && ["user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed"].includes(intake.service_date_source)) {
     return { kind: "manual", label: "You confirmed this date" };
+  }
+  const photoDefault = intake.photo_defaults_applied?.[field];
+  if (photoDefault && String(photoDefault).trim().toLowerCase() === String(value).trim().toLowerCase()) {
+    const label = field === "service_date" ? "Your photo-date default · editable"
+      : field === "service_place" ? "Your photo-city court venue default · editable"
+      : "Your photo-city court default · editable";
+    return { kind: "default", label };
   }
   const evidence = data.review_evidence || data.source_evidence || {};
   const fields = Array.isArray(evidence.field_evidence)
@@ -112,6 +123,7 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
     return { kind: "source", label: "From source text · check it" };
   }
   if (source === "user_confirmed") return { kind: "manual", label: "You confirmed this date" };
+  if (source === "photo_default") return { kind: "default", label: "Your saved photo default · editable" };
   if (source === "service_profile") return { kind: "default", label: "Profile default · check it" };
   if (source === "known_destination") return { kind: "default", label: "Saved place/distance · check it" };
   if (["image_metadata", "visible_google_photos_metadata"].includes(source)) {
@@ -277,4 +289,185 @@ export function beginnerNeededLabels(questions) {
     if (label && !labels.includes(label)) labels.push(label);
   });
   return labels;
+}
+
+function copySourceCase(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+export function mergeSourceReviewEvidence(review = {}, previous = {}) {
+  const source = { ...copySourceCase(previous), ...copySourceCase(review.source_evidence) };
+  const evidence = { ...source, ...copySourceCase(review.review_evidence) };
+  // Review values and attention belong to the selected case and latest check.
+  // The immutable uploaded file and its preview still belong to the source.
+  ["filename", "kind", "source_kind", "sha256", "artifact_url", "metadata", "rendered_page_urls", "rendered_page_count"].forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(source, field)) evidence[field] = source[field];
+  });
+  return evidence;
+}
+
+export function sourceCaseCandidatesFromUpload(data = {}) {
+  const candidates = Array.isArray(data.case_candidates) ? data.case_candidates : [];
+  if (candidates.length <= 1) return [];
+  // Preserve unresolved rows as well as readable cases. The server's ordinary
+  // review decides whether each one is ready; the browser never guesses a case.
+  return candidates.map((candidate) => {
+    const intake = copySourceCase(candidate.candidate_intake);
+    const review = copySourceCase(candidate.review);
+    return {
+      candidate_intake: intake,
+      review: { ...review, candidate_intake: intake,
+        source: review.source || copySourceCase(data.source),
+        source_evidence: mergeSourceReviewEvidence(review, data.source_evidence) },
+      answers: "",
+      needs_review: false,
+    };
+  });
+}
+
+export function sourceCaseReadiness(candidate = {}) {
+  const review = candidate.review || {};
+  const status = candidate.needs_review ? "needs_review" : String(review.status || "blocked");
+  return { status, ready: claimMode(candidate.candidate_intake) !== "neither" && !candidate.needs_review && review.status === "ready"
+    && Boolean(String(candidate.candidate_intake?.case_number || "").trim())
+    && !(Array.isArray(review.questions) && review.questions.length)
+    && review.next_safe_action?.blocked !== true };
+}
+
+export function claimMode(intake = {}) {
+  const interpreting = intake.claim_interpreting !== false;
+  const transport = intake.claim_transport !== false;
+  return interpreting ? (transport ? "both" : "interpreting_only") : (transport ? "travel_only" : "neither");
+}
+
+export function claimModeLabel(intake = {}) {
+  return { both: "Interpreting + travel", interpreting_only: "Interpreting only", travel_only: "Travel only", neither: "Choose a claim" }[claimMode(intake)];
+}
+
+export function intakeWithClaimMode(intake, mode) {
+  if (!["both", "interpreting_only", "travel_only"].includes(mode)) throw new Error("Choose interpreting + travel, interpreting only, or travel only.");
+  return { ...copySourceCase(intake), claim_interpreting: mode !== "travel_only", claim_transport: mode !== "interpreting_only" };
+}
+
+export function sharedSourceTravelEligibility(candidates = []) {
+  if (candidates.length < 2) return { eligible: false, reason: "A shared trip needs more than one case from this source." };
+  const fields = ["source_sha256", "service_date", "service_place"];
+  for (const field of fields) {
+    const values = candidates.map((candidate) => String(candidate.candidate_intake?.[field] || "").trim().replace(/\s+/g, " ").toLowerCase());
+    if (!values[0] || values.some((value) => !value || value !== values[0])) {
+      return { eligible: false, reason: "Shared trip paused: every case must have the same source, service date and physical venue. Correct the visit details, or choose Separate trips." };
+    }
+  }
+  const profiles = candidates.map((candidate) => String(candidate.candidate_intake?.personal_profile_id || "").trim());
+  const destinations = candidates.map((candidate) => String(candidate.candidate_intake?.transport?.destination || "").trim().replace(/\s+/g, " ").toLowerCase());
+  const origins = candidates.map((candidate) => String(candidate.candidate_intake?.transport?.origin || "").trim().replace(/\s+/g, " ").toLowerCase());
+  if (!profiles[0] || !destinations[0] || new Set(profiles).size > 1 || new Set(destinations).size > 1 || new Set(origins).size > 1) {
+    return { eligible: false, reason: "Shared trip paused: personal profiles, travel origins or destinations differ or need review. Correct the visit details, or choose Separate trips." };
+  }
+  return { eligible: true, reason: "" };
+}
+
+export function sourceTravelGroupId(candidates = []) {
+  const hashes = candidates.map((candidate) => String(candidate.candidate_intake?.source_sha256 || "").trim());
+  return hashes.length > 1 && hashes[0] && hashes.every((hash) => hash === hashes[0]) ? `source-trip-${hashes[0]}` : "";
+}
+
+export function sourceCasesWithTravelChoice(candidates, mode, ownerIndex = 0, groupId = "") {
+  const copied = copySourceCase(candidates);
+  if (!["shared", "separate", "none"].includes(mode)) throw new Error("Choose one shared trip, separate trips, or no travel.");
+  if (mode === "shared") {
+    const eligibility = sharedSourceTravelEligibility(candidates);
+    if (!eligibility.eligible) return { candidates: copied, blocked_reason: eligibility.reason };
+    if ((ownerIndex !== null && (!Number.isInteger(ownerIndex) || !copied[ownerIndex])) || !groupId) throw new Error("Choose which case carries the shared trip.");
+  }
+  copied.forEach((candidate, index) => {
+    const intake = candidate.candidate_intake;
+    const before = JSON.stringify(intake);
+    intake.claim_interpreting = intake.claim_interpreting !== false;
+    intake.claim_transport = mode === "separate" || (mode === "shared" && index === ownerIndex);
+    if (mode === "shared") intake.travel_group_id = groupId;
+    else delete intake.travel_group_id;
+    if (before !== JSON.stringify(intake)) candidate.needs_review = true;
+  });
+  return { candidates: copied, blocked_reason: "" };
+}
+
+export function sourceCasesMatchSharedTravelChoice(candidates, ownerIndex, groupId) {
+  return Boolean(groupId) && sharedSourceTravelEligibility(candidates).eligible
+    && (ownerIndex === null || (Number.isInteger(ownerIndex) && Boolean(candidates[ownerIndex])))
+    && candidates.every((candidate, index) => candidate.candidate_intake?.travel_group_id === groupId
+      && candidate.candidate_intake?.claim_transport === (index === ownerIndex));
+}
+
+export async function reviewSourceCaseCandidates(candidates, requestReview, isCurrent = () => true) {
+  const reviewed = [];
+  for (const candidate of candidates) {
+    if (!isCurrent()) return null;
+    const intake = copySourceCase(candidate.candidate_intake);
+    let result;
+    try {
+      result = await requestReview(intake);
+    } catch (error) {
+      if (!isCurrent()) return null;
+      throw error;
+    }
+    if (!isCurrent()) return null;
+    let review = retainCaptureDateOrigin({ ...result,
+      source: result.source || candidate.review?.source }, candidate.review);
+    review = { ...review, source_evidence: mergeSourceReviewEvidence(review, candidate.review?.source_evidence) };
+    reviewed.push({ ...copySourceCase(candidate),
+      candidate_intake: copySourceCase(review.effective_intake || review.intake || intake),
+      review, needs_review: false });
+  }
+  return reviewed;
+}
+
+export function browserRequestIdentityKey(intake = {}) {
+  const caseNumber = String(intake.case_number || "").replace(/\s+/g, "").toUpperCase().replace(/^0+(?=\d)/, "");
+  return [caseNumber, String(intake.service_date || "").trim(),
+    String(intake.service_period_label || "").trim().replace(/\s+/g, " ").toLowerCase()].join("|");
+}
+
+export function preparedFirstRequestReview(prepared = {}, reviews = []) {
+  return preparedRequestReview(prepared, reviews, 0);
+}
+
+export function preparedRequestReview(prepared = {}, reviews = [], index = 0) {
+  const first = prepared?.items?.[index];
+  if (!first) return null;
+  // The prepared manifest is the snapshot used to create these PDFs. A current
+  // source selection can belong to another request and must not supply facts.
+  const intake = copySourceCase(prepared.prepared_review_material?.effective_intakes?.[index]
+    || first.effective_intake || first.intake || {
+      case_number: first.case_number || "", service_date: first.service_date || "",
+      payment_entity: first.payment_entity || "", service_place: first.service_place || "",
+      recipient_email: first.recipient || "",
+      claim_interpreting: first.claim_interpreting !== false, claim_transport: first.claim_transport !== false,
+    });
+  const matched = reviews.find((review) => {
+    const candidate = review?.effective_intake || review?.intake || review?.candidate_intake || {};
+    return browserRequestIdentityKey(candidate) === browserRequestIdentityKey(intake)
+      && String(candidate.source_sha256 || "") === String(intake.source_sha256 || "");
+  }) || {};
+  return { ...copySourceCase(matched), intake, effective_intake: intake,
+    case_number: first.case_number || intake.case_number || "",
+    service_date: first.service_date || intake.service_date || "",
+    recipient: first.recipient || intake.recipient_email || "", questions: [] };
+}
+
+export function duplicateSourceCaseIndices(candidates = []) {
+  const firstByIdentity = new Map();
+  const duplicates = new Set();
+  candidates.forEach((candidate, index) => {
+    const intake = candidate.candidate_intake || {};
+    if (!String(intake.case_number || "").trim()) return;
+    const identity = browserRequestIdentityKey(intake);
+    if (firstByIdentity.has(identity)) {
+      duplicates.add(firstByIdentity.get(identity));
+      duplicates.add(index);
+    } else {
+      firstByIdentity.set(identity, index);
+    }
+  });
+  return [...duplicates].sort((left, right) => left - right);
 }

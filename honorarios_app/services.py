@@ -74,11 +74,14 @@ from scripts.prepare_honorarios import (
 )
 from scripts.record_gmail_draft import main as record_gmail_draft_main
 from scripts.request_identity import normalize_case_number, request_identity_key
+from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
 from scripts.entity_rules import classify_entity_type, source_mentions_pj_context
 from scripts.source_parsing import explicit_service_places, service_date_evidence
 from scripts.source_classification import detect_translation_source, format_translation_rejection
 
 from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
+from .source_cases import source_case_rows, valid_source_case
+from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gmail_draft_api import (
     create_gmail_draft_from_payload,
     gmail_oauth_callback,
@@ -640,9 +643,9 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
         fields["service_date"] = service_date
         fields["service_date_source"] = "document_text"
 
-    email_match = EMAIL_RE.search(source_text)
-    if email_match:
-        fields["recipient_email"] = email_match.group(0).lower()
+    source_emails = {email.lower() for email in EMAIL_RE.findall(source_text)}
+    if len(source_emails) == 1:
+        fields["recipient_email"] = next(iter(source_emails))
 
     place_fields, _warning = _source_place_fields(source_text, paths)
     fields.update(place_fields)
@@ -1010,6 +1013,9 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     This wrapper gives manual/pasted review the same proactive help without
     saving reference data or skipping the normal duplicate/PDF/Gmail guards.
     """
+    intake = copy.deepcopy(intake)
+    reconcile_photo_venue_edit(intake)
+    _normalize_source_case_confirmation(intake)
     profiles = _load_available_service_profiles(paths)
     requested_profile = _requested_service_profile_from_intake(intake)
     existing_auto = intake.get("auto_profile")
@@ -1040,6 +1046,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
         profile_key = str(profile_decision.get("profile_key") or "").strip()
         defaults = _service_profile_defaults(profile_key, profiles)
         reviewed_intake = deep_merge(defaults, remove_empty_values(reviewed_intake))
+        preserve_photo_routing(intake, reviewed_intake)
         reviewed_intake["service_profile_key"] = profile_key
         reviewed_intake.setdefault("closing_date", app_current_date())
     reviewed_intake["auto_profile"] = profile_decision
@@ -1165,7 +1172,7 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
     date_evidence = service_date_evidence(str(intake.get("source_text") or ""))
 
     raw_case = _first_ai_field(ai_recovery, "raw_case_number", "source_case_number", "case_number").upper()
-    if raw_case and not intake.get("case_number"):
+    if raw_case and not intake.get("case_number") and valid_source_case(raw_case):
         intake["raw_case_number"] = raw_case
         intake["source_case_number"] = raw_case
         intake["case_number"] = normalize_case_number(raw_case)
@@ -1190,7 +1197,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         intake["source_document_timestamp"] = source_timestamp
 
     court_email = _first_ai_field(ai_recovery, "court_email", "recipient_email")
-    if court_email and _looks_like_email(court_email):
+    source_emails = {email.lower() for email in EMAIL_RE.findall(str(intake.get('source_text') or ''))}
+    if len(source_emails) <= 1 and court_email and _looks_like_email(court_email):
         raw_text = raw_visible_text.casefold()
         existing_email = str(intake.get("recipient_email") or "").strip()
         if not existing_email or court_email.casefold() in raw_text:
@@ -1358,6 +1366,55 @@ def store_supporting_attachment_upload(
     }
 
 
+def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    candidate = result['candidate_intake']
+    rows = source_case_rows(result['extracted_text'], result['ai_recovery']) if result['source']['source_kind'] == 'photo' else []
+    if not rows:
+        existing_case = str(candidate.get('case_number') or '')
+        rows = [{'case_number': existing_case, 'raw_case_number': str(candidate.get('raw_case_number') or existing_case)}]
+    case_candidates = []
+    for row in rows:
+        child = copy.deepcopy(candidate)
+        child.update(case_number=row['case_number'], raw_case_number=row['raw_case_number'],
+                     source_case_number=row['raw_case_number'])
+        child['source_case_numbers'] = [item['case_number'] for item in rows if item['case_number']]
+        if not row['case_number']:
+            child['case_number_requires_confirmation'] = True
+        # Source rows must carry the selected effective profile before UI grouping.
+        child, _, _ = effective_intake_for_profile(child, paths)
+        child_review = review_intake(child, paths)
+        child = copy.deepcopy(child_review.get('effective_intake') or child)
+        evidence = build_field_evidence(
+            candidate=child, deterministic_fields=extract_candidate_fields(result['extracted_text'], paths),
+            metadata=result['source']['metadata'], ai_recovery=result['ai_recovery'],
+            profile_decision=child.get('auto_profile') or {}, profiles=_load_available_service_profiles(paths),
+        )
+        proposal = build_profile_proposal(child, child.get('auto_profile') or {}, _load_available_service_profiles(paths))
+        attention = build_source_attention(candidate=child, review=child_review, ai_recovery=result['ai_recovery'],
+            profile_decision=child.get('auto_profile') or {}, profile_proposal=proposal,
+            field_evidence=evidence, warnings=result['source_evidence'].get('warnings') or [])
+        child_review['review_evidence'] = {**copy.deepcopy(result['source_evidence']),
+            'case_number': child.get('case_number', ''), 'raw_case_number': child.get('raw_case_number', ''),
+            'question_count': len(child_review.get('questions') or []), 'field_evidence': evidence,
+            'attention': attention, 'profile_proposal': proposal}
+        child_review['profile_proposal'] = proposal
+        case_candidates.append({'candidate_intake': child, 'review': child_review})
+    result['case_count'] = len(case_candidates)
+    result['case_candidates'] = case_candidates
+    result['candidate_intake'] = case_candidates[0]['candidate_intake']
+    result['review'] = case_candidates[0]['review']
+    # Preserve source-upload evidence while making the selected case coherent.
+    evidence = copy.deepcopy(case_candidates[0]['review']['review_evidence'])
+    selected = result['candidate_intake']
+    evidence.update(case_number=selected.get('case_number', ''), raw_case_number=selected.get('raw_case_number', ''),
+                    case_count=len(case_candidates), case_numbers=selected.get('source_case_numbers', []),
+                    question_count=len(result['review'].get('questions') or []),
+                    field_evidence=case_candidates[0]['review']['review_evidence']['field_evidence'])
+    result['source_evidence'] = evidence
+    result['profile_proposal'] = case_candidates[0]['review']['profile_proposal']
+    return result
+
+
 def artifact_root(root_key: str, paths: AppPaths) -> Path:
     roots = {
         "sources": paths.source_upload_dir,
@@ -1413,6 +1470,7 @@ def build_partial_intake_from_profile(
     extracted_text: str,
     metadata: dict[str, Any],
     paths: AppPaths,
+    contact_text: str | None = None,
 ) -> dict[str, Any]:
     profiles = _load_available_service_profiles(paths)
     selected_profile = str(profile_name or "").strip()
@@ -1436,6 +1494,10 @@ def build_partial_intake_from_profile(
         intake["source_text"] = extracted_text.strip()
 
     fields = extract_candidate_fields(extracted_text, paths)
+    # Consider both independent text and recovered visible text before choosing
+    # a source contact. Saved profile contacts are retained when sources conflict.
+    if contact_text is not None and len({email.lower() for email in EMAIL_RE.findall(contact_text)}) > 1:
+        fields.pop('recipient_email', None)
     extracted_service_date = str(fields.get("service_date") or "").strip()
     transport_destination = fields.pop("transport_destination", "")
     km_one_way = fields.pop("km_one_way", "")
@@ -1544,8 +1606,14 @@ def recover_source_upload(
         extracted_text=extracted_text,
         metadata=metadata,
         paths=paths,
+        contact_text=combine_text_parts(extracted_text, str(ai_recovery.get('raw_visible_text') or '')),
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
+    apply_photo_defaults(
+        candidate, preferences=load_photo_defaults(paths.ai_config), metadata=metadata,
+        ai_recovery=ai_recovery, directory=read_json_list(paths.court_emails),
+        explicit_profile=profile_decision.get('mode') == 'explicit_profile',
+    )
     if (
         str(candidate.get("photo_metadata_date") or "").strip()
         and not str(candidate.get("service_date") or "").strip()
@@ -1584,7 +1652,7 @@ def recover_source_upload(
         warnings=source_warnings,
     )
 
-    return {
+    result = {
         "status": "uploaded",
         "source": {
             "source_kind": source_kind,
@@ -1626,6 +1694,7 @@ def recover_source_upload(
         },
         "send_allowed": False,
     }
+    return _review_source_cases(result, paths)
 
 
 def read_json_list(path: Path) -> list[dict[str, Any]]:
@@ -4740,8 +4809,20 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
     if field == "claim_transport":
         claim = coerce_answer_bool(value)
         intake["claim_transport"] = claim
-        if not claim:
+        if not claim and not intake.get('travel_group_id'):
             intake.pop("transport", None)
+        return
+
+    if field == 'claim_interpreting':
+        intake[field] = coerce_answer_bool(value)
+        return
+
+    if field == 'claim_options':
+        choices = {'both': (True, True), 'interpreting-only': (True, False), 'travel-only': (False, True)}
+        flags = choices.get(value.lower())
+        if flags is None:
+            raise IntakeError('Choose both, interpreting-only, or travel-only.')
+        intake['claim_interpreting'], intake['claim_transport'] = flags
         return
 
     if field == "transport.km_one_way":
@@ -4749,9 +4830,26 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
         return
 
     if field == "payment_entity":
+        if intake.get("photo_defaults_applied") and value != intake.get("payment_entity"):
+            for routing_field in ("addressee", "recipient_email", "court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"):
+                intake[routing_field] = ""
         intake["payment_entity"] = value
         if not str(intake.get("addressee") or "").strip():
             intake["addressee"] = _default_addressee(value)
+        return
+
+    if field == "recipient_email" and intake.get("photo_defaults_applied"):
+        for routing_field in ("court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"):
+            intake[routing_field] = ""
+        intake["recipient_email"] = value
+        return
+
+    if field in {'service_place', 'service_entity'} and (intake.get('photo_defaults_applied') or {}).get('service_place'):
+        intake[field] = value
+        other = 'service_entity' if field == 'service_place' else 'service_place'
+        if not str(intake.get(other) or '').strip():
+            intake[other] = value
+        reconcile_photo_venue_edit(intake)
         return
 
     if field == "service_place":
@@ -5036,10 +5134,24 @@ def generator_profile_for_intake(paths: AppPaths, intake: dict[str, Any] | None 
     return profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
 
 
+def _normalize_source_case_confirmation(intake: dict[str, Any]) -> None:
+    if intake.get('case_number_requires_confirmation') or 'source_case_numbers' in intake:
+        value = valid_source_case(intake.get('case_number'))
+        intake['case_number'] = value
+        intake['case_number_requires_confirmation'] = not bool(value)
+
+
 def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    intake = copy.deepcopy(intake)
+    reconcile_photo_venue_edit(intake)
+    _normalize_source_case_confirmation(intake)
     profile = selected_personal_profile(paths, intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
     generator_profile = profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
+    saved_closing_city = str(_legacy_profile_defaults(paths).get("default_closing_city") or "").strip()
+    if intake.get("photo_defaults_applied") and not str(effective.get("closing_city") or "").strip() and saved_closing_city:
+        effective["closing_city"] = saved_closing_city
+        provenance["applied"].append("closing_city")
     return effective, generator_profile, provenance
 
 
@@ -5291,6 +5403,7 @@ def _prepared_payload_request_identities(draft_payload: dict[str, Any]) -> list[
             "service_start_time": str(source.get("service_start_time") or "").strip(),
             "service_end_time": str(source.get("service_end_time") or "").strip(),
         }
+        identity.update({key: source[key] for key in ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding') if key in source})
         identities.append(identity)
 
     if not identities:
@@ -5327,6 +5440,10 @@ def _assert_gmail_create_duplicate_clear(
     paths: AppPaths,
 ) -> dict[str, Any]:
     identities = _prepared_payload_request_identities(draft_payload)
+    try:
+        validate_travel_payload_groups(identities, prior_requests=recorded_claims(paths))
+    except ClaimError as exc:
+        raise IntakeError('Gmail draft creation blocked before contacting Gmail: ' + str(exc)) from exc
     lifecycles: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     for identity in identities:
@@ -5702,8 +5819,10 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         email_config = load_json(paths.email_config)
         court_directory = read_json_list(paths.court_emails)
         rendered = build_rendered_request(effective_intake, profile)
+        resolve_email_body(effective_intake, email_config, signature_name=rendered.signature_name)
+        validate_shared_travel_groups([effective_intake], prior_requests=recorded_claims(paths))
         recipient, recipient_source = resolve_recipient(effective_intake, email_config, court_directory)
-    except (IntakeError, OSError, json.JSONDecodeError) as exc:
+    except (IntakeError, ClaimError, OSError, json.JSONDecodeError) as exc:
         return {
             "status": "error",
             "message": str(exc),
@@ -5753,8 +5872,8 @@ def underlying_requests_for_packet(items: list[dict[str, Any]]) -> list[dict[str
             "case_number": item.get("case_number", ""),
             "service_date": item.get("service_date", ""),
         }
-        for key in ("service_period_label", "service_start_time", "service_end_time"):
-            if item.get(key):
+        for key in ("service_period_label", "service_start_time", "service_end_time", 'claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding'):
+            if key in item:
                 request[key] = item[key]
         requests.append(request)
     return requests
@@ -5767,18 +5886,24 @@ def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[st
         signature = default_body.split("Melhores cumprimentos,", 1)[1].strip() or signature
     count = len(items)
     request_word = "requerimento" if count == 1 else "requerimentos"
+    fee_claim = any(item.get('claim_interpreting', True) for item in items)
+    travel_claim = any(item.get('claim_transport', False) for item in items)
+    scope = ('honorários e despesas de transporte' if travel_claim else 'honorários') if fee_claim else 'despesas de transporte'
     return (
         "Bom dia,\n\n"
-        "Venho por este meio, requerer o pagamento dos honorários devidos, "
-        "em virtude de ter sido nomeado intérprete.\n\n"
-        f"Poderão encontrar em anexo um pacote PDF com {count} {request_word} de honorários "
-        "correspondentes aos serviços identificados.\n\n"
+        f"Venho por este meio requerer o pagamento de {scope}, conforme os pedidos individuais anexos.\n\n"
+        f"Poderão encontrar em anexo um pacote PDF com {count} {request_word}.\n\n"
         "Melhores cumprimentos,\n\n"
         f"{signature}"
     )
 
 
 def validate_packet_recipients(intakes: list[dict[str, Any]], email_config: dict[str, Any], court_directory: list[dict[str, Any]]) -> str:
+    custom_body = str(intakes[0].get('packet_email_body') or '')
+    if custom_body.strip():
+        resolve_email_body({'claim_interpreting': any(intake.get('claim_interpreting', True) for intake in intakes),
+                            'claim_transport': any(intake.get('claim_transport', False) for intake in intakes),
+                            'email_body': custom_body}, email_config)
     recipients: list[str] = []
     for intake in intakes:
         recipient, _source = resolve_recipient(intake, email_config, court_directory)
@@ -5817,13 +5942,17 @@ def build_packet_result(
         raise IntakeError(str(exc)) from exc
 
     packet_intake = copy.deepcopy(intakes[0])
+    packet_intake['claim_interpreting'] = any(item.get('claim_interpreting', True) for item in items)
+    packet_intake['claim_transport'] = any(item.get('claim_transport', False) for item in items)
+    packet_intake.pop('travel_group_id', None)
+    packet_intake.pop('travel_group_binding', None)
     packet_intake["service_period_label"] = "packet"
     packet_intake.pop("additional_attachment_files", None)
     packet_intake["underlying_requests"] = underlying_requests_for_packet(items)
     custom_packet_body = str(packet_intake.get("packet_email_body") or "")
     packet_intake["email_body"] = custom_packet_body if custom_packet_body.strip() else default_packet_email_body(items, email_config, signature_name=signature_name)
 
-    payload = build_email_payload(packet_intake, packet_pdf, email_config, court_directory)
+    payload = build_email_payload(packet_intake, packet_pdf, email_config, court_directory, signature_name=signature_name)
     payload_errors = validate_draft_payload(payload)
     if payload_errors:
         raise IntakeError(f"Packet draft payload is not Gmail-ready: {'; '.join(payload_errors)}")
@@ -5925,13 +6054,21 @@ def preflight_item_summary(
         "send_allowed": False,
         "write_allowed": False,
     }
+    summary.update({key: intake.get(key, default) for key, default in (('claim_interpreting', True), ('claim_transport', False))})
+    if 'travel_group_id' in intake:
+        summary['travel_group_id'] = intake['travel_group_id']
     if key:
+        summary.update(claim_metadata(intake))
         summary["duplicate_key"] = {
             "case_number": key[0],
             "service_date": key[1],
             "service_period_label": key[2],
         }
     return summary
+
+
+def recorded_claims(paths: AppPaths) -> list[dict[str, Any]]:
+    return recorded_travel_requests(load_draft_log(paths.draft_log), read_json_list(paths.duplicate_index))
 
 
 def preflight_intakes(
@@ -5961,10 +6098,17 @@ def preflight_intakes(
     items: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     seen_keys: dict[tuple[str, str, str], str] = {}
+    group_error = ''
+    try:
+        validate_shared_travel_groups(effective_intakes, prior_requests=recorded_claims(paths))
+    except ClaimError as exc:
+        group_error = str(exc)
 
     for index, (intake_path, intake, generator_profile) in enumerate(zip(intake_paths, effective_intakes, generator_profiles), start=1):
         lifecycle = draft_lifecycle_for_intake(intake, paths)
         try:
+            if group_error:
+                raise IntakeError(group_error)
             key = validate_intake_before_generation(
                 intake_path,
                 intake,
@@ -6098,6 +6242,10 @@ def prepare_intakes(
     intake_paths = planned_intake_paths(effective_intakes, paths)
     seen_keys: dict[tuple[str, str, str], Path] = {}
     lifecycle_checks: list[dict[str, Any]] = []
+    try:
+        validate_shared_travel_groups(effective_intakes, prior_requests=recorded_claims(paths))
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
 
     if correction_mode:
         for intake in effective_intakes:

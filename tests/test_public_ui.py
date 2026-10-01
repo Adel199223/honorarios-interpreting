@@ -169,7 +169,7 @@ class PublicUiTests(PublicCandidateSmokeTests):
             'shell.classList.add("has-review")',
             'shell.classList.remove("has-review", "source-review", "manual-review")',
             "focusHomeReviewCard",
-            "applyReview(data.review, { openDrawer: false })",
+            "await reviewIntake({ openDrawer: false })",
             "applyNumberedAnswers({ sourceSelector: \"#home-numbered-answers\", openDrawer: false })",
             "hideHomeReviewPanel();",
             "function applyReview(data, options = {})",
@@ -553,7 +553,7 @@ class PublicUiTests(PublicCandidateSmokeTests):
         app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
         prepare_body = app_js.split("async function prepareIntake", 1)[1].split("function renderPrepared", 1)[0]
 
-        snapshot_index = prepare_body.index('const requestIntake = cloneIntake(state.currentIntake)')
+        snapshot_index = prepare_body.index('const requestIntake = cloneIntake(options.correctionMode ? preparedTargetIntake() || state.currentIntake : state.currentIntake)')
         revision_index = prepare_body.index('const capturedRevision = beginPreparation()')
         preflight_index = prepare_body.index('requestWorkflowJson("/api/prepare/preflight"')
         binding_index = prepare_body.index('requestPayload.preflight_review = preflight.preflight_review')
@@ -667,11 +667,13 @@ console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
         self.assertIn("await recordPreparedDraftFromForm()", one_click_body)
         self.assertNotIn("await recordDraft()", one_click_body)
         prepared_record_body = app_js.split("async function recordPreparedDraftFromForm", 1)[1].split("async function ", 1)[0]
-        self.assertIn('requestJson("/api/drafts/record"', prepared_record_body)
+        self.assertIn('requestDraftRecord("/api/drafts/record", payload, context)', prepared_record_body)
+        draft_record_request_body = app_js.split("async function requestDraftRecord", 1)[1].split("async function ", 1)[0]
+        self.assertIn('requestJson(url,', draft_record_request_body)
         self.assertIn("gmail_handoff_reviewed: true", prepared_record_body)
         self.assertIn("...currentPreparedReviewFields(payloadPath)", prepared_record_body)
         manual_record_body = app_js.split("async function recordDraft()", 1)[1].split("function ", 1)[0]
-        self.assertIn('requestJson("/api/drafts/status"', manual_record_body)
+        self.assertIn('requestDraftRecord("/api/drafts/status", payload, context)', manual_record_body)
         self.assertNotIn("_send_email", app_js)
         self.assertNotIn("_send_draft", app_js)
 
@@ -819,7 +821,7 @@ console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
             self.assertIsNotNone(match, name)
             functions.append(match.group(0))
         module_url = (root / "honorarios_app/static/review_guidance.js").as_uri()
-        script = "import { beginnerReviewFacts } from " + json.dumps(module_url) + ";\n"
+        script = "import { beginnerReviewFacts, claimModeLabel } from " + json.dumps(module_url) + ";\n"
         script += "\n".join(functions) + """
 const details = {open:false};
 const focused = [], lookups = [];

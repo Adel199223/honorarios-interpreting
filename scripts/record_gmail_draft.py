@@ -10,14 +10,17 @@ from typing import Any
 
 try:
     from scripts.request_identity import normalize_case_number, normalize_period_label, request_identity_key
+    from scripts.claim_options import recorded_travel_requests, validate_travel_payload_groups
 except ModuleNotFoundError:
     from request_identity import normalize_case_number, normalize_period_label, request_identity_key
+    from claim_options import recorded_travel_requests, validate_travel_payload_groups
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOG = ROOT / "data" / "gmail-draft-log.json"
 DEFAULT_DUPLICATE_INDEX = ROOT / "data" / "duplicate-index.json"
 STATUSES = {"active", "trashed", "superseded", "not_found", "sent"}
+CLAIM_FIELDS = ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding')
 
 
 def load_log(path: Path) -> list[dict[str, Any]]:
@@ -138,11 +141,12 @@ def build_duplicate_record(record: dict[str, Any]) -> dict[str, Any]:
     }
     if record.get("sent_date"):
         duplicate["sent_date"] = record["sent_date"]
+    duplicate.update({key: record[key] for key in CLAIM_FIELDS if key in record})
     return duplicate
 
 
 def duplicate_records_for_log_record(record: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
-    underlying = payload.get("underlying_requests") or []
+    underlying = payload.get("underlying_requests") or record.get('underlying_requests') or []
     if not isinstance(underlying, list) or not underlying:
         return [build_duplicate_record(record)]
 
@@ -151,8 +155,13 @@ def duplicate_records_for_log_record(record: dict[str, Any], payload: dict[str, 
         if not isinstance(item, dict):
             continue
         child = dict(record)
+        for key in CLAIM_FIELDS:
+            child.pop(key, None)
+        child.update({key: item[key] for key in CLAIM_FIELDS if key in item})
         for key in ("case_number", "service_date", "service_period_label", "service_start_time", "service_end_time"):
-            if item.get(key) not in (None, ""):
+            if key in {'service_period_label', 'service_start_time', 'service_end_time'}:
+                child[key] = item.get(key, '')
+            elif item.get(key) not in (None, ""):
                 child[key] = item[key]
         records.append(build_duplicate_record(child))
     return records
@@ -210,9 +219,18 @@ def main(argv: list[str] | None = None) -> int:
             "notes": args.notes,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        duplicate_records = load_duplicate_index(args.duplicate_index)
+        previous = next((existing for existing in records if existing.get('draft_id') == args.draft_id), {})
+        record.update({key: previous[key] for key in CLAIM_FIELDS if key in previous})
+        record.update({key: payload[key] for key in CLAIM_FIELDS if key in payload})
+        underlying = payload.get('underlying_requests') or previous.get('underlying_requests')
+        if isinstance(underlying, list) and underlying:
+            record['underlying_requests'] = underlying
+        if args.status in {'active', 'sent'}:
+            validate_travel_payload_groups(underlying if isinstance(underlying, list) and underlying else [record],
+                                          prior_requests=recorded_travel_requests(records, duplicate_records))
         upsert_record(records, record)
         write_log(args.log, records)
-        duplicate_records = load_duplicate_index(args.duplicate_index)
         for duplicate_record in duplicate_records_for_log_record(record, payload):
             upsert_duplicate_record(duplicate_records, duplicate_record)
         write_duplicate_index(args.duplicate_index, duplicate_records)

@@ -10,9 +10,11 @@ from typing import Any
 try:
     from scripts.generate_pdf import ROOT, get_service_date_value, load_json, service_date_conflict, service_date_conflict_is_confirmed
     from scripts.entity_rules import has_pj_host_building, resolve_entities, source_mentions_non_court_service, source_mentions_pj_context
+    from scripts.claim_options import ClaimError, validate_claims
 except ModuleNotFoundError:
     from generate_pdf import ROOT, get_service_date_value, load_json, service_date_conflict, service_date_conflict_is_confirmed
     from entity_rules import has_pj_host_building, resolve_entities, source_mentions_non_court_service, source_mentions_pj_context
+    from claim_options import ClaimError, validate_claims
 
 
 QUESTION_RULES = [
@@ -38,6 +40,12 @@ QUESTION_RULES = [
         "question": "Which court, Ministério Público office, or other entity should this request be addressed to for payment?",
         "answer_hint": "Example: Tribunal de Beja.",
         "unless": "payment_entity_inferred",
+    },
+    {
+        "field": "recipient_email",
+        "question": "What is the email address for the court that should receive this request?",
+        "answer_hint": "Use the verified tribunais.org.pt court address.",
+        "when": "photo_recipient_missing",
     },
     {
         "field": "service_place",
@@ -111,6 +119,11 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
     if unless == "payment_entity_inferred" and entities["payment_entity"]:
         return False
     if unless == "service_entity_inferred":
+        photo_defaults = intake.get('photo_defaults_applied') or {}
+        if isinstance(photo_defaults, dict) and (photo_defaults.get('service_place') or 'venue_status' in photo_defaults) and not any(
+            has_value(intake, field) for field in ('service_place', 'service_entity', 'service_place_phrase')
+        ):
+            return True
         if source_mentions_pj_context(intake) and not has_pj_host_building(intake):
             return False
         has_explicit_service_entity = (
@@ -129,6 +142,11 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
         return True
     if condition == "claim_transport":
         return bool(intake.get("claim_transport"))
+    if condition == "photo_recipient_missing":
+        defaults = intake.get("photo_defaults_applied")
+        return isinstance(defaults, dict) and "routing_status" in defaults and not (
+            has_value(intake, "recipient_email") or has_value(intake, "court_email") or has_value(intake, "court_email_key")
+        )
     if condition == "service_date_conflict":
         return bool(service_date_conflict(intake)) and not service_date_conflict_is_confirmed(intake)
     if condition == "pj_host_building_missing":
@@ -138,14 +156,23 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
 
 def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
+    travel_only = intake.get('claim_interpreting', True) is False and intake.get('claim_transport') is True
+    try:
+        validate_claims(intake)
+    except ClaimError:
+        questions.append({'field': 'claim_options', 'number': 1,
+            'question': 'What should this request claim? It cannot claim neither interpreting nor travel.',
+            'answer_hint': 'Choose both, interpreting-only, or travel-only.'})
     for rule in QUESTION_RULES:
         if not rule_applies(rule, intake):
             continue
         if rule.get("when") == "service_date_conflict":
+            date_label = 'document attendance date' if travel_only else 'document service date'
+            action = 'attend in person as an interpreter' if travel_only else 'provide the interpreting service'
             questions.append({**rule, "number": len(questions) + 1,
                 "question": (
-                    f"The document service date is {intake.get('service_date')} and the photo capture date is "
-                    f"{intake.get('photo_metadata_date')}. On which date did you actually provide the interpreting service?"
+                    f"The {date_label} is {intake.get('service_date')} and the photo capture date is "
+                    f"{intake.get('photo_metadata_date')}. On which date did you actually {action}?"
                 ),
                 "answer_hint": "Give the actual date in YYYY-MM-DD, or answer document or metadata.",
             })
@@ -154,7 +181,11 @@ def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
             questions.append({**rule, "number": len(questions) + 1})
             continue
         if not has_value(intake, rule["field"]):
-            questions.append({**rule, "number": len(questions) + 1})
+            question = {**rule, "number": len(questions) + 1}
+            if travel_only and rule['field'] == 'service_date':
+                question.update(question='What date did you attend in person as an interpreter?',
+                                answer_hint='Use YYYY-MM-DD. If the image metadata date is the actual attendance date, give that date.')
+            questions.append(question)
     return questions
 
 

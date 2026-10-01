@@ -18,6 +18,7 @@ try:
         build_email_payload,
         resolve_additional_attachments,
         resolve_recipient,
+        resolve_email_body,
         validate_draft_payload,
     )
     from scripts.generate_pdf import (
@@ -43,6 +44,8 @@ try:
     from scripts.intake_questions import format_numbered_questions, missing_questions
     from scripts.request_identity import request_identity_key
     from scripts.source_classification import detect_translation_source, format_translation_rejection
+    from scripts.claim_options import ClaimError, claim_metadata, profile_binding, recorded_travel_requests, validate_shared_travel_groups
+    from scripts.record_gmail_draft import load_duplicate_index
 except ModuleNotFoundError:
     from build_email_draft import (
         DEFAULT_COURT_EMAILS,
@@ -50,6 +53,7 @@ except ModuleNotFoundError:
         build_email_payload,
         resolve_additional_attachments,
         resolve_recipient,
+        resolve_email_body,
         validate_draft_payload,
     )
     from generate_pdf import (
@@ -75,6 +79,8 @@ except ModuleNotFoundError:
     from intake_questions import format_numbered_questions, missing_questions
     from request_identity import request_identity_key
     from source_classification import detect_translation_source, format_translation_rejection
+    from claim_options import ClaimError, claim_metadata, profile_binding, recorded_travel_requests, validate_shared_travel_groups
+    from record_gmail_draft import load_duplicate_index
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -198,7 +204,13 @@ def validate_intake_before_generation(
             f"Draft ID(s): {draft_ids}. Add --correction-reason with a short audit reason."
         )
 
-    build_rendered_request(intake, profile)
+    rendered = build_rendered_request(intake, profile)
+    resolve_email_body(intake, email_config, signature_name=rendered.signature_name)
+    try:
+        validate_shared_travel_groups([intake], personal_profile_key=profile_binding(profile),
+                                      prior_requests=recorded_travel_requests(draft_log, load_duplicate_index(duplicate_index)))
+    except ClaimError as exc:
+        raise IntakeError(str(exc)) from exc
     resolve_recipient(intake, email_config, court_directory)
     additional_attachments = resolve_additional_attachments(intake)
     if additional_attachments and not str(intake.get("email_body") or "").strip():
@@ -253,6 +265,10 @@ def prepare_one(
             f"Draft ID(s): {draft_ids}. Add --correction-reason with a short audit reason."
         )
 
+    validate_intake_before_generation(intake_path, intake, profile=profile, email_config=email_config,
+                                     court_directory=court_directory, duplicate_index=duplicate_index,
+                                     draft_log=draft_log, allow_duplicate=allow_duplicate,
+                                     allow_existing_draft=allow_existing_draft, correction_reason=correction_reason)
     rendered = build_rendered_request(intake, profile)
     pdf_path = output_dir / default_output_path(intake).name
     html_path = html_dir / f"{pdf_path.stem}.html"
@@ -264,7 +280,7 @@ def prepare_one(
         raise IntakeError(f"PDF verification failed for {pdf_path}: missing {missing}")
 
     payload = build_email_payload(intake, pdf_path, email_config, court_directory,
-                                  signature_name=rendered.signature_name)
+                                  signature_name=rendered.signature_name, personal_profile_key=profile_binding(profile))
     payload_errors = validate_draft_payload(payload)
     if payload_errors:
         raise IntakeError(f"Draft payload is not Gmail-ready: {'; '.join(payload_errors)}")
@@ -325,6 +341,7 @@ def prepare_one(
             for record in active_drafts
         ],
     }
+    result.update(claim_metadata(intake, personal_profile_key=profile_binding(profile)))
     if active_drafts and str(correction_reason or "").strip():
         result["correction_mode"] = True
         result["correction_reason"] = str(correction_reason or "").strip()
@@ -391,6 +408,8 @@ def main(argv: list[str] | None = None) -> int:
         court_directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
         draft_log = load_draft_log(args.draft_log)
         loaded: list[tuple[Path, dict[str, Any]]] = [(intake_path, load_json(intake_path)) for intake_path in args.intakes]
+        validate_shared_travel_groups([intake for _, intake in loaded], personal_profile_key=profile_binding(profile),
+                                     prior_requests=recorded_travel_requests(draft_log, load_duplicate_index(args.duplicate_index)))
         seen_keys: dict[tuple[str, str, str], Path] = {}
         for intake_path, intake in loaded:
             key = validate_intake_before_generation(
@@ -443,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
             "items": items,
         }
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    except (IntakeError, OSError, json.JSONDecodeError) as exc:
+    except (IntakeError, ClaimError, OSError, json.JSONDecodeError) as exc:
         print(f"Cannot prepare honorários batch: {exc}", file=sys.stderr)
         return 2
 

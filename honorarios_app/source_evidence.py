@@ -13,6 +13,7 @@ import unicodedata
 
 from scripts.request_identity import normalize_case_number
 from scripts.source_parsing import explicit_service_places
+from .source_cases import source_case_rows
 
 
 FIELD_EVIDENCE_LABELS = {
@@ -248,6 +249,44 @@ def build_field_evidence(
                 else "A capture-date candidate was supplied for review. Check its origin and confirm whether the service happened then."
             ),
         )
+
+    if 'source_case_numbers' in candidate and candidate.get('case_number'):
+        case = normalize_case_number(candidate['case_number'])
+        for text, source, confidence in ((independent_text, 'deterministic_text', 'high'),
+                                         (raw_visible_text, 'openai_ocr', 'medium')):
+            matched = next((row for row in source_case_rows(text, {}) if row['case_number'] == case), None)
+            if matched:
+                add('case_number', case, source=source, confidence=confidence,
+                    raw_value=matched['raw_case_number'], excerpt=_line_excerpt(text, matched['raw_case_number']),
+                    reason='This separately reviewed case reference matched the visible source text. Check it against the original photo.' if source == 'deterministic_text' else
+                           'AI read this separately reviewed case reference in the photo. Check it against the original image; a repeated pattern is not independent confirmation.')
+                break
+    station = candidate.get('source_station_place')
+    if station and _values_match(candidate.get('service_place'), station):
+        for text, source, confidence in ((independent_text, 'document_text', 'high'),
+                                         (raw_visible_text, 'openai_ocr', 'medium')):
+            if _text_contains_value(text, station):
+                add('service_place', station, source=source, confidence=confidence,
+                    excerpt=_line_excerpt(text, station), reason='The source names this specific police station. Check the venue for this appointment; the city-court fallback was not used.')
+                break
+
+    photo_defaults = candidate.get("photo_defaults_applied") or {}
+    if isinstance(photo_defaults, dict):
+        for field in ("service_date", "payment_entity", "recipient_email", "service_place"):
+            value = photo_defaults.get(field)
+            if value and _values_match(candidate.get(field), value) and not (
+                field == "service_date" and str(candidate.get("service_date_source") or "") in CONFIRMED_SERVICE_DATE_SOURCES
+            ):
+                reason = (
+                    "Your saved photo-date default uses the capture day as the interpreting day. You can edit an exception."
+                    if field == "service_date" else
+                    "Your saved missing-venue default uses the capture-city court when the source supplies no service building. You can edit an exception. This is your default, not a venue printed on the document."
+                    if field == "service_place" else
+                    f"Your saved photo-city default selects the configured court/contact for {photo_defaults.get('photo_city', '')}. This is your default, not a payer stated on the document."
+                )
+                if field == "service_date" and photo_defaults.get("original_service_date"):
+                    reason += f" The source also suggested {photo_defaults['original_service_date']}; the photo default takes priority."
+                add(field, value, source="photo_default", confidence="medium", reason=reason)
 
     if str(candidate.get("service_date_source") or "").strip().lower() in CONFIRMED_SERVICE_DATE_SOURCES:
         add("service_date", candidate.get("service_date"), source="user_confirmed", confidence="high", reason="You explicitly supplied or confirmed the service date. Source, conflict and duplicate checks still apply.")

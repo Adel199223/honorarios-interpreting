@@ -19,6 +19,21 @@ from honorarios_app.source_evidence import (
 
 
 class SourceEvidenceTests(unittest.TestCase):
+    def test_later_photo_case_has_scoped_ocr_evidence_without_promoting_self_agreement(self):
+        text = 'Processos 710/26.0TSTXX e 711/26.0TSTXX'
+        entries = self.fields(candidate={'case_number': '711/26.0TSTXX', 'source_case_numbers': ['710/26.0TSTXX', '711/26.0TSTXX'], 'source_text': text},
+            deterministic_fields={'case_number': '710/26.0TSTXX'},
+            ai_recovery={'status': 'ok', 'raw_visible_text': text, 'case_numbers': ['710/26.0TSTXX', '711/26.0TSTXX'], 'fields': {}})
+        case = next(entry for entry in entries if entry['field'] == 'case_number')
+        self.assertEqual(case['value'], '711/26.0TSTXX')
+        self.assertEqual(case['source'], 'openai_ocr')
+        self.assertEqual(case['confidence'], 'medium')
+
+    def test_model_only_case_array_does_not_supply_confirmed_evidence(self):
+        entries = self.fields(candidate={'case_number': '711/26.0TSTXX', 'source_case_numbers': ['711/26.0TSTXX'], 'source_text': 'Unreadable'},
+            ai_recovery={'status': 'ok', 'raw_visible_text': 'Unreadable', 'case_numbers': ['711/26.0TSTXX'], 'fields': {}})
+        self.assertFalse(any(entry['field'] == 'case_number' for entry in entries))
+
     def fields(self, **overrides):
         inputs = dict(candidate={}, deterministic_fields={}, metadata={}, ai_recovery={}, profile_decision={}, profiles={})
         inputs.update(overrides)

@@ -4,6 +4,8 @@ This contract describes how a future LegalPDF Translate integration should call 
 
 Current contract version: `2026-05-10.optional-gmail-boundary.v4`
 
+Optional intake claims are additive: `claim_interpreting` defaults to `true`, alongside existing `claim_transport`. Optional `travel_group_id` identifies an explicitly shared visit; callers must retain it and the claim flags throughout reviewed preparation and draft recording. All group members must have coherent visit/profile facts, and no group can request transport twice. Claim choices do not change the existing case/date/period duplicate identity, route paths or required payload keys. Use the shared review/preflight boundaries; do not independently infer trips from matching city/date or generate a second reimbursement claim.
+
 ## Boundary
 
 LegalPDF Translate remains read-only from this app. The Honorários app owns:
@@ -151,3 +153,5 @@ python scripts\legalpdf_adapter_caller.py --base-url http://127.0.0.1:8765 --sou
 The flag is intentionally explicit because the full sequence prepares artifacts and records synthetic draft IDs, and the caller still refuses to continue unless `/api/health` attests an isolated synthetic runtime. Use the isolated smoke launcher for normal verification.
 
 Use that endpoint as the machine-readable source for future LegalPDF integration planning.
+
+Recipient routing keeps the existing intake fields and route contracts. Explicit `recipient_email`, `court_email` or `court_email_key` selection is checked against independent paying-court evidence and takes priority over unrelated footer contacts. A unique payer-directory match may report `recipient_source=payment_entity_directory`; equally ranked conflicting mappings block. Missing or deliberately cleared photo-recipient fields do not regain a generic fallback. Selecting a prepared email in the browser still uses that item's existing payload path and current signed review fields; it does not add a new caller endpoint.

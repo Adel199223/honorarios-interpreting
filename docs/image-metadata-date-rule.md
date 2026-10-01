@@ -7,10 +7,10 @@ When the user provides screenshots/photos rather than a clean PDF, inspect both 
 Use this priority for the service date:
 
 1. User-confirmed service date.
-2. Visible photo/image metadata date.
-3. Explicit service wording in the document, such as `serviço prestado no dia`.
+2. One unambiguous capture day when the saved photo-date default is enabled.
+3. Explicit service wording in the document, such as `serviço prestado no dia`, when no saved photo-date default applies.
 
-If the image metadata date and a document date conflict, stop and ask the user which one is the service date. After the user answers, set `service_date_source` to `user_confirmed` or `user_confirmed_exception`.
+With the saved photo-date default enabled, apply the capture day without repeated confirmation and retain a different printed date as evidence. Without it, uploaded capture-only dates and unresolved document/capture conflicts require the user's choice. Missing or competing capture dates still ask. After an explicit answer, set `service_date_source` to `user_confirmed` or `user_confirmed_exception`.
 
 Do not use these as service dates unless confirmed:
 
@@ -32,7 +32,7 @@ Use:
 }
 ```
 
-The generator treats `service_date` as highest priority only when the conflict is user-confirmed. Otherwise it stops on conflicting dates. If `service_date` is absent, it falls back to `photo_metadata_date`.
+Photo intake with the saved default sets both `service_date` and `photo_metadata_date` to the chosen capture day and labels `service_date_source` as `photo_metadata`. A manual exception can replace `service_date`. The generator stops on unresolved conflicts, and an uploaded capture-only date cannot bypass a required confirmation. Deliberately clearing the selected date keeps it unresolved through review.
 
 Duplicate checks use the same effective service date.
 
@@ -40,4 +40,10 @@ Use `user_confirmed_exception` when the user chooses a non-default date, such as
 
 ## Example
 
-If a document says `2026-02-12 12:30` but the visible image metadata says `Feb 16`, tell the user there is a conflict and ask which date to use. If the user confirms `2026-02-12`, record it as `service_date` with `service_date_source: user_confirmed_exception`.
+If a document says `2026-02-12 12:30` but the photo's capture metadata says `2026-02-16`, the saved photo-date default selects `2026-02-16`. Without that preference, ask which date to use. If the user explicitly chooses `2026-02-12`, record it as `service_date` with `service_date_source: user_confirmed_exception`.
+
+## Capture city and missing venue
+
+The photo capture city is separate from the document's district header and from the physical service host. The opt-in `photo_city_court` preference selects the configured court/contact for that capture city as payer. The separate `missing_venue_is_city_court` preference uses that court as the service venue only when the source does not identify a physical building. Both values remain editable policy defaults; a case suffix does not prove a venue. See [saved photo preferences and the public configuration example](source-quality.md#saved-photo-defaults).
+
+When a photo has several case references, each underlying request receives the same selected capture-date evidence but keeps its own case number and duplicate identity. A date or venue correction belongs to the selected case and needs fresh review. Missing or ambiguous case references remain unresolved even when capture metadata is clear.
