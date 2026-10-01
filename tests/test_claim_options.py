@@ -18,6 +18,7 @@ from honorarios_app.personal_profiles import lookup_profile_distance
 from honorarios_app.services import (
     AppPaths, _assert_gmail_create_duplicate_clear, apply_answer_to_intake,
     effective_intake_for_profile, preflight_intakes, prepare_intakes, review_intake,
+    load_personal_profiles, save_personal_profile,
 )
 from scripts.build_email_draft import custom_transport_body_conflict, resolve_email_body, validate_draft_payload
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups
@@ -28,6 +29,81 @@ from scripts.record_gmail_draft import main as record_cli
 from scripts.request_identity import request_identity_key
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class PersonalProfilePersistenceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='fictional-profile-save-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        create_synthetic_runtime(self.root)
+        self.paths = AppPaths(**runtime_path_overrides(self.root))
+        store = load_personal_profiles(self.paths)
+        self.incoming = copy.deepcopy(store['profiles'][0])
+        second = copy.deepcopy(self.incoming)
+        second.update(id='fictional-second-profile', first_name='Second', last_name='Example')
+        store['profiles'].append(second)
+        self.paths.personal_profiles.write_text(json.dumps(store), encoding='utf-8')
+        self.incoming['postal_address'] = 'Revised fictional address'
+
+    def test_interrupted_temporary_write_preserves_previous_profiles_and_legacy_bytes(self):
+        before = {path: path.read_bytes() for path in (self.paths.personal_profiles, self.paths.profile)}
+
+        def interrupted_dump(value, handle, **kwargs):
+            handle.write('{"partially_written":')
+            raise OSError('Fictional disk-write interruption')
+
+        with patch('scripts.state_store.json.dump', side_effect=interrupted_dump):
+            with self.assertRaisesRegex(OSError, 'disk-write interruption'):
+                save_personal_profile({'profile': self.incoming}, self.paths)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(len(load_personal_profiles(self.paths)['profiles']), 2)
+        self.assertEqual(list(self.paths.personal_profiles.parent.glob('.*.tmp')), [])
+
+    def test_failed_atomic_replace_preserves_existing_profile_store(self):
+        before = self.paths.personal_profiles.read_bytes()
+        with patch('scripts.state_store.os.replace', side_effect=OSError('Fictional locked destination')):
+            with self.assertRaisesRegex(OSError, 'locked destination'):
+                save_personal_profile({'profile': self.incoming}, self.paths)
+        self.assertEqual(self.paths.personal_profiles.read_bytes(), before)
+        self.assertEqual(len(load_personal_profiles(self.paths)['profiles']), 2)
+
+    def test_unreadable_or_malformed_existing_store_blocks_loading_and_overwrite(self):
+        for contents in ('{"profiles":', '[]', '{}', '{"profiles": []}', '{"profiles": [null]}'):
+            with self.subTest(contents=contents):
+                self.paths.personal_profiles.write_text(contents, encoding='utf-8')
+                before = self.paths.personal_profiles.read_bytes()
+                with self.assertRaisesRegex(IntakeError, 'saved personal profiles'):
+                    load_personal_profiles(self.paths)
+                with self.assertRaisesRegex(IntakeError, 'saved personal profiles'):
+                    save_personal_profile({'profile': self.incoming}, self.paths)
+                self.assertEqual(self.paths.personal_profiles.read_bytes(), before)
+        original_read = Path.read_text
+
+        def denied(path, *args, **kwargs):
+            if path == self.paths.personal_profiles:
+                raise PermissionError('Fictional unreadable profile store')
+            return original_read(path, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', denied), self.assertRaisesRegex(IntakeError, 'could not be read'):
+            save_personal_profile({'profile': self.incoming}, self.paths)
+
+    def test_successful_save_preserves_other_profiles_and_updates_legacy_copy(self):
+        result = save_personal_profile({'profile': self.incoming}, self.paths)
+        self.assertEqual(result['status'], 'saved')
+        store = load_personal_profiles(self.paths)
+        self.assertEqual(len(store['profiles']), 2)
+        self.assertEqual(store['profiles'][0]['postal_address'], self.incoming['postal_address'])
+        legacy = json.loads(self.paths.profile.read_text(encoding='utf-8'))
+        self.assertEqual(legacy['address'], self.incoming['postal_address'])
+
+    def test_absent_profile_store_retains_legacy_migration(self):
+        from honorarios_app.personal_profiles import load_profile_store
+        absent = self.root / 'new-profile-store.json'
+        migrated = load_profile_store(absent, self.paths.profile, self.paths.known_destinations)
+        self.assertEqual(len(migrated['profiles']), 1)
+        self.assertEqual(migrated['profiles'][0]['first_name'], 'Example')
+        self.assertFalse(absent.exists())
 
 
 class ClaimOptionsTests(unittest.TestCase):

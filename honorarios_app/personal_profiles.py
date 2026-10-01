@@ -10,6 +10,7 @@ from typing import Any
 
 from scripts.generate_pdf import IntakeError
 from scripts.entity_rules import normalize_text
+from scripts.state_store import atomic_write_json
 
 
 DEFAULT_PRIMARY_PROFILE_ID = "primary"
@@ -211,7 +212,15 @@ def load_profile_store(
     legacy_profile = load_json_if_exists(legacy_profile_path, {})
     fallback = synthesize_profile_from_legacy(legacy_profile, known_destinations if isinstance(known_destinations, list) else [])
     if profile_store_path.exists():
-        return normalize_profile_store(load_json_if_exists(profile_store_path, {}), fallback_profile=fallback)
+        try:
+            stored = json.loads(profile_store_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            raise IntakeError('The saved personal profiles could not be read. Restore or repair the profile file before saving or preparing requests.') from exc
+        profiles = stored.get('profiles') if isinstance(stored, dict) else None
+        records = list(profiles.values()) if isinstance(profiles, dict) else profiles
+        if not isinstance(records, list) or not records or not all(isinstance(record, dict) for record in records):
+            raise IntakeError('The saved personal profiles have an invalid structure. Restore or repair the profile file before saving or preparing requests.')
+        return normalize_profile_store(stored)
     return normalize_profile_store({"primary_profile_id": DEFAULT_PRIMARY_PROFILE_ID, "profiles": [fallback]}, fallback_profile=fallback)
 
 
@@ -297,14 +306,9 @@ def save_profile_store(
     normalized = normalize_profile_store(store)
     for profile in normalized["profiles"]:
         validate_profile(profile)
-    profile_store_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_store_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(profile_store_path, normalized)
     selected = main_profile(normalized)
-    legacy_profile_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_profile_path.write_text(
-        json.dumps(profile_to_generator_profile(selected, legacy_defaults), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(legacy_profile_path, profile_to_generator_profile(selected, legacy_defaults))
     return normalized
 
 
