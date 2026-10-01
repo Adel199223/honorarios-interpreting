@@ -8,7 +8,9 @@
     "test_service_profile_selection.py",
     "test_review_guidance.py",
     "test_claim_options.py",
-    "test_claim_options_ui.py"
+    "test_claim_options_ui.py",
+    "test_email_routing.py",
+    "test_email_routing_ui.py"
   ],
   "intake": [
     "test_intake_rules.py",
@@ -18,7 +20,8 @@
     "test_source_decisions.py",
     "test_public_ai_recovery.py",
     "test_multi_case_sources.py",
-    "test_claim_options.py"
+    "test_claim_options.py",
+    "test_email_routing.py"
   ],
   "quality": [
     "test_source_decisions.py",
@@ -32,13 +35,15 @@
   "email": [
     "test_email_rules.py",
     "test_public_email.py",
-    "test_claim_options.py"
+    "test_claim_options.py",
+    "test_email_routing.py"
   ],
   "ui": [
     "test_browser_iab_smoke.py",
     "test_review_guidance.py",
     "test_public_ui.py",
-    "test_claim_options_ui.py"
+    "test_claim_options_ui.py",
+    "test_email_routing_ui.py"
   ],
   "package": [
     "test_dev_environment.py",
@@ -74,6 +79,8 @@
     "test_photo_defaults.py",
     "test_multi_case_sources.py",
     "test_claim_options.py",
-    "test_claim_options_ui.py"
+    "test_claim_options_ui.py",
+    "test_email_routing.py",
+    "test_email_routing_ui.py"
   ]
 }

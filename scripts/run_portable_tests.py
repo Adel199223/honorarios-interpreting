@@ -25,7 +25,7 @@ PUBLIC_TEST_FILES = frozenset({
     'test_portable_groups.py',
     'test_source_evidence.py', 'test_service_profile_selection.py', 'test_review_guidance.py',
     'test_source_decisions.py', 'test_public_ai_recovery.py',
-    'test_photo_defaults.py', 'test_multi_case_sources.py', 'test_claim_options.py', 'test_claim_options_ui.py',
+    'test_photo_defaults.py', 'test_multi_case_sources.py', 'test_claim_options.py', 'test_claim_options_ui.py', 'test_email_routing.py', 'test_email_routing_ui.py',
 })
 PUBLIC_EVALUATION_FILES = frozenset({'examples/source-quality-cases.json'})
 
