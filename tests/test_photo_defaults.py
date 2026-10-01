@@ -166,6 +166,7 @@ class PhotoDefaultTests(unittest.TestCase):
         self.root = Path(temporary.name)
         create_synthetic_runtime(self.root)
         self.paths = AppPaths(**runtime_path_overrides(self.root))
+        write_json(self.paths.ai_config, {'api_key': 'fictional-offline-test-key'})
         destinations = json.loads(self.paths.known_destinations.read_text(encoding='utf-8'))
         destinations.append({'destination': CAPTURE_CITY, 'institution_examples': [CAPTURE_COURT],
                              'km_one_way': 12, 'notes': 'Fictional saved venue distance.'})
@@ -471,9 +472,11 @@ class PhotoDefaultTests(unittest.TestCase):
     def test_complete_text_notification_at_eight_page_limit_remains_usable(self):
         data = BytesIO()
         document = canvas.Canvas(data)
+        logo = Image.new('RGB', (1000, 1000), 'white')
         for page_number in range(8):
             document.drawString(40, 790, f'Processo {CASE_NUMBER}. Servico de interpretacao realizado em 24/09/2026.')
             document.drawString(40, 760, f'Fictional supporting page {page_number + 1}; same appointment and no additional requests.')
+            document.drawImage(ImageReader(logo), 40, 700, width=40, height=40)
             document.showPage()
         document.save()
         with patch('honorarios_app.services.recover_source_with_openai', return_value={'status': 'disabled'}) as provider:
@@ -481,10 +484,11 @@ class PhotoDefaultTests(unittest.TestCase):
                 content=data.getvalue(), source_kind='notification_pdf', paths=self.paths, ai_recovery_mode='off')
         self.assertEqual(result['candidate_intake']['service_date'], '2026-09-24')
         self.assertEqual(result['source']['metadata']['pdf_page_count'], 8)
+        self.assertEqual(result['source']['metadata']['pdf_pages_without_useful_text'], [])
         self.assertEqual(provider.call_args.kwargs['rendered_page_images'], [])
 
     @staticmethod
-    def hybrid_notification():
+    def hybrid_notification(*, with_header=False, raster_mode='direct'):
         first = (f'Processo {CASE_NUMBER}\nNomeado interprete, deve comparecer em 24-09-2026.\n'
                  'Tribunal de Example City. Fictional notification for a personally attended interpreting service.')
         second = 'Interprete: Example Person. Nova audiencia designada para 25-09-2026.'
@@ -493,9 +497,19 @@ class PhotoDefaultTests(unittest.TestCase):
         for index, line in enumerate(first.splitlines()):
             document.drawString(40, 790 - index * 20, line)
         document.showPage()
+        if with_header:
+            document.drawString(30, 800, 'Tribunal Judicial da Comarca de Example District - pagina 2')
         raster = Image.new('RGB', (600, 850), 'white')
         ImageDraw.Draw(raster).multiline_text((40, 50), second, fill='black')
-        document.drawImage(ImageReader(raster), 0, 0, width=595, height=842)
+        if raster_mode == 'form':
+            document.beginForm('fictional-scanned-body')
+            document.drawImage(ImageReader(raster), 30, 30, width=500, height=700)
+            document.endForm()
+            document.doForm('fictional-scanned-body')
+        elif raster_mode == 'inline':
+            document.drawInlineImage(raster, 30, 30, width=500, height=700)
+        else:
+            document.drawImage(ImageReader(raster), 30, 30, width=500, height=700)
         document.showPage()
         document.save()
         return data.getvalue(), first, second
@@ -514,6 +528,53 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['review']['status'], 'needs_info')
         self.assertFalse(result['candidate_intake'].get('service_date'))
         self.assertIn('service_date', self.question_fields(result))
+
+    def test_readable_court_header_does_not_hide_scanned_body(self):
+        for raster_mode in ('direct', 'form', 'inline'):
+            with self.subTest(raster_mode=raster_mode):
+                content, first, second = self.hybrid_notification(with_header=True, raster_mode=raster_mode)
+                pages = PdfReader(BytesIO(content)).pages
+                self.assertGreater(len(pages[1].extract_text().strip()), 20)
+                recovery = {'status': 'ok', 'raw_visible_text': first + '\n' + second, 'fields': {}}
+                with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
+                    result = recover_source_upload(filename='fictional-header-scan.pdf', content_type='application/pdf',
+                        content=content, source_kind='notification_pdf', paths=self.paths)
+                self.assertEqual(provider.call_args.kwargs['source_metadata']['pdf_pages_without_useful_text'], [2])
+                self.assertEqual(len(provider.call_args.kwargs['rendered_page_images']), 2)
+                self.assertFalse(result['candidate_intake'].get('service_date'))
+                self.assertIn('service_date', self.question_fields(result))
+
+    def test_text_only_uncertain_notification_can_ask_without_image_reading(self):
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        for _ in range(4):
+            document.drawString(40, 790, f'Processo {CASE_NUMBER}. Nomeacao de interprete. Data: 16-09-2026.')
+            document.showPage()
+        document.save()
+        for mode, configured in (('off', True), ('auto', False)):
+            with self.subTest(mode=mode):
+                write_json(self.paths.ai_config, {'api_key': 'fictional-offline-test-key'} if configured else {})
+                with patch.dict('os.environ', {}, clear=True), \
+                     patch('honorarios_app.services.render_pdf_pages_for_source') as render:
+                    result = recover_source_upload(filename='fictional-uncertain.pdf', content_type='application/pdf',
+                        content=data.getvalue(), source_kind='notification_pdf', paths=self.paths, ai_recovery_mode=mode)
+                render.assert_not_called()
+                self.assertFalse(result['candidate_intake'].get('service_date'))
+                self.assertIn('service_date', self.question_fields(result))
+
+    def test_scanned_body_with_disabled_ai_stops_before_renderer_or_provider(self):
+        content, _first, _second = self.hybrid_notification(with_header=True)
+        for mode, configured in (('off', True), ('auto', False)):
+            with self.subTest(mode=mode):
+                write_json(self.paths.ai_config, {'api_key': 'fictional-offline-test-key'} if configured else {})
+                with patch.dict('os.environ', {}, clear=True), \
+                     patch('honorarios_app.services.render_pdf_pages_for_source') as render, \
+                     patch('honorarios_app.services.recover_source_with_openai') as provider:
+                    with self.assertRaisesRegex(IntakeError, 'AI reading is off or unavailable'):
+                        recover_source_upload(filename='fictional-header-scan.pdf', content_type='application/pdf',
+                            content=content, source_kind='notification_pdf', paths=self.paths, ai_recovery_mode=mode)
+                render.assert_not_called()
+                provider.assert_not_called()
 
     def test_hybrid_notification_cannot_prepare_from_only_readable_first_page_if_ai_fails(self):
         content, _first, _second = self.hybrid_notification()

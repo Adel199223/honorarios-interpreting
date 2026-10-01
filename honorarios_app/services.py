@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 import httpx
 from PIL import Image
 from pypdf import PdfReader
+from pypdf.generic import ContentStream
 
 from scripts.build_email_draft import (
     DEFAULT_COURT_EMAILS,
@@ -80,7 +81,8 @@ from scripts.entity_rules import build_service_place_clause, classify_entity_typ
 from scripts.source_parsing import explicit_service_places, service_date_evidence
 from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection, source_scope_fingerprint
 
-from .ai_recovery import MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
+from .ai_recovery import (MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai,
+                          resolve_openai_config, should_attempt_ai_recovery, text_is_weak_for_pdf_ocr)
 from .source_cases import source_case_rows, valid_source_case
 from .workspace_draft import workspace_runtime_id
 from .photo_defaults import apply_photo_defaults, apply_saved_court_label, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
@@ -1339,16 +1341,60 @@ def image_metadata_from_bytes(content: bytes) -> dict[str, Any]:
 MAX_PDF_TEXT_PAGES = 8
 
 
+def _pdf_page_has_substantial_raster(page: Any) -> bool:
+    """Require image reading for scanned bodies even beneath readable headers."""
+    page_area = max(1.0, float(page.cropbox.width) * float(page.cropbox.height))
+
+    def resolved(value: Any) -> Any:
+        return value.get_object() if hasattr(value, "get_object") else value
+
+    def area_scale(matrix: Any) -> float:
+        return abs(float(matrix[0]) * float(matrix[3]) - float(matrix[1]) * float(matrix[2]))
+
+    def raster_area(stream: Any, resources: Any, scale: float = 1.0, depth: int = 0) -> float:
+        if stream is None:
+            return 0.0
+        if depth > 10:
+            # Do not certify text coverage of a recursive/unreadable form tree.
+            return page_area
+        content = stream if isinstance(stream, ContentStream) else ContentStream(stream, page.pdf)
+        resources = resolved(resources)
+        stack: list[float] = []
+        total = 0.0
+        for operands, operator in content.operations:
+            if operator == b"q":
+                stack.append(scale)
+            elif operator == b"Q" and stack:
+                scale = stack.pop()
+            elif operator == b"cm":
+                scale *= area_scale(operands)
+            elif operator == b"INLINE IMAGE":
+                total += scale
+            elif operator == b"Do":
+                objects = resolved(resources.get("/XObject", {}))
+                obj = resolved(objects[operands[0]])
+                if obj.get("/Subtype") == "/Image":
+                    total += scale
+                elif obj.get("/Subtype") == "/Form":
+                    form_scale = area_scale(obj.get("/Matrix", [1, 0, 0, 1, 0, 0]))
+                    total += raster_area(obj, obj.get("/Resources", resources), scale * form_scale, depth + 1)
+        return total
+
+    # Measure the image's drawn size, not its pixel resolution, so ordinary
+    # small court logos do not turn a complete text notification into a scan.
+    return raster_area(page.get_contents(), page.get("/Resources", {})) >= page_area * 0.20
+
+
 def _pdf_text_and_page_count(content: bytes) -> tuple[str, int, list[int]]:
     try:
         reader = PdfReader(BytesIO(content))
         pages = []
-        for page in reader.pages[:MAX_PDF_TEXT_PAGES]:
+        unread_pages = []
+        for number, page in enumerate(reader.pages[:MAX_PDF_TEXT_PAGES], start=1):
             pages.append(page.extract_text() or "")
-        # A readable first page cannot establish that a later scanned page was
-        # read. Page numbers/headers alone also do not constitute useful text.
-        unread_pages = [number for number, text in enumerate(pages, start=1)
-                        if len(re.sub(r"\s+", "", text)) < 20]
+            # A readable header cannot establish that the raster body was read.
+            if len(re.sub(r"\s+", "", pages[-1])) < 20 or _pdf_page_has_substantial_raster(page):
+                unread_pages.append(number)
         return "\n".join(pages).strip(), len(reader.pages), unread_pages
     except Exception as exc:  # pypdf raises several parser-specific exceptions.
         raise IntakeError("Uploaded notification PDF could not be read.") from exc
@@ -1659,12 +1705,22 @@ def recover_source_upload(
 
     rendered_page_paths: list[Path] = []
     unread_pdf_pages = metadata.get("pdf_pages_without_useful_text") or []
-    if source_kind == "notification_pdf" and (unread_pdf_pages or text_is_weak_for_pdf_ocr(extracted_text)):
+    pdf_image_review_enabled = False
+    if source_kind == "notification_pdf":
+        config = resolve_openai_config(paths.ai_config)
+        pdf_image_review_enabled = bool(config.configured and config.package_available and should_attempt_ai_recovery(
+            source_kind, ai_recovery_mode, extracted_text, unread_pdf_pages=bool(unread_pdf_pages)))
+    if source_kind == "notification_pdf" and (unread_pdf_pages or (pdf_image_review_enabled and text_is_weak_for_pdf_ocr(extracted_text))):
         if metadata['pdf_page_count'] > MAX_PDF_OCR_PAGES:
             raise IntakeError(
                 f"This notification has {metadata['pdf_page_count']} pages and needs image review, which covers only the first {MAX_PDF_OCR_PAGES} pages. "
                 "Later pages may change the cases or appointment date. Upload a shorter PDF containing the relevant pages, "
                 "or enter the complete reviewed source text using manual intake. No request was prepared.")
+        if not pdf_image_review_enabled:
+            raise IntakeError(
+                "This PDF contains pages that need image reading, but AI reading is off or unavailable. "
+                "Enable AI reading and retry, upload a readable PDF, or enter the complete reviewed source text using manual intake. "
+                "No request was prepared.")
         rendered_page_paths, render_warnings = render_pdf_pages_for_source(stored_path)
         metadata["rendered_page_count"] = len(rendered_page_paths)
         if rendered_page_paths:
