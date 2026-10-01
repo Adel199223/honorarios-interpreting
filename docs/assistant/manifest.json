@@ -9,7 +9,7 @@
   "integration_readiness": "docs/integration-readiness.md",
   "adapter_contract": "docs/legalpdf-adapter-contract.md",
   "plan_lifecycle": "docs/assistant/exec_plans/PLANS.md",
-  "current_plan": "docs/assistant/exec_plans/completed/2026-10-01_three_source_review.md",
+  "current_plan": "docs/assistant/exec_plans/completed/2026-10-01_three_source_live_acceptance.md",
   "workflow_acceptance": "docs/workflow-acceptance.md",
   "source_quality": "docs/source-quality.md",
   "user_guide": "docs/user-guide.md",

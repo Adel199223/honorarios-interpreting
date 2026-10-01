@@ -1,5 +1,16 @@
 # Next Thread Handoff
 
+## Completed three-source live draft run — 2026-10-01
+
+The user explicitly authorized the full app process including Gmail creation after the local three-source review. The [live acceptance plan](assistant/exec_plans/completed/2026-10-01_three_source_live_acceptance.md) is complete. All three sources were freshly read through the unchanged normal saved app, then reviewed and prepared using ordinary browser controls. Each generated one separate interpreting-plus-travel PDF and its own actual unsent Gmail draft.
+
+Every rendered page and exact email argument set was inspected before creation. All PDF texts match the previously accepted requests. Three app-side Gmail verifications succeeded, followed by 120 independent checks of exactly those returned draft IDs: exact recipient/subject/body/PDF bytes, DRAFT present and SENT absent, and correct local records/journal bindings.
+
+All original history rows and prior artifacts are preserved. Only ordinary Gmail token refresh and the intended draft/index additions changed three of 1,568 prior protected files; three recorded attempt rows and normal new source/PDF/payload files were added. No pending attempt remains. Owned browser/server resources are closed. No product, settings, model or dependency change was necessary. Nothing was sent or published.
+
+The three-draft operation is consumed. Do not replay it or replace/delete drafts without a new request. The user's next step is to review the existing drafts in Gmail. The preceding review below describes historical local acceptance before this subsequently authorized live run.
+
+
 ## Completed three-source review — 2026-10-01
 
 The [three-source plan](assistant/exec_plans/completed/2026-10-01_three_source_review.md) is complete locally on `codex/fee-three-source-audit-20261001`, starting from `a100f67`. Implementation checkpoint `50bf632` and touched guidance are applied to the usual saved app; published main remains `668abdb`. The next useful step is the user's own trial. No missing user input or implementation blocker remains within this review.

@@ -66,6 +66,9 @@ The first hosted [PR #61](https://github.com/Adel199223/honorarios-interpreting/
 
 ## Current preparation status
 
+The subsequent [three-source live acceptance](docs/assistant/exec_plans/completed/2026-10-01_three_source_live_acceptance.md) completed the normal upload-to-Gmail path for all three supplied sources. Three actual drafts passed UI verification and 120 independent content/attachment/unsent checks. They are recorded locally and ready for user review; this consumed run must not be repeated without a new request.
+
+
 The [completed three-source review](docs/assistant/exec_plans/completed/2026-10-01_three_source_review.md) supersedes the preceding readiness checkpoint for current work. It covers notification dates/mixed work, complete PDF source reading, per-source isolation, conservative batch duplicates and saved wording defaults. All three final interpreting-plus-travel requests passed ordinary-browser preparation, rendered-PDF review and exact email attachment checks. The missing travel distance is now user-confirmed and saved. Candidate and saved-app Full passed 615 public tests and four isolated workflows; the reviewed changes are applied locally and remain unpublished. The handoff records final acceptance; earlier checkpoints below remain historical evidence.
 
 The September preparation work adds a pinned development environment, locked setup/validation commands, package checks, and concise documentation front doors. The preparation-only publication branch passed 89 portable synthetic tests (including actual installed-wheel checks), four isolated workflow smokes, and hosted Windows/GitHub Full validation. The original saved checkout passed 91 tests because it also retains separate local interface work. Publication and application evidence are recorded in the [current handoff](docs/next-thread-handoff.md).
