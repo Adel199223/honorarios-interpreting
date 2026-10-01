@@ -23,11 +23,12 @@ const element = selector => {
 const calls = [];
 let holdReview = null;
 let rejectCase = '';
+let reviewTransform = row => row;
 const context = {...g,console,FormData,JSON,Map,Set,Date,window:{},document:{querySelector:element,
   querySelectorAll(){return []},getElementById:id=>element('#'+id),body:{dataset:{}}},fetch:async(url,options)=>{
   if (url==='/api/intake/from-profile') return {ok:true,json:async()=>({intake:{...makeIntake(720),claim_interpreting:false,claim_transport:false},review:{status:'ready'}})};
   if (url!=='/api/review') throw new Error('Unexpected synthetic route: '+url);
-  const intake = JSON.parse(options.body).intake; calls.push(JSON.parse(JSON.stringify(intake)));
+  const intake = reviewTransform(JSON.parse(options.body).intake); calls.push(JSON.parse(JSON.stringify(intake)));
   if (holdReview) await holdReview;
   const valid = g.claimMode(intake)!=='neither' && intake.case_number!==rejectCase;
   return {ok:true,json:async()=>({status:valid?'ready':'needs_info',intake,effective_intake:intake,
@@ -37,7 +38,7 @@ const context = {...g,console,FormData,JSON,Map,Set,Date,window:{},document:{que
 }};
 let app = fs.readFileSync('honorarios_app/static/app.js','utf8').replace(/^import \{[\s\S]*?\} from "\.\/review_guidance\.js";/,'');
 app = app.slice(0,app.lastIndexOf('\nbindNavigation();'));
-app += '\nthis.api={state,adoptUploadedSource,selectSourceCase,refreshSourceClaimReviews,changeSourceTravelChoice,changeRequestClaimMode,addSourceCasesToBatch,clearPreparedArtifacts,renderBatchItemInspector,refreshHomeWorkflow,sourceCaseDetailsChanged,fillFormFromIntake,resetReview,buildIntakeFromProfile};';
+app += '\nthis.api={state,adoptUploadedSource,selectSourceCase,refreshSourceClaimReviews,changeSourceTravelChoice,changeRequestClaimMode,addSourceCasesToBatch,clearPreparedArtifacts,renderBatchItemInspector,refreshHomeWorkflow,sourceCaseDetailsChanged,fillFormFromIntake,resetReview,buildIntakeFromProfile,renderMetadataDateActions};';
 vm.runInNewContext(app,context);
 const a = context.api;
 const intake = number => ({case_number:`${number}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Court Test City',
@@ -212,6 +213,73 @@ console.log(JSON.stringify({message,unchanged:before===JSON.stringify(a.state.ba
         self.assertTrue(result['unchanged'])
         self.assertEqual(result['selected'], 1)
         self.assertEqual(result['dirty'], [True, False, True])
+
+    def test_corrected_missing_dates_reconcile_saved_shared_owner_before_queue(self):
+        result = self.run_js("""
+const data=upload([710,711]);data.case_candidates.forEach(row=>{row.candidate_intake.service_date=''});
+a.adoptUploadedSource(data);a.selectSourceCase(0,{persist:false,focus:false});
+const initial=a.state.sourceCaseCandidates.map(row=>({travel:row.candidate_intake.claim_transport,group:row.candidate_intake.travel_group_id||''}));
+a.state.sourceCaseCandidates.forEach(row=>{row.candidate_intake.service_date='2026-10-01'});
+a.selectSourceCase(0,{persist:false,focus:false});await a.refreshSourceClaimReviews();await a.addSourceCasesToBatch();
+const queued=a.state.batchIntakes.map(row=>({travel:row.claim_transport,group:row.travel_group_id}));
+// If a ready row's marker is lost later, Add all applies the chosen policy
+// and requires another review; it cannot silently queue ungrouped travel.
+delete a.state.sourceCaseCandidates[1].candidate_intake.travel_group_id;
+a.selectSourceCase(1,{persist:false,focus:false});const before=JSON.stringify(a.state.batchIntakes);
+let message='';try{await a.addSourceCasesToBatch();}catch(error){message=error.message;}
+console.log(JSON.stringify({initial,queued,message,unchanged:before===JSON.stringify(a.state.batchIntakes)}));
+""", app=True)
+        self.assertEqual(result['initial'], [{'travel': True, 'group': ''}, {'travel': True, 'group': ''}])
+        self.assertEqual([row['travel'] for row in result['queued']], [True, False])
+        self.assertEqual({row['group'] for row in result['queued']}, {'source-trip-fictional-source-hash'})
+        self.assertIn('Review all case choices', result['message'])
+        self.assertTrue(result['unchanged'])
+
+    def test_reconciliation_preserves_unclaimed_owner_and_excluded_interpreting(self):
+        result = self.run_js("""
+const data=upload([710,711]);data.case_candidates.forEach(row=>{row.candidate_intake.service_date=''});
+a.adoptUploadedSource(data);a.state.sourceTravelChoice.ownerIndex=null;
+a.state.sourceCaseCandidates.forEach(row=>{row.candidate_intake.service_date='2026-10-01'});
+a.state.sourceCaseCandidates[0].candidate_intake.claim_interpreting=false;
+a.selectSourceCase(0,{persist:false,focus:false});await a.refreshSourceClaimReviews();
+console.log(JSON.stringify({owner:a.state.sourceTravelChoice.ownerIndex,rows:a.state.sourceCaseCandidates.map(row=>({mode:g.claimMode(row.candidate_intake),travel:row.candidate_intake.claim_transport,interpreting:row.candidate_intake.claim_interpreting,group:row.candidate_intake.travel_group_id,ready:g.sourceCaseReadiness(row).ready}))}));
+""", app=True)
+        self.assertIsNone(result['owner'])
+        self.assertEqual([row['travel'] for row in result['rows']], [False, False])
+        self.assertFalse(result['rows'][0]['interpreting'])
+        self.assertEqual(result['rows'][0]['mode'], 'neither')
+        self.assertFalse(result['rows'][0]['ready'])
+        self.assertTrue(all(row['group'] == 'source-trip-fictional-source-hash' for row in result['rows']))
+
+    def test_same_uploaded_source_has_stable_group_distinct_sources_do_not(self):
+        result = self.run_js("""
+const groups=[];for(const hash of ['source-one','source-one','source-two','']){const data=upload([710,711]);data.case_candidates.forEach(row=>{row.candidate_intake.source_sha256=hash});a.adoptUploadedSource(data);groups.push({id:a.state.sourceTravelChoice.groupId,rows:a.state.sourceCaseCandidates.map(row=>row.candidate_intake.travel_group_id||'')});}
+console.log(JSON.stringify(groups));
+""", app=True)
+        self.assertEqual(result[0]['id'], result[1]['id'])
+        self.assertNotEqual(result[0]['id'], result[2]['id'])
+        self.assertTrue(all(row == 'source-trip-source-one' for row in result[0]['rows']))
+        self.assertEqual(result[3], {'id': '', 'rows': ['', '']})
+
+    def test_fresh_review_cannot_remove_group_marker_and_then_queue_travel(self):
+        result = self.run_js("""
+a.adoptUploadedSource(upload([710,711]));a.selectSourceCase(0,{persist:false,focus:false});await a.refreshSourceClaimReviews();
+reviewTransform=row=>{delete row.travel_group_id;return row};const before=JSON.stringify(a.state.batchIntakes);
+let message='';try{await a.addSourceCasesToBatch();}catch(error){message=error.message;}
+console.log(JSON.stringify({message,unchanged:before===JSON.stringify(a.state.batchIntakes),ready:a.state.sourceCaseCandidates.map(row=>g.sourceCaseReadiness(row).ready)}));
+""", app=True)
+        self.assertIn('fresh review changed shared trip details', result['message'])
+        self.assertTrue(result['unchanged'])
+        self.assertEqual(result['ready'], [False, False])
+
+    def test_travel_only_metadata_date_confirms_attendance_without_inferring_work(self):
+        result = self.run_js("""
+const questions=[{field:'service_date'}];
+console.log(JSON.stringify({travel:a.renderMetadataDateActions({photo_metadata_date:'2026-10-01',claim_interpreting:false,claim_transport:true},questions),both:a.renderMetadataDateActions({photo_metadata_date:'2026-10-01'},questions)}));
+""", app=True)
+        self.assertIn('attended the visit then', result['travel'])
+        self.assertNotIn('interpreting service happened then', result['travel'])
+        self.assertIn('interpreting service happened then', result['both'])
 
     def test_new_source_resets_claim_choice_and_prepared_summary_keeps_immutable_mode(self):
         result = self.run_js("""

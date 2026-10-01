@@ -26,7 +26,9 @@ import {
   claimModeLabel,
   intakeWithClaimMode,
   sharedSourceTravelEligibility,
-  sourceCasesWithTravelChoice
+  sourceCasesWithTravelChoice,
+  sourceTravelGroupId,
+  sourceCasesMatchSharedTravelChoice
 } from "./review_guidance.js";
 
 const state = {
@@ -749,6 +751,25 @@ function sourceTravelBlockedReason() {
   return sharedSourceTravelEligibility(state.sourceCaseCandidates).reason;
 }
 
+function reconcileSourceTravelChoice() {
+  const choice = state.sourceTravelChoice;
+  if (choice?.mode !== "shared" || sourceTravelBlockedReason()) return false;
+  if (sourceCasesMatchSharedTravelChoice(state.sourceCaseCandidates, choice.ownerIndex, choice.groupId)) return false;
+  const reconciled = sourceCasesWithTravelChoice(state.sourceCaseCandidates, "shared", choice.ownerIndex, choice.groupId);
+  state.sourceCaseCandidates = reconciled.candidates;
+  clearPreparedArtifacts("shared trip choice applied to corrected visit details");
+  state.batchPreflight = null;
+  selectSourceCase(state.sourceCaseSelectedIndex || 0, { persist: false, focus: false });
+  return true;
+}
+
+function requireReviewedSharedTravelChoice(reviewed) {
+  if (state.sourceTravelChoice?.mode !== "shared" || sourceCasesMatchSharedTravelChoice(reviewed, state.sourceTravelChoice.ownerIndex, state.sourceTravelChoice.groupId)) return;
+  reviewed.forEach((candidate) => { candidate.needs_review = true; });
+  selectSourceCase(state.sourceCaseSelectedIndex || 0, { persist: false, focus: false });
+  throw new Error(sourceTravelBlockedReason() || "The fresh review changed shared trip details. Use Review all case choices before adding this source; the batch queue was unchanged.");
+}
+
 function renderClaimChoices() {
   const unavailable = state.serverConnection?.connected === false || state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null;
   const heading = $("#request-claim-heading");
@@ -785,6 +806,7 @@ function renderClaimChoices() {
 
 async function refreshSourceClaimReviews() {
   if (sourceTravelBlockedReason()) return null;
+  reconcileSourceTravelChoice();
   clearPreparedArtifacts("source claims reviewed");
   state.batchPreflight = null;
   const capturedRevision = state.workflowRevision;
@@ -796,6 +818,7 @@ async function refreshSourceClaimReviews() {
       () => isWorkflowResponseCurrent(capturedRevision, state.workflowRevision));
     if (!reviewed) return null;
     state.sourceCaseCandidates = reviewed;
+    requireReviewedSharedTravelChoice(reviewed);
     selectSourceCase(state.sourceCaseSelectedIndex || 0, { persist: false, focus: false });
     return reviewed;
   } finally {
@@ -949,6 +972,7 @@ function queueReviewedIntake(intake, previousKey = "") {
 async function addSourceCasesToBatch() {
   persistCurrentSourceCase();
   if (state.sourceCaseBatchInFlight) return null;
+  if (reconcileSourceTravelChoice()) throw new Error("The shared trip choice has been applied to the corrected visit details. Use Review all case choices before adding this source; the batch queue was unchanged.");
   if (sourceTravelBlockedReason() || state.sourceCaseCandidates.length <= 1 || !state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)) {
     renderSourceCaseList();
     throw new Error(sourceTravelBlockedReason() || "Resolve and review every case in this source before adding them together.");
@@ -962,6 +986,7 @@ async function addSourceCasesToBatch() {
       () => isWorkflowResponseCurrent(capturedRevision, state.workflowRevision));
     if (!reviewed) return null;
     state.sourceCaseCandidates = reviewed;
+    requireReviewedSharedTravelChoice(reviewed);
     const blockedIndex = reviewed.findIndex((candidate) => !sourceCaseReadiness(candidate).ready);
     if (blockedIndex >= 0) {
       selectSourceCase(blockedIndex, { persist: false });
@@ -1741,7 +1766,7 @@ function renderMetadataDateActions(intake, questions) {
   return `
     <div class="date-confirmation-actions" data-date-confirmation-actions="true">
       <strong>Is ${escapeHtml(label)} the service date?</strong>
-      <p>The photo metadata suggests this date. Confirm it only if the interpreting service happened then.</p>
+      <p>${claimMode(intake) === "travel_only" ? "The photo metadata suggests this date. Confirm it only if you attended the visit then." : "The photo metadata suggests this date. Confirm it only if the interpreting service happened then."}</p>
       <div class="button-row compact-button-row">
         <button type="button" class="mini-button primary-mini-button" data-confirm-metadata-service-date="${escapeHtml(metadataDate)}">Use ${escapeHtml(label)}</button>
         <button type="button" class="mini-button" data-focus-date-answer="true">Enter another date</button>
@@ -2508,7 +2533,7 @@ function adoptUploadedSource(data, attachments = [], emailBody = "") {
   });
   state.sourceCaseSelectedIndex = state.sourceCaseCandidates.length > 1 ? 0 : null;
   state.sourceTravelChoice = state.sourceCaseCandidates.length > 1
-    ? { mode: "shared", ownerIndex: 0, groupId: `source-trip-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` } : null;
+    ? { mode: "shared", ownerIndex: 0, groupId: sourceTravelGroupId(state.sourceCaseCandidates) } : null;
   if (state.sourceTravelChoice) {
     const grouped = sourceCasesWithTravelChoice(state.sourceCaseCandidates, "shared", 0, state.sourceTravelChoice.groupId);
     state.sourceCaseCandidates = grouped.candidates;

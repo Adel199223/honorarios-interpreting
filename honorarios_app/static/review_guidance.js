@@ -367,13 +367,18 @@ export function sharedSourceTravelEligibility(candidates = []) {
   return { eligible: true, reason: "" };
 }
 
+export function sourceTravelGroupId(candidates = []) {
+  const hashes = candidates.map((candidate) => String(candidate.candidate_intake?.source_sha256 || "").trim());
+  return hashes.length > 1 && hashes[0] && hashes.every((hash) => hash === hashes[0]) ? `source-trip-${hashes[0]}` : "";
+}
+
 export function sourceCasesWithTravelChoice(candidates, mode, ownerIndex = 0, groupId = "") {
   const copied = copySourceCase(candidates);
   if (!["shared", "separate", "none"].includes(mode)) throw new Error("Choose one shared trip, separate trips, or no travel.");
   if (mode === "shared") {
     const eligibility = sharedSourceTravelEligibility(candidates);
     if (!eligibility.eligible) return { candidates: copied, blocked_reason: eligibility.reason };
-    if (!Number.isInteger(ownerIndex) || !copied[ownerIndex] || !groupId) throw new Error("Choose which case carries the shared trip.");
+    if ((ownerIndex !== null && (!Number.isInteger(ownerIndex) || !copied[ownerIndex])) || !groupId) throw new Error("Choose which case carries the shared trip.");
   }
   copied.forEach((candidate, index) => {
     const intake = candidate.candidate_intake;
@@ -385,6 +390,13 @@ export function sourceCasesWithTravelChoice(candidates, mode, ownerIndex = 0, gr
     if (before !== JSON.stringify(intake)) candidate.needs_review = true;
   });
   return { candidates: copied, blocked_reason: "" };
+}
+
+export function sourceCasesMatchSharedTravelChoice(candidates, ownerIndex, groupId) {
+  return Boolean(groupId) && sharedSourceTravelEligibility(candidates).eligible
+    && (ownerIndex === null || (Number.isInteger(ownerIndex) && Boolean(candidates[ownerIndex])))
+    && candidates.every((candidate, index) => candidate.candidate_intake?.travel_group_id === groupId
+      && candidate.candidate_intake?.claim_transport === (index === ownerIndex));
 }
 
 export async function reviewSourceCaseCandidates(candidates, requestReview, isCurrent = () => true) {
