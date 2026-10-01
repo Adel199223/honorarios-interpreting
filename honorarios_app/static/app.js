@@ -2432,6 +2432,8 @@ function updateHomeReviewCard(data) {
   if ($("#home-numbered-answers")) {
     $("#home-numbered-answers").value = pendingAnswers;
   }
+  // Rendering recreates disabled controls; gate them after restoring their inputs.
+  syncActionGates();
 }
 
 function renderFieldEvidence(fieldEvidence) {

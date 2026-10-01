@@ -165,12 +165,21 @@ const answers='1. 850/26.0TSTXX\\n2. 2026-09-28';
 const snapshot=makeSnapshot();snapshot.current_intake={...alpha,case_number:'',service_date:''};snapshot.batch_intakes=[];snapshot.answers=answers;
 storage.set(g.workspaceDraftStorageKey(workspace),savedRecord(snapshot));a.initializeWorkspaceDraft(workspace);
 // The real question textarea is replaced when its parent gets new innerHTML.
-const card=element('#interpretation-review-home-result');Object.defineProperty(card,'innerHTML',{get(){return this._html||''},set(value){this._html=value;element('#home-numbered-answers').value=''}});
+const card=element('#interpretation-review-home-result');Object.defineProperty(card,'innerHTML',{get(){return this._html||''},set(value){this._html=value;element('#home-numbered-answers').value='';element('#home-apply-numbered-answers').disabled=true}});
 await a.resumeWorkspaceDraft();const resumed=element('#numbered-answers').value;
 await element('#workspace-draft-status').listeners.click({target:{closest:selector=>selector==='#review-resumed-workspace'?{}:null}});
 await Promise.resolve();
-console.log(JSON.stringify({resumed,home:element('#home-numbered-answers').value,drawer:element('#numbered-answers').value,
- saved:JSON.parse(storage.get(g.workspaceDraftStorageKey(workspace))).snapshot.answers,cases:a.state.sourceCaseCandidates.length,calls:calls.map(row=>row.url)}));
+const reviewed={home:element('#home-numbered-answers').value,drawer:element('#numbered-answers').value,
+ saved:JSON.parse(storage.get(g.workspaceDraftStorageKey(workspace))).snapshot.answers,disabled:element('#home-apply-numbered-answers').disabled};
+const marker=fullApp.indexOf('const button = event.target.closest("#home-apply-numbered-answers")');
+const start=fullApp.lastIndexOf('document.addEventListener("click", async',marker);
+context.document.addEventListener=(event,handler)=>context.applyAnswerClick=handler;
+vm.runInNewContext(fullApp.slice(start,fullApp.indexOf('\\n  });',marker)+6),context);
+routeOverrides['/api/review/apply-answers']=body=>({status:'ready',intake:{...body.intake,case_number:'850/26.0TSTXX',service_date:'2026-09-28'},applied_fields:['case_number','service_date'],next_safe_action:{state:'prepare_pdf'}});
+if(!reviewed.disabled)await context.applyAnswerClick({target:{closest:selector=>selector==='#home-apply-numbered-answers'?element(selector):null}});
+console.log(JSON.stringify({resumed,...reviewed,cases:a.state.sourceCaseCandidates.length,calls:calls.map(row=>row.url),
+ appliedAnswers:calls.find(row=>row.url==='/api/review/apply-answers')?.body.answers||'',next:a.state.currentNextSafeAction?.state,
+ case:a.state.currentIntake.case_number,date:a.state.currentIntake.service_date,cleared:element('#home-numbered-answers').value,disabledAfterApply:element('#home-apply-numbered-answers').disabled}));
 """)
         answers = '1. 850/26.0TSTXX\n2. 2026-09-28'
         self.assertEqual(result['resumed'], answers)
@@ -178,7 +187,12 @@ console.log(JSON.stringify({resumed,home:element('#home-numbered-answers').value
         self.assertEqual(result['drawer'], answers)
         self.assertEqual(result['saved'], answers)
         self.assertEqual(result['cases'], 0)
-        self.assertEqual(result['calls'], ['/api/workspace/resume', '/api/review'])
+        self.assertFalse(result['disabled'])
+        self.assertEqual(result['calls'], ['/api/workspace/resume', '/api/review', '/api/review/apply-answers'])
+        self.assertEqual(result['appliedAnswers'], answers)
+        self.assertEqual((result['case'], result['date'], result['next']), ('850/26.0TSTXX', '2026-09-28', 'prepare_pdf'))
+        self.assertEqual(result['cleared'], '')
+        self.assertTrue(result['disabledAfterApply'])
 
     def test_manual_answer_edits_sync_and_consumed_answers_do_not_reappear(self):
         result = self.run_js("""
@@ -186,12 +200,13 @@ a.state.currentIntake=alpha;a.fillFormFromIntake(alpha);const typed='1. 850/26.0
 a.saveSourceCaseAnswers(typed);const mirrored=element('#numbered-answers').value;
 await a.applyNumberedAnswers({sourceSelector:'#home-numbered-answers',openDrawer:false});
 const applied={home:element('#home-numbered-answers').value,drawer:element('#numbered-answers').value};
-a.saveSourceCaseAnswers(typed);a.saveSourceCaseAnswers('');a.updateHomeReviewCard({status:'needs_info',intake:alpha,questions:[{field:'service_date'}]});
-console.log(JSON.stringify({mirrored,applied,cleared:element('#home-numbered-answers').value,calls:calls.map(row=>row.url)}));
+a.saveSourceCaseAnswers(typed);a.saveSourceCaseAnswers('');a.state.currentNextSafeAction={state:'answer_questions'};a.updateHomeReviewCard({status:'needs_info',intake:alpha,questions:[{field:'service_date'}]});
+console.log(JSON.stringify({mirrored,applied,cleared:element('#home-numbered-answers').value,disabled:element('#home-apply-numbered-answers').disabled,calls:calls.map(row=>row.url)}));
 """)
         self.assertEqual(result['mirrored'], '1. 850/26.0TSTXX')
         self.assertEqual(result['applied'], {'home': '', 'drawer': ''})
         self.assertEqual(result['cleared'], '')
+        self.assertTrue(result['disabled'])
         self.assertEqual(result['calls'], ['/api/review/apply-answers'])
 
     def test_five_case_resume_without_conditional_home_answer_control_finishes(self):
