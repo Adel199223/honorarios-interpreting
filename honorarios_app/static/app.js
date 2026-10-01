@@ -105,7 +105,7 @@ function renderWorkspaceDraft() {
     ${draft.validation?.missing_sources?.length ? "<p>The original source file is unavailable. Reattach it to read the source again; recovered facts are retained for checking.</p>" : ""}
     ${unavailableProfiles.length ? `<p>A saved personal profile is unavailable. Choose the intended replacement before resuming.</p><label>Profile for requests with an unavailable profile<select id="workspace-resume-profile"><option value="">Choose a profile</option>${(personalProfilesData().profiles || []).map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(personalProfileName(profile))}</option>`).join("")}</select></label>` : ""}
     ${draft.pending || draft.readFailed ? `<div class="button-row">${draft.pending ? `<button type="button" id="resume-workspace-draft" ${draft.busy ? "disabled" : ""}>${missing.length ? "Resume without unavailable files" : "Resume unfinished work"}</button>` : ""}<button type="button" id="discard-workspace-draft" ${draft.busy ? "disabled" : ""}>Discard saved work</button></div>` : ""}
-    ${draft.resumed && (state.currentIntake || draft.manualDirty) ? '<button type="button" id="review-resumed-workspace">Review restored work</button>' : ""}`;
+    ${draft.resumed && (state.currentIntake || draft.manualDirty) ? '<div class="button-row"><button type="button" class="primary-button" id="review-resumed-workspace">Review restored work</button></div>' : ""}`;
 }
 
 function initializeWorkspaceDraft(workspaceId) {
