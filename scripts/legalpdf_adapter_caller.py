@@ -795,7 +795,7 @@ def synthetic_notification_pdf(case_number: str, service_date: str, *, recipient
     output = BytesIO()
     document = canvas.Canvas(output)
     document.drawString(72, 720, f"NUIPC {raw_case}")
-    document.drawString(72, 700, f"Data/Hora da diligência: {day}/{month}/{year} 10:00")
+    document.drawString(72, 700, f"Serviço de interpretação realizado em {day}/{month}/{year} às 10:00")
     document.drawString(72, 680, "Local: Posto Territorial de Serpa")
     document.drawString(72, 660, f"Email: {recipient_email}")
     document.save()
