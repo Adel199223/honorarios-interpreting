@@ -1,5 +1,10 @@
 # Next Thread Handoff
 
+## Hosted portability correction — 2026-10-01
+
+The first [PR #63](https://github.com/Adel199223/honorarios-interpreting/pull/63) Windows run exposed an undeclared test dependency on optional Poppler: four scanned/hybrid test methods mocked AI but used the actual native renderer. Missing `pdftoppm` reproduced five failures and five errors. Domain tests now replay only that renderer boundary using valid synthetic page images, retaining real PDF/raster detection and all source-coverage/appointment checks. A missing-native-renderer regression confirms that no provider or request creation occurs. Application code, package versions and the accepted live drafts are unchanged. Final local/hosted results and the independently checked real renderer belong in the publication receipt; the first failed run is preserved as history.
+
+
 ## Authorized readiness publication — 2026-10-01
 
 The user explicitly authorized PR, merge and cleanup after the completed three-source live acceptance. The [publication preparation and cleanup contract](assistant/exec_plans/completed/2026-10-01_readiness_publication.md) is decision-complete. The candidate branch is `codex/fee-three-source-audit-20261001`, based on published main `668abdb`; it contains all accepted readiness, resume/backup and source-handling improvements. Final local Full passed **615 public tests and four isolated workflows**. Independent outgoing-history privacy review found no private data or significant publication blocker.

@@ -429,7 +429,8 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertFalse(any((page.extract_text() or '').strip() for page in PdfReader(BytesIO(data.getvalue())).pages))
         recovery = {'status': 'ok', 'attempted': True, 'fields': {'service_date': '2026-09-24'},
                     'raw_visible_text': text, 'warnings': [], 'translation_indicators': []}
-        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider, \
+             patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
             result = recover_source_upload(filename='fictional-scanned-notice.pdf', content_type='application/pdf',
                 content=data.getvalue(), source_kind='notification_pdf', profile_name='example_interpreting',
                 ai_recovery_mode='auto', paths=self.paths)
@@ -488,6 +489,18 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(provider.call_args.kwargs['rendered_page_images'], [])
 
     @staticmethod
+    def rendered_fixture_pages(pdf_path, *, max_pages=3):
+        """Replay the native renderer boundary; PDF detection and routing stay real."""
+        pages = []
+        for number, _page in enumerate(PdfReader(pdf_path).pages[:max_pages], start=1):
+            path = pdf_path.with_name(f'{pdf_path.stem}_page-{number}.png')
+            raster = Image.new('RGB', (600, 850), 'white')
+            ImageDraw.Draw(raster).text((40, 50), f'Fictional rendered page {number}', fill='black')
+            raster.save(path)
+            pages.append(path)
+        return pages, []
+
+    @staticmethod
     def hybrid_notification(*, with_header=False, raster_mode='direct'):
         first = (f'Processo {CASE_NUMBER}\nNomeado interprete, deve comparecer em 24-09-2026.\n'
                  'Tribunal de Example City. Fictional notification for a personally attended interpreting service.')
@@ -519,7 +532,8 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertFalse(should_attempt_ai_recovery('notification_pdf', 'auto', first))
         recovery = {'status': 'ok', 'attempted': True, 'fields': {'service_date': '2026-09-24'},
                     'raw_visible_text': first + '\n' + second, 'warnings': [], 'translation_indicators': []}
-        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider, \
+             patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
             result = recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
                 content=content, source_kind='notification_pdf', paths=self.paths)
         arguments = provider.call_args.kwargs
@@ -536,7 +550,8 @@ class PhotoDefaultTests(unittest.TestCase):
                 pages = PdfReader(BytesIO(content)).pages
                 self.assertGreater(len(pages[1].extract_text().strip()), 20)
                 recovery = {'status': 'ok', 'raw_visible_text': first + '\n' + second, 'fields': {}}
-                with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
+                with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider, \
+                     patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
                     result = recover_source_upload(filename='fictional-header-scan.pdf', content_type='application/pdf',
                         content=content, source_kind='notification_pdf', paths=self.paths)
                 self.assertEqual(provider.call_args.kwargs['source_metadata']['pdf_pages_without_useful_text'], [2])
@@ -581,7 +596,8 @@ class PhotoDefaultTests(unittest.TestCase):
         for status in ('skipped', 'unconfigured', 'unavailable', 'failed', 'ok'):
             with self.subTest(status=status):
                 with patch('honorarios_app.services.recover_source_with_openai', return_value={
-                        'status': status, 'raw_visible_text': '', 'fields': {}}):
+                        'status': status, 'raw_visible_text': '', 'fields': {}}), \
+                     patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
                     with self.assertRaisesRegex(IntakeError, 'AI image reading did not complete'):
                         recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
                             content=content, source_kind='notification_pdf', paths=self.paths)
@@ -597,6 +613,17 @@ class PhotoDefaultTests(unittest.TestCase):
                 recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
                     content=content, source_kind='notification_pdf', paths=self.paths)
         provider.assert_not_called()
+
+    def test_missing_native_renderer_stops_before_provider_or_request_creation(self):
+        content, _first, _second = self.hybrid_notification()
+        with patch('honorarios_app.services.shutil.which', return_value=None), \
+             patch('honorarios_app.services.recover_source_with_openai') as provider:
+            with self.assertRaisesRegex(IntakeError, 'not every page could be rendered'):
+                recover_source_upload(filename='fictional-no-renderer.pdf', content_type='application/pdf',
+                    content=content, source_kind='notification_pdf', paths=self.paths)
+        provider.assert_not_called()
+        for directory in (self.paths.output_dir, self.paths.intake_output_dir, self.paths.manifest_dir):
+            self.assertEqual(list(directory.glob('*')), [])
 
     def test_capture_city_selects_its_court_instead_of_district_or_service_city(self):
         self.enable(mappings={
