@@ -228,7 +228,10 @@
                 </div>
                 <div class="field">
                   <label for="recipient_email">Court Email</label>
+                  <label for="saved-court-email">Choose a saved court email</label>
+                  <select id="saved-court-email"><option value="">Type an email below</option></select>
                   <input id="recipient_email" autocomplete="off" placeholder="Needs recipient after review">
+                  <p class="field-hint">Selecting an email changes the recipient only. Review any payer mismatch before preparation.</p>
                 </div>
                 <div class="field">
                   <label for="service_place">Service Location</label>
@@ -1065,6 +1068,14 @@
         </div>
 
         <div id="prepare-results" class="result-stack"></div>
+        <section class="result-card hidden" id="prepared-email-target-card">
+          <label for="prepared-email-target"><strong>Email draft for</strong></label>
+          <select id="prepared-email-target"></select>
+          <p id="prepared-email-target-summary" class="field-hint"></p>
+          <div id="prepared-email-target-preview"></div>
+          <strong>Exact draft args for this selection</strong>
+          <pre id="prepared-email-target-args" class="draft-args"></pre>
+        </section>
         <div class="result-card packet-record-helper-template hidden">
           <strong>Packet draft recording helper</strong>
           <p>After `_create_draft` returns IDs, copy the packet record JSON or command so the packet draft and its underlying duplicate blockers are logged together.</p>

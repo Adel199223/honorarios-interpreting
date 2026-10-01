@@ -429,11 +429,15 @@ export function browserRequestIdentityKey(intake = {}) {
 }
 
 export function preparedFirstRequestReview(prepared = {}, reviews = []) {
-  const first = prepared?.items?.[0];
+  return preparedRequestReview(prepared, reviews, 0);
+}
+
+export function preparedRequestReview(prepared = {}, reviews = [], index = 0) {
+  const first = prepared?.items?.[index];
   if (!first) return null;
   // The prepared manifest is the snapshot used to create these PDFs. A current
   // source selection can belong to another request and must not supply facts.
-  const intake = copySourceCase(prepared.prepared_review_material?.effective_intakes?.[0]
+  const intake = copySourceCase(prepared.prepared_review_material?.effective_intakes?.[index]
     || first.effective_intake || first.intake || {
       case_number: first.case_number || "", service_date: first.service_date || "",
       payment_entity: first.payment_entity || "", service_place: first.service_place || "",

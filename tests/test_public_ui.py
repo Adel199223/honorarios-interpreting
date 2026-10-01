@@ -553,7 +553,7 @@ class PublicUiTests(PublicCandidateSmokeTests):
         app_js = (root / "honorarios_app" / "static" / "app.js").read_text(encoding="utf-8")
         prepare_body = app_js.split("async function prepareIntake", 1)[1].split("function renderPrepared", 1)[0]
 
-        snapshot_index = prepare_body.index('const requestIntake = cloneIntake(state.currentIntake)')
+        snapshot_index = prepare_body.index('const requestIntake = cloneIntake(options.correctionMode ? preparedTargetIntake() || state.currentIntake : state.currentIntake)')
         revision_index = prepare_body.index('const capturedRevision = beginPreparation()')
         preflight_index = prepare_body.index('requestWorkflowJson("/api/prepare/preflight"')
         binding_index = prepare_body.index('requestPayload.preflight_review = preflight.preflight_review')

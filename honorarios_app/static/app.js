@@ -22,6 +22,7 @@ import {
   mergeSourceReviewEvidence,
   duplicateSourceCaseIndices,
   preparedFirstRequestReview,
+  preparedRequestReview,
   claimMode,
   claimModeLabel,
   intakeWithClaimMode,
@@ -42,6 +43,7 @@ const state = {
   batchSelectedIndex: null,
   batchPreflight: null,
   lastPrepared: null,
+  preparedEmailTargetIndex: 0,
   lastReview: null,
   workflowRevision: 0,
   workflowStale: false,
@@ -62,6 +64,7 @@ const state = {
   currentNextSafeAction: null,
   currentPersonalProfile: null,
   gmailCreateInFlight: false,
+  gmailCreateRequestId: 0,
   gmailCreateCompletedPayload: "",
   lastGmailCreateConfirmation: null,
   lastManualHandoff: null,
@@ -201,6 +204,8 @@ const SERVER_DISCONNECTED_MESSAGE = "Local server disconnected. This browser tab
 const SERVER_GATED_SELECTORS = [
   "#refresh-reference",
   "#review-intake",
+  "#saved-court-email",
+  "#prepared-email-target",
   "#review-source-case-choices",
   "#request-claim-mode",
   "#source-travel-mode",
@@ -398,8 +403,11 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
   state.pendingPreparationRevision = null;
   state.locallyRecordedPayload = "";
   state.lastPrepared = null;
+  state.preparedEmailTargetIndex = 0;
+  renderPreparedEmailTarget();
   state.draftLifecycle = null;
   state.gmailCreateInFlight = false;
+  state.gmailCreateRequestId += 1;
   state.gmailCreateCompletedPayload = "";
   state.lastGmailCreateConfirmation = null;
   state.lastManualHandoff = null;
@@ -555,7 +563,27 @@ function fillFormFromIntake(intake) {
       input.value = "";
     }
   });
+  renderSavedCourtEmailOptions();
   renderSupportingAttachmentList();
+}
+
+function renderSavedCourtEmailOptions() {
+  const select = $("#saved-court-email");
+  if (!select) return;
+  const email = String($("#recipient_email")?.value || "").trim().toLowerCase();
+  const entries = (state.reference?.court_emails || []).filter((item) => String(item.email || "").trim());
+  select.innerHTML = `<option value="">Type an email below</option>` + entries.map((item) => `<option value="${escapeHtml(item.email)}">${escapeHtml(item.name || item.key || "Court")} · ${escapeHtml(item.email)}</option>`).join("");
+  select.value = entries.find((item) => String(item.email).trim().toLowerCase() === email)?.email || "";
+}
+
+async function chooseSavedCourtEmail(email) {
+  if (!email) return;
+  $("#recipient_email").value = email;
+  clearPreparedArtifacts("recipient changed");
+  mergeFormIntoCurrentIntake();
+  sourceCaseDetailsChanged();
+  renderSavedCourtEmailOptions();
+  if (state.currentIntake) await reviewIntake({ openDrawer: false });
 }
 
 function renderGuidedStep(stateName = "idle") {
@@ -588,8 +616,11 @@ function mergeFormIntoCurrentIntake() {
     "source_text",
     "personal_profile_id",
   ].forEach((key) => {
-    if (payload[key] || (selectedSourceCase() && Object.prototype.hasOwnProperty.call(intake, key))) intake[key] = payload[key] || "";
+    if (payload[key] || ((selectedSourceCase() || key === "recipient_email") && Object.prototype.hasOwnProperty.call(intake, key))) intake[key] = payload[key] || "";
   });
+  if (intake.recipient_email !== state.currentIntake.recipient_email) {
+    ["court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"].forEach((field) => { intake[field] = ""; });
+  }
   if (intake.photo_defaults_applied) {
     ["service_date", "payment_entity", "recipient_email", "service_place"].forEach((key) => {
       intake[key] = payload[key] || "";
@@ -1326,13 +1357,84 @@ function applyParsedGmailDraftIds(ids) {
 }
 
 function preparedRecordTarget() {
-  return state.lastPrepared?.packet || state.lastPrepared?.items?.[0] || null;
+  return state.lastPrepared?.packet || state.lastPrepared?.items?.[state.preparedEmailTargetIndex] || null;
+}
+
+function preparedTargetIntake() {
+  return preparedRequestReview(state.lastPrepared, [], state.lastPrepared?.packet ? 0 : state.preparedEmailTargetIndex)?.effective_intake || null;
+}
+
+async function copyPreparedDraftArgs() {
+  const target = preparedRecordTarget();
+  if (!target?.draft_payload) throw new Error("Select a prepared email before copying draft args.");
+  await copyText(JSON.stringify(target.gmail_create_draft_args || {}, null, 2));
+}
+
+function renderPreparedEmailTarget() {
+  const card = $("#prepared-email-target-card");
+  const select = $("#prepared-email-target");
+  if (!card || !select) return;
+  const targets = state.lastPrepared?.packet ? [state.lastPrepared.packet] : (state.lastPrepared?.items || []);
+  card.classList.toggle("hidden", !targets.length);
+  if (!targets.length) {
+    select.innerHTML = "";
+    ["#prepared-email-target-summary", "#prepared-email-target-args", "#prepared-email-target-preview"].forEach((id) => { $(id).textContent = ""; });
+    return;
+  }
+  if (!targets[state.preparedEmailTargetIndex]) state.preparedEmailTargetIndex = 0;
+  select.innerHTML = targets.map((item, index) => `<option value="${index}">${escapeHtml(item.packet_mode ? "Combined packet" : item.case_number || `Request ${index + 1}`)} · ${escapeHtml(item.recipient || item.gmail_create_draft_args?.to || "recipient pending")} · ${escapeHtml(item.attachment_count ?? item.gmail_create_draft_args?.attachment_files?.length ?? 0)} attachment(s)</option>`).join("");
+  select.value = String(state.preparedEmailTargetIndex);
+  select.disabled = targets.length === 1;
+  const target = preparedRecordTarget();
+  const files = target.gmail_create_draft_args?.attachment_files || [target.pdf].filter(Boolean);
+  $("#recipient-summary").textContent = `${target.case_number || "Packet"} · To: ${target.recipient || target.gmail_create_draft_args?.to || "recipient pending"}`;
+  $("#draft-text").textContent = target.gmail_create_draft_args?.body || "Review this selected prepared email's exact draft args and PDF below.";
+  $("#prepared-email-target-summary").textContent = `${target.packet_mode ? "One packet email" : target.case_number || "Selected request"} to ${target.recipient || target.gmail_create_draft_args?.to || "recipient pending"}. Attachments: ${files.map(pathBasename).join(", ") || "none"}. All draft and recording actions below use this selection.`;
+  $("#prepared-email-target-args").textContent = JSON.stringify(target.gmail_create_draft_args || {}, null, 2);
+  $("#prepared-email-target-preview").innerHTML = target.png_preview_urls?.[0]
+    ? `<figure class="pdf-preview-figure"><img class="pdf-preview-image" src="${escapeHtml(target.png_preview_urls[0])}" alt="Selected email PDF for ${escapeHtml(target.case_number || "packet")}"><figcaption>${escapeHtml(pathBasename(target.pdf))} · ${escapeHtml(target.recipient || "")}</figcaption></figure>`
+    : `<p>${escapeHtml(pathBasename(target.pdf) || "Prepared PDF")} — inspect the prepared PDF before drafting.</p>`;
+}
+
+function resetPreparedEmailTargetState() {
+  state.lastManualHandoff = null;
+  state.locallyRecordedPayload = "";
+  state.gmailCreateCompletedPayload = "";
+  state.lastGmailCreateConfirmation = null;
+  state.draftLifecycle = null;
+  ["record_payload", "record_draft_id", "record_message_id", "record_thread_id", "record_supersedes", "record_sent_date", "record_notes", "gmail-response-raw", "correction_reason"].forEach((id) => { $(`#${id}`).value = ""; });
+  $("#record_status").value = "active";
+  $("#gmail_handoff_reviewed").checked = false;
+  renderManualHandoffPacket(null);
+  renderGmailApiResult(null);
+  renderGmailVerifyResult(null);
+  renderDraftLifecycle(null);
+  const target = preparedRecordTarget();
+  if (target) {
+    $("#record_payload").value = target.draft_payload || "";
+    $("#record_notes").value = preparedRecordNote(target);
+    state.draftLifecycle = target.draft_lifecycle || null;
+    if (state.draftLifecycle) renderDraftLifecycle(state.draftLifecycle);
+  }
+}
+
+function selectPreparedEmailTarget(index) {
+  if (!Number.isInteger(index) || state.lastPrepared?.packet || !state.lastPrepared?.items?.[index]) return false;
+  if (index === state.preparedEmailTargetIndex) return true;
+  state.preparedEmailTargetIndex = index;
+  state.workflowRevision += 1;
+  resetPreparedEmailTargetState();
+  renderPreparedEmailTarget();
+  syncActionGates();
+  refreshHomeWorkflow();
+  return true;
 }
 
 function currentPreparedReviewFields(payloadPath = "") {
   const review = state.lastPrepared?.prepared_review || null;
   if (!review) return {};
   const normalizedPayload = String(payloadPath || "").trim();
+  if (normalizedPayload && preparedRecordTarget()?.draft_payload !== normalizedPayload) return {};
   const payloadPaths = Array.isArray(review.payload_paths) ? review.payload_paths : [];
   if (normalizedPayload && payloadPaths.length && !payloadPaths.includes(normalizedPayload)) {
     return {};
@@ -1737,7 +1839,7 @@ function renderBeginnerFacts(data, intake, { editable = true } = {}) {
       <strong>Check key facts</strong>
       <p>AI-read values and suggestions still need checking against the original source. Payment entity and recipient can differ from the service place.</p>
       <ul>${rows}<li class="review-fact-row"><div><strong>Request includes</strong><span class="review-fact-value">${escapeHtml(claimModeLabel(intake))}</span><small class="review-fact-origin confirmed">Your request choice</small></div></li></ul>
-      <small>${editable ? "Edit a detail, then use Review recovered details to check the request again." : "These facts belong to the first prepared request. Review the relevant source before correcting details and preparing again."}</small>
+      <small>${editable ? "Edit a detail, then use Review recovered details to check the request again." : "These facts belong to the selected prepared request. Review the relevant source before correcting details and preparing again."}</small>
     </section>
   `;
 }
@@ -1806,8 +1908,8 @@ function currentWorkflowGuidance(data = {}) {
 
 function refreshHomeWorkflow() {
   const review = state.lastReview || {};
-  const preparedReview = preparedFirstRequestReview(state.lastPrepared,
-    [review, ...state.sourceCaseCandidates.map((candidate) => candidate.review)]);
+  const preparedReview = preparedRequestReview(state.lastPrepared,
+    [review, ...state.sourceCaseCandidates.map((candidate) => candidate.review)], state.lastPrepared?.packet ? 0 : state.preparedEmailTargetIndex);
   if (preparedReview) {
     updateHomeReviewCard(preparedReview);
     return;
@@ -3001,37 +3103,41 @@ function renderGmailVerifyResult(data, kind = "") {
 }
 
 async function verifyGmailDraft() {
+  const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
   const draftId = $("#record_draft_id")?.value.trim() || "";
   if (!draftId) {
     throw new Error("Paste or create a Gmail draft ID before verifying it.");
   }
-  const data = await requestJson("/api/gmail/drafts/verify", {
+  const data = await requestWorkflowJson("/api/gmail/drafts/verify", {
     method: "POST",
     body: JSON.stringify(removeEmpty({
       draft_id: draftId,
       message_id: $("#record_message_id")?.value.trim() || "",
       thread_id: $("#record_thread_id")?.value.trim() || "",
     })),
-  });
+  }, captured);
+  if (!data) return null;
   renderGmailVerifyResult(data, data.status || "verified");
   setStatus(data.status || "verified", data.message || "Gmail draft verification completed.");
   return data;
 }
 
 async function verifyCreatedGmailDraft() {
+  const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
   const confirmation = state.lastGmailCreateConfirmation || {};
   const draftId = String(confirmation.draft_id || $("#record_draft_id")?.value.trim() || "").trim();
   if (!draftId) {
     throw new Error("Create a Gmail draft before verifying the created draft.");
   }
-  const data = await requestJson("/api/gmail/drafts/verify", {
+  const data = await requestWorkflowJson("/api/gmail/drafts/verify", {
     method: "POST",
     body: JSON.stringify(removeEmpty({
       draft_id: draftId,
       message_id: confirmation.message_id || $("#record_message_id")?.value.trim() || "",
       thread_id: confirmation.thread_id || $("#record_thread_id")?.value.trim() || "",
     })),
-  });
+  }, captured);
+  if (!data) return null;
   renderGmailVerifyResult(data, data.status || "verified");
   setStatus(data.status || "verified", data.message || "Gmail draft verification completed.");
   return data;
@@ -3051,6 +3157,8 @@ async function createGmailApiDraft() {
     .map((item) => item.trim())
     .filter(Boolean);
   const correctionReason = $("#correction_reason")?.value.trim() || "";
+  const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
+  const requestId = ++state.gmailCreateRequestId;
   state.gmailCreateInFlight = true;
   renderGmailApiResult({ status: "info", message: "Creating Gmail draft and recording duplicate protection..." }, "info");
   syncActionGates();
@@ -3066,6 +3174,11 @@ async function createGmailApiDraft() {
         ...currentPreparedReviewFields(target.draft_payload),
       })),
     });
+    if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
+      showAlert("The earlier selected email was created as a draft and recorded locally. Its IDs were not applied to the current selection. Check Recent Work for that draft.", "recorded");
+      await loadReference();
+      return data;
+    }
     $("#record_payload").value = target.draft_payload;
     $("#record_draft_id").value = data.draft_id || data.confirmation?.draft_id || "";
     $("#record_message_id").value = data.message_id || data.confirmation?.message_id || "";
@@ -3082,7 +3195,7 @@ async function createGmailApiDraft() {
     await loadReference();
     return data;
   } finally {
-    state.gmailCreateInFlight = false;
+    if (state.gmailCreateRequestId === requestId) state.gmailCreateInFlight = false;
     syncActionGates();
   }
 }
@@ -4088,6 +4201,7 @@ async function markHistoryDraftNotFound(index, source = "draft_log") {
 }
 
 function renderReference() {
+  renderSavedCourtEmailOptions();
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
   const duplicateRecords = indexedHistoryRecords(state.reference?.duplicates || [], "sent");
@@ -4805,14 +4919,18 @@ function focusDateAnswerBox() {
 }
 
 async function activeCheck() {
-  if (!state.currentIntake) {
+  const preparedIntake = preparedTargetIntake();
+  if (!preparedIntake && !state.currentIntake) {
     await buildIntakeFromProfile();
   }
-  mergeFormIntoCurrentIntake();
-  const data = await requestJson("/api/drafts/active-check", {
+  if (!preparedIntake) mergeFormIntoCurrentIntake();
+  const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
+  let data = await requestWorkflowJson("/api/drafts/active-check", {
     method: "POST",
-    body: JSON.stringify({ intake: state.currentIntake }),
-  });
+    body: JSON.stringify({ intake: preparedIntake || state.currentIntake }),
+  }, captured);
+  if (!data) return null;
+  if (state.lastPrepared?.packet) data = { ...data, message: `${data.message || "Draft lifecycle checked."} This check covers the first underlying packet request; creating the packet draft checks all members.` };
   state.draftLifecycle = data;
   renderDraftLifecycle(data);
   return data;
@@ -5000,7 +5118,7 @@ async function prepareIntake(options = {}) {
     await buildIntakeFromProfile();
   }
   mergeFormIntoCurrentIntake();
-  const requestIntake = cloneIntake(state.currentIntake);
+  const requestIntake = cloneIntake(options.correctionMode ? preparedTargetIntake() || state.currentIntake : state.currentIntake);
   const requestPayload = { intakes: [requestIntake], render_previews: true };
   if (options.correctionMode) {
     requestPayload.correction_mode = true;
@@ -5054,6 +5172,10 @@ async function prepareIntake(options = {}) {
 }
 
 function renderPrepared(data) {
+  state.lastPrepared = data;
+  state.preparedEmailTargetIndex = 0;
+  resetPreparedEmailTargetState();
+  renderPreparedEmailTarget();
   state.pendingPreparationRevision = null;
   state.workflowStale = false;
   const items = data.items || [];
@@ -5135,8 +5257,8 @@ function renderPrepared(data) {
     </div>`
   )).join("");
   $("#prepare-results").innerHTML = packetCard + itemCards;
-  if (packet?.draft_payload || first?.draft_payload) {
-    $("#record_payload").value = packet?.draft_payload || first.draft_payload;
+  if (preparedRecordTarget()?.draft_payload) {
+    $("#record_payload").value = preparedRecordTarget().draft_payload;
   }
   if (data.correction_mode) {
     renderDraftLifecycle({
@@ -5181,6 +5303,7 @@ function draftRecordPayloadFromForm() {
     .map((item) => item.trim())
     .filter(Boolean);
   const payloadPath = $("#record_payload").value.trim();
+  if (preparedRecordTarget()?.draft_payload && payloadPath !== preparedRecordTarget().draft_payload) throw new Error("Select the prepared email that matches this payload before recording it.");
   return {
     payload: payloadPath,
     draft_id: $("#record_draft_id").value.trim(),
@@ -5348,6 +5471,11 @@ function bindNavigation() {
 
 function bindActions() {
   bindSourceDropZone();
+  $("#saved-court-email").addEventListener("change", async () => {
+    try { await chooseSavedCourtEmail($("#saved-court-email").value); }
+    catch (error) { showAlert(error.message, "blocked"); }
+  });
+  $("#prepared-email-target").addEventListener("change", () => selectPreparedEmailTarget(Number($("#prepared-email-target").value)));
   const claimChange = (action) => async () => {
     try { await action(); }
     catch (error) { setStatus("blocked", error.message); showAlert(error.message, "blocked"); }
@@ -5359,6 +5487,7 @@ function bindActions() {
   const intakeChanged = () => {
     clearPreparedArtifacts("intake form changed");
     sourceCaseDetailsChanged();
+    renderSavedCourtEmailOptions();
   };
   $("#intake-form").addEventListener("input", intakeChanged);
   $("#intake-form").addEventListener("change", intakeChanged);
@@ -6215,8 +6344,7 @@ function bindActions() {
   });
   $("#copy-draft-args").addEventListener("click", async () => {
     try {
-      const target = preparedRecordTarget();
-      await copyText(JSON.stringify(target?.gmail_create_draft_args || {}, null, 2));
+      await copyPreparedDraftArgs();
       showAlert("Copied Gmail draft args JSON.", "recorded");
     } catch (error) {
       showAlert(error.message, "blocked");
@@ -6274,6 +6402,7 @@ function bindActions() {
   });
   $("#copy-record-values").addEventListener("click", async () => {
     try {
+      draftRecordPayloadFromForm();
       const recordValues = {
         payload: $("#record_payload").value.trim(),
         draft_id: $("#record_draft_id").value.trim(),
