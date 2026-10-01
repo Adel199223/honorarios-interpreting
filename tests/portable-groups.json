@@ -39,7 +39,8 @@
     "test_public_email.py",
     "test_claim_options.py",
     "test_email_routing.py",
-    "test_source_email_groups.py"
+    "test_source_email_groups.py",
+    "test_local_backup.py"
   ],
   "ui": [
     "test_workspace_draft.py",
@@ -57,7 +58,8 @@
     "test_public_publication.py"
   ],
   "integration": [
-    "test_public_adapter.py"
+    "test_public_adapter.py",
+    "test_local_backup.py"
   ],
   "full": [
     "test_public_candidate_smoke.py",
@@ -87,6 +89,7 @@
     "test_email_routing.py",
     "test_email_routing_ui.py",
     "test_source_email_groups.py",
-    "test_workspace_draft.py"
+    "test_workspace_draft.py",
+    "test_local_backup.py"
   ]
 }

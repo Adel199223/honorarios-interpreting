@@ -94,6 +94,9 @@ from .gmail_draft_api import (
     verify_gmail_draft_exists,
 )
 from .gmail_attempts import attempt_lock, load_attempts, save_attempts, new_attempt, pending_attempt, update_attempt
+from .backup import (runtime_lock, validate_attempts, export_recovery_capsules, validate_capsules,
+                     merge_attempts, merge_history, restore_capsules, rebase_value, artifact_bindings, TERMINAL)
+from scripts.state_store import atomic_write_json
 from .personal_profiles import (
     LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE,
     apply_profile_defaults_to_intake,
@@ -2021,6 +2024,7 @@ def managed_backup_counts(paths: AppPaths) -> dict[str, int]:
         key: read_backup_dataset(path, expected_type)
         for key, (path, expected_type) in backup_dataset_paths(paths).items()
     }
+    datasets["gmail_attempts"] = load_attempts(paths.draft_log)
     return backup_counts(datasets)
 
 
@@ -2256,16 +2260,26 @@ def diagnostics_status_payload() -> dict[str, Any]:
     }
 
 
-def backup_payload(paths: AppPaths) -> dict[str, Any]:
+def _backup_payload_unlocked(paths: AppPaths) -> dict[str, Any]:
     datasets = {
         key: read_backup_dataset(path, expected_type)
         for key, (path, expected_type) in backup_dataset_paths(paths).items()
     }
+    # The first-run legacy profile is usable without a saved store; back it up
+    # as a valid explicit store rather than installing an unreadable {} later.
+    if not paths.personal_profiles.exists():
+        datasets["personal_profiles"] = load_personal_profiles(paths)
+    attempts = load_attempts(paths.draft_log)
+    datasets["gmail_attempts"] = attempts
+    capsules = export_recovery_capsules(attempts, paths)
+    warnings = _backup_recovery_warnings(capsules, attempts)
     return {
         "kind": BACKUP_KIND,
         "schema_version": BACKUP_SCHEMA_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "datasets": datasets,
+        "gmail_attempt_recovery": capsules,
+        "warnings": warnings,
         "counts": backup_counts(datasets),
         "contains_private_local_data": True,
         "notes": "Local honorários backup for private app data. Do not publish this file.",
@@ -2273,19 +2287,37 @@ def backup_payload(paths: AppPaths) -> dict[str, Any]:
     }
 
 
+def backup_payload(paths: AppPaths) -> dict[str, Any]:
+    with runtime_lock(paths.draft_log):
+        return _backup_payload_unlocked(paths)
+
+
+def _backup_recovery_warnings(capsules: dict[str, Any] | None, attempts: list[dict[str, Any]]) -> list[str]:
+    entries = {row["attempt_id"]: row for row in (capsules or {}).get("entries", [])}
+    incomplete = [row for row in attempts if row["state"] not in TERMINAL and (
+        row["attempt_id"] not in entries or entries[row["attempt_id"]].get("omitted")
+        or {item["path"] for item in entries[row["attempt_id"]].get("artifacts", [])} != set(artifact_bindings(row)))]
+    warnings = ["This backup includes local records and pending Gmail recovery files, not a complete document archive or Gmail credentials."]
+    if incomplete:
+        warnings.append(f"{len(incomplete)} pending Gmail attempt(s) lack some original reviewed files. Duplicate protection is preserved; keep the original files or obtain a complete backup before finishing local recording on another computer.")
+    return warnings
+
+
 def write_backup_file(backup: dict[str, Any], paths: AppPaths, *, prefix: str = "honorarios-backup") -> Path:
     paths.backup_output_dir.mkdir(parents=True, exist_ok=True)
     path = paths.backup_output_dir / f"{prefix}-{timestamp_slug()}-{secrets.token_hex(4)}.json"
-    path.write_text(json.dumps(backup, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, backup)
     return path
 
 
 def export_local_backup(paths: AppPaths) -> dict[str, Any]:
-    backup = backup_payload(paths)
-    backup_file = write_backup_file(backup, paths)
+    with runtime_lock(paths.draft_log):
+        backup = _backup_payload_unlocked(paths)
+        backup_file = write_backup_file(backup, paths)
     return {
         "status": "exported",
-        "message": "Local backup exported. Keep this file private.",
+        "message": "Local backup exported. Keep this file private. " + " ".join(backup["warnings"]),
+        "warnings": backup["warnings"],
         "backup_file": str(backup_file),
         "backup": backup,
         "counts": backup["counts"],
@@ -2320,7 +2352,7 @@ def validate_backup_payload(payload: dict[str, Any], paths: AppPaths) -> dict[st
         raise IntakeError("Backup must include a datasets object.")
 
     allowed = backup_dataset_paths(paths)
-    unknown = sorted(set(datasets) - set(allowed))
+    unknown = sorted(set(datasets) - set(allowed) - {"gmail_attempts"})
     if unknown:
         raise IntakeError(f"Backup contains unsupported dataset(s): {', '.join(unknown)}")
     if not datasets:
@@ -2328,17 +2360,41 @@ def validate_backup_payload(payload: dict[str, Any], paths: AppPaths) -> dict[st
 
     validated: dict[str, Any] = {}
     for key, value in datasets.items():
+        if key == "gmail_attempts":
+            validated[key] = validate_attempts(value)
+            continue
         expected_type = allowed[key][1]
         if not isinstance(value, expected_type):
             type_name = "object" if expected_type is dict else "list"
             raise IntakeError(f"Backup dataset {key} must be a JSON {type_name}.")
+        if key == "personal_profiles":
+            profiles = value.get("profiles")
+            records = list(profiles.values()) if isinstance(profiles, dict) else profiles
+            if not isinstance(records, list) or not records or not all(isinstance(row, dict) for row in records):
+                raise IntakeError("Backup personal profiles have an invalid structure. Keep at least one editable profile before restoring.")
         validated[key] = value
+
+    attempts = validated.get("gmail_attempts", [])
+    capsules = validate_capsules(backup.get("gmail_attempt_recovery"), attempts)
+    for key in ("gmail_draft_log", "duplicate_index"):
+        if key in validated:
+            merge_history([], validated[key], duplicate=key == "duplicate_index")
+    for attempt in attempts:
+        if attempt["state"] == "recorded":
+            draft_id = attempt["gmail_result"]["draft_id"]
+            log = next((row for row in validated.get("gmail_draft_log", []) if row.get("draft_id") == draft_id), None)
+            if not log or log.get("message_id") != attempt["gmail_result"]["message_id"]:
+                raise IntakeError("Backup recorded Gmail attempt is missing its draft history. Restore a complete backup.")
+            if sorted(request_identity_key(row) for row in attempt["requests"]) != sorted(request_identity_key(row) for row in log.get("underlying_requests") or [log]):
+                raise IntakeError("Backup recorded Gmail attempt does not match its draft history requests.")
 
     return {
         "backup": backup,
         "datasets": validated,
         "counts": backup_counts(validated),
         "dataset_names": list(validated.keys()),
+        "capsules": capsules,
+        "warnings": _backup_recovery_warnings(backup.get("gmail_attempt_recovery"), attempts),
     }
 
 
@@ -2346,7 +2402,8 @@ def preview_local_backup_import(payload: dict[str, Any], paths: AppPaths) -> dic
     validation = validate_backup_payload(payload, paths)
     return {
         "status": "ready",
-        "message": "Backup import is valid. Preview only; no local files were changed.",
+        "message": "Backup import is valid. Preview only; no local files were changed. Existing Gmail attempts and newer draft history will be preserved. " + " ".join(validation["warnings"]),
+        "warnings": validation["warnings"],
         "counts": validation["counts"],
         "dataset_names": validation["dataset_names"],
         "restore_requirements": {
@@ -4100,24 +4157,73 @@ def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
     restore_reason = str(payload.get("restore_reason") or "").strip()
     if not restore_reason:
         raise IntakeError("Backup restore requires a short restore_reason explaining why this rollback is safe.")
-    validation = validate_backup_payload(payload, paths)
-    pre_restore_backup = backup_payload(paths)
-    pre_restore_backup["reason"] = f"Automatic backup before local restore. Restore reason: {restore_reason}"
-    pre_restore_file = write_backup_file(pre_restore_backup, paths, prefix="pre-restore-backup")
-
-    dataset_paths = backup_dataset_paths(paths)
-    for key, data in validation["datasets"].items():
-        target_path, expected_type = dataset_paths[key]
-        if expected_type is dict:
-            write_json_object(target_path, data)
-        else:
-            write_json_list(target_path, data)
+    with runtime_lock(paths.draft_log):
+        validation = validate_backup_payload(payload, paths)
+        datasets = copy.deepcopy(validation["datasets"])
+        local_attempts = load_attempts(paths.draft_log)
+        attempts = merge_attempts(local_attempts, datasets.get("gmail_attempts", []))
+        incoming_by_id = {row["attempt_id"]: row for row in datasets.get("gmail_attempts", [])}
+        for attempt in attempts:
+            incoming = incoming_by_id.get(attempt["attempt_id"], {})
+            if attempt.get("backup_restore_recorded_pending") and incoming.get("state") == "recorded":
+                # A prior interrupted restore reserved this identity. The final
+                # journal may close it only after this restore writes history.
+                attempt["state"] = "recorded"
+                attempt.pop("backup_restore_recorded_pending", None)
+        dataset_paths = backup_dataset_paths(paths)
+        # Validate every history merge before writing artifacts or any local data.
+        for key in ("gmail_draft_log", "duplicate_index"):
+            if key in datasets:
+                datasets[key] = merge_history(read_backup_dataset(dataset_paths[key][0], list), datasets[key], duplicate=key == "duplicate_index")
+        pre_restore_backup = _backup_payload_unlocked(paths)
+        pre_restore_backup["reason"] = f"Automatic backup before local restore. Restore reason: {restore_reason}"
+        pre_restore_file = write_backup_file(pre_restore_backup, paths, prefix="pre-restore-backup")
+        # Rebase incoming snapshots only. A newer local attempt keeps its original
+        # files and cannot silently acquire an older backup's artifact binding.
+        imported_ids = {row["attempt_id"] for row in attempts if row not in local_attempts or row.get("backup_capsule_pending")}
+        for row in attempts:
+            if row["attempt_id"] in imported_ids and row["state"] not in TERMINAL:
+                row["backup_capsule_pending"] = True
+        local_recorded_ids = {row["attempt_id"] for row in local_attempts if row["state"] == "recorded"}
+        def save_reservations():
+            reservations = copy.deepcopy(attempts)
+            for row in reservations:
+                if row["state"] == "recorded" and row["attempt_id"] not in local_recorded_ids:
+                    row["state"] = "created_unrecorded"
+                    row["backup_restore_recorded_pending"] = True
+                    row["backup_recovery_warning"] = "A backup restore was interrupted before all history was saved. Restore that same backup again to finish safely."
+            if "gmail_attempts" in datasets or reservations:
+                save_attempts(paths.draft_log, reservations)
+        # Reserve before even copying recovery files: a disk interruption during
+        # materialization must still leave the imported request protected.
+        save_reservations()
+        imported = [row for row in attempts if row["attempt_id"] in imported_ids]
+        restored, mapping, hashes = restore_capsules(imported, validation["capsules"], paths)
+        restored_by_id = {row["attempt_id"]: row for row in restored}
+        attempts = [restored_by_id.get(row["attempt_id"], row) for row in attempts]
+        for key in ("gmail_draft_log", "duplicate_index"):
+            if key in datasets:
+                datasets[key] = rebase_value(datasets[key], mapping, hashes)
+        # Commit the validated rebased paths before history. Recorded imports
+        # remain pending until all datasets below have been written.
+        save_reservations()
+        for key in ("gmail_draft_log", "duplicate_index"):
+            if key in datasets:
+                atomic_write_json(dataset_paths[key][0], datasets[key])
+        for key, data in datasets.items():
+            if key not in {"gmail_attempts", "gmail_draft_log", "duplicate_index"}:
+                atomic_write_json(dataset_paths[key][0], data)
+        if "gmail_attempts" in datasets or attempts:
+            save_attempts(paths.draft_log, attempts)
+        if "gmail_attempts" in datasets:
+            datasets["gmail_attempts"] = attempts
 
     return {
         "status": "restored",
-        "message": "Backup restored locally. A pre-restore backup was written first.",
+        "message": "Backup restored locally. A pre-restore backup was written first. Existing Gmail attempts and newer draft history were preserved. " + " ".join(validation["warnings"]),
+        "warnings": validation["warnings"],
         "restored_datasets": validation["dataset_names"],
-        "counts": validation["counts"],
+        "counts": backup_counts(datasets),
         "pre_restore_backup_file": str(pre_restore_file),
         "restore_reason": restore_reason,
         "backup_status": backup_status_payload(paths),
@@ -5812,6 +5918,8 @@ def gmail_attempt_response(attempt: dict[str, Any], *, error: str = "") -> dict[
     status = "created_unrecorded" if confirmed else "creation_uncertain"
     message = ("Gmail created this draft, but local recording is incomplete. Finish local recording; do not create another draft."
                if confirmed else "Gmail may already have created this email. Check Gmail, then record the existing draft or explicitly confirm that no draft exists. Another create is blocked until then.")
+    if attempt.get("backup_recovery_warning"):
+        message += " " + attempt["backup_recovery_warning"]
     return {**result, "status": status, "message": error or message,
             "recording_error": str(attempt.get("error") or ""), "attempt_id": attempt["attempt_id"],
             "draft_payload": attempt["payload"], "create_retry_allowed": False,
@@ -5823,6 +5931,9 @@ def gmail_attempt_response(attempt: dict[str, Any], *, error: str = "") -> dict[
 def _validate_attempt_artifacts(attempt: dict[str, Any]) -> dict[str, Any]:
     target = attempt["target"]
     payload_path = Path(attempt["payload"])
+    expected_paths = [payload_path, *(Path(raw) for raw in {**target.get("attachment_sha256", {}), **target.get("child_payload_sha256", {})})]
+    if any(not path.is_file() for path in expected_paths):
+        raise IntakeError("Original reviewed recovery files are missing. This attempt remains blocked to prevent a duplicate. Restore a complete backup made on the original computer, or restore the original reviewed files at their recorded paths, then finish local recording.")
     if file_sha256(payload_path) != target["draft_payload_sha256"]:
         raise IntakeError("The original attempted email payload changed. Recover its saved original files before recording this draft.")
     for raw_path, expected in {**target.get("attachment_sha256", {}), **target.get("child_payload_sha256", {})}.items():
