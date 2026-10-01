@@ -69,6 +69,53 @@ class SourceDateLineWrappingTests(unittest.TestCase):
         self.assertTrue(evidence.needs_confirmation)
 
 
+class NotificationDateTests(unittest.TestCase):
+    def evidence(self, text):
+        return service_date_evidence(text, source_kind='notification_pdf')
+
+    def test_interpreter_appointment_wins_over_issue_and_certification_dates(self):
+        for appointment in ('24-09-2026', '24/09/2026', '2026-09-24', '24 de setembro de 2026'):
+            with self.subTest(appointment=appointment):
+                text = ('Certificação Citius em: 16-09-2026\nData: 16/09/2026\n'
+                        'Foi nomeado intérprete de língua estrangeira,\n'
+                        f'devendo comparecer neste Tribunal no dia {appointment}, às 10:30 horas.')
+                evidence = self.evidence(text)
+                self.assertEqual(evidence.value, '2026-09-24')
+                self.assertEqual(set(evidence.candidates), {'2026-09-16', '2026-09-24'})
+
+    def test_pdf_appointment_policy_does_not_change_photo_or_manual_date_roles(self):
+        text = 'Nomeado intérprete, deve comparecer no dia 24/09/2026 neste Tribunal.'
+        self.assertEqual(self.evidence(text).value, '2026-09-24')
+        for kind in ('', 'photo'):
+            self.assertEqual(service_date_evidence(text, source_kind=kind).value, '')
+
+    def test_issue_or_unlabelled_date_never_supplies_notification_service_date(self):
+        for text in ('Nomeação de intérprete\nData: 16-09-2026',
+                     'Nomeação de intérprete\n16/09/2026',
+                     'Nomeação de intérprete\nCertificação Citius em: 16/09/2026'):
+            with self.subTest(text=text):
+                evidence = self.evidence(text)
+                self.assertFalse(evidence.value)
+                self.assertTrue(evidence.needs_confirmation)
+
+    def test_ordinary_witness_appointment_is_not_an_interpreting_appointment(self):
+        evidence = self.evidence('A testemunha deve comparecer no dia 24/09/2026 para audiência de julgamento.')
+        self.assertFalse(evidence.value)
+        self.assertTrue(evidence.needs_confirmation)
+
+    def test_multiple_interpreting_dates_need_confirmation(self):
+        for text in ('Nomeado intérprete, deve comparecer em 24/09/2026 e em 25/09/2026.',
+                     'Interpretação realizada em 24/09/2026. Nova diligência designada para 25/09/2026.'):
+            with self.subTest(text=text):
+                evidence = self.evidence(text)
+                self.assertFalse(evidence.value)
+                self.assertTrue(evidence.needs_confirmation)
+
+    def test_wrapped_appointment_date_keeps_its_role(self):
+        evidence = self.evidence('Data: 16/09/2026\nNomeado intérprete, deve comparecer no dia\n24-09-2026 às 10:30.')
+        self.assertEqual(evidence.value, '2026-09-24')
+
+
 class SourcePlaceRoleTests(unittest.TestCase):
     def test_court_host_on_line_after_wrapped_service_date_label(self):
         self.assertEqual(explicit_service_places(

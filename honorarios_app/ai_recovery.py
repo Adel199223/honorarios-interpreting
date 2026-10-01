@@ -24,7 +24,7 @@ DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_TIMEOUT_SECONDS = 90
 MAX_OUTPUT_TOKENS = 8192
 AI_RECOVERY_SCHEMA_NAME = "honorarios_source_recovery"
-AI_RECOVERY_PROMPT_VERSION = "honorarios-source-multi-case-v4"
+AI_RECOVERY_PROMPT_VERSION = "honorarios-source-notification-date-v5"
 AI_RECOVERY_FIELD_NAMES = [
     "raw_case_number",
     "case_number",
@@ -101,7 +101,7 @@ Pattern examples for this honorários workflow:
 - GNR sources can name a command or detachment in one city while the actual service happened in another locality. If visible metadata or body text indicates Beringel, use Beringel as service_place/locality and do not replace it with Beja only because the header says Comando Territorial de Beja.
 - Tribunal do Trabalho de Beja / Juízo do Trabalho de Beja sources are labor-court services. Extract that court as payment_entity and service_place when no separate police/GNR/PSP service place appears.
 - Polícia Judiciária victim-accompaniment can happen at a medical-legal office. Extract Gabinete Médico-Legal de Beja and Hospital José Joaquim Fernandes when visible as the physical service place.
-- Translation or word-count requests are not interpreting honorários. If phrases such as número de palavras, documento traduzido, contém ... palavras, tradução, or tradutor appear, put the exact visible phrase in translation_indicators.
+- Written-translation-only or word-count-only requests are not interpreting honorários. If phrases such as número de palavras, documento traduzido, contém ... palavras, tradução, or tradutor appear, keep the exact visible phrase in translation_indicators. A notice may separately appoint an in-person interpreter and also order written translation: preserve both passages, extract the interpreting appointment's date and place, and never confuse a translation deadline with that appointment. Ambiguous mixed work needs confirmation.
 - Do not infer kilometers, IBAN, Gmail recipients, or payment defaults. Only extract visible source facts.
 """.strip()
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNORECASE)
@@ -182,8 +182,8 @@ def text_is_weak_for_pdf_ocr(text: str) -> bool:
     if len(cleaned) < 80:
         return True
     has_case = bool(CASE_NUMBER_RE.search(cleaned))
-    has_date = bool(ISO_DATE_RE.search(cleaned) or EU_DATE_RE.search(cleaned))
-    return not (has_case and has_date) or service_date_evidence(cleaned).needs_confirmation
+    evidence = service_date_evidence(cleaned, source_kind="notification_pdf")
+    return not (has_case and evidence.candidates) or evidence.needs_confirmation
 
 
 def should_attempt_ai_recovery(source_kind: str, mode: str, extracted_text: str) -> bool:
@@ -261,6 +261,22 @@ def _normalize_ai_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadata: dict[str, Any] | None = None) -> str:
+    notification = source_kind == "notification_pdf"
+    date_roles = (
+        "Date roles for this notification PDF: service_date is the explicitly stated interpreting appointment "
+        "or performed-service date in the document. A summons saying the recipient was appointed intérprete "
+        "and must comparecer on a stated date supplies that appointment date, including a future appointment. "
+        "Never substitute the issue, Citius certification, signing/closing, filename, scan or capture date. "
+        "Preserve all visible dates in raw_visible_text, including DD-MM-YYYY and Portuguese written months. "
+        "If several interpreting appointments or performed dates remain possible, leave service_date empty and warn. "
+        "For notification PDFs leave photo_metadata_date and photo_metadata_city empty."
+        if notification else
+        "Date roles: service_date is the date of an explicitly performed interpreting service. "
+        "Do not use the issue date, signing/closing date, a future appointment, filename or capture date. "
+        "If two performed dates remain possible, leave service_date empty and warn that confirmation is required."
+    )
+    date_description = ("YYYY-MM-DD for the explicitly stated interpreting appointment or performed service; otherwise empty"
+                        if notification else "YYYY-MM-DD only for an explicitly performed service; otherwise empty")
     return (
         "You are extracting visible data from Portuguese legal interpretation-service documents for a local fee-request app. "
         "Return strict JSON only. Do not invent missing values. Preserve accents. "
@@ -272,9 +288,7 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         "For exactly one clear case, also fill fields.raw_case_number and fields.case_number; for multiple cases leave those scalar fields empty. "
         "For an unreadable row or alternative readings, preserve the unclear text in case_numbers and a warning; do not invent a missing character. "
         "Case suffixes and folder spines alone do not establish a service institution or physical host building.\n\n"
-        "Date roles: service_date is the date of an explicitly performed interpreting service. "
-        "Do not use the issue date, signing/closing date, a future appointment, filename or capture date. "
-        "If two performed dates remain possible, leave service_date empty and warn that confirmation is required. "
+        f"{date_roles} "
         "Cross-check all date formats rather than prefer ISO over Portuguese dates.\n\n"
         "Entity/place roles: distinguish the paying authority/header from where interpreting actually happened. "
         "Use the actual host building and locality; never replace an unfamiliar city with a familiar example. "
@@ -302,7 +316,7 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         '  "fields": {\n'
         '    "raw_case_number": "",\n'
         '    "case_number": "",\n'
-        '    "service_date": "YYYY-MM-DD only for an explicitly performed service; otherwise empty",\n'
+        f'    "service_date": "{date_description}",\n'
         '    "photo_metadata_date": "YYYY-MM-DD if visible Google Photos/photo metadata shows a capture date",\n'
         '    "photo_metadata_city": "capture city explicitly shown in the photo metadata/location panel; otherwise empty",\n'
         '    "source_document_timestamp": "",\n'

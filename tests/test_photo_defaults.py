@@ -9,10 +9,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from pypdf import PdfReader
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 
+from honorarios_app.ai_recovery import _prompt_for_source, should_attempt_ai_recovery
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
 from honorarios_app.services import (
     AppPaths, apply_answer_to_intake, apply_numbered_answers, recover_source_upload,
@@ -280,6 +282,73 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['candidate_intake']['service_date'], PRINTED_DATE)
         self.assertEqual(result['candidate_intake']['payment_entity'], 'Example Court')
         self.assertNotEqual(result['candidate_intake'].get('recipient_email'), CAPTURE_RECIPIENT)
+
+    def test_notification_appointment_reaches_actual_pdf_without_photo_date_contamination(self):
+        self.enable(venue=True)
+        text = (f'Processo {CASE_NUMBER}\nData: 16/09/2026\n'
+                'Nomeado intérprete, deve comparecer no dia 24 de setembro de 2026, às 10:30,\n'
+                'para a audiência no Tribunal de Example City.')
+        self.assertFalse(should_attempt_ai_recovery('notification_pdf', 'auto', text))
+        result = self.upload(source_kind='notification_pdf', visible_text=text,
+                             service_profile='example_interpreting',
+                             ai_fields={'service_date': '2026-09-16', 'photo_metadata_date': '2026-09-30'})
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['service_date'], '2026-09-24')
+        self.assertNotIn('photo_metadata_date', candidate)
+        self.assertNotIn('photo_defaults_applied', candidate)
+        self.assertNotIn('service_date', self.question_fields(result))
+        self.assertNotIn('service_date_source', self.question_fields(result))
+        # Complete unrelated routing/claim fields as a user would; the source
+        # date itself must reach generation without a manual date correction.
+        candidate.update(payment_entity='Example Court', recipient_email=DEFAULT_RECIPIENT,
+                         claim_transport=False, closing_city='Example City')
+        prepared = prepare_intakes([candidate], self.paths)
+        pdf_text = '\n'.join(page.extract_text() for page in PdfReader(prepared['items'][0]['pdf']).pages)
+        self.assertIn('24/09/2026', pdf_text)
+        self.assertNotIn('16/09/2026', pdf_text)
+        self.assertNotIn('30/09/2026', pdf_text)
+
+    def test_notification_issue_date_alone_cannot_use_ai_or_saved_profile_date(self):
+        profiles = json.loads(self.paths.service_profiles.read_text(encoding='utf-8'))
+        profiles['example_interpreting']['defaults'].update(
+            service_date='2026-09-01', photo_metadata_date='2026-09-30')
+        write_json(self.paths.service_profiles, profiles)
+        result = self.upload(source_kind='notification_pdf', service_profile='example_interpreting',
+                             visible_text=f'Processo {CASE_NUMBER}\nNomeação de intérprete\nData: 16-09-2026',
+                             ai_fields={'service_date': '2026-09-16', 'photo_metadata_date': '2026-09-30'})
+        self.assertFalse(result['candidate_intake'].get('service_date'))
+        self.assertNotIn('photo_metadata_date', result['candidate_intake'])
+        self.assertIn('service_date', self.question_fields(result))
+
+    def test_scanned_notification_replayed_ocr_reads_both_pages_and_appointment_date(self):
+        text = (f'Processo {CASE_NUMBER}\nCertificação Citius em: 16-09-2026\n'
+                'Foi nomeado intérprete, devendo comparecer neste Tribunal no dia 24-09-2026 às 10:30.')
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        for page_text in (text, 'Fictional second page: court signature only.'):
+            raster = Image.new('RGB', (600, 850), 'white')
+            ImageDraw.Draw(raster).multiline_text((40, 50), page_text, fill='black')
+            document.drawImage(ImageReader(raster), 0, 0, width=595, height=842)
+            document.showPage()
+        document.save()
+        self.assertFalse(any((page.extract_text() or '').strip() for page in PdfReader(BytesIO(data.getvalue())).pages))
+        recovery = {'status': 'ok', 'attempted': True, 'fields': {'service_date': '2026-09-24'},
+                    'raw_visible_text': text, 'warnings': [], 'translation_indicators': []}
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
+            result = recover_source_upload(filename='fictional-scanned-notice.pdf', content_type='application/pdf',
+                content=data.getvalue(), source_kind='notification_pdf', profile_name='example_interpreting',
+                ai_recovery_mode='auto', paths=self.paths)
+        self.assertEqual(result['candidate_intake']['service_date'], '2026-09-24')
+        self.assertEqual(len(provider.call_args.kwargs['rendered_page_images']), 2)
+        self.assertEqual(result['source']['metadata']['rendered_page_count'], 2)
+        self.assertTrue(should_attempt_ai_recovery('notification_pdf', 'auto', ''))
+
+    def test_source_specific_ai_prompt_explains_pdf_appointment_and_photo_policy(self):
+        pdf_prompt = _prompt_for_source('notification_pdf', '')
+        self.assertIn('including a future appointment', pdf_prompt)
+        self.assertIn('leave photo_metadata_date and photo_metadata_city empty', pdf_prompt)
+        photo_prompt = _prompt_for_source('photo', '')
+        self.assertIn('Do not use the issue date, signing/closing date, a future appointment', photo_prompt)
 
     def test_capture_city_selects_its_court_instead_of_district_or_service_city(self):
         self.enable(mappings={

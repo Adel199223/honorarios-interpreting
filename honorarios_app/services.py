@@ -598,9 +598,9 @@ def parse_exif_date(value: Any) -> str:
     return ""
 
 
-def extract_first_date(text: str) -> str:
+def extract_first_date(text: str, *, source_kind: str = "") -> str:
     """Compatibility entry point for contextual, mixed-format date parsing."""
-    return service_date_evidence(text).value
+    return service_date_evidence(text, source_kind=source_kind).value
 
 
 def extract_visible_metadata_date(text: str) -> str:
@@ -635,7 +635,7 @@ def extract_visible_metadata_date(text: str) -> str:
     return candidate.isoformat()
 
 
-def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
+def extract_candidate_fields(text: str, paths: AppPaths, *, source_kind: str = "") -> dict[str, Any]:
     fields: dict[str, Any] = {}
     source_text = text or ""
     case_match = CASE_NUMBER_RE.search(source_text)
@@ -645,7 +645,7 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
         fields["source_case_number"] = raw_case
         fields["case_number"] = normalize_case_number(raw_case)
 
-    service_date = extract_first_date(source_text)
+    service_date = extract_first_date(source_text, source_kind=source_kind)
     if service_date:
         fields["service_date"] = service_date
         fields["service_date_source"] = "document_text"
@@ -699,8 +699,8 @@ def _source_place_fields(text: str, paths: AppPaths) -> tuple[dict[str, Any], st
     return fields, ""
 
 
-def _source_rule_warnings(text: str, paths: AppPaths) -> list[str]:
-    date_warning = service_date_evidence(text).warning
+def _source_rule_warnings(text: str, paths: AppPaths, *, source_kind: str = "") -> list[str]:
+    date_warning = service_date_evidence(text, source_kind=source_kind).warning
     _fields, place_warning = _source_place_fields(text, paths)
     return [warning for warning in (date_warning, place_warning) if warning]
 
@@ -1109,11 +1109,13 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     candidate = copy.deepcopy(review.get("effective_intake") or reviewed_intake)
     candidate.setdefault("auto_profile", profile_decision)
 
-    deterministic_fields = extract_candidate_fields(str(candidate.get("source_text") or evidence_text), paths)
+    deterministic_fields = extract_candidate_fields(str(candidate.get("source_text") or evidence_text), paths,
+                                                    source_kind=str(candidate.get("source_kind") or ""))
     metadata = {}
     if str(candidate.get("photo_metadata_date") or "").strip():
         metadata["visible_metadata_date"] = str(candidate.get("photo_metadata_date") or "").strip()
-    source_warnings = _source_rule_warnings(str(candidate.get("source_text") or ""), paths)
+    source_warnings = _source_rule_warnings(str(candidate.get("source_text") or ""), paths,
+                                          source_kind=str(candidate.get("source_kind") or ""))
     profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
     field_evidence = build_field_evidence(
         candidate=candidate,
@@ -1223,7 +1225,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
     raw_visible_text = str(ai_recovery.get("raw_visible_text") or "").strip()
     if raw_visible_text:
         intake["source_text"] = combine_text_parts(str(intake.get("source_text") or ""), raw_visible_text)
-    date_evidence = service_date_evidence(str(intake.get("source_text") or ""))
+    date_evidence = service_date_evidence(str(intake.get("source_text") or ""),
+                                        source_kind=str(intake.get("source_kind") or ""))
 
     raw_case = _first_ai_field(ai_recovery, "raw_case_number", "source_case_number", "case_number").upper()
     if raw_case and not intake.get("case_number") and valid_source_case(raw_case):
@@ -1232,7 +1235,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         intake["case_number"] = normalize_case_number(raw_case)
 
     photo_metadata_date = _first_ai_field(ai_recovery, "photo_metadata_date", "metadata_date")
-    if photo_metadata_date and _looks_like_iso_date(photo_metadata_date) and not intake.get("photo_metadata_date"):
+    if (intake.get("source_kind") != "notification_pdf" and photo_metadata_date
+            and _looks_like_iso_date(photo_metadata_date) and not intake.get("photo_metadata_date")):
         intake["photo_metadata_date"] = photo_metadata_date
 
     service_date = _first_ai_field(ai_recovery, "service_date")
@@ -1450,7 +1454,8 @@ def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, A
         child_review = review_intake(child, paths)
         child = copy.deepcopy(child_review.get('effective_intake') or child)
         evidence = build_field_evidence(
-            candidate=child, deterministic_fields=extract_candidate_fields(result['extracted_text'], paths),
+            candidate=child, deterministic_fields=extract_candidate_fields(result['extracted_text'], paths,
+                                                                           source_kind=result['source']['source_kind']),
             metadata=result['source']['metadata'], ai_recovery=result['ai_recovery'],
             profile_decision=child.get('auto_profile') or {}, profiles=_load_available_service_profiles(paths),
         )
@@ -1555,10 +1560,16 @@ def build_partial_intake_from_profile(
     intake["source_file"] = str(stored_path.resolve())
     intake["source_kind"] = source_kind
     intake["source_sha256"] = digest
+    if source_kind == "notification_pdf":
+        # A notification's appointment must come from this document, never a
+        # recurring profile's date or photo/capture metadata.
+        intake.update(service_date="", service_date_source="")
+        for field in ("photo_metadata_date", "photo_metadata_date_requires_confirmation", "photo_defaults_applied"):
+            intake.pop(field, None)
     if extracted_text.strip():
         intake["source_text"] = extracted_text.strip()
 
-    fields = extract_candidate_fields(extracted_text, paths)
+    fields = extract_candidate_fields(extracted_text, paths, source_kind=source_kind)
     # Consider both independent text and recovered visible text before choosing
     # a source contact. Saved profile contacts are retained when sources conflict.
     if contact_text is not None and len({email.lower() for email in EMAIL_RE.findall(contact_text)}) > 1:
@@ -1580,7 +1591,7 @@ def build_partial_intake_from_profile(
         intake["transport"] = transport
 
     photo_metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or "").strip()
-    if photo_metadata_date:
+    if source_kind == "photo" and photo_metadata_date:
         intake["photo_metadata_date"] = photo_metadata_date
         if intake.get("service_date") and intake.get("service_date") == photo_metadata_date:
             intake["service_date_source"] = "document_text_and_photo_metadata"
@@ -1644,7 +1655,7 @@ def recover_source_upload(
         if render_warnings:
             metadata.setdefault("warnings", []).extend(render_warnings)
 
-    deterministic_fields = extract_candidate_fields(extracted_text, paths)
+    deterministic_fields = extract_candidate_fields(extracted_text, paths, source_kind=source_kind)
     ai_recovery = recover_source_with_openai(
         filename=filename,
         content_type=content_type,
@@ -1705,7 +1716,7 @@ def recover_source_upload(
     source_warnings = [
         *[str(item) for item in metadata.get("warnings", []) if str(item).strip()],
         *[str(item) for item in candidate.get("ai_recovery", {}).get("warnings", []) if str(item).strip()],
-        *_source_rule_warnings(combined_text, paths),
+        *_source_rule_warnings(combined_text, paths, source_kind=source_kind),
     ]
     source_attention = build_source_attention(
         candidate=candidate,
