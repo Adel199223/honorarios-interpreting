@@ -14,6 +14,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader
+from reportlab.pdfgen.canvas import Canvas
 
 from honorarios_app import ai_recovery as ai
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
@@ -135,6 +136,63 @@ class MultiCaseSourceTests(unittest.TestCase):
             self.assertEqual(record['review']['status'], 'ready', record['review'])
             self.assertFalse(record['review']['send_allowed'])
         return candidates
+
+    def upload_pdf(self, text):
+        content = BytesIO()
+        canvas = Canvas(content)
+        for index, line in enumerate(text.splitlines()):
+            canvas.drawString(25, 790 - index * 18, line)
+        canvas.save()
+        before = self.managed_snapshot()
+        with patch('honorarios_app.services.recover_source_with_openai', return_value={
+            'status': 'disabled', 'attempted': False, 'fields': {},
+        }):
+            result = recover_source_upload(filename='fictional-notice-20260930.pdf',
+                content_type='application/pdf', content=content.getvalue(),
+                source_kind='notification_pdf', ai_recovery_mode='off', paths=self.paths)
+        self.assertEqual(self.managed_snapshot(), before)
+        self.assert_no_preparation_artifacts()
+        return result
+
+    def test_pdf_visible_cases_each_reach_their_own_review_and_pdf_in_one_email(self):
+        result = self.upload_pdf(
+            f'Processos {CASES[0]} e {CASES[1]}\n'
+            'Servico de interpretacao realizado em 28/09/2026.\nTribunal de Alpha')
+        self.assertEqual(result['case_count'], 2)
+        candidates = [row['candidate_intake'] for row in result['case_candidates']]
+        self.assertEqual([row['case_number'] for row in candidates], list(CASES[:2]))
+        for row in result['case_candidates']:
+            candidate = row['candidate_intake']
+            self.assertEqual(candidate['source_kind'], 'notification_pdf')
+            self.assertEqual(candidate['service_date'], '2026-09-28')
+            self.assertFalse(candidate.get('photo_metadata_date'))
+            self.assertEqual(row['review']['status'], 'ready')
+            candidate.update(claim_interpreting=True, claim_transport=False)
+            reviewed = review_intake_with_profile_evidence(copy.deepcopy(candidate), self.paths)
+            self.assertEqual(reviewed['intake']['case_number'], candidate['case_number'])
+        prepared = prepare_intakes(candidates, self.paths, email_grouping='source', render_previews=False)
+        self.assertEqual(len(prepared['items']), 2)
+        self.assertEqual(len(prepared['email_groups']), 1)
+        self.assertEqual(len(prepared['email_groups'][0]['attachment_files']), 2)
+        for candidate, item in zip(candidates, prepared['items']):
+            text = '\n'.join(page.extract_text() or '' for page in PdfReader(item['pdf']).pages)
+            self.assertIn(candidate['case_number'], text)
+            self.assertNotIn(next(case for case in CASES[:2] if case != candidate['case_number']), text)
+            self.assertIn('28/09/2026', text)
+
+    def test_pdf_unclear_reference_is_retained_and_blocks_the_whole_batch(self):
+        result = self.upload_pdf(
+            f'Processo {CASES[0]}\nProcesso {CASES[1]} ou {CASES[2]} (uncertain).\n'
+            'Servico de interpretacao realizado em 28/09/2026.\nTribunal de Alpha')
+        self.assertEqual(result['case_count'], 2)
+        candidates = [row['candidate_intake'] for row in result['case_candidates']]
+        unclear = next(row for row in result['case_candidates'] if not row['candidate_intake']['case_number'])
+        self.assertEqual(unclear['review']['status'], 'needs_info')
+        self.assertIn('case_number', {q['field'] for q in unclear['review']['questions']})
+        self.assertEqual(preflight_intakes(candidates, self.paths, email_grouping='source')['status'], 'blocked')
+        with self.assertRaises(IntakeError):
+            prepare_intakes(candidates, self.paths, email_grouping='source', render_previews=False)
+        self.assert_no_preparation_artifacts()
 
     def test_photo_upload_returns_five_reviewed_candidates_without_writing_requests(self):
         result = self.upload(through_api=True)

@@ -1433,7 +1433,7 @@ def store_supporting_attachment_upload(
 
 def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     candidate = result['candidate_intake']
-    rows = source_case_rows(result['extracted_text'], result['ai_recovery']) if result['source']['source_kind'] == 'photo' else []
+    rows = source_case_rows(result['extracted_text'], result['ai_recovery'])
     if not rows:
         existing_case = str(candidate.get('case_number') or '')
         rows = [{'case_number': existing_case, 'raw_case_number': str(candidate.get('raw_case_number') or existing_case)}]

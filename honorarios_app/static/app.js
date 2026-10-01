@@ -2928,6 +2928,7 @@ async function uploadSource(sourceKind, options = {}) {
   form.append("ai_recovery", $("#ai_recovery_mode").value || "auto");
   const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
   const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
+  const existingSourceHash = String(state.currentIntake?.source_sha256 || "").trim();
 
   let data;
   try {
@@ -2936,7 +2937,8 @@ async function uploadSource(sourceKind, options = {}) {
     if (state.sourceUploadPending === pending) state.sourceUploadPending = null;
   }
   if (!data) return null;
-  adoptUploadedSource(data, existingAttachments, existingEmailBody);
+  const sameSource = !existingSourceHash || existingSourceHash === String(data.source?.sha256 || data.candidate_intake?.source_sha256 || "").trim();
+  adoptUploadedSource(data, sameSource ? existingAttachments : [], sameSource ? existingEmailBody : "");
   state.lastProfileProposal = data.profile_proposal || null;
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);

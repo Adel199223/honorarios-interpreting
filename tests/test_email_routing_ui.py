@@ -85,6 +85,57 @@ console.log(JSON.stringify({result,current:a.state.currentIntake.case_number,att
         self.assertEqual(result['current'], '711/26.0TSTXX')
         self.assertEqual(result['attachments'], [])
 
+    def test_new_pdf_upload_does_not_inherit_another_sources_proofs_or_body(self):
+        result = self.run_js("""
+const results=[];const originalFetch=context.fetch;
+for(const previousHash of [alpha.source_sha256,beta.source_sha256,'']){
+ a.state.currentIntake={...alpha,source_sha256:previousHash,additional_attachment_files:['/fictional/alpha-proof.pdf'],email_body:'Previous explanation'};a.fillFormFromIntake(a.state.currentIntake);
+ context.fetch=async(url,options)=>url==='/api/sources/upload'?{ok:true,json:async()=>({candidate_intake:{...beta,source_kind:'notification_pdf'},review:{status:'ready',intake:beta,next_safe_action:{state:'prepare_pdf'}},source:{sha256:beta.source_sha256,source_kind:'notification_pdf'}})}:originalFetch(url,options);
+ await a.uploadSource('notification_pdf',{file:{name:'beta.pdf',size:20,lastModified:2,type:'application/pdf'}});
+ results.push({previousHash,case:a.state.currentIntake.case_number,attachments:a.state.currentIntake.additional_attachment_files||[],body:a.state.currentIntake.email_body||''});
+}
+console.log(JSON.stringify({results,reviewBodies:calls.filter(row=>row.url==='/api/review').map(row=>({attachments:row.body.intake.additional_attachment_files||[],body:row.body.intake.email_body||''}))}));
+""")
+        self.assertEqual(result['results'][0]['case'], '711/26.0TSTXX')
+        self.assertEqual(result['results'][0]['attachments'], [])
+        self.assertEqual(result['results'][0]['body'], '')
+        self.assertEqual(result['reviewBodies'][0], {'attachments': [], 'body': ''})
+        for row in result['results'][1:]:
+            self.assertEqual(row['attachments'], ['/fictional/alpha-proof.pdf'])
+            self.assertEqual(row['body'], 'Previous explanation')
+
+    def test_pdf_multiple_cases_follow_existing_review_and_shared_trip_ui(self):
+        result = self.run_js("""
+const rows=photoRows().slice(1,3).map(row=>({...row,source_kind:'notification_pdf',service_date:'2026-09-28',transport:{origin:'Example home',destination:'Beta',km_one_way:12}}));
+const originalFetch=context.fetch;
+context.fetch=async(url,options)=>url==='/api/sources/upload'?{ok:true,json:async()=>({candidate_intake:rows[0],case_count:2,case_candidates:rows.map(intake=>({candidate_intake:intake,review:{status:'ready',intake,next_safe_action:{state:'prepare_pdf'}}})),source:{sha256:rows[0].source_sha256,source_kind:'notification_pdf',filename:'fictional-two-cases.pdf'}})}:originalFetch(url,options);
+routeOverrides['/api/review']=body=>({status:'ready',intake:body.intake,next_safe_action:{state:'prepare_pdf'}});
+await a.uploadSource('notification_pdf',{file:{name:'two-cases.pdf',size:20,lastModified:2,type:'application/pdf'}});
+console.log(JSON.stringify({cases:a.state.sourceCaseCandidates.map(row=>({case:row.candidate_intake.case_number,kind:row.candidate_intake.source_kind,date:row.candidate_intake.service_date,travel:row.candidate_intake.claim_transport,status:row.review.status})),owner:a.state.sourceTravelChoice.ownerIndex,addDisabled:element('#add-source-cases-to-batch').disabled,reviewed:calls.filter(row=>row.url==='/api/review').map(row=>row.body.intake.case_number)}));
+""")
+        self.assertEqual([row['case'] for row in result['cases']], ['711/26.0TSTXX', '712/26.0TSTXX'])
+        self.assertTrue(all(row['kind'] == 'notification_pdf' and row['date'] == '2026-09-28' and row['status'] == 'ready' for row in result['cases']))
+        self.assertEqual([row['travel'] for row in result['cases']], [True, False])
+        self.assertEqual(result['owner'], 0)
+        self.assertFalse(result['addDisabled'])
+        self.assertEqual(result['reviewed'], ['711/26.0TSTXX', '712/26.0TSTXX'])
+
+    def test_late_pdf_upload_cannot_restore_old_supplemental_files_after_source_change(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha,additional_attachment_files:['/fictional/alpha-proof.pdf'],email_body:'Alpha explanation'};a.fillFormFromIntake(a.state.currentIntake);
+let release;const gate=new Promise(resolve=>release=resolve);
+context.fetch=async()=>{await gate;return {ok:true,json:async()=>({candidate_intake:alpha,source:{sha256:alpha.source_sha256,source_kind:'notification_pdf'}})}};
+const pending=a.uploadSource('notification_pdf',{file:{name:'alpha.pdf',size:20,lastModified:2,type:'application/pdf'}});
+a.clearPreparedArtifacts('changed source');a.state.currentIntake={...beta,additional_attachment_files:['/fictional/beta-proof.pdf'],email_body:'Beta explanation'};
+release();const result=await pending;
+console.log(JSON.stringify({result,current:a.state.currentIntake,cases:a.state.sourceCaseCandidates.length}));
+""")
+        self.assertIsNone(result['result'])
+        self.assertEqual(result['current']['case_number'], '711/26.0TSTXX')
+        self.assertEqual(result['current']['additional_attachment_files'], ['/fictional/beta-proof.pdf'])
+        self.assertEqual(result['current']['email_body'], 'Beta explanation')
+        self.assertEqual(result['cases'], 0)
+
     def test_current_multiple_proofs_attach_but_stale_upload_error_is_ignored(self):
         result = self.run_js("""
 a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);let uploaded=0;
