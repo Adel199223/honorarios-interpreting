@@ -78,7 +78,7 @@ from scripts.request_identity import normalize_case_number, request_identity_key
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
 from scripts.entity_rules import build_service_place_clause, classify_entity_type, source_mentions_pj_context
 from scripts.source_parsing import explicit_service_places, service_date_evidence
-from scripts.source_classification import detect_translation_source, format_translation_rejection
+from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection, source_scope_fingerprint
 
 from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
 from .source_cases import source_case_rows, valid_source_case
@@ -4981,6 +4981,13 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
     if not value:
         return
 
+    if field == 'mixed_notice_scope':
+        if value.lower() not in {'interpreting-only', 'translation-only'}:
+            raise IntakeError('Choose interpreting-only for the separate in-person service, or translation-only to set this notice aside.')
+        intake[field] = value.lower()
+        intake['mixed_notice_scope_fingerprint'] = source_scope_fingerprint(intake)
+        return
+
     if field == "service_date_source":
         folded = fold_match_text(value)
         if folded in {"metadata", "photo", "foto", "image", "imagem"}:
@@ -6224,7 +6231,9 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
 
     return {
         "status": "ready",
-        "message": "Ready for PDF generation and Gmail draft payload preparation.",
+        "message": ("Ready for the in-person interpreting request only. Written translation in this notice is excluded."
+                    if classify_source_work(effective_intake) == 'mixed_interpreting'
+                    else "Ready for PDF generation and Gmail draft payload preparation."),
         "case_number": rendered.case_number,
         "service_date": str(effective_intake.get("service_date") or effective_intake.get("photo_metadata_date") or ""),
         "payment_entity": str(effective_intake.get("payment_entity") or ""),

@@ -194,6 +194,42 @@ class MultiCaseSourceTests(unittest.TestCase):
             prepare_intakes(candidates, self.paths, email_grouping='source', render_previews=False)
         self.assert_no_preparation_artifacts()
 
+    def test_mixed_pdf_reviews_and_prepares_only_explicit_interpreting_work(self):
+        result = self.upload_pdf(f'Processo {CASES[0]}\n'
+            'Servico de interpretacao presencial realizado em 28/09/2026.\n'
+            'A traducao escrita da acusacao devera ser entregue no prazo de 10 dias.\nTribunal de Alpha')
+        self.assertEqual(result['review']['status'], 'ready', result['review'])
+        self.assertIn('Written translation', result['review']['message'])
+        candidate = result['candidate_intake']
+        prepared = prepare_intakes([candidate], self.paths, render_previews=False)
+        pdf = PdfReader(prepared['items'][0]['pdf'])
+        text = '\n'.join(page.extract_text() or '' for page in pdf.pages).lower()
+        self.assertIn('intérprete', text)
+        self.assertNotIn('tradução', text)
+        self.assertNotIn('10 dias', text)
+
+    def test_ambiguous_mixed_pdf_requires_scope_answer_and_changed_source_requires_new_answer(self):
+        result = self.upload_pdf(f'Processo {CASES[0]}\n'
+            'Tradutor e interprete: traducao escrita de documento.\nData: 28/09/2026.\nTribunal de Alpha')
+        candidate = result['candidate_intake']
+        review = result['review']
+        self.assertEqual(review['status'], 'needs_info')
+        questions = {q['field']: q['number'] for q in review['questions']}
+        self.assertIn('mixed_notice_scope', questions)
+        with self.assertRaises(IntakeError):
+            prepare_intakes([candidate], self.paths, render_previews=False)
+        self.assert_no_preparation_artifacts()
+        answer = f"{questions['mixed_notice_scope']}. interpreting-only"
+        applied = apply_numbered_answers({'intake': candidate, 'answer_text': answer}, self.paths)
+        self.assertNotIn('mixed_notice_scope', {q['field'] for q in applied.get('questions', [])})
+        changed = copy.deepcopy(applied['intake'])
+        changed['source_text'] += '\nOutra referencia documental.'
+        fresh = review_intake_with_profile_evidence(changed, self.paths)
+        self.assertIn('mixed_notice_scope', {q['field'] for q in fresh['questions']})
+        aside = apply_numbered_answers({'intake': candidate,
+            'answer_text': f"{questions['mixed_notice_scope']}. translation-only"}, self.paths)
+        self.assertEqual(aside['status'], 'set_aside')
+
     def test_photo_upload_returns_five_reviewed_candidates_without_writing_requests(self):
         result = self.upload(through_api=True)
         self.assertEqual(result['status'], 'uploaded')

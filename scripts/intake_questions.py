@@ -11,10 +11,12 @@ try:
     from scripts.generate_pdf import ROOT, get_service_date_value, load_json, service_date_conflict, service_date_conflict_is_confirmed
     from scripts.entity_rules import has_pj_host_building, resolve_entities, source_mentions_non_court_service, source_mentions_pj_context
     from scripts.claim_options import ClaimError, validate_claims
+    from scripts.source_classification import classify_source_work
 except ModuleNotFoundError:
     from generate_pdf import ROOT, get_service_date_value, load_json, service_date_conflict, service_date_conflict_is_confirmed
     from entity_rules import has_pj_host_building, resolve_entities, source_mentions_non_court_service, source_mentions_pj_context
     from claim_options import ClaimError, validate_claims
+    from source_classification import classify_source_work
 
 
 QUESTION_RULES = [
@@ -158,11 +160,15 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
 
 def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
+    if classify_source_work(intake) == 'ambiguous_mixed':
+        questions.append({'field': 'mixed_notice_scope', 'number': 1,
+            'question': 'Does this notice assign a separate in-person interpreting service, or only written translation?',
+            'answer_hint': 'Answer interpreting-only to request only the separate in-person service, or translation-only to set this notice aside.'})
     travel_only = intake.get('claim_interpreting', True) is False and intake.get('claim_transport') is True
     try:
         validate_claims(intake)
     except ClaimError:
-        questions.append({'field': 'claim_options', 'number': 1,
+        questions.append({'field': 'claim_options', 'number': len(questions) + 1,
             'question': 'What should this request claim? It cannot claim neither interpreting nor travel.',
             'answer_hint': 'Choose both, interpreting-only, or travel-only.'})
     for rule in QUESTION_RULES:
