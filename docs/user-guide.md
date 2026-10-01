@@ -30,7 +30,9 @@ The capture city comes from photo location metadata or the photo viewer's locati
 
 The optional missing-venue rule uses the court in the capture city only when the source does not establish a physical service building. It appears as **Your photo-city court venue default · editable**. A police station or other venue identified in the source stays the service place, even if the court is paying. You can edit an exception or clear the default and answer the venue question. This rule is your saved preference, rather than proof of where the service occurred.
 
-If the app identifies a translation request, duplicate or existing draft, read the warning before continuing. The ordinary PDF path stays blocked until the problem is resolved. Corrections use the explicit correction workflow, not a second normal request.
+For a notification PDF, the date comes from the interpreting appointment in the notice, rather than the notice's issue date. Check that it is the service you are claiming. If the notice also assigns written translation, the app prepares only the separate in-person interpreting request. It asks when the scope is unclear; translation-only requests remain outside this app.
+
+If the app identifies a translation-only request, duplicate or existing draft, read the warning before continuing. The ordinary PDF path stays blocked until the problem is resolved. Corrections use the explicit correction workflow, not a second normal request. A blank period and “morning” for the same case/day overlap; use genuinely different periods only for separate services.
 
 ## Choose the court email
 
@@ -60,9 +62,9 @@ Then click **Create fee-request PDF**. Open the generated PDF or its preview and
 
 Changing the source or request details makes the old prepared result stale. Review again and create a fresh PDF before using its email handoff.
 
-## Several cases in one photo
+## Several cases in one source
 
-The review shows **Cases found in this source** when one photo contains several case references. Use **Review case** beside each row to check its facts and questions. Your field edits and unfinished numbered answers stay with that case when you switch. An unclear case remains visible until you correct it.
+The review shows **Cases found in this source** when a photo or PDF contains several case references. Use **Review case** beside each row to check its facts and questions. Your field edits and unfinished numbered answers stay with that case when you switch. An unclear case remains visible until you correct it. Each request gets its own PDF; compatible requests from the same source can share one email.
 
 The **Travel for these source cases** controls start with **One shared trip** when the source's cases have matching visit facts. **Case that claims the shared trip** chooses the one PDF that includes travel. The first case is selected initially; the other cases retain their interpreting claims. This fits several cases handled during one journey. Choosing a travel-bearing claim on another case moves the shared trip to it. Check the previous owner's claim choice, especially if it previously claimed travel only.
 
@@ -72,9 +74,9 @@ When every case is ready, click **Add all cases to batch** (the button includes 
 
 To include another photo, queue the current reviewed request or all its cases first, then use **Change source**. The previous queue stays in place while the next source starts with empty recovered text and capture metadata. Bulk adding a multi-case source selects separate fee-request PDFs. Check that every expected case appears in **Batch Queue**, leave **Packet mode** unchecked, run **Check batch preflight**, then use **Prepare batch package**. Review each generated PDF before any email step.
 
-**One email per photo** keeps each case's own PDF and puts the requests from that photo in one email to their reviewed court recipient. Five cases in one photo produce five PDF attachments in one email; another photo gets its own email. Choose **Separate emails** when needed. Different recipients or personal profiles within one photo need correction or separate emails before preparation. Email grouping does not add travel to other cases.
+**One email per source (PDF or photo)** keeps each case's own PDF and puts the requests from that source in one email to their reviewed court recipient. Five cases in one photo produce five PDF attachments in one email; another source gets its own email. Choose **Separate emails** when needed. Different recipients or personal profiles within one source need correction or separate emails before preparation. Email grouping does not add travel to other cases.
 
-If those cases already have drafts, enter a reason under **Replace this photo's existing email**, then choose **Prepare replacement email for this photo**. The app reviews every case and prepares the complete photo email together. Existing drafts remain in history until a replacement is actually created and recorded. A correction cannot silently retire the other requests from an earlier grouped email.
+If those cases already have drafts, enter a reason under **Replace this source's existing email**, then choose **Prepare replacement email for this source**. The app reviews every case and prepares the complete source email together. Existing drafts remain in history until a replacement is actually created and recorded. A correction cannot silently retire the other requests from an earlier grouped email.
 
 Editing a case after queueing pauses batch preparation until you review the correction and add the updated case or source to the queue. Do not rely on an earlier green batch check after changing details. **Reset workspace** clears the whole visible queue when you want to start over.
 

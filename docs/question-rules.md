@@ -97,11 +97,15 @@ If yes and the destination is unknown, ask:
 
 ## Translation Indicators
 
-If the source mentions word counts or translation wording, do not generate the interpreting PDF. Say:
+If the source assigns only written translation or word-count work, do not generate the interpreting PDF. Say:
 
 ```text
 This looks like a translation honorários request because it mentions word counts or translation work. I will set it aside from the in-person interpreting project.
 ```
+
+An explicit separate in-person interpreting assignment in the same notice may proceed for interpreting only. Explain that written translation is excluded. When the source mixes the two roles without a clear interpreting assignment, ask the generated numbered scope question before proceeding. That answer applies only to the reviewed source and does not fill missing dates, venues or recipients.
+
+For a notification PDF, use a clear interpreting appointment date rather than its issue/certification date. If the appointment is missing, conflicting, cancelled or belongs to another person, ask for the actual interpreting date. Photo capture-date preferences remain separate.
 
 ## Missing Closing Date
 

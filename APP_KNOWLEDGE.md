@@ -1,6 +1,6 @@
 # LegalPDF Honorários app knowledge
 
-LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpreting services. It is a separate development project intended for future integration with LegalPDF Translate. Translation/word-count requests are set aside.
+LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpreting services. It is a separate development project intended for future integration with LegalPDF Translate. Translation-only/word-count requests are set aside. Mixed notices may yield their explicit separate interpreting request; ambiguous scope requires a source-bound answer.
 
 ## Architecture and ownership
 
@@ -26,6 +26,8 @@ The browser and CLI share the domain rules. The services facade retains existing
 - Personal profiles contain the applicant/payment/address/travel information. The selected profile is adapted into the existing generator profile contract.
 - Service profiles contain recurring interpreting service/payment/recipient patterns.
 - Duplicate records and draft lifecycle records protect both drafted and sent requests; packet and source-group emails retain every underlying identity and each source-group child's own PDF/hash.
+- In-batch duplicate checks use the same conservative overlap rule as history: a blank period overlaps any named period for the same normalized case/day, while distinct named periods can represent separate services. Preflight, preparation, MIME/payload validation and local recording share this rule.
+- Notification PDFs use explicit interpreting appointment evidence for their editable service-date default, independently of issue/capture dates. PDF case lists pass through the same per-case review as photos. A new source cannot inherit an earlier source's supplemental files or custom email body.
 - Prepared PDF/payload/manifest files and review tokens belong to the same reviewed request snapshot. Source, intake, queue, profile or attachment changes invalidate that snapshot.
 - Browser local storage retains unfinished inputs, per-case answers/evidence, explicit travel ownership and the queue, scoped by an opaque identifier derived from the runtime profile/history/upload paths. Resume/discard is explicit. Prepared artifacts, tokens, Gmail IDs and acknowledgements are excluded; a fresh review/preflight is required. Detected runtime changes block writes until reload. Missing supporting files require explicit salvage and unavailable profiles require a selected replacement. This browser session is not part of server backups.
 - Private overlays, tokens, source documents, generated output, backups and reports remain local and ignored. Public fixtures and tests must be synthetic.
@@ -63,6 +65,8 @@ The subsequent [live acceptance plan](docs/assistant/exec_plans/completed/2026-1
 The first hosted [PR #61](https://github.com/Adel199223/honorarios-interpreting/pull/61) run then exposed a Node-test decoding mismatch between Windows defaults and UTF-8 CI. Only test-harness decoding and equivalent escape notation changed; a simulated Windows-default regression now covers that boundary. Final candidate and saved-app Full each passed 424 tests and four isolated workflows. The earlier 423-test checkpoint and live acceptance remain valid; the corrected current PR head requires hosted Full before merge.
 
 ## Current preparation status
+
+The [active three-source review](docs/assistant/exec_plans/active/2026-10-01_three_source_review.md) supersedes the preceding readiness checkpoint for current work. It covers notification dates/mixed work, complete PDF source reading, per-source isolation, conservative batch duplicates and saved wording defaults. The handoff records current acceptance and the remaining user-specific travel-distance input; earlier completed checks below remain historical evidence.
 
 The September preparation work adds a pinned development environment, locked setup/validation commands, package checks, and concise documentation front doors. The preparation-only publication branch passed 89 portable synthetic tests (including actual installed-wheel checks), four isolated workflow smokes, and hosted Windows/GitHub Full validation. The original saved checkout passed 91 tests because it also retains separate local interface work. Publication and application evidence are recorded in the [current handoff](docs/next-thread-handoff.md).
 

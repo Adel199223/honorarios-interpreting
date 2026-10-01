@@ -17,6 +17,8 @@ The default wrapper checks the pinned environment, lock/export consistency, depe
 
 ## Work in focused chunks
 
+For notification handling, test issue-versus-interpreting appointment dates, written Portuguese dates, unrelated/cancelled appointments, mixed interpreting/translation scope and every case in a multi-case PDF. Verify the final PDF date and each email attachment, not only extraction. Test replacing a source with existing proof/custom email text. Within a batch, the same case/day with a blank and named period must block before files or records; distinct named periods remain valid.
+
 While changing one behavior, select its public test group instead of repeatedly rebuilding and checking every unrelated workflow:
 
 ```powershell
