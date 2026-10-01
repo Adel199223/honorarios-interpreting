@@ -18,7 +18,7 @@ const element=selector=>{
   }return elements.get(selector);
 };
 const calls=[],copied=[];let deferred=null;let responseOverride=null;let responseFailure=null;let routeOverrides={};let deferredRoute='';
-const context={...g,console,JSON,Map,Set,Date,window:{},referenceLoads:0,navigator:{clipboard:{writeText:async text=>copied.push(text)}},
+const context={...g,console,FormData,JSON,Map,Set,Date,window:{},referenceLoads:0,navigator:{clipboard:{writeText:async text=>copied.push(text)}},
   document:{querySelector:element,querySelectorAll(){return []},getElementById:id=>element('#'+id),body:{dataset:{}}},
   fetch:async(url,options)=>{
     const body=options?.body?JSON.parse(options.body):{};calls.push({url,body});if(deferred&&(!deferredRoute||deferredRoute===url))await deferred;
@@ -48,7 +48,7 @@ app+='\n'+listenerSource('#saved-court-email','change');
 app+='\n'+listenerSource('#batch-email-grouping','change')+'\n'+listenerSource('#prepared-email-member','change');
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
-app+='\nloadReference=async()=>{referenceLoads+=1};this.api={state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
+app+='\nloadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
@@ -68,6 +68,90 @@ class EmailRoutingUiTests(unittest.TestCase):
         result=subprocess.run(['node','--input-type=module','-'],input=script,text=True,encoding='utf-8',capture_output=True,timeout=20,cwd=ROOT)
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
+
+    def test_late_supporting_proof_never_attaches_to_a_new_request(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);
+let release;const gate=new Promise(resolve=>release=resolve);
+context.fetch=async()=>{await gate;return {ok:true,json:async()=>({attachment:{stored_path:'/fictional/alpha-proof.pdf'}})}};
+const pending=a.uploadSupportingAttachments([{name:'alpha-proof.pdf'}]);
+a.clearPreparedArtifacts('source changed');a.state.currentIntake={...beta};a.fillFormFromIntake(beta);
+release();const result=await pending;
+console.log(JSON.stringify({result,current:a.state.currentIntake.case_number,attachments:a.state.currentIntake.additional_attachment_files||[]}));
+""")
+        self.assertIsNone(result['result'])
+        self.assertEqual(result['current'], '711/26.0TSTXX')
+        self.assertEqual(result['attachments'], [])
+
+    def test_current_multiple_proofs_attach_but_stale_upload_error_is_ignored(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);let uploaded=0;
+context.fetch=async()=>({ok:true,json:async()=>({attachment:{stored_path:`/fictional/proof-${++uploaded}.pdf`}})});
+await a.uploadSupportingAttachments([{name:'one.pdf'},{name:'two.pdf'}]);
+const attachments=a.state.currentIntake.additional_attachment_files;
+let release;const gate=new Promise(resolve=>release=resolve);
+context.fetch=async()=>{await gate;throw new Error('obsolete upload failure')};
+const pending=a.uploadSupportingAttachments([{name:'old.pdf'}]);
+a.clearPreparedArtifacts('reset');a.state.currentIntake=null;release();const stale=await pending;
+console.log(JSON.stringify({attachments,stale,current:a.state.currentIntake}));
+""")
+        self.assertEqual(result['attachments'], ['/fictional/proof-1.pdf', '/fictional/proof-2.pdf'])
+        self.assertIsNone(result['stale'])
+        self.assertIsNone(result['current'])
+
+    def test_late_manual_profile_result_cannot_replace_current_source(self):
+        result = self.run_js("""
+a.state.reference={service_profiles:{example_interpreting:{}}};a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);
+let release;const gate=new Promise(resolve=>release=resolve);const requests=[];
+context.fetch=async(url,options)=>{requests.push({url,body:JSON.parse(options.body)});await gate;return {ok:true,json:async()=>({intake:alpha})}};
+const pending=a.buildIntakeFromProfile({openDrawer:false});
+a.clearPreparedArtifacts('new source');a.state.currentIntake={...beta};a.fillFormFromIntake(beta);release();const stale=await pending;
+console.log(JSON.stringify({stale,current:a.state.currentIntake.case_number,requests}));
+""")
+        self.assertIsNone(result['stale'])
+        self.assertEqual(result['current'], '711/26.0TSTXX')
+        self.assertEqual(len(result['requests']), 1)
+        self.assertEqual(result['requests'][0]['body']['profile'], 'example_interpreting')
+
+    def test_upload_double_click_is_one_request_and_old_errors_cannot_block_new_source(self):
+        result = self.run_js("""
+let release;const gate=new Promise(resolve=>release=resolve);let count=0;
+context.fetch=async()=>{count++;await gate;return {ok:false,status:503,json:async()=>({message:'obsolete source failure'})}};
+const file={name:'one.png',size:10,lastModified:1,type:'image/png'};
+const first=a.uploadSource('photo',{file});const repeated=await a.uploadSource('photo',{file});
+a.clearPreparedArtifacts('reset');a.state.currentIntake={...beta};release();const stale=await first;
+let currentError='';try {await a.uploadSource('photo',{file})}catch(error){currentError=error.message}
+console.log(JSON.stringify({count,repeated,stale,currentError,current:a.state.currentIntake.case_number,pending:a.state.sourceUploadPending}));
+""")
+        self.assertEqual(result['count'], 2, 'One original upload and one deliberate retry after reset')
+        self.assertIsNone(result['repeated'])
+        self.assertIsNone(result['stale'])
+        self.assertEqual(result['currentError'], 'obsolete source failure')
+        self.assertEqual(result['current'], '711/26.0TSTXX')
+        self.assertIsNone(result['pending'])
+
+    def test_cleared_single_case_fields_reach_review_as_explicit_removals(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha,transport:{km_one_way:42}};a.fillFormFromIntake(a.state.currentIntake);
+for(const id of ['case_number','service_date','payment_entity','service_place','km_one_way'])element('#'+id).value='';
+a.mergeFormIntoCurrentIntake();const cleared=JSON.parse(JSON.stringify(a.state.currentIntake));
+element('#case_number').value='712/26.0TSTXX';a.mergeFormIntoCurrentIntake();
+console.log(JSON.stringify({cleared,resolved:a.state.currentIntake.review_cleared_fields}));
+""")
+        for field in ['case_number', 'service_date', 'payment_entity', 'service_place']:
+            self.assertEqual(result['cleared'][field], '')
+            self.assertIn(field, result['cleared']['review_cleared_fields'])
+        self.assertEqual(result['cleared']['transport']['km_one_way'], '')
+        self.assertIn('transport.km_one_way', result['cleared']['review_cleared_fields'])
+        self.assertIn('case_number', result['resolved'], 'Review resolves the intent marker after reconciling dependent fields')
+
+    def test_error_review_never_advertises_readiness(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha};a.updateHomeReviewCard({status:'error',message:'Unknown service profile',questions:[]});
+console.log(JSON.stringify({card:element('#interpretation-review-home-result').innerHTML}));
+""")
+        self.assertIn('Review needs attention', result['card'])
+        self.assertNotIn('Ready for the next step', result['card'])
 
     def test_saved_picker_matches_filled_email_refreshes_and_escapes_without_rewriting_text(self):
         result=self.run_js("""

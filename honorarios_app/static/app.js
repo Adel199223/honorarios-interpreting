@@ -42,6 +42,7 @@ const state = {
   sourceCaseSelectedIndex: null,
   sourceCaseBatchInFlight: false,
   sourceTravelChoice: null,
+  sourceUploadPending: null,
   batchIntakes: [],
   batchSelectedIndex: null,
   batchPreflight: null,
@@ -416,6 +417,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
 function clearPreparedArtifacts(reason = "stale prepared result") {
   const hadPreparedOrPending = Boolean(state.lastPrepared || state.pendingPreparationRevision !== null);
   state.workflowRevision += 1;
+  state.sourceUploadPending = null;
   state.workflowStale = state.workflowStale || hadPreparedOrPending;
   state.pendingPreparationRevision = null;
   state.locallyRecordedPayload = "";
@@ -622,6 +624,12 @@ function mergeFormIntoCurrentIntake() {
   if (!state.currentIntake) return null;
   const payload = collectProfilePayload();
   const intake = { ...state.currentIntake };
+  const cleared = new Set(Array.isArray(intake.review_cleared_fields) ? intake.review_cleared_fields : []);
+  const trackClear = (field, value, previous) => {
+    // Retain the marker until review also reconciles dependent venue/routing
+    // fields when a removed fact is supplied again.
+    if (!String(value ?? "").trim() && String(previous ?? "").trim()) cleared.add(field);
+  };
   [
     "case_number",
     "service_date",
@@ -635,7 +643,8 @@ function mergeFormIntoCurrentIntake() {
     "source_text",
     "personal_profile_id",
   ].forEach((key) => {
-    if (payload[key] || ((selectedSourceCase() || key === "recipient_email") && Object.prototype.hasOwnProperty.call(intake, key))) intake[key] = payload[key] || "";
+    trackClear(key, payload[key], intake[key]);
+    if (payload[key] || Object.prototype.hasOwnProperty.call(intake, key)) intake[key] = payload[key] || "";
   });
   if (intake.recipient_email !== state.currentIntake.recipient_email) {
     ["court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"].forEach((field) => { intake[field] = ""; });
@@ -668,9 +677,12 @@ function mergeFormIntoCurrentIntake() {
   }
   if (payload.km_one_way) {
     intake.transport = { ...(intake.transport || {}), km_one_way: Number(payload.km_one_way) || payload.km_one_way };
-  } else if (selectedSourceCase() && Object.prototype.hasOwnProperty.call(intake.transport || {}, "km_one_way")) {
+  } else if (Object.prototype.hasOwnProperty.call(intake.transport || {}, "km_one_way")) {
     intake.transport = { ...intake.transport, km_one_way: "" };
   }
+  trackClear("transport.km_one_way", payload.km_one_way, state.currentIntake.transport?.km_one_way);
+  if (cleared.size) intake.review_cleared_fields = [...cleared];
+  else delete intake.review_cleared_fields;
   state.currentIntake = intake;
   return intake;
 }
@@ -1211,21 +1223,19 @@ async function uploadSupportingAttachments(files) {
     throw new Error("Choose at least one supporting declaration or proof file first.");
   }
   if (!state.currentIntake) {
-    await buildIntakeFromProfile();
+    if (!await buildIntakeFromProfile()) return null;
   }
+  const captured = { revision: state.workflowRevision };
   const uploaded = [];
   for (const file of attachmentFiles) {
     const form = new FormData();
     form.append("file", file);
-    const response = await fetch("/api/attachments/upload", {
-      method: "POST",
-      body: form,
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || data.message || `Supporting attachment upload failed: ${response.status}`);
-    }
+    const data = await requestWorkflowUpload("/api/attachments/upload", form, captured);
+    if (!data) return null;
     addSupportingAttachmentToIntake(data.attachment);
+    // Adding our own attachment invalidates prepared artifacts. Carry only that
+    // revision forward; edits, source changes and resets invalidate the next await.
+    captured.revision = state.workflowRevision;
     uploaded.push(data);
   }
   const count = uploaded.length;
@@ -2195,7 +2205,7 @@ function renderBeginnerReviewSummary(data) {
       <div class="source-review-title">
         <div>
           <span>Review this source</span>
-          <strong>${workflow.phase !== "review" ? escapeHtml(workflow.headline) : questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : "Ready for the next step"}</strong>
+          <strong>${workflow.phase !== "review" ? escapeHtml(workflow.headline) : questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : data.status === "ready" ? "Ready for the next step" : "Review needs attention"}</strong>
         </div>
         <span class="status-chip ${questions.length ? "blocked" : statusChipClass(data.status)}">${questions.length ? "Needs review" : escapeHtml(String(data.status || "review"))}</span>
       </div>
@@ -2707,7 +2717,16 @@ function isEditablePasteTarget(target) {
 async function recoverLocalSourceFile(file, origin = "local source") {
   const sourceKind = inferDroppedSourceKind(file);
   setDropStatus(`Recovering ${file.name || origin}...`);
-  await uploadSource(sourceKind, { file });
+  return uploadSource(sourceKind, { file });
+}
+
+function requestWorkflowUpload(url, form, captured) {
+  return awaitWorkflowResponse(async () => {
+    const response = await fetch(url, { method: "POST", body: form });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
+    return data;
+  }, captured, () => ({ revision: state.workflowRevision }));
 }
 
 async function uploadSource(sourceKind, options = {}) {
@@ -2722,10 +2741,14 @@ async function uploadSource(sourceKind, options = {}) {
     if (sourceKind === "google_photos") throw new Error("Choose a Google Photos image first.");
     throw new Error("Choose a photo or screenshot first.");
   }
+  const fileKey = JSON.stringify([sourceKind, file.name, file.size, file.lastModified, file.type]);
+  if (state.sourceUploadPending?.fileKey === fileKey) return null;
   state.currentReviewOrigin = "source";
   clearPreparedArtifacts("source changed");
   clearSourceCaseReview();
   const capturedRevision = state.workflowRevision;
+  const pending = { fileKey, revision: capturedRevision };
+  state.sourceUploadPending = pending;
   const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
   const enteredSourceText = state.currentIntake?.source_sha256 ? "" : $("#source_text").value.trim();
   const visibleText = [enteredSourceText, googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
@@ -2742,25 +2765,23 @@ async function uploadSource(sourceKind, options = {}) {
   const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
   const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
 
-  const response = await fetch("/api/sources/upload", {
-    method: "POST",
-    body: form,
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
+  let data;
+  try {
+    data = await requestWorkflowUpload("/api/sources/upload", form, { revision: capturedRevision });
+  } finally {
+    if (state.sourceUploadPending === pending) state.sourceUploadPending = null;
   }
-  if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;
+  if (!data) return null;
   adoptUploadedSource(data, existingAttachments, existingEmailBody);
   state.lastProfileProposal = data.profile_proposal || null;
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
   if (state.sourceCaseCandidates.length > 1) {
     selectSourceCase(0, { persist: false, focus: false });
-    await refreshSourceClaimReviews();
+    if (!await refreshSourceClaimReviews()) return null;
   } else {
     fillFormFromIntake(state.currentIntake);
-    await reviewIntake({ openDrawer: false });
+    if (!await reviewIntake({ openDrawer: false })) return null;
   }
   if (data.source?.sha256 && state.currentIntake?.source_sha256 !== data.source.sha256) return null;
   setDropStatus(`Recovered ${file.name || "dropped source"}. Review what I found below before any PDF or Gmail draft step.`, "ready");
@@ -2822,8 +2843,8 @@ function bindSourceDropZone() {
       return;
     }
     try {
-      await recoverLocalSourceFile(file, "dropped source");
-      if (files.length > 1) {
+      const recovered = await recoverLocalSourceFile(file, "dropped source");
+      if (recovered && files.length > 1) {
         await uploadSupportingAttachments(files.slice(1));
       }
     } catch (error) {
@@ -4979,19 +5000,23 @@ async function buildIntakeFromProfile(options = {}) {
   clearPreparedArtifacts("new manual request");
   state.currentReviewOrigin = "manual";
   clearSourceCaseReview();
+  const capturedRevision = state.workflowRevision;
   const payload = removeEmpty(collectProfilePayload());
   if (!payload.profile) {
-    payload.profile = "court_mp_generic";
+    const profiles = Object.keys(state.reference?.service_profiles || {});
+    payload.profile = profiles.includes("court_mp_generic") ? "court_mp_generic" : profiles.length === 1 ? profiles[0] : "";
+    if (!payload.profile) throw new Error("Choose an available service profile before entering manual request details.");
   }
   const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
   const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
-  const data = await requestJson("/api/intake/from-profile", {
+  const data = await requestWorkflowJson("/api/intake/from-profile", {
     method: "POST",
     body: JSON.stringify(payload),
-  });
+  }, { revision: capturedRevision });
+  if (!data) return null;
   state.currentIntake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody), "both");
   fillFormFromIntake(state.currentIntake);
-  await reviewIntake(options);
+  return reviewIntake(options);
 }
 
 async function reviewIntake(options = {}) {

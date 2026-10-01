@@ -76,7 +76,7 @@ from scripts.prepare_honorarios import (
 from scripts.record_gmail_draft import main as record_gmail_draft_main, validate_superseded_request_coverage, validate_source_group_history
 from scripts.request_identity import normalize_case_number, request_identity_key
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
-from scripts.entity_rules import classify_entity_type, source_mentions_pj_context
+from scripts.entity_rules import build_service_place_clause, classify_entity_type, source_mentions_pj_context
 from scripts.source_parsing import explicit_service_places, service_date_evidence
 from scripts.source_classification import detect_translation_source, format_translation_rejection
 
@@ -1007,6 +1007,51 @@ def _service_profile_defaults(profile_key: str, profiles: dict[str, Any]) -> dic
     return copy.deepcopy(defaults)
 
 
+def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any]) -> None:
+    """Retain deliberate review removals while leaving initial defaults available."""
+    allowed = {'case_number', 'service_date', 'photo_metadata_date', 'payment_entity',
+               'service_place', 'recipient_email', 'service_period_label',
+               'service_start_time', 'service_end_time', 'source_text', 'transport.km_one_way'}
+    supplied = original.get('review_cleared_fields')
+    if not isinstance(supplied, list):
+        return
+    active = []
+    for field in supplied:
+        if not isinstance(field, str) or field not in allowed:
+            continue
+        transport = original.get('transport') if isinstance(original.get('transport'), dict) else {}
+        value = transport.get('km_one_way') if field == 'transport.km_one_way' else original.get(field)
+        if str(value if value is not None else '').strip():
+            if field == 'service_place':
+                entity_type = classify_entity_type(str(value))
+                merged.update(service_entity=value, service_entity_type=entity_type,
+                              entities_differ=entity_type not in {'court', 'ministerio_publico'},
+                              service_place_phrase=build_service_place_clause({'service_place': value}, str(value)))
+            elif field == 'payment_entity' and not str(original.get('addressee') or '').strip():
+                merged['addressee'] = _default_addressee(str(value))
+            continue  # A new field edit or numbered answer resolves the removal.
+        active.append(field)
+        if field == 'transport.km_one_way':
+            if not isinstance(merged.get('transport'), dict):
+                merged['transport'] = {}
+            merged.setdefault('transport', {})['km_one_way'] = ''
+        else:
+            merged[field] = ''
+        if field == 'service_date':
+            merged['photo_metadata_date_requires_confirmation'] = True
+        elif field == 'service_place':
+            merged.update(service_entity='', service_place_phrase='', service_entity_type='', entities_differ=False)
+        elif field == 'payment_entity':
+            merged.update(addressee='', recipient_email='', court_email='', court_email_key='',
+                          recipient_override_reason='', court_email_override_reason='')
+        elif field == 'recipient_email':
+            merged.update(court_email='', court_email_key='', recipient_override_reason='', court_email_override_reason='')
+    if active:
+        merged['review_cleared_fields'] = sorted(set(active))
+    else:
+        merged.pop('review_cleared_fields', None)
+
+
 def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     """Review an intake and include non-writing service-profile evidence.
 
@@ -1015,6 +1060,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     saving reference data or skipping the normal duplicate/PDF/Gmail guards.
     """
     intake = copy.deepcopy(intake)
+    preserve_review_field_clears(intake, intake)
     reconcile_photo_venue_edit(intake)
     _normalize_source_case_confirmation(intake)
     profiles = _load_available_service_profiles(paths)
@@ -1050,6 +1096,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
         preserve_photo_routing(intake, reviewed_intake)
         reviewed_intake["service_profile_key"] = profile_key
         reviewed_intake.setdefault("closing_date", app_current_date())
+    preserve_review_field_clears(intake, reviewed_intake)
     reviewed_intake["auto_profile"] = profile_decision
 
     review = review_intake(reviewed_intake, paths)
@@ -5203,10 +5250,15 @@ def _normalize_source_case_confirmation(intake: dict[str, Any]) -> None:
 
 def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     intake = copy.deepcopy(intake)
+    preserve_review_field_clears(intake, intake)
     reconcile_photo_venue_edit(intake)
     _normalize_source_case_confirmation(intake)
     profile = selected_personal_profile(paths, intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
+    preserve_review_field_clears(intake, effective)
+    if 'transport.km_one_way' in effective.get('review_cleared_fields', []):
+        provenance['applied'] = [field for field in provenance['applied'] if field != 'transport.km_one_way']
+        provenance['distance_source'] = ''
     generator_profile = profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
     saved_closing_city = str(_legacy_profile_defaults(paths).get("default_closing_city") or "").strip()
     if intake.get("photo_defaults_applied") and not str(effective.get("closing_city") or "").strip() and saved_closing_city:

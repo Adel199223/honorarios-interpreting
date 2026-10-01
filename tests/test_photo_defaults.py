@@ -45,6 +45,44 @@ def court_record(entity=CAPTURE_COURT, recipient=CAPTURE_RECIPIENT):
 
 
 class PhotoDefaultTests(unittest.TestCase):
+    def test_explicit_review_clears_survive_default_reapplication_and_ask_again(self):
+        original = json.loads((Path(__file__).resolve().parents[1] / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
+        original['auto_profile'] = {'auto_applied': True, 'profile_key': 'example_interpreting'}
+        for field in ('case_number', 'service_date', 'payment_entity', 'service_place', 'recipient_email', 'transport.km_one_way'):
+            with self.subTest(field=field):
+                row = copy.deepcopy(original)
+                row['review_cleared_fields'] = [field]
+                if field == 'transport.km_one_way':
+                    row['transport']['km_one_way'] = ''
+                else:
+                    row[field] = ''
+                first = review_intake_with_profile_evidence(row, self.paths)
+                self.assertEqual(first['status'], 'needs_info')
+                self.assertIn(field, [question['field'] for question in first['questions']])
+                second = review_intake_with_profile_evidence(first['intake'], self.paths)
+                self.assertIn(field, [question['field'] for question in second['questions']])
+                answer = {'case_number': '710/26.0TSTXX', 'service_date': '2026-01-15',
+                          'payment_entity': 'Example Court', 'service_place': 'Esquadra da PSP de Outra Cidade',
+                          'recipient_email': DEFAULT_RECIPIENT, 'transport.km_one_way': '12'}[field]
+                resolved = copy.deepcopy(second['intake'])
+                apply_answer_to_intake(resolved, field, answer)
+                final = review_intake_with_profile_evidence(resolved, self.paths)
+                self.assertNotIn(field, final['intake'].get('review_cleared_fields', []))
+                self.assertNotIn(field, [question['field'] for question in final['questions']])
+                if field == 'service_place':
+                    self.assertEqual(final['intake']['service_entity'], answer)
+                    self.assertIn(answer, final['intake']['service_place_phrase'])
+
+    def test_initial_missing_fields_still_receive_defaults_without_clear_intent(self):
+        row = json.loads((Path(__file__).resolve().parents[1] / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
+        row['auto_profile'] = {'auto_applied': True, 'profile_key': 'example_interpreting'}
+        row.update(payment_entity='', service_place='')
+        row['transport']['km_one_way'] = ''
+        result = review_intake_with_profile_evidence(row, self.paths)
+        self.assertEqual(result['intake']['payment_entity'], 'Example Court')
+        self.assertEqual(result['intake']['service_place'], 'Example Police Station')
+        self.assertEqual(result['intake']['transport']['km_one_way'], 12)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='honorarios-photo-default-public-')
         self.addCleanup(temporary.cleanup)

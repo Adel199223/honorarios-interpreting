@@ -108,6 +108,8 @@ def has_value(data: dict[str, Any], field_path: str) -> bool:
 
 
 def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
+    if rule['field'] in (intake.get('review_cleared_fields') or []) and not has_value(intake, rule['field']):
+        return rule.get('when') != 'claim_transport' or bool(intake.get('claim_transport'))
     unless = rule.get("unless")
     entities = resolve_entities(intake)
     if unless == "effective_service_date_available":
