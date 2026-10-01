@@ -22,7 +22,7 @@ class PublicCandidateSmokeTests(unittest.TestCase):
         duplicate_index.write_text("[]", encoding="utf-8")
         draft_log.write_text("[]", encoding="utf-8")
         profile_change_log.write_text("[]", encoding="utf-8")
-        return TestClient(create_app(
+        return TestClient(base_url='http://127.0.0.1', app=create_app(
             profile=project_root / "config" / "profile.example.json",
             personal_profiles=project_root / "config" / "profiles.example.json",
             email_config=project_root / "config" / "email.example.json",

@@ -299,7 +299,7 @@ class SourceEmailGroupsTests(unittest.TestCase):
             self.assertEqual(transport.call_count, 1)
 
     def test_http_preflight_prepare_and_active_check_preserve_group_contract(self):
-        client = TestClient(create_app(**runtime_path_overrides(self.root)))
+        client = TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1')
         rows = self.rows(3)[1:]
         preflight = client.post('/api/prepare/preflight', json={'intakes': rows, 'email_grouping': 'source'})
         self.assertEqual(preflight.status_code, 200)

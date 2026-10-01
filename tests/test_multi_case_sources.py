@@ -105,7 +105,7 @@ class MultiCaseSourceTests(unittest.TestCase):
         recovery = self.recovery(case_numbers=case_numbers, text=text, fields=fields)
         with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
             if through_api:
-                with TestClient(create_app(**runtime_path_overrides(self.root))) as client:
+                with TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1') as client:
                     response = client.post('/api/sources/upload',
                         files={'file': ('fictional-five-cases.jpg', self.content.getvalue(), 'image/jpeg')},
                         data={'source_kind': 'photo', 'profile_name': 'auto',

@@ -94,7 +94,7 @@ class PublicEmailTests(PublicCandidateSmokeTests):
         previous = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
         os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
         try:
-            client = TestClient(create_app(
+            client = TestClient(base_url='http://127.0.0.1', app=create_app(
                 profile=project_root / "config" / "profile.example.json",
                 personal_profiles=project_root / "config" / "profiles.example.json",
                 email_config=project_root / "config" / "email.example.json",
@@ -159,7 +159,7 @@ class PublicEmailTests(PublicCandidateSmokeTests):
         previous = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
         os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
         try:
-            client = TestClient(create_app(
+            client = TestClient(base_url='http://127.0.0.1', app=create_app(
                 profile=project_root / "config" / "profile.example.json",
                 personal_profiles=project_root / "config" / "profiles.example.json",
                 email_config=project_root / "config" / "email.example.json",
@@ -223,7 +223,7 @@ class PublicEmailTests(PublicCandidateSmokeTests):
         previous = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
         os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = "1"
         try:
-            client = TestClient(create_app(
+            client = TestClient(base_url='http://127.0.0.1', app=create_app(
                 profile=project_root / "config" / "profile.example.json",
                 personal_profiles=project_root / "config" / "profiles.example.json",
                 email_config=project_root / "config" / "email.example.json",
