@@ -16,7 +16,15 @@ Current local baseline is `a100f67` (566 tests/four isolated workflows and the c
 6. Use ordinary browser controls to review/correct, queue, preflight and prepare all three requests and their email packages. Inspect every rendered PDF and exact recipient/body/attachment association. No actual Gmail call is required by this request.
 7. Run focused and final Full checks, apply only validated public changes with beforeimages, run saved-app validation and confirm protected local hashes. Sync touched guidance and provide a clear result/report. Complete only after every requirement has direct evidence.
 
-## Progress and risks
+## Completion — 2026-10-01
+
+All requirements are complete locally. The user supplied the remaining one-way distance; it was saved with exact beforeimages and all prior destination entries preserved. A fresh normal-browser upload automatically applied it with both fee claims. PDF preparation and local email handoff succeeded; root and independent inspection verified the single final page, round-trip wording and exact attachment bytes.
+
+The final three complete requests pass 111 individual checks, nine cross-source checks and three visual reviews. The former interpreting-only test is retained as historical evidence, not the final combined request. Saved-code replay passes all three complete reviews without network calls. Candidate and saved Full remain accepted at 615 public tests and four isolated workflows; no product code changed for the final distance correction.
+
+All 36 public files are verified as applied. Three authorized private settings files changed; the remaining 81 protected entries, personal details, credentials, real histories, accepted prior documents and saved branch/head are preserved. Source-read count remains four; no Gmail or publication action occurred. Results/report and exact beforeimages remain in ignored saved-app evidence. Owned browser/server resources are closed. The user's own trial is the next step; this completed local review does not publish the improvements.
+
+## Dated progress and historical risks
 
 - Initial turn: the preceding goal is a completed, verified checkpoint; this is a new goal, not a claim that earlier green tests cover these additional sources. Root revalidated the clean local baseline and began three independent domain/source/output reviews.
 - All three supplied inputs are now present. The PDF is scanned, with two pages; visual inspection distinguishes the scheduled interpreting appointment from the earlier issue/Citius date. It also requests separate written translation work, so the user was asked whether mixed notices should produce only the interpreting request or remain blocked.
