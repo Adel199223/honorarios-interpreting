@@ -103,6 +103,10 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
     return { kind: "manual", label: "You confirmed this date" };
   }
   const photoDefault = intake.photo_defaults_applied?.[field];
+  const courtLabel = intake.court_label_preference;
+  if (courtLabel?.label === value && Object.prototype.hasOwnProperty.call(courtLabel.original_fields || {}, field)) {
+    return { kind: "default", label: "Your saved court label · editable" };
+  }
   if (photoDefault && String(photoDefault).trim().toLowerCase() === String(value).trim().toLowerCase()) {
     const label = field === "service_date" ? "Your photo-date default · editable"
       : field === "service_place" ? "Your photo-city court venue default · editable"
@@ -124,6 +128,7 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   }
   if (source === "user_confirmed") return { kind: "manual", label: "You confirmed this date" };
   if (source === "photo_default") return { kind: "default", label: "Your saved photo default · editable" };
+  if (source === "saved_court_label") return { kind: "default", label: "Your saved court label · editable" };
   if (source === "service_profile") return { kind: "default", label: "Profile default · check it" };
   if (source === "known_destination") return { kind: "default", label: "Saved place/distance · check it" };
   if (["image_metadata", "visible_google_photos_metadata"].includes(source)) {
@@ -494,3 +499,5 @@ export function duplicateSourceCaseIndices(candidates = []) {
   });
   return [...duplicates].sort((left, right) => left - right);
 }
+export { workspaceInputCopy, workspaceReviewEvidence, workspaceDraftSnapshot, workspaceDraftHasWork,
+  workspaceDraftStorageKey, readWorkspaceDraft, writeWorkspaceDraft } from "./workspace_draft.js";

@@ -9,15 +9,19 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
+from pypdf import PdfReader
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 
+from honorarios_app.ai_recovery import _prompt_for_source, should_attempt_ai_recovery
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
+from honorarios_app.photo_defaults import apply_saved_court_label
 from honorarios_app.services import (
     AppPaths, apply_answer_to_intake, apply_numbered_answers, recover_source_upload,
-    review_intake, review_intake_with_profile_evidence,
+    prepare_intakes, review_intake, review_intake_with_profile_evidence,
 )
-from scripts.generate_pdf import build_rendered_request
+from scripts.generate_pdf import IntakeError, build_rendered_request, generate_pdf
 
 
 CASE_NUMBER = '710/26.0TSTXX'
@@ -43,13 +47,126 @@ def court_record(entity=CAPTURE_COURT, recipient=CAPTURE_RECIPIENT):
     return {'payment_entity': entity, 'addressee': entity, 'recipient_email': recipient}
 
 
+class SavedCourtLabelTests(unittest.TestCase):
+    def candidate(self):
+        court = 'Tribunal Judicial da Comarca de District City - Juizo de Competencia Generica de Capture City'
+        return {'source_kind': 'notification_pdf', 'source_text': court + '\nServico em 2026-09-28.',
+                'payment_entity': court, 'service_place': court, 'service_entity': court,
+                'recipient_email': CAPTURE_RECIPIENT, 'service_date': '2026-09-28'}
+
+    def test_exact_saved_court_shortens_labels_without_changing_date_or_contact(self):
+        candidate = self.candidate()
+        original = copy.deepcopy(candidate)
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+        for field in ('payment_entity', 'addressee', 'service_place', 'service_entity'):
+            self.assertEqual(candidate[field], CAPTURE_COURT)
+        for field in ('source_text', 'recipient_email', 'service_date'):
+            self.assertEqual(candidate[field], original[field])
+        self.assertEqual(candidate['court_label_preference']['original_fields']['payment_entity'], original['payment_entity'])
+        self.assertNotIn('photo_defaults_applied', candidate)
+
+    def test_specialized_unmatched_unmapped_and_ungrounded_courts_stay_unchanged(self):
+        for changes in ({'payment_entity': 'Tribunal do Trabalho de Capture City'},
+                        {'recipient_email': DEFAULT_RECIPIENT}, {'source_text': 'Unrelated source'},
+                        {'payment_entity': 'Tribunal de Other City'}, {'source_kind': 'photo'}):
+            with self.subTest(changes=changes):
+                candidate = {**self.candidate(), **changes}
+                original = copy.deepcopy(candidate)
+                apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+                self.assertEqual(candidate, original)
+        candidate = self.candidate()
+        original = copy.deepcopy(candidate)
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}}, explicit_profile=True)
+        self.assertEqual(candidate, original)
+
+    def test_physical_address_and_station_are_not_replaced_by_court_label(self):
+        candidate = self.candidate()
+        candidate.update(service_place='Rua Example, 12', service_entity='Posto da GNR de Capture City', service_place_phrase='na Rua Example, 12')
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+        self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(candidate['service_place'], 'Rua Example, 12')
+        self.assertEqual(candidate['service_entity'], 'Posto da GNR de Capture City')
+        self.assertEqual(candidate['service_place_phrase'], 'na Rua Example, 12')
+
+    def test_grounded_court_with_address_suffix_uses_short_venue_in_actual_pdf(self):
+        root = Path(__file__).resolve().parents[1]
+        candidate = json.loads((root / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
+        candidate.update(self.candidate())
+        venue = 'Juizo de Competencia Generica de Capture City, Rua Example, 12, Capture City'
+        candidate.update(service_place=venue, service_entity=venue, service_entity_type='court', entities_differ=False)
+        candidate['source_text'] += '\n' + venue
+        original_text = candidate['source_text']
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+        self.assertEqual(candidate['service_place'], CAPTURE_COURT)
+        self.assertEqual(candidate['court_label_preference']['original_fields']['service_place'], venue)
+        self.assertEqual(candidate['source_text'], original_text)
+        profile = json.loads((root / 'config/profile.example.json').read_text(encoding='utf-8'))
+        with tempfile.TemporaryDirectory(prefix='fee-court-label-pdf-') as temporary:
+            target = Path(temporary) / 'fictional.pdf'
+            generate_pdf(build_rendered_request(candidate, profile), target)
+            text = '\n'.join(page.extract_text() or '' for page in PdfReader(target).pages)
+        self.assertIn(CAPTURE_COURT, text)
+        self.assertNotIn('Juizo de Competencia', text)
+        self.assertNotIn('Rua Example', text)
+
+    def test_other_court_and_specialized_venue_with_addresses_are_preserved(self):
+        for venue in ('Tribunal do Trabalho de Capture City, Rua Example, 12',
+                      'Juizo de Competencia Generica de Other City, Rua Example, 12',
+                      'Posto da GNR de Capture City, Rua Example, 12'):
+            with self.subTest(venue=venue):
+                candidate = self.candidate()
+                candidate.update(service_place=venue, service_entity=venue)
+                candidate['source_text'] += '\n' + venue
+                apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+                self.assertEqual(candidate['service_place'], venue)
+
+
 class PhotoDefaultTests(unittest.TestCase):
+    def test_explicit_review_clears_survive_default_reapplication_and_ask_again(self):
+        original = json.loads((Path(__file__).resolve().parents[1] / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
+        original['auto_profile'] = {'auto_applied': True, 'profile_key': 'example_interpreting'}
+        for field in ('case_number', 'service_date', 'payment_entity', 'service_place', 'recipient_email', 'transport.km_one_way'):
+            with self.subTest(field=field):
+                row = copy.deepcopy(original)
+                row['review_cleared_fields'] = [field]
+                if field == 'transport.km_one_way':
+                    row['transport']['km_one_way'] = ''
+                else:
+                    row[field] = ''
+                first = review_intake_with_profile_evidence(row, self.paths)
+                self.assertEqual(first['status'], 'needs_info')
+                self.assertIn(field, [question['field'] for question in first['questions']])
+                second = review_intake_with_profile_evidence(first['intake'], self.paths)
+                self.assertIn(field, [question['field'] for question in second['questions']])
+                answer = {'case_number': '710/26.0TSTXX', 'service_date': '2026-01-15',
+                          'payment_entity': 'Example Court', 'service_place': 'Esquadra da PSP de Outra Cidade',
+                          'recipient_email': DEFAULT_RECIPIENT, 'transport.km_one_way': '12'}[field]
+                resolved = copy.deepcopy(second['intake'])
+                apply_answer_to_intake(resolved, field, answer)
+                final = review_intake_with_profile_evidence(resolved, self.paths)
+                self.assertNotIn(field, final['intake'].get('review_cleared_fields', []))
+                self.assertNotIn(field, [question['field'] for question in final['questions']])
+                if field == 'service_place':
+                    self.assertEqual(final['intake']['service_entity'], answer)
+                    self.assertIn(answer, final['intake']['service_place_phrase'])
+
+    def test_initial_missing_fields_still_receive_defaults_without_clear_intent(self):
+        row = json.loads((Path(__file__).resolve().parents[1] / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
+        row['auto_profile'] = {'auto_applied': True, 'profile_key': 'example_interpreting'}
+        row.update(payment_entity='', service_place='')
+        row['transport']['km_one_way'] = ''
+        result = review_intake_with_profile_evidence(row, self.paths)
+        self.assertEqual(result['intake']['payment_entity'], 'Example Court')
+        self.assertEqual(result['intake']['service_place'], 'Example Police Station')
+        self.assertEqual(result['intake']['transport']['km_one_way'], 12)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='honorarios-photo-default-public-')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         create_synthetic_runtime(self.root)
         self.paths = AppPaths(**runtime_path_overrides(self.root))
+        write_json(self.paths.ai_config, {'api_key': 'fictional-offline-test-key'})
         destinations = json.loads(self.paths.known_destinations.read_text(encoding='utf-8'))
         destinations.append({'destination': CAPTURE_CITY, 'institution_examples': [CAPTURE_COURT],
                              'km_one_way': 12, 'notes': 'Fictional saved venue distance.'})
@@ -73,7 +190,7 @@ class PhotoDefaultTests(unittest.TestCase):
 
     def upload(self, *, metadata_date=CAPTURE_DATE, photo_city=CAPTURE_CITY,
                visible_text=SOURCE_TEXT, ai_fields=None, exif=False, source_kind='photo',
-               service_profile='auto'):
+               service_profile='auto', exif_values=None):
         if source_kind == 'notification_pdf':
             content = BytesIO()
             document = canvas.Canvas(content)
@@ -87,6 +204,8 @@ class PhotoDefaultTests(unittest.TestCase):
             metadata = image.getexif()
             if exif and metadata_date:
                 metadata[36867] = metadata_date.replace('-', ':') + ' 10:15:00'
+            for tag, value in (exif_values or {}).items():
+                metadata[tag] = value
             image.save(content, format='JPEG', exif=metadata)
             filename, content_type = 'fictional-photo.jpg', 'image/jpeg'
         fields = {
@@ -179,6 +298,36 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['source']['metadata']['exif_date'], CAPTURE_DATE)
         self.assertEqual(result['review']['status'], 'ready')
 
+    def test_nested_exif_original_date_wins_over_modification_in_actual_pdf(self):
+        self.enable()
+        result = self.upload(metadata_date=None, exif_values={
+            34665: {36867: '2026:09:26 10:15:00', 36868: '2026:09:27 10:15:00'},
+            306: '2026:09:30 15:00:00',
+        })
+        self.assertEqual(result['source']['metadata']['exif_date'], CAPTURE_DATE)
+        self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
+        self.assertEqual(result['review']['status'], 'ready')
+        prepared = prepare_intakes([result['candidate_intake']], self.paths)
+        text = '\n'.join(page.extract_text() for page in PdfReader(prepared['items'][0]['pdf']).pages)
+        self.assertIn('26/09/2026', text)
+        self.assertNotIn('30/09/2026', text)
+
+    def test_modification_date_alone_cannot_supply_capture_or_service_date(self):
+        self.enable()
+        result = self.upload(metadata_date=None, exif_values={306: '2026:09:30 15:00:00'})
+        self.assertNotIn('exif_date', result['source']['metadata'])
+        self.assertFalse(result['candidate_intake'].get('service_date'))
+        self.assertEqual(result['review']['status'], 'needs_info')
+        self.assertIn('service_date', self.question_fields(result))
+        self.assertTrue(any('modification date' in warning for warning in result['source']['metadata']['warnings']))
+
+    def test_nested_digitized_date_is_used_only_without_original_date(self):
+        self.enable()
+        result = self.upload(metadata_date=None, exif_values={
+            34665: {36868: '2026:09:26 10:15:00'}, 306: '2026:09:30 15:00:00',
+        })
+        self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
+
     def test_user_photo_default_takes_priority_over_different_printed_service_date(self):
         self.enable()
         text = SOURCE_TEXT + '\nServico de interpretacao realizado em 18/09/2026.'
@@ -209,6 +358,272 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['candidate_intake']['service_date'], PRINTED_DATE)
         self.assertEqual(result['candidate_intake']['payment_entity'], 'Example Court')
         self.assertNotEqual(result['candidate_intake'].get('recipient_email'), CAPTURE_RECIPIENT)
+
+    def test_pdf_saved_short_court_label_survives_fresh_review_with_original_evidence(self):
+        self.enable()
+        write_json(self.paths.service_profiles, {'first': {'defaults': {}}, 'second': {'defaults': {}}})
+        court = 'Tribunal Judicial da Comarca de District City - Juizo de Competencia Generica de Capture City'
+        text = (f'Processo {CASE_NUMBER}\n{court}\n{CAPTURE_RECIPIENT}\n'
+                'Servico de interpretacao realizado em 28/09/2026.')
+        result = self.upload(source_kind='notification_pdf', visible_text=text, ai_fields={
+            'payment_entity': court, 'service_entity': court, 'service_place': court, 'service_entity_type': 'court'})
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(candidate['service_place'], CAPTURE_CITY, 'A bare recovered locality is not proof of the court venue.')
+        self.assertIn(court, candidate['source_text'])
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['intake']['payment_entity'], CAPTURE_COURT)
+        payer = next(row for row in review['review_evidence']['field_evidence'] if row['field'] == 'payment_entity')
+        self.assertEqual(payer['source'], 'saved_court_label')
+        self.assertEqual(payer['raw_value'], court)
+        self.assertEqual(review['intake']['service_date'], '2026-09-28')
+
+    def test_notification_appointment_reaches_actual_pdf_without_photo_date_contamination(self):
+        self.enable(venue=True)
+        text = (f'Processo {CASE_NUMBER}\nData: 16/09/2026\n'
+                'Nomeado intérprete, deve comparecer no dia 24 de setembro de 2026, às 10:30,\n'
+                'para a audiência no Tribunal de Example City.')
+        self.assertFalse(should_attempt_ai_recovery('notification_pdf', 'auto', text))
+        result = self.upload(source_kind='notification_pdf', visible_text=text,
+                             service_profile='example_interpreting',
+                             ai_fields={'service_date': '2026-09-16', 'photo_metadata_date': '2026-09-30'})
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['service_date'], '2026-09-24')
+        self.assertNotIn('photo_metadata_date', candidate)
+        self.assertNotIn('photo_defaults_applied', candidate)
+        self.assertNotIn('service_date', self.question_fields(result))
+        self.assertNotIn('service_date_source', self.question_fields(result))
+        # Complete unrelated routing/claim fields as a user would; the source
+        # date itself must reach generation without a manual date correction.
+        candidate.update(payment_entity='Example Court', recipient_email=DEFAULT_RECIPIENT,
+                         claim_transport=False, closing_city='Example City')
+        prepared = prepare_intakes([candidate], self.paths)
+        pdf_text = '\n'.join(page.extract_text() for page in PdfReader(prepared['items'][0]['pdf']).pages)
+        self.assertIn('24/09/2026', pdf_text)
+        self.assertNotIn('16/09/2026', pdf_text)
+        self.assertNotIn('30/09/2026', pdf_text)
+
+    def test_notification_issue_date_alone_cannot_use_ai_or_saved_profile_date(self):
+        profiles = json.loads(self.paths.service_profiles.read_text(encoding='utf-8'))
+        profiles['example_interpreting']['defaults'].update(
+            service_date='2026-09-01', photo_metadata_date='2026-09-30')
+        write_json(self.paths.service_profiles, profiles)
+        result = self.upload(source_kind='notification_pdf', service_profile='example_interpreting',
+                             visible_text=f'Processo {CASE_NUMBER}\nNomeação de intérprete\nData: 16-09-2026',
+                             ai_fields={'service_date': '2026-09-16', 'photo_metadata_date': '2026-09-30'})
+        self.assertFalse(result['candidate_intake'].get('service_date'))
+        self.assertNotIn('photo_metadata_date', result['candidate_intake'])
+        self.assertIn('service_date', self.question_fields(result))
+
+    def test_scanned_notification_replayed_ocr_reads_both_pages_and_appointment_date(self):
+        text = (f'Processo {CASE_NUMBER}\nCertificação Citius em: 16-09-2026\n'
+                'Foi nomeado intérprete, devendo comparecer neste Tribunal no dia 24-09-2026 às 10:30.')
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        for page_text in (text, 'Fictional second page: court signature only.'):
+            raster = Image.new('RGB', (600, 850), 'white')
+            ImageDraw.Draw(raster).multiline_text((40, 50), page_text, fill='black')
+            document.drawImage(ImageReader(raster), 0, 0, width=595, height=842)
+            document.showPage()
+        document.save()
+        self.assertFalse(any((page.extract_text() or '').strip() for page in PdfReader(BytesIO(data.getvalue())).pages))
+        recovery = {'status': 'ok', 'attempted': True, 'fields': {'service_date': '2026-09-24'},
+                    'raw_visible_text': text, 'warnings': [], 'translation_indicators': []}
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider, \
+             patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
+            result = recover_source_upload(filename='fictional-scanned-notice.pdf', content_type='application/pdf',
+                content=data.getvalue(), source_kind='notification_pdf', profile_name='example_interpreting',
+                ai_recovery_mode='auto', paths=self.paths)
+        self.assertEqual(result['candidate_intake']['service_date'], '2026-09-24')
+        self.assertEqual(len(provider.call_args.kwargs['rendered_page_images']), 2)
+        self.assertEqual(result['source']['metadata']['rendered_page_count'], 2)
+        self.assertTrue(should_attempt_ai_recovery('notification_pdf', 'auto', ''))
+
+    def test_source_specific_ai_prompt_explains_pdf_appointment_and_photo_policy(self):
+        pdf_prompt = _prompt_for_source('notification_pdf', '')
+        self.assertIn('including a future appointment', pdf_prompt)
+        self.assertIn('leave photo_metadata_date and photo_metadata_city empty', pdf_prompt)
+        photo_prompt = _prompt_for_source('photo', '')
+        self.assertIn('Do not use the issue date, signing/closing date, a future appointment', photo_prompt)
+
+    def test_notification_beyond_read_coverage_stops_before_ocr_or_preparation(self):
+        for count, scanned, limit in ((9, False, 8), (4, True, 3), (4, 'last', 3)):
+            with self.subTest(page_count=count, scanned=scanned):
+                data = BytesIO()
+                document = canvas.Canvas(data)
+                for page_number in range(count):
+                    if scanned is True or (scanned == 'last' and page_number == count - 1):
+                        image = Image.new('RGB', (600, 850), 'white')
+                        ImageDraw.Draw(image).text((40, 50), f'Fictional scanned page {page_number + 1}', fill='black')
+                        document.drawImage(ImageReader(image), 0, 0, width=595, height=842)
+                    else:
+                        document.drawString(40, 790, f'Processo {CASE_NUMBER}. Servico de interpretacao realizado em 24/09/2026.')
+                    document.showPage()
+                document.save()
+                with patch('honorarios_app.services.recover_source_with_openai') as provider, \
+                     patch('honorarios_app.services.render_pdf_pages_for_source') as render:
+                    with self.assertRaisesRegex(IntakeError, f'only the first {limit}'):
+                        recover_source_upload(filename='fictional-over-limit.pdf', content_type='application/pdf',
+                            content=data.getvalue(), source_kind='notification_pdf', paths=self.paths)
+                    provider.assert_not_called()
+                    render.assert_not_called()
+                for directory in (self.paths.output_dir, self.paths.intake_output_dir, self.paths.manifest_dir):
+                    self.assertEqual(list(directory.glob('*')), [])
+
+    def test_complete_text_notification_at_eight_page_limit_remains_usable(self):
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        logo = Image.new('RGB', (1000, 1000), 'white')
+        for page_number in range(8):
+            document.drawString(40, 790, f'Processo {CASE_NUMBER}. Servico de interpretacao realizado em 24/09/2026.')
+            document.drawString(40, 760, f'Fictional supporting page {page_number + 1}; same appointment and no additional requests.')
+            document.drawImage(ImageReader(logo), 40, 700, width=40, height=40)
+            document.showPage()
+        document.save()
+        with patch('honorarios_app.services.recover_source_with_openai', return_value={'status': 'disabled'}) as provider:
+            result = recover_source_upload(filename='fictional-eight-pages.pdf', content_type='application/pdf',
+                content=data.getvalue(), source_kind='notification_pdf', paths=self.paths, ai_recovery_mode='off')
+        self.assertEqual(result['candidate_intake']['service_date'], '2026-09-24')
+        self.assertEqual(result['source']['metadata']['pdf_page_count'], 8)
+        self.assertEqual(result['source']['metadata']['pdf_pages_without_useful_text'], [])
+        self.assertEqual(provider.call_args.kwargs['rendered_page_images'], [])
+
+    @staticmethod
+    def rendered_fixture_pages(pdf_path, *, max_pages=3):
+        """Replay the native renderer boundary; PDF detection and routing stay real."""
+        pages = []
+        for number, _page in enumerate(PdfReader(pdf_path).pages[:max_pages], start=1):
+            path = pdf_path.with_name(f'{pdf_path.stem}_page-{number}.png')
+            raster = Image.new('RGB', (600, 850), 'white')
+            ImageDraw.Draw(raster).text((40, 50), f'Fictional rendered page {number}', fill='black')
+            raster.save(path)
+            pages.append(path)
+        return pages, []
+
+    @staticmethod
+    def hybrid_notification(*, with_header=False, raster_mode='direct'):
+        first = (f'Processo {CASE_NUMBER}\nNomeado interprete, deve comparecer em 24-09-2026.\n'
+                 'Tribunal de Example City. Fictional notification for a personally attended interpreting service.')
+        second = 'Interprete: Example Person. Nova audiencia designada para 25-09-2026.'
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        for index, line in enumerate(first.splitlines()):
+            document.drawString(40, 790 - index * 20, line)
+        document.showPage()
+        if with_header:
+            document.drawString(30, 800, 'Tribunal Judicial da Comarca de Example District - pagina 2')
+        raster = Image.new('RGB', (600, 850), 'white')
+        ImageDraw.Draw(raster).multiline_text((40, 50), second, fill='black')
+        if raster_mode == 'form':
+            document.beginForm('fictional-scanned-body')
+            document.drawImage(ImageReader(raster), 30, 30, width=500, height=700)
+            document.endForm()
+            document.doForm('fictional-scanned-body')
+        elif raster_mode == 'inline':
+            document.drawInlineImage(raster, 30, 30, width=500, height=700)
+        else:
+            document.drawImage(ImageReader(raster), 30, 30, width=500, height=700)
+        document.showPage()
+        document.save()
+        return data.getvalue(), first, second
+
+    def test_hybrid_notification_reads_scanned_page_even_when_first_page_is_clear(self):
+        content, first, second = self.hybrid_notification()
+        self.assertFalse(should_attempt_ai_recovery('notification_pdf', 'auto', first))
+        recovery = {'status': 'ok', 'attempted': True, 'fields': {'service_date': '2026-09-24'},
+                    'raw_visible_text': first + '\n' + second, 'warnings': [], 'translation_indicators': []}
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider, \
+             patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
+            result = recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
+                content=content, source_kind='notification_pdf', paths=self.paths)
+        arguments = provider.call_args.kwargs
+        self.assertEqual(arguments['source_metadata']['pdf_pages_without_useful_text'], [2])
+        self.assertEqual(len(arguments['rendered_page_images']), 2)
+        self.assertEqual(result['review']['status'], 'needs_info')
+        self.assertFalse(result['candidate_intake'].get('service_date'))
+        self.assertIn('service_date', self.question_fields(result))
+
+    def test_readable_court_header_does_not_hide_scanned_body(self):
+        for raster_mode in ('direct', 'form', 'inline'):
+            with self.subTest(raster_mode=raster_mode):
+                content, first, second = self.hybrid_notification(with_header=True, raster_mode=raster_mode)
+                pages = PdfReader(BytesIO(content)).pages
+                self.assertGreater(len(pages[1].extract_text().strip()), 20)
+                recovery = {'status': 'ok', 'raw_visible_text': first + '\n' + second, 'fields': {}}
+                with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider, \
+                     patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
+                    result = recover_source_upload(filename='fictional-header-scan.pdf', content_type='application/pdf',
+                        content=content, source_kind='notification_pdf', paths=self.paths)
+                self.assertEqual(provider.call_args.kwargs['source_metadata']['pdf_pages_without_useful_text'], [2])
+                self.assertEqual(len(provider.call_args.kwargs['rendered_page_images']), 2)
+                self.assertFalse(result['candidate_intake'].get('service_date'))
+                self.assertIn('service_date', self.question_fields(result))
+
+    def test_text_only_uncertain_notification_can_ask_without_image_reading(self):
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        for _ in range(4):
+            document.drawString(40, 790, f'Processo {CASE_NUMBER}. Nomeacao de interprete. Data: 16-09-2026.')
+            document.showPage()
+        document.save()
+        for mode, configured in (('off', True), ('auto', False)):
+            with self.subTest(mode=mode):
+                write_json(self.paths.ai_config, {'api_key': 'fictional-offline-test-key'} if configured else {})
+                with patch.dict('os.environ', {}, clear=True), \
+                     patch('honorarios_app.services.render_pdf_pages_for_source') as render:
+                    result = recover_source_upload(filename='fictional-uncertain.pdf', content_type='application/pdf',
+                        content=data.getvalue(), source_kind='notification_pdf', paths=self.paths, ai_recovery_mode=mode)
+                render.assert_not_called()
+                self.assertFalse(result['candidate_intake'].get('service_date'))
+                self.assertIn('service_date', self.question_fields(result))
+
+    def test_scanned_body_with_disabled_ai_stops_before_renderer_or_provider(self):
+        content, _first, _second = self.hybrid_notification(with_header=True)
+        for mode, configured in (('off', True), ('auto', False)):
+            with self.subTest(mode=mode):
+                write_json(self.paths.ai_config, {'api_key': 'fictional-offline-test-key'} if configured else {})
+                with patch.dict('os.environ', {}, clear=True), \
+                     patch('honorarios_app.services.render_pdf_pages_for_source') as render, \
+                     patch('honorarios_app.services.recover_source_with_openai') as provider:
+                    with self.assertRaisesRegex(IntakeError, 'AI reading is off or unavailable'):
+                        recover_source_upload(filename='fictional-header-scan.pdf', content_type='application/pdf',
+                            content=content, source_kind='notification_pdf', paths=self.paths, ai_recovery_mode=mode)
+                render.assert_not_called()
+                provider.assert_not_called()
+
+    def test_hybrid_notification_cannot_prepare_from_only_readable_first_page_if_ai_fails(self):
+        content, _first, _second = self.hybrid_notification()
+        for status in ('skipped', 'unconfigured', 'unavailable', 'failed', 'ok'):
+            with self.subTest(status=status):
+                with patch('honorarios_app.services.recover_source_with_openai', return_value={
+                        'status': status, 'raw_visible_text': '', 'fields': {}}), \
+                     patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=self.rendered_fixture_pages):
+                    with self.assertRaisesRegex(IntakeError, 'AI image reading did not complete'):
+                        recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
+                            content=content, source_kind='notification_pdf', paths=self.paths)
+                for directory in (self.paths.output_dir, self.paths.intake_output_dir, self.paths.manifest_dir):
+                    self.assertEqual(list(directory.glob('*')), [])
+
+    def test_hybrid_notification_requires_every_page_to_render_before_provider_call(self):
+        content, _first, _second = self.hybrid_notification()
+        with patch('honorarios_app.services.render_pdf_pages_for_source', return_value=([
+                self.root / 'fictional-page-1.png'], ['Fictional partial renderer failure.'])), \
+             patch('honorarios_app.services.recover_source_with_openai') as provider:
+            with self.assertRaisesRegex(IntakeError, 'not every page could be rendered'):
+                recover_source_upload(filename='fictional-hybrid.pdf', content_type='application/pdf',
+                    content=content, source_kind='notification_pdf', paths=self.paths)
+        provider.assert_not_called()
+
+    def test_missing_native_renderer_stops_before_provider_or_request_creation(self):
+        content, _first, _second = self.hybrid_notification()
+        with patch('honorarios_app.services.shutil.which', return_value=None), \
+             patch('honorarios_app.services.recover_source_with_openai') as provider:
+            with self.assertRaisesRegex(IntakeError, 'not every page could be rendered'):
+                recover_source_upload(filename='fictional-no-renderer.pdf', content_type='application/pdf',
+                    content=content, source_kind='notification_pdf', paths=self.paths)
+        provider.assert_not_called()
+        for directory in (self.paths.output_dir, self.paths.intake_output_dir, self.paths.manifest_dir):
+            self.assertEqual(list(directory.glob('*')), [])
 
     def test_capture_city_selects_its_court_instead_of_district_or_service_city(self):
         self.enable(mappings={

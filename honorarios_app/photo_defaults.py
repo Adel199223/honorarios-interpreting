@@ -175,6 +175,47 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
         warnings.append('Your photo-city court default has no unique city/court contact. Enter the paying court and recipient; the general email default will not be used.')
 
 
+def apply_saved_court_label(intake: dict[str, Any], preferences: dict[str, Any], *, explicit_profile: bool = False) -> None:
+    """Use an exact saved ordinary-court label, without changing source routing."""
+    if explicit_profile or intake.get('source_kind') != 'notification_pdf':
+        return
+    mapping = preferences.get('city_courts')
+    if not isinstance(mapping, dict):
+        return
+    recipient = str(intake.get('recipient_email') or '').strip().lower()
+    matches = [(city, record) for city, record in mapping.items() if isinstance(record, dict)
+               and recipient and recipient == str(record.get('recipient_email') or record.get('email') or '').strip().lower()]
+    if len(matches) != 1:
+        return
+    city, record = matches[0]
+    label = str(record.get('payment_entity') or record.get('name') or '').strip()
+    city_key = _city_key(city)
+    if _city_key(label) != 'tribunal de ' + city_key:
+        return
+    def same_ordinary_court(value: Any) -> bool:
+        text = _city_key(value)
+        specialized = re.search(r'\b(trabalho|familia|menores|comercio|administrativo|fiscal|execucao|central|instrucao|criminal|civel)\b', text)
+        return not specialized and text.startswith(('tribunal ', 'juizo ')) and text.endswith(' de ' + city_key)
+    def grounded(value: Any) -> bool:
+        words = lambda text: ' '.join(re.sub(r'[^\w]+', ' ', _city_key(text)).split())
+        return bool(words(value)) and words(value) in words(intake.get('source_text'))
+    payer = str(intake.get('payment_entity') or '')
+    if not same_ordinary_court(payer) or not grounded(payer):
+        return
+    before = {'payment_entity': payer, 'addressee': str(intake.get('addressee') or '')}
+    intake.update(payment_entity=label, addressee=str(record.get('addressee') or f'Exmo. Senhor Juiz de Direito\n{label}'))
+    for field in ('service_entity', 'service_place'):
+        value = intake.get(field)
+        court_prefix = str(value or '').split(',', 1)[0].strip()
+        if same_ordinary_court(court_prefix) and grounded(court_prefix):
+            before[field] = value
+            intake[field] = label
+    if 'service_place' in before:
+        before['service_place_phrase'] = intake.get('service_place_phrase', '')
+        intake['service_place_phrase'] = f'em diligência realizada no {label}'
+    intake['court_label_preference'] = {'label': label, 'original_fields': before}
+
+
 def preserve_photo_routing(original: dict[str, Any], merged: dict[str, Any]) -> None:
     """Profile re-review must not reintroduce a removed payer or recipient."""
     applied = original.get('photo_defaults_applied')

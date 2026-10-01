@@ -17,6 +17,8 @@ The default wrapper checks the pinned environment, lock/export consistency, depe
 
 ## Work in focused chunks
 
+For notification handling, test issue-versus-interpreting appointment dates, written Portuguese dates, unrelated/cancelled appointments, mixed interpreting/translation scope and every case in a multi-case PDF. Verify the final PDF date and each email attachment, not only extraction. Test replacing a source with existing proof/custom email text. Within a batch, the same case/day with a blank and named period must block before files or records; distinct named periods remain valid.
+
 While changing one behavior, select its public test group instead of repeatedly rebuilding and checking every unrelated workflow:
 
 ```powershell
@@ -29,11 +31,15 @@ powershell -ExecutionPolicy Bypass -File scripts/validate_dev.ps1 -Group ui
 
 The accepted groups are `quick`, `intake`, `quality`, `pdf`, `email`, `ui`, `package`, `integration` and `full`. Their exact membership lives in `tests/portable-groups.json`; every selected test file must also belong to the explicit public allowlist in `tests/portable-suite.txt`. Unknown groups or unsafe/unlisted entries must fail. Group selection retains the temporary source-only checkout and provider-environment stripping.
 
+Scanned/hybrid PDF domain tests use real PDF text/raster detection and deterministic page-image fixtures at the native renderer boundary, with separate missing/incomplete-render coverage. They do not claim to test Poppler or live OCR. A separate real-render check needs `pdftoppm` on `PATH` and must verify each synthetic page image. The hosted Windows runner intentionally need not have this optional native tool.
+
 The `quality` group runs fictional source-decision oracles, saved photo-default regressions and evaluator safeguards. Run `.\.venv311\Scripts\python.exe scripts/evaluate_source_quality.py` for the repeatable scorecard. It measures decision handling from provided text/provider replay, not OCR or private-document accuracy. Actual paid model and image-reading acceptance requires an explicitly authorized bounded session, using fictional sources by default; see [the model comparison](source-quality.md). Record any separately authorized real-source exception in the plan and handoff, and retain its source/results only in ignored local evidence.
 
 Claim-option regressions are included in the intake/PDF/email groups and normal UI group. They cover truthful attendance-only wording, neither-claim rejection, shared-trip ownership and persisted draft guards; a synthetic pass still needs normal-screen and rendered-PDF acceptance.
 
 Email-routing regressions belong to intake/email and normal UI groups. Exercise actual source recovery with ambiguous footer contacts, independent payer checks, exact-versus-broad aliases, same-value saved selection, normal select input/change events and delayed success/failure callbacks after switching prepared targets. Unit tests do not replace checking the chosen court email and exact PDF through ordinary browser controls.
+
+Whole-app readiness regressions additionally cover nested EXIF capture dates, modification-only ambiguity, fragmented case suffixes, exact distance selection, immutable prepared filenames, tax profile values in actual PDFs, deliberate field clears and delayed uploads. Gmail tests must exercise timeout after remote creation, concurrent retries, partial local writes, restart discovery and recovery without a second create. These provider failures use offline fake transports. Local HTTP tests use a loopback base URL and reject foreign Host/Origin requests before any handler writes.
 
 Use `quick` for a fast general checkpoint, then the group matching the changed behavior. Intake covers request/review rules, PDF covers document generation, email covers recipient/draft rules, UI covers browser-facing behavior, package covers distribution, and integration covers the adapter/workflow boundary. The wrapper also runs environment/docs/JavaScript checks for the selected group; the direct Python runner runs that group alone.
 
@@ -64,6 +70,14 @@ The legacy runtime doctor checks broader runtime/dependency drift. It complement
 These checks use disposable runtime roots and synthetic fixtures. The adapter check covers source intake, numbered answers, preflight, preparation, Manual Draft Handoff, review-token binding/stale rejection and synthetic local draft recording. The fake-Gmail check never contacts Google. Neither check writes to LegalPDF Translate.
 
 Optional Browser/IAB or Playwright checks remain documented in [the roadmap/process references](process-optimizations.md). Use the [workflow acceptance checklist](workflow-acceptance.md) for the actual guided journey and rendered PDF. Run any artifact-writing browser path through the isolated launcher. If the adapter lacks a required capability, record the tooling blocker; do not substitute private files or real draft records.
+
+## Resume and backup recovery checks
+
+`tests/test_workspace_draft.py` covers the editable browser snapshot, opaque per-runtime namespace, explicit resume, manual fields, per-case answers/evidence and shared-trip bindings. It checks missing/out-of-root files, explicit replacement profiles, stale responses, corrupt/quota-limited storage, Change source/Reset, the absent conditional home answer box, and the served dependency import-map version. The focused `ui` group runs these checks. Keep new static modules in both package/source-only copies and the versioned browser dependency graph.
+
+Use ordinary browser controls to review a five-case source, move its travel owner, queue it, reload and resume. Confirm that all five rows return as needing review and that no previous PDF/email approval becomes actionable. Review again, refresh the queue, run batch preflight, prepare and inspect all five PDFs and the single email target. Repeat with manual fields entered before Build/Review. At a narrow viewport, check the resume banner and action remain above the reordered source panel. Exercise missing-file/profile repair in synthetic data; allow recovery of facts without silently accepting a different profile or missing attachment.
+
+For backup changes, use isolated source and destination runtimes with fake Gmail transport. Export pending attempts, restore reviewed JSON/PDF/image recovery files, then complete local recording without another provider create. Verify old/legacy backup restore retains newer active/sent history and pending reservations, conflicts pause, incomplete recovery files remain blocked, and same-backup retry handles interruption. Check export/preview/restore warnings and the bounded file limits. Browser-local unfinished sessions and server-side attempt backups have separate storage and must not be reported as interchangeable. Current integrated test totals and actual browser evidence belong in the handoff/active plan, not inferred from this checklist.
 
 ## Tracked-content privacy checks
 

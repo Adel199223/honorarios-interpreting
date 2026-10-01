@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shutil
 import subprocess
 import sys
@@ -42,7 +43,7 @@ try:
         service_date_conflict,
     )
     from scripts.intake_questions import format_numbered_questions, missing_questions
-    from scripts.request_identity import request_identity_key
+    from scripts.request_identity import request_identity_key, request_identity_keys_overlap
     from scripts.source_classification import detect_translation_source, format_translation_rejection
     from scripts.claim_options import ClaimError, claim_metadata, profile_binding, recorded_travel_requests, validate_shared_travel_groups
     from scripts.record_gmail_draft import load_duplicate_index
@@ -77,7 +78,7 @@ except ModuleNotFoundError:
         service_date_conflict,
     )
     from intake_questions import format_numbered_questions, missing_questions
-    from request_identity import request_identity_key
+    from request_identity import request_identity_key, request_identity_keys_overlap
     from source_classification import detect_translation_source, format_translation_rejection
     from claim_options import ClaimError, claim_metadata, profile_binding, recorded_travel_requests, validate_shared_travel_groups
     from record_gmail_draft import load_duplicate_index
@@ -270,7 +271,9 @@ def prepare_one(
                                      draft_log=draft_log, allow_duplicate=allow_duplicate,
                                      allow_existing_draft=allow_existing_draft, correction_reason=correction_reason)
     rendered = build_rendered_request(intake, profile)
-    pdf_path = output_dir / default_output_path(intake).name
+    # A later preparation or correction must never replace artifacts already
+    # bound into an earlier review or recorded draft, even within one second.
+    pdf_path = output_dir / f'{default_output_path(intake).stem}_{secrets.token_hex(8)}.pdf'
     html_path = html_dir / f"{pdf_path.stem}.html"
     render_html(template_path, rendered, html_path)
     generate_pdf(rendered, pdf_path)
@@ -374,7 +377,7 @@ def print_summary(items: list[dict[str, Any]]) -> None:
 
 def default_manifest_path() -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return DEFAULT_MANIFEST_DIR / f"prepared-{timestamp}.json"
+    return DEFAULT_MANIFEST_DIR / f"prepared-{timestamp}-{secrets.token_hex(8)}.json"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -424,10 +427,11 @@ def main(argv: list[str] | None = None) -> int:
                 allow_existing_draft=args.allow_existing_draft,
                 correction_reason=correction_reason,
             )
-            if key in seen_keys:
+            overlapping_key = next((previous for previous in seen_keys if request_identity_keys_overlap(key, previous)), None)
+            if overlapping_key is not None:
                 raise IntakeError(
                     "Duplicate request appears more than once in this batch: "
-                    f"{intake_path} duplicates {seen_keys[key]}"
+                    f"{intake_path} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests."
                 )
             seen_keys[key] = intake_path
 

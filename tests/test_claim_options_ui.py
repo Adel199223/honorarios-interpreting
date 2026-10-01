@@ -192,6 +192,7 @@ a.state.currentIntake=intake(710);a.fillFormFromIntake(a.state.currentIntake);
 const modes=[];for(const mode of ['interpreting_only','travel_only','both']){await a.changeRequestClaimMode(mode);modes.push(g.claimMode(a.state.currentIntake));}
 const facts=a.state.currentIntake.service_place;
 a.state.currentIntake.claim_interpreting=false;
+a.state.reference={service_profiles:{example_interpreting:{}}};
 await a.buildIntakeFromProfile({openDrawer:false});
 console.log(JSON.stringify({modes,facts,manual:g.claimMode(a.state.currentIntake),calls:calls.map(row=>[row.claim_interpreting,row.claim_transport]),manualLabel:element('#request-claim-mode').value}));
 """, app=True)

@@ -8,6 +8,10 @@ from scripts.request_identity import normalize_case_number
 
 CASE_FULL = re.compile(r'\d+/\d{2}\.\d[A-Z][A-Z0-9]*(?:\.[A-Z0-9]+)*', re.IGNORECASE)
 CASE_VISIBLE = re.compile(r'(?<![A-Z0-9/])\d+\s*/\s*\d{2}\s*\.\s*\d\s*[A-Z][A-Z0-9]*(?:\.[A-Z0-9]+)*', re.IGNORECASE)
+SPACED_SUFFIX_TAIL = re.compile(
+    r'(?:[ \t]+[A-Za-z0-9](?=[ \t]|$|[.,;:!?)])){2,}'
+    r'|[ \t]+[A-Z0-9](?=[ \t]|$|[.,;:!?)])'
+)
 ALTERNATIVE = re.compile(r'\b(?:ou|or|ileg[ií]v\w*|unreadable|uncertain|ambiguous|incerto)\b|\?', re.IGNORECASE)
 
 
@@ -51,6 +55,14 @@ def source_case_rows(text: str, ai_recovery: dict[str, Any]) -> list[dict[str, s
             add(line)
         else:
             for match in matches:
+                # OCR can split the institution suffix into separate letters.
+                # Do not turn its first fragment into a shorter, "ready" case.
+                tail = SPACED_SUFFIX_TAIL.match(line[match.end():])
+                if tail:
+                    raw = match.group() + tail.group()
+                    ambiguous_cases.update((valid_source_case(raw), valid_source_case(match.group())))
+                    add(raw)
+                    continue
                 value = valid_source_case(match.group())
                 if value:
                     add(match.group(), value)

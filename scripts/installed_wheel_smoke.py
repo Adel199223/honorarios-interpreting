@@ -73,7 +73,7 @@ with patch.object(socket.socket, "connect", guarded_connect), patch.object(socke
 
     create_synthetic_runtime(runtime)
     app = create_app(**runtime_path_overrides(runtime))
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         page = client.get("/")
         assert page.status_code == 200 and "LegalPDF Honorários" in page.text
         assert client.get("/static/app.js").status_code == 200
@@ -83,7 +83,7 @@ with patch.object(socket.socket, "connect", guarded_connect), patch.object(socke
             response = client.get(urlparse(url).path)
             response.raise_for_status()
             return response.json()
-        readiness = run_adapter_readiness_result("http://testserver", fetch_json=fetch_json)
+        readiness = run_adapter_readiness_result("http://127.0.0.1", fetch_json=fetch_json)
         assert readiness.status == "ready", readiness.safe_summary()
         assert readiness.send_allowed is False and readiness.write_allowed is False
         assert readiness.isolated_synthetic_runtime is True

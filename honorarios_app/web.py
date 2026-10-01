@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ipaddress
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -81,9 +83,33 @@ from .services import (
     upsert_service_profile,
 )
 from .runtime import SYNTHETIC_RUNTIME_ATTESTATION, create_synthetic_runtime, runtime_path_overrides
+from .workspace_draft import validate_workspace_resume
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def _browser_origin(value: str) -> tuple[str, str, int] | None:
+    """Parse only an HTTP origin, never credentials, paths or header lists."""
+    if (not value or any(delimiter in value for delimiter in ('?', '#', ','))
+            or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value)):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {'http', 'https'} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path or parsed.query or parsed.fragment
+                or parsed.netloc.endswith(':') or '\\' in parsed.netloc):
+            return None
+        host = parsed.hostname.lower()
+        try:
+            host = str(ipaddress.ip_address(host))
+        except ValueError:
+            pass
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == 'https' else 80)
+        return (parsed.scheme, host, port) if port > 0 else None
+    except ValueError:
+        return None
 
 
 def build_paths(**overrides: Any) -> AppPaths:
@@ -138,6 +164,21 @@ def create_app(**path_overrides: Any) -> FastAPI:
     )
     app.state.paths = paths
 
+    @app.middleware('http')
+    async def require_local_browser_origin(request: Request, call_next):
+        hosts = request.headers.getlist('host')
+        target = _browser_origin(f"{request.scope.get('scheme', 'http')}://{hosts[0]}") if len(hosts) == 1 else None
+        if target is None or target[1] not in {'localhost', '127.0.0.1', '::1'}:
+            return JSONResponse(status_code=400, content={'detail': 'This app accepts only a local loopback Host.'})
+        if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+            origins = request.headers.getlist('origin')
+            if origins:
+                if len(origins) != 1 or _browser_origin(origins[0]) != target:
+                    return JSONResponse(status_code=403, content={'detail': 'Open this action from the same local app address.'})
+            elif request.headers.get('sec-fetch-site', '').lower() == 'cross-site':
+                return JSONResponse(status_code=403, content={'detail': 'Cross-site requests cannot change local app data.'})
+        return await call_next(request)
+
     templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
 
@@ -159,6 +200,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
             "write_allowed": False,
             "managed_data_changed": False,
         }
+
+    @app.post("/api/workspace/resume")
+    async def api_workspace_resume(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return validate_workspace_resume(payload, paths, personal_profiles_summary(paths))
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/reference")
     async def api_reference() -> dict[str, Any]:

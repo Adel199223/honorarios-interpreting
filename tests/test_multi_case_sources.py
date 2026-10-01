@@ -14,6 +14,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader
+from reportlab.pdfgen.canvas import Canvas
 
 from honorarios_app import ai_recovery as ai
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
@@ -105,7 +106,7 @@ class MultiCaseSourceTests(unittest.TestCase):
         recovery = self.recovery(case_numbers=case_numbers, text=text, fields=fields)
         with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery) as provider:
             if through_api:
-                with TestClient(create_app(**runtime_path_overrides(self.root))) as client:
+                with TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1') as client:
                     response = client.post('/api/sources/upload',
                         files={'file': ('fictional-five-cases.jpg', self.content.getvalue(), 'image/jpeg')},
                         data={'source_kind': 'photo', 'profile_name': 'auto',
@@ -135,6 +136,99 @@ class MultiCaseSourceTests(unittest.TestCase):
             self.assertEqual(record['review']['status'], 'ready', record['review'])
             self.assertFalse(record['review']['send_allowed'])
         return candidates
+
+    def upload_pdf(self, text):
+        content = BytesIO()
+        canvas = Canvas(content)
+        for index, line in enumerate(text.splitlines()):
+            canvas.drawString(25, 790 - index * 18, line)
+        canvas.save()
+        before = self.managed_snapshot()
+        with patch('honorarios_app.services.recover_source_with_openai', return_value={
+            'status': 'disabled', 'attempted': False, 'fields': {},
+        }):
+            result = recover_source_upload(filename='fictional-notice-20260930.pdf',
+                content_type='application/pdf', content=content.getvalue(),
+                source_kind='notification_pdf', ai_recovery_mode='off', paths=self.paths)
+        self.assertEqual(self.managed_snapshot(), before)
+        self.assert_no_preparation_artifacts()
+        return result
+
+    def test_pdf_visible_cases_each_reach_their_own_review_and_pdf_in_one_email(self):
+        result = self.upload_pdf(
+            f'Processos {CASES[0]} e {CASES[1]}\n'
+            'Servico de interpretacao realizado em 28/09/2026.\nTribunal de Alpha')
+        self.assertEqual(result['case_count'], 2)
+        candidates = [row['candidate_intake'] for row in result['case_candidates']]
+        self.assertEqual([row['case_number'] for row in candidates], list(CASES[:2]))
+        for row in result['case_candidates']:
+            candidate = row['candidate_intake']
+            self.assertEqual(candidate['source_kind'], 'notification_pdf')
+            self.assertEqual(candidate['service_date'], '2026-09-28')
+            self.assertFalse(candidate.get('photo_metadata_date'))
+            self.assertEqual(row['review']['status'], 'ready')
+            candidate.update(claim_interpreting=True, claim_transport=False)
+            reviewed = review_intake_with_profile_evidence(copy.deepcopy(candidate), self.paths)
+            self.assertEqual(reviewed['intake']['case_number'], candidate['case_number'])
+        prepared = prepare_intakes(candidates, self.paths, email_grouping='source', render_previews=False)
+        self.assertEqual(len(prepared['items']), 2)
+        self.assertEqual(len(prepared['email_groups']), 1)
+        self.assertEqual(len(prepared['email_groups'][0]['attachment_files']), 2)
+        for candidate, item in zip(candidates, prepared['items']):
+            text = '\n'.join(page.extract_text() or '' for page in PdfReader(item['pdf']).pages)
+            self.assertIn(candidate['case_number'], text)
+            self.assertNotIn(next(case for case in CASES[:2] if case != candidate['case_number']), text)
+            self.assertIn('28/09/2026', text)
+
+    def test_pdf_unclear_reference_is_retained_and_blocks_the_whole_batch(self):
+        result = self.upload_pdf(
+            f'Processo {CASES[0]}\nProcesso {CASES[1]} ou {CASES[2]} (uncertain).\n'
+            'Servico de interpretacao realizado em 28/09/2026.\nTribunal de Alpha')
+        self.assertEqual(result['case_count'], 2)
+        candidates = [row['candidate_intake'] for row in result['case_candidates']]
+        unclear = next(row for row in result['case_candidates'] if not row['candidate_intake']['case_number'])
+        self.assertEqual(unclear['review']['status'], 'needs_info')
+        self.assertIn('case_number', {q['field'] for q in unclear['review']['questions']})
+        self.assertEqual(preflight_intakes(candidates, self.paths, email_grouping='source')['status'], 'blocked')
+        with self.assertRaises(IntakeError):
+            prepare_intakes(candidates, self.paths, email_grouping='source', render_previews=False)
+        self.assert_no_preparation_artifacts()
+
+    def test_mixed_pdf_reviews_and_prepares_only_explicit_interpreting_work(self):
+        result = self.upload_pdf(f'Processo {CASES[0]}\n'
+            'Servico de interpretacao presencial realizado em 28/09/2026.\n'
+            'A traducao escrita da acusacao devera ser entregue no prazo de 10 dias.\nTribunal de Alpha')
+        self.assertEqual(result['review']['status'], 'ready', result['review'])
+        self.assertIn('Written translation', result['review']['message'])
+        candidate = result['candidate_intake']
+        prepared = prepare_intakes([candidate], self.paths, render_previews=False)
+        pdf = PdfReader(prepared['items'][0]['pdf'])
+        text = '\n'.join(page.extract_text() or '' for page in pdf.pages).lower()
+        self.assertIn('intérprete', text)
+        self.assertNotIn('tradução', text)
+        self.assertNotIn('10 dias', text)
+
+    def test_ambiguous_mixed_pdf_requires_scope_answer_and_changed_source_requires_new_answer(self):
+        result = self.upload_pdf(f'Processo {CASES[0]}\n'
+            'Tradutor e interprete: traducao escrita de documento.\nData: 28/09/2026.\nTribunal de Alpha')
+        candidate = result['candidate_intake']
+        review = result['review']
+        self.assertEqual(review['status'], 'needs_info')
+        questions = {q['field']: q['number'] for q in review['questions']}
+        self.assertIn('mixed_notice_scope', questions)
+        with self.assertRaises(IntakeError):
+            prepare_intakes([candidate], self.paths, render_previews=False)
+        self.assert_no_preparation_artifacts()
+        answer = f"{questions['mixed_notice_scope']}. interpreting-only"
+        applied = apply_numbered_answers({'intake': candidate, 'answer_text': answer}, self.paths)
+        self.assertNotIn('mixed_notice_scope', {q['field'] for q in applied.get('questions', [])})
+        changed = copy.deepcopy(applied['intake'])
+        changed['source_text'] += '\nOutra referencia documental.'
+        fresh = review_intake_with_profile_evidence(changed, self.paths)
+        self.assertIn('mixed_notice_scope', {q['field'] for q in fresh['questions']})
+        aside = apply_numbered_answers({'intake': candidate,
+            'answer_text': f"{questions['mixed_notice_scope']}. translation-only"}, self.paths)
+        self.assertEqual(aside['status'], 'set_aside')
 
     def test_photo_upload_returns_five_reviewed_candidates_without_writing_requests(self):
         result = self.upload(through_api=True)
@@ -296,6 +390,23 @@ class MultiCaseSourceTests(unittest.TestCase):
         self.assertEqual(result['review']['status'], 'ready', result['review'])
         self.assertEqual(len(result['case_candidates']), 1)
 
+    def test_spaced_suffix_does_not_create_ready_truncated_case_or_extra_row(self):
+        for declared in ([], [CASES[0]], ['710/26.0T']):
+            with self.subTest(declared=declared):
+                raw = '710/26.0T S T X X'
+                result = self.upload(case_numbers=declared, text=f'Processo {raw}')
+                self.assertEqual(result['case_count'], 1)
+                self.assertEqual(result['candidate_intake']['case_number'], '')
+                self.assertEqual(result['candidate_intake']['raw_case_number'], raw)
+                self.assertEqual(result['review']['status'], 'needs_info')
+                self.assertEqual(preflight_intakes([result['candidate_intake']], self.paths)['status'], 'blocked')
+                corrected = copy.deepcopy(result['candidate_intake'])
+                corrected['case_number'] = CASES[0]
+                reviewed = review_intake_with_profile_evidence(corrected, self.paths)
+                self.assertEqual(reviewed['status'], 'ready')
+                self.assertEqual(reviewed['intake']['case_number'], CASES[0])
+        self.assert_no_preparation_artifacts()
+
     def test_existing_duplicate_blocks_entire_batch_before_any_artifacts(self):
         candidates = self.ready_candidates(self.upload())
         write_json(self.paths.duplicate_index, [{
@@ -342,6 +453,15 @@ class MultiCaseNormalizationTests(unittest.TestCase):
         from honorarios_app.source_cases import source_case_rows
         rows = source_case_rows(f'NPP: 990/26.0TSTXX NUIPC: {CASES[0]}', {})
         self.assertEqual([row['case_number'] for row in rows], [CASES[0]])
+
+    def test_lowercase_spaced_suffix_and_normal_conjunction_remain_distinct(self):
+        from honorarios_app.source_cases import source_case_rows
+        for raw in ('710/26.0t s t x x', '710/26.0T S t X x', '710/26.0TSTX X'):
+            with self.subTest(raw=raw):
+                rows = source_case_rows('Processo ' + raw, {'case_numbers': [CASES[0]]})
+                self.assertEqual(rows, [{'case_number': '', 'raw_case_number': raw}])
+        rows = source_case_rows(f'{CASES[0]} e {CASES[1]}', {})
+        self.assertEqual([row['case_number'] for row in rows], list(CASES[:2]))
 
     def test_strict_extraction_schema_requires_a_case_list(self):
         schema = ai.AI_RECOVERY_RESPONSE_FORMAT['format']['schema']

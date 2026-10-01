@@ -19,12 +19,12 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 try:
     from scripts.entity_rules import build_service_place_clause, has_pj_host_building, normalize_text, resolve_entities, source_mentions_pj_context
     from scripts.request_identity import normalize_case_number, normalize_period_label
-    from scripts.source_classification import detect_translation_source, format_translation_rejection
+    from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection
     from scripts.claim_options import ClaimError, validate_claims
 except ModuleNotFoundError:
     from entity_rules import build_service_place_clause, has_pj_host_building, normalize_text, resolve_entities, source_mentions_pj_context
     from request_identity import normalize_case_number, normalize_period_label
-    from source_classification import detect_translation_source, format_translation_rejection
+    from source_classification import classify_source_work, detect_translation_source, format_translation_rejection
     from claim_options import ClaimError, validate_claims
 
 
@@ -304,6 +304,8 @@ def build_rendered_request(intake: dict[str, Any], profile: dict[str, Any]) -> R
     translation_matches = detect_translation_source(intake)
     if translation_matches:
         raise IntakeError(format_translation_rejection(translation_matches))
+    if classify_source_work(intake) == 'ambiguous_mixed':
+        raise IntakeError('Confirm whether this mixed notice assigns a separate in-person interpreting service before PDF generation.')
     if source_mentions_pj_context(intake) and not has_pj_host_building(intake):
         raise IntakeError(
             "Polícia Judiciária interpreting requests must include the physical "

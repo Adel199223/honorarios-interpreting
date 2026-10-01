@@ -111,6 +111,8 @@
             <li><span>5</span><strong>Draft email</strong><small>Draft-only, never send</small></li>
           </ol>
 
+          <div class="result-card hidden" id="workspace-draft-status" aria-live="polite"></div>
+
           <div class="task-switcher hidden beginner-hidden" role="tablist" aria-label="Job type">
             <button type="button" class="task-button inactive">Translation</button>
             <button type="button" class="task-button active">Interpretation</button>
@@ -311,10 +313,10 @@
                   <button type="button" id="add-source-cases-to-batch" disabled aria-disabled="true">Add all reviewed cases to batch</button>
                 </div>
                 <div class="claim-choice-card" id="source-email-correction">
-                  <label for="source-correction-reason"><strong>Replace this photo's existing email</strong></label>
+                  <label for="source-correction-reason"><strong>Replace this source's existing email</strong></label>
                   <input id="source-correction-reason" placeholder="Explain the correction">
                   <p class="field-hint">If these cases already have drafts, give a reason to prepare one replacement email with every request's separate PDF. Existing drafts stay in history until the replacement is created and recorded.</p>
-                  <button type="button" id="prepare-source-email-replacement">Prepare replacement email for this photo</button>
+                  <button type="button" id="prepare-source-email-replacement">Prepare replacement email for this source</button>
                 </div>
               </section>
               <div class="result-card next-safe-action-card hidden" id="next-safe-action">
@@ -391,10 +393,10 @@
               <div class="field">
                 <label for="batch-email-grouping"><strong>Emails for queued requests</strong></label>
                 <select id="batch-email-grouping">
-                  <option value="source" selected>One email per photo</option>
+                  <option value="source" selected>One email per source</option>
                   <option value="individual">Separate emails</option>
                 </select>
-                <small id="batch-email-grouping-note">Each request keeps its own PDF. Requests from the same photo go in one email to their reviewed recipient.</small>
+                <small id="batch-email-grouping-note">Each request keeps its own PDF. Requests from the same source PDF or photo go in one email to their reviewed recipient.</small>
               </div>
               <label class="checkbox-card packet-mode-card" for="batch-packet-mode">
                 <input type="checkbox" id="batch-packet-mode">
@@ -831,6 +833,7 @@
               </div>
             </div>
           </div>
+          <div id="pending-gmail-attempts"></div>
           <div class="panel history-filter-panel">
             <div class="panel-header">
               <div>
@@ -1136,14 +1139,22 @@
           </div>
         </div>
 
-        <div class="result-card" id="manual-handoff-card">
-          <div class="result-header">
+        <label class="checkbox-card gmail-handoff-checklist" for="gmail_handoff_reviewed" aria-label="Gmail handoff checklist">
+          <input type="checkbox" id="gmail_handoff_reviewed">
+          <span>
+            <strong>Ready to create the email draft</strong>
+            <small>I reviewed every request's PDF preview and the exact `_create_draft` args shown above, including recipient, body, and all attachments.</small>
+          </span>
+        </label>
+
+        <details class="result-card" id="manual-handoff-card">
+          <summary class="result-header">
             <div>
               <strong>Manual Draft Handoff</strong>
               <p>Manual Draft Handoff is always available as the safe fallback: review the PDF preview, copy the exact `_create_draft` args, create the draft manually, then record the returned IDs locally.</p>
             </div>
             <span class="status-chip ready" id="manual-handoff-chip">Recommended</span>
-          </div>
+          </summary>
           <p id="manual-handoff-status">Manual handoff is always draft-only and never sends email automatically.</p>
           <ol class="handoff-steps">
             <li>Review the generated PDF preview and recipient.</li>
@@ -1155,7 +1166,7 @@
             <button type="button" id="copy-manual-handoff-prompt">Copy handoff prompt</button>
           </div>
           <div class="result-card compact-result hidden" id="manual-handoff-packet"></div>
-        </div>
+        </details>
 
         <details class="result-card gmail-api-deferred-panel" id="gmail-api-deferred-panel">
           <summary>
@@ -1167,6 +1178,12 @@
           </summary>
           <div id="gmail-api-card" class="gmail-api-deferred-body">
             <p id="gmail-api-drawer-status">Checking Gmail Draft API status...</p>
+            <div class="button-row">
+              <button type="button" class="primary-button" id="create-gmail-api-draft">Create Gmail Draft</button>
+            </div>
+            <div class="result-card compact-result hidden" id="gmail-api-result"></div>
+            <details id="gmail-setup-details">
+              <summary>Gmail connection settings</summary>
             <div class="gmail-setup-card" id="gmail-setup-card">
               <div class="result-header compact-result-header">
                 <div>
@@ -1198,9 +1215,8 @@
             </div>
             <div class="button-row">
               <button type="button" id="connect-gmail-oauth">Connect Gmail Draft API</button>
-              <button type="button" class="primary-button" id="create-gmail-api-draft">Create Gmail Draft</button>
             </div>
-            <div class="result-card compact-result hidden" id="gmail-api-result"></div>
+            </details>
             <div class="record-autofill-note">
               <div>
                 <strong>Verify Gmail draft exists</strong>
@@ -1221,13 +1237,6 @@
             </div>
             <span class="status-chip info">Local log</span>
           </div>
-          <label class="checkbox-card gmail-handoff-checklist" for="gmail_handoff_reviewed">
-            <input type="checkbox" id="gmail_handoff_reviewed">
-            <span>
-              <strong>Gmail handoff checklist</strong>
-              <small>I reviewed every request's PDF preview and the exact `_create_draft` args shown above, including recipient, body, and all attachments.</small>
-            </span>
-          </label>
           <div class="gmail-response-parser">
             <div>
               <strong>Paste Gmail _create_draft response</strong>
@@ -1290,7 +1299,7 @@
       </section>
     </div>
 
-    <script type="importmap">{"imports":{"/static/review_guidance.js":"/static/review_guidance.js?v={{ asset_version }}"}}</script>
+    <script type="importmap">{"imports":{"/static/review_guidance.js":"/static/review_guidance.js?v={{ asset_version }}","/static/workspace_draft.js":"/static/workspace_draft.js?v={{ asset_version }}"}}</script>
     <script type="module" src="/static/app.js?v={{ asset_version }}"></script>
   </body>
 </html>

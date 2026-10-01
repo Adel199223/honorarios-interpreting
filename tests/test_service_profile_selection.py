@@ -11,8 +11,9 @@ from unittest.mock import patch
 from PIL import Image
 
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
-from honorarios_app.services import AppPaths, choose_service_profile, recover_source_upload
+from honorarios_app.services import AppPaths, choose_service_profile, effective_intake_for_profile, recover_source_upload
 from scripts.generate_pdf import IntakeError
+from scripts.intake_questions import missing_questions
 
 
 class ServiceProfileSelectionTests(unittest.TestCase):
@@ -67,6 +68,28 @@ class SyntheticUploadProfileTests(unittest.TestCase):
         photo = BytesIO()
         Image.new("RGB", (24, 24), "white").save(photo, format="PNG")
         self.photo = photo.getvalue()
+
+    def test_saved_closing_city_applies_without_service_profile_or_photo_policy(self):
+        profile = json.loads(self.paths.profile.read_text(encoding='utf-8'))
+        profile['default_closing_city'] = 'Fictional Closing City'
+        self.paths.profile.write_text(json.dumps(profile), encoding='utf-8')
+        for kind in ('notification_pdf', 'photo', ''):
+            with self.subTest(kind=kind):
+                effective, _, provenance = effective_intake_for_profile({'source_kind': kind}, self.paths)
+                self.assertEqual(effective['closing_city'], 'Fictional Closing City')
+                self.assertIn('closing_city', provenance['applied'])
+                self.assertNotIn('closing_city', {q['field'] for q in missing_questions(effective)})
+
+    def test_closing_city_fallback_preserves_request_edit_and_deliberate_clear(self):
+        for value, cleared in (('Chosen Closing City', []), ('', ['closing_city'])):
+            with self.subTest(value=value):
+                effective, _, provenance = effective_intake_for_profile({
+                    'source_kind': 'notification_pdf', 'closing_city': value,
+                    'review_cleared_fields': cleared,
+                }, self.paths)
+                self.assertEqual(effective['closing_city'], value)
+                self.assertNotIn('closing_city', provenance['applied'])
+                self.assertEqual('closing_city' in {q['field'] for q in missing_questions(effective)}, not bool(value))
 
     def upload(self, *, profile="auto", stub_ai=True):
         kwargs = dict(filename="synthetic-source.png", content_type="image/png", content=self.photo, source_kind="photo", profile_name=profile, visible_text="Synthetic interpreting service 999/26.0EXAMPLE on 2026-09-20", ai_recovery_mode="off", paths=self.paths)

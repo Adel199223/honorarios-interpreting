@@ -1,6 +1,6 @@
 # LegalPDF Honorários app knowledge
 
-LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpreting services. It is a separate development project intended for future integration with LegalPDF Translate. Translation/word-count requests are set aside.
+LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpreting services. It is a separate development project intended for future integration with LegalPDF Translate. Translation-only/word-count requests are set aside. Mixed notices may yield their explicit separate interpreting request; ambiguous scope requires a source-bound answer.
 
 ## Architecture and ownership
 
@@ -8,12 +8,14 @@ LegalPDF Honorários creates Portuguese PDF fee requests for in-person interpret
 | --- | --- |
 | Browser/API | `honorarios_app/web.py`, templates and static assets: source intake, review, numbered answers, PDF preview, batch queue, draft handoff, profiles and references. |
 | Browser review guidance | `honorarios_app/static/review_guidance.js`: pure guided-step, question and outcome helpers; rendering/action gates remain in `app.js`. |
+| Unfinished browser work | `static/workspace_draft.js` saves editable inputs; `workspace_draft.py` validates runtime identity, profiles and retained file references through `/api/workspace/resume`. Resume requires fresh review. |
 | Shared application services | `honorarios_app/services.py`: compatibility facade plus runtime/provider/domain orchestration, review, preparation, freshness binding, managed data, backups and adapter boundaries. |
 | Source evidence | `honorarios_app/source_evidence.py`: pure field provenance, profile evidence, Review Attention and text/metadata helpers; no file or provider operations. |
 | Source cases | `honorarios_app/source_cases.py`: source-grounded case references, ordered deduplication and ambiguity/administrative-reference checks; services review each child independently. |
 | Domain/CLI helpers | `scripts/`: authoritative PDF generation, classification, dates/questions, duplicate identity, recipient validation, packet preparation and local draft recording. |
 | Runtime isolation | `honorarios_app/runtime.py`: separates config/data/output paths and initializes disposable synthetic fixtures for checks. |
 | Optional providers | AI recovery, Google Photos and Gmail helpers: local configuration, secret-free status, guarded provider operations. |
+| Durable local state | `gmail_attempts.py` reserves Gmail creation before the provider call; `scripts/state_store.py` supplies atomic JSON replacement and local process locks. Pending attempts remain recoverable from Recent Work after restart. |
 | Future caller | `scripts/legalpdf_adapter_caller.py` and `/api/integration/adapter-contract`: versioned endpoint sequence and caller validation. |
 
 The browser and CLI share the domain rules. The services facade retains existing evidence exports so extraction does not change routes, payloads, dates, duplicate checks, recipients or freshness binding. Packaging must include the shared helpers, templates and static assets; an installed import alone is insufficient proof that the workflow works.
@@ -24,7 +26,10 @@ The browser and CLI share the domain rules. The services facade retains existing
 - Personal profiles contain the applicant/payment/address/travel information. The selected profile is adapted into the existing generator profile contract.
 - Service profiles contain recurring interpreting service/payment/recipient patterns.
 - Duplicate records and draft lifecycle records protect both drafted and sent requests; packet and source-group emails retain every underlying identity and each source-group child's own PDF/hash.
+- In-batch duplicate checks use the same conservative overlap rule as history: a blank period overlaps any named period for the same normalized case/day, while distinct named periods can represent separate services. Preflight, preparation, MIME/payload validation and local recording share this rule.
+- Notification PDFs use explicit interpreting appointment evidence for their editable service-date default, independently of issue/capture dates. PDF case lists pass through the same per-case review as photos. A new source cannot inherit an earlier source's supplemental files or custom email body.
 - Prepared PDF/payload/manifest files and review tokens belong to the same reviewed request snapshot. Source, intake, queue, profile or attachment changes invalidate that snapshot.
+- Browser local storage retains unfinished inputs, per-case answers/evidence, explicit travel ownership and the queue, scoped by an opaque identifier derived from the runtime profile/history/upload paths. Resume/discard is explicit. Prepared artifacts, tokens, Gmail IDs and acknowledgements are excluded; a fresh review/preflight is required. Detected runtime changes block writes until reload. Missing supporting files require explicit salvage and unavailable profiles require a selected replacement. This browser session is not part of server backups.
 - Private overlays, tokens, source documents, generated output, backups and reports remain local and ignored. Public fixtures and tests must be synthetic.
 
 Future integrations must use the app boundary rather than directly edit these files.
@@ -36,6 +41,14 @@ Source email grouping keeps individual PDF `items` and adds frozen `email_groups
 The normal sequence is source intake -> review -> numbered answers -> non-writing preflight -> PDF preparation and preview -> Manual Draft Handoff -> local recording of returned draft IDs. Missing Gmail OAuth does not block the manual handoff workflow.
 
 Optional direct Gmail creation calls only `users.drafts.create` after current PDF/payload review, duplicate checks and acknowledgement. Verification calls only `users.drafts.get`. The app does not send email or offer mailbox search/trash/delete operations. The user reviews and sends drafts manually.
+
+Draft creation reserves each underlying case/date/period in an ignored local attempt journal before contacting Gmail. Lost responses block another create across concurrent requests, re-preparation and restart. Known returned IDs survive local-recording failures; recovery validates the original payload and attachment hashes and records locally without creating another draft. Uncertain attempts require explicit reconciliation. Original approved correction targets stay distinct from later conflicting history.
+
+Local backups now include the attempt journal and bounded recovery files for pending attempts. Restore merges newer local history and reservations, rejects conflicting identities/status/coverage, and preserves pending protection when reading legacy backups without the journal. Complete recovery files are rehomed under `output/email-drafts/restored-attempts`; original PDF bytes are retained while JSON paths/hashes are updated. Old prepared-review tokens/fingerprints are removed. Missing, changed, out-of-root or oversized files produce warnings and retain the blocker instead of making a retry safe. Recovery files are limited to app-owned reviewed JSON and supported PDF/images, 25 MiB per file, 100 MiB total and 256 entries. Credentials, completed-document archives, unrelated source files and browser sessions are excluded. Restore creates a pre-restore backup, reserves blockers before restoring artifacts/history, and supports interrupted same-backup retries with atomic per-file writes; it is not a transactional rollback of all local data.
+
+Prepared files use distinct versioned names. Personal-profile saves replace complete files atomically; an unreadable existing profile store stops instead of silently falling back and discarding secondary profiles. Selected IVA/IRS text controls the PDF. Capture-date extraction reads the original nested EXIF metadata and does not mistake modification time for capture time. Source references with fragmented suffixes remain unresolved. Exact destination matches take precedence over broader names, and deliberate field clears survive profile defaults.
+
+The local HTTP boundary accepts loopback Hosts and same-origin browser writes. Ordinary no-Origin CLI callers and existing OAuth GET callbacks remain supported; this is a local app, not an authenticated remotely hosted service.
 
 LegalPDF reference import previews and plans are read-only. Existing apply/restore paths require their exact confirmation phrase and reason, create backups, and write only this app's permitted reference files. They do not write to LegalPDF Translate.
 
@@ -52,6 +65,14 @@ The subsequent [live acceptance plan](docs/assistant/exec_plans/completed/2026-1
 The first hosted [PR #61](https://github.com/Adel199223/honorarios-interpreting/pull/61) run then exposed a Node-test decoding mismatch between Windows defaults and UTF-8 CI. Only test-harness decoding and equivalent escape notation changed; a simulated Windows-default regression now covers that boundary. Final candidate and saved-app Full each passed 424 tests and four isolated workflows. The earlier 423-test checkpoint and live acceptance remain valid; the corrected current PR head requires hosted Full before merge.
 
 ## Current preparation status
+
+Publication, merge and safe cleanup are now user-authorized. The [publication contract](docs/assistant/exec_plans/completed/2026-10-01_readiness_publication.md) records final local validation; actual PR/head checks and the publication receipt determine remote completion. The saved application already contains the accepted product changes.
+
+
+The subsequent [three-source live acceptance](docs/assistant/exec_plans/completed/2026-10-01_three_source_live_acceptance.md) completed the normal upload-to-Gmail path for all three supplied sources. Three actual drafts passed UI verification and 120 independent content/attachment/unsent checks. They are recorded locally and ready for user review; this consumed run must not be repeated without a new request.
+
+
+The [completed three-source review](docs/assistant/exec_plans/completed/2026-10-01_three_source_review.md) supersedes the preceding readiness checkpoint for current work. It covers notification dates/mixed work, complete PDF source reading, per-source isolation, conservative batch duplicates and saved wording defaults. All three final interpreting-plus-travel requests passed ordinary-browser preparation, rendered-PDF review and exact email attachment checks. The missing travel distance is now user-confirmed and saved. Candidate and saved-app Full passed 615 public tests and four isolated workflows; the reviewed changes are applied locally and remain unpublished. The handoff records final acceptance; earlier checkpoints below remain historical evidence.
 
 The September preparation work adds a pinned development environment, locked setup/validation commands, package checks, and concise documentation front doors. The preparation-only publication branch passed 89 portable synthetic tests (including actual installed-wheel checks), four isolated workflow smokes, and hosted Windows/GitHub Full validation. The original saved checkout passed 91 tests because it also retains separate local interface work. Publication and application evidence are recorded in the [current handoff](docs/next-thread-handoff.md).
 

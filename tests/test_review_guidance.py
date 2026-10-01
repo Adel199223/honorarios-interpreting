@@ -19,6 +19,18 @@ class SourceCaseEvidenceRegressionTests(unittest.TestCase):
                                 text=True, encoding="utf-8", capture_output=True, check=True, cwd=ROOT)
         return json.loads(result.stdout)
 
+    def test_saved_court_label_is_a_preference_not_source_or_ai_evidence(self):
+        result = self.run_guidance("""
+const intake={court_label_preference:{label:'Tribunal de Example City',original_fields:{payment_entity:'Long court name'}}};
+console.log(JSON.stringify({saved:g.reviewFactOrigin('payment_entity','Tribunal de Example City',{},intake),
+ edited:g.reviewFactOrigin('payment_entity','Another court',{},intake),
+ venue:g.reviewFactOrigin('service_place','Tribunal de Example City',{},intake)}));
+""")
+        self.assertEqual(result['saved']['kind'], 'default')
+        self.assertIn('saved court label', result['saved']['label'])
+        self.assertEqual(result['edited']['kind'], 'unknown')
+        self.assertEqual(result['venue']['kind'], 'unknown')
+
     def test_candidate_evidence_uses_its_own_case_and_attention_with_shared_source_metadata(self):
         result = self.run_guidance("""
 const upload = {source:{source_kind:'photo',filename:'fictional.jpg',sha256:'shared-hash'},

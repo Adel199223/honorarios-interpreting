@@ -3,17 +3,113 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
 from honorarios_app.web import create_app
-from scripts.local_app_smoke import _post_expected_blocked_json, run_smoke
+from scripts.local_app_smoke import _post_expected_blocked_json, _synthetic_notification_pdf, run_smoke
+from scripts.legalpdf_adapter_caller import synthetic_notification_pdf as adapter_notification_pdf
 
 
 from test_public_candidate_smoke import PublicCandidateSmokeTests
+
+
+class LocalBrowserBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='honorarios-browser-boundary-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        create_synthetic_runtime(self.root)
+        self.app = create_app(**runtime_path_overrides(self.root))
+        self.client = TestClient(self.app, base_url='http://127.0.0.1:8765')
+        self.addCleanup(self.client.close)
+        network = patch('httpx.HTTPTransport.handle_request', side_effect=AssertionError('Boundary tests stay offline.'))
+        network.start()
+        self.addCleanup(network.stop)
+
+    def snapshot(self):
+        return {str(path.relative_to(self.root)): path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
+
+    def test_loopback_addresses_and_matching_origins_keep_normal_actions_available(self):
+        for base, origin in (
+            ('http://127.0.0.1:8765', 'http://127.0.0.1:8765'),
+            ('http://localhost:8765', 'http://LOCALHOST:8765'),
+            ('http://[::1]:8765', 'http://[::1]:8765'),
+            ('http://[0:0:0:0:0:0:0:1]:8765', 'http://[::1]:8765'),
+            ('http://localhost', 'http://localhost:80'),
+            ('https://localhost', 'https://localhost:443'),
+        ):
+            # The pinned TestClient transport cannot parse IPv6 URL authorities;
+            # exercise the actual IPv6 Host/Origin headers through its IPv4 URL.
+            client_base = 'http://127.0.0.1:8765' if '[' in base else base
+            headers = {'Host': base.split('://', 1)[1], 'Origin': origin}
+            with self.subTest(base=base), TestClient(self.app, base_url=client_base) as client:
+                self.assertEqual(client.get('/api/health', headers=headers).status_code, 200)
+                response = client.post('/api/backup/export', headers=headers)
+                self.assertEqual(response.status_code, 200, response.text)
+
+    def test_foreign_or_malformed_host_cannot_read_or_change_app_data(self):
+        before = self.snapshot()
+        for host in ('attacker.invalid:8765', '127.0.0.1.attacker.invalid', 'localhost.attacker.invalid',
+                     '127.0.0.1@attacker.invalid', 'attacker.invalid@127.0.0.1', '127.0.0.1:bad',
+                     '127.0.0.1:8765/path', '127.0.0.1:8765?query', '127.0.0.1:8765#fragment',
+                     '127.0.0.1:8765?', '127.0.0.1:8765#',
+                     '127.0.0.1:8765, attacker.invalid', '[::1]:99999', '127.0.0.1:', '0.0.0.0:8765'):
+            with self.subTest(host=host):
+                self.assertEqual(self.client.get('/api/reference', headers={'Host': host}).status_code, 400)
+                self.assertEqual(self.client.post('/api/backup/export', headers={'Host': host}).status_code, 400)
+        duplicate_host = [('Host', '127.0.0.1:8765'), ('Host', 'attacker.invalid')]
+        self.assertEqual(self.client.get('/api/reference', headers=duplicate_host).status_code, 400)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_foreign_origin_simple_form_json_and_multipart_stop_before_writes(self):
+        before = self.snapshot()
+        headers = {'Origin': 'https://attacker.invalid'}
+        requests = (
+            ('/api/backup/export', {'content': b'', 'headers': headers}),
+            ('/api/backup/export', {'data': {'unrelated': 'value'}, 'headers': headers}),
+            ('/api/backup/export', {'json': {}, 'headers': headers}),
+            ('/api/attachments/upload', {'files': {'file': ('fictional.pdf', b'%PDF-1.4\n', 'application/pdf')}, 'headers': headers}),
+        )
+        for route, options in requests:
+            with self.subTest(route=route, payload_type=list(options)[0]):
+                self.assertEqual(self.client.post(route, **options).status_code, 403)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_origin_requires_exact_scheme_host_and_effective_port(self):
+        before = self.snapshot()
+        for origin in ('null', '', 'http://localhost:8765', 'https://127.0.0.1:8765',
+                       'http://127.0.0.1:8766', 'http://127.0.0.1', 'http://127.0.0.1:8765/path',
+                       'http://user@127.0.0.1:8765', 'http://127.0.0.1:8765 https://attacker.invalid'):
+            with self.subTest(origin=origin):
+                self.assertEqual(self.client.post('/api/backup/export', headers={'Origin': origin}).status_code, 403)
+        duplicate = [('Origin', 'http://127.0.0.1:8765'), ('Origin', 'https://attacker.invalid')]
+        self.assertEqual(self.client.post('/api/backup/export', headers=duplicate).status_code, 403)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_no_origin_cli_works_but_cross_site_fetch_metadata_is_rejected(self):
+        before = self.snapshot()
+        response = self.client.post('/api/backup/export', headers={'Sec-Fetch-Site': 'cross-site'})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.client.post('/api/backup/export').status_code, 200)
+        self.assertNotEqual(self.snapshot(), before)
+
+    def test_cross_site_oauth_get_callback_keeps_existing_state_validation(self):
+        before = self.snapshot()
+        for provider in ('gmail', 'google-photos'):
+            callback_name = 'gmail_api_oauth_callback' if provider == 'gmail' else 'google_photos_oauth_callback'
+            with self.subTest(provider=provider), patch('honorarios_app.web.' + callback_name, return_value={'status': 'connected'}) as callback:
+                response = self.client.get(f'/api/{provider}/oauth/callback?code=fictional-code&state=fictional-state',
+                                           headers={'Origin': 'https://accounts.google.com', 'Sec-Fetch-Site': 'cross-site'})
+                self.assertEqual(response.status_code, 200)
+                callback.assert_called_once_with(code='fictional-code', state='fictional-state', paths=self.app.state.paths)
+        self.assertEqual(self.snapshot(), before)
 
 
 class PublicRuntimeTests(PublicCandidateSmokeTests):
@@ -51,7 +147,7 @@ class PublicRuntimeTests(PublicCandidateSmokeTests):
         with tempfile.TemporaryDirectory() as tmp:
             runtime_root = Path(tmp)
             create_synthetic_runtime(runtime_root, seed_active_draft=True)
-            client = TestClient(create_app(**runtime_path_overrides(runtime_root)))
+            client = TestClient(create_app(**runtime_path_overrides(runtime_root)), base_url='http://127.0.0.1')
 
             response = client.get("/api/health")
 
@@ -606,6 +702,21 @@ class PublicRuntimeTests(PublicCandidateSmokeTests):
         self.assertIn("source_upload_photo_attention", {check["name"] for check in report["checks"]})
         self.assertIn("source_upload_pdf_evidence", {check["name"] for check in report["checks"]})
         self.assertEqual([item[1]["source_kind"] for item in seen_uploads], ["photo", "notification_pdf"])
+        self.assertTrue(all(item[1]['ai_recovery'] == 'off' for item in seen_uploads))
+
+    def test_synthetic_pdf_smoke_fixture_recovers_without_rendering_or_provider(self):
+        client = self.make_client()
+        for fixture in (_synthetic_notification_pdf, adapter_notification_pdf):
+            with self.subTest(fixture=fixture.__module__), \
+                 patch('honorarios_app.services.render_pdf_pages_for_source', side_effect=AssertionError('Clear smoke fixture must not need rendering')), \
+                 patch('honorarios_app.ai_recovery.OpenAI', side_effect=AssertionError('Synthetic smoke cannot call a provider')) as provider:
+                response = client.post('/api/sources/upload',
+                    files={'file': ('fictional-smoke.pdf', fixture('999/26.0SMOKE', '2026-05-04'), 'application/pdf')},
+                    data={'source_kind': 'notification_pdf', 'profile': 'example_interpreting', 'ai_recovery': 'off'})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['candidate_intake']['case_number'], '999/26.0SMOKE')
+                self.assertEqual(response.json()['candidate_intake']['service_date'], '2026-05-04')
+                provider.assert_not_called()
 
 
     def test_local_app_smoke_runner_supporting_attachment_contract_is_injectable(self):

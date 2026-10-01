@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -13,9 +14,11 @@ from unittest.mock import patch
 from pypdf import PdfReader
 
 from honorarios_app.runtime import SYNTHETIC_COURT_EMAIL, create_synthetic_runtime, runtime_path_overrides
+from honorarios_app.personal_profiles import lookup_profile_distance
 from honorarios_app.services import (
     AppPaths, _assert_gmail_create_duplicate_clear, apply_answer_to_intake,
     effective_intake_for_profile, preflight_intakes, prepare_intakes, review_intake,
+    load_personal_profiles, save_personal_profile,
 )
 from scripts.build_email_draft import custom_transport_body_conflict, resolve_email_body, validate_draft_payload
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups
@@ -26,6 +29,81 @@ from scripts.record_gmail_draft import main as record_cli
 from scripts.request_identity import request_identity_key
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class PersonalProfilePersistenceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='fictional-profile-save-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        create_synthetic_runtime(self.root)
+        self.paths = AppPaths(**runtime_path_overrides(self.root))
+        store = load_personal_profiles(self.paths)
+        self.incoming = copy.deepcopy(store['profiles'][0])
+        second = copy.deepcopy(self.incoming)
+        second.update(id='fictional-second-profile', first_name='Second', last_name='Example')
+        store['profiles'].append(second)
+        self.paths.personal_profiles.write_text(json.dumps(store), encoding='utf-8')
+        self.incoming['postal_address'] = 'Revised fictional address'
+
+    def test_interrupted_temporary_write_preserves_previous_profiles_and_legacy_bytes(self):
+        before = {path: path.read_bytes() for path in (self.paths.personal_profiles, self.paths.profile)}
+
+        def interrupted_dump(value, handle, **kwargs):
+            handle.write('{"partially_written":')
+            raise OSError('Fictional disk-write interruption')
+
+        with patch('scripts.state_store.json.dump', side_effect=interrupted_dump):
+            with self.assertRaisesRegex(OSError, 'disk-write interruption'):
+                save_personal_profile({'profile': self.incoming}, self.paths)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(len(load_personal_profiles(self.paths)['profiles']), 2)
+        self.assertEqual(list(self.paths.personal_profiles.parent.glob('.*.tmp')), [])
+
+    def test_failed_atomic_replace_preserves_existing_profile_store(self):
+        before = self.paths.personal_profiles.read_bytes()
+        with patch('scripts.state_store.os.replace', side_effect=OSError('Fictional locked destination')):
+            with self.assertRaisesRegex(OSError, 'locked destination'):
+                save_personal_profile({'profile': self.incoming}, self.paths)
+        self.assertEqual(self.paths.personal_profiles.read_bytes(), before)
+        self.assertEqual(len(load_personal_profiles(self.paths)['profiles']), 2)
+
+    def test_unreadable_or_malformed_existing_store_blocks_loading_and_overwrite(self):
+        for contents in ('{"profiles":', '[]', '{}', '{"profiles": []}', '{"profiles": [null]}'):
+            with self.subTest(contents=contents):
+                self.paths.personal_profiles.write_text(contents, encoding='utf-8')
+                before = self.paths.personal_profiles.read_bytes()
+                with self.assertRaisesRegex(IntakeError, 'saved personal profiles'):
+                    load_personal_profiles(self.paths)
+                with self.assertRaisesRegex(IntakeError, 'saved personal profiles'):
+                    save_personal_profile({'profile': self.incoming}, self.paths)
+                self.assertEqual(self.paths.personal_profiles.read_bytes(), before)
+        original_read = Path.read_text
+
+        def denied(path, *args, **kwargs):
+            if path == self.paths.personal_profiles:
+                raise PermissionError('Fictional unreadable profile store')
+            return original_read(path, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', denied), self.assertRaisesRegex(IntakeError, 'could not be read'):
+            save_personal_profile({'profile': self.incoming}, self.paths)
+
+    def test_successful_save_preserves_other_profiles_and_updates_legacy_copy(self):
+        result = save_personal_profile({'profile': self.incoming}, self.paths)
+        self.assertEqual(result['status'], 'saved')
+        store = load_personal_profiles(self.paths)
+        self.assertEqual(len(store['profiles']), 2)
+        self.assertEqual(store['profiles'][0]['postal_address'], self.incoming['postal_address'])
+        legacy = json.loads(self.paths.profile.read_text(encoding='utf-8'))
+        self.assertEqual(legacy['address'], self.incoming['postal_address'])
+
+    def test_absent_profile_store_retains_legacy_migration(self):
+        from honorarios_app.personal_profiles import load_profile_store
+        absent = self.root / 'new-profile-store.json'
+        migrated = load_profile_store(absent, self.paths.profile, self.paths.known_destinations)
+        self.assertEqual(len(migrated['profiles']), 1)
+        self.assertEqual(migrated['profiles'][0]['first_name'], 'Example')
+        self.assertFalse(absent.exists())
 
 
 class ClaimOptionsTests(unittest.TestCase):
@@ -142,6 +220,29 @@ class ClaimOptionsTests(unittest.TestCase):
                 row['transport']['km_one_way'] = distance
                 build_rendered_request(row, self.profile)
 
+    def test_exact_profile_distance_wins_over_an_earlier_city_name_prefix(self):
+        profiles = json.loads(self.paths.personal_profiles.read_text(encoding='utf-8'))
+        profiles['profiles'][0]['travel_distances_by_city'] = {'Vila Fictícia': 400, 'Vila Fictícia do Sul': 150}
+        self.write(self.paths.personal_profiles, profiles)
+        row = self.row()
+        row['transport'] = {'destination': 'Vila Fictícia do Sul'}
+        reviewed = review_intake(row, self.paths)
+        self.assertEqual(reviewed['status'], 'ready')
+        self.assertEqual(reviewed['effective_intake']['transport']['km_one_way'], 150)
+        prepared = prepare_intakes([row], self.paths)
+        text = '\n'.join(page.extract_text() for page in PdfReader(prepared['items'][0]['pdf']).pages)
+        self.assertIn('150 km', text)
+        self.assertNotIn('400 km', text)
+
+    def test_profile_distance_uses_specific_venue_locality_and_rejects_partial_city(self):
+        profile = {'travel_distances_by_city': {'Vila Fictícia': 400, 'Vila Fictícia do Sul': 150}}
+        self.assertEqual(lookup_profile_distance(profile, 'Tribunal de Vila Ficticia do Sul'), (150, 'Vila Fictícia do Sul'))
+        for destination in ('Vila', 'Vila Fictícia Nova', 'Outra Vila Fictícia', 'Fictícia'):
+            with self.subTest(destination=destination):
+                self.assertEqual(lookup_profile_distance(profile, destination), (None, ''))
+        conflicting = {'travel_distances_by_city': {'Vila Fictícia': 400, 'Vila Ficticia': 150}}
+        self.assertEqual(lookup_profile_distance(conflicting, 'Vila Fictícia'), (None, ''))
+
     def test_travel_only_default_email_does_not_mutate_saved_preferences(self):
         before = copy.deepcopy(self.email_config)
         result = prepare_intakes([self.row(claim_interpreting=False)], self.paths)
@@ -210,6 +311,23 @@ class ClaimOptionsTests(unittest.TestCase):
         manifest = json.loads((self.paths.manifest_dir / 'cli.json').read_text(encoding='utf-8'))
         self.assertEqual([item['claim_transport'] for item in manifest['items']], [True, False])
         self.assertEqual(manifest['items'][0]['travel_group_binding'], manifest['items'][1]['travel_group_binding'])
+
+    def test_direct_cli_repreparation_preserves_prior_pdf_payload_and_default_manifest(self):
+        row = self.row()
+        with patch('scripts.prepare_honorarios.DEFAULT_MANIFEST_DIR', self.paths.manifest_dir), \
+             patch('scripts.prepare_honorarios.datetime') as clock:
+            clock.now.return_value = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(prepare_cli(self.cli_args([row])[:-2]), 0)
+            original_manifest = next(self.paths.manifest_dir.glob('*.json'))
+            original = json.loads(original_manifest.read_text(encoding='utf-8'))['items'][0]
+            files = {original_manifest, *(Path(original[key]) for key in ('pdf', 'draft_payload', 'html_preview'))}
+            before = {path: path.read_bytes() for path in files}
+            row['transport']['km_one_way'] = 99
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(prepare_cli(self.cli_args([row])[:-2]), 0)
+        self.assertEqual(len(list(self.paths.manifest_dir.glob('*.json'))), 2)
+        self.assertEqual({path: path.read_bytes() for path in files}, before)
 
     def test_same_city_date_ungrouped_requests_are_not_assumed_one_visit(self):
         rows = [self.row(101), self.row(102)]

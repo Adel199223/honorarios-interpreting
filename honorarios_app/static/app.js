@@ -32,7 +32,9 @@ import {
   sharedSourceTravelEligibility,
   sourceCasesWithTravelChoice,
   sourceTravelGroupId,
-  sourceCasesMatchSharedTravelChoice
+  sourceCasesMatchSharedTravelChoice,
+  workspaceInputCopy, workspaceDraftSnapshot, workspaceDraftHasWork, workspaceDraftStorageKey,
+  readWorkspaceDraft, writeWorkspaceDraft
 } from "./review_guidance.js";
 
 const state = {
@@ -42,6 +44,8 @@ const state = {
   sourceCaseSelectedIndex: null,
   sourceCaseBatchInFlight: false,
   sourceTravelChoice: null,
+  sourceUploadPending: null,
+  workspaceDraft: { workspaceId: "", pending: null, error: "", initialized: false, saving: false, busy: false, validation: null, runtimeChanged: false },
   batchIntakes: [],
   batchSelectedIndex: null,
   batchPreflight: null,
@@ -79,6 +83,153 @@ const state = {
     message: "",
   },
 };
+
+function currentWorkspaceDraft() {
+  return workspaceDraftSnapshot(state, { answers: $("#home-numbered-answers")?.value || $("#numbered-answers")?.value || "",
+    email_grouping: currentBatchEmailGrouping(), packet_mode: currentBatchPacketMode(),
+    manual_fields: !state.currentIntake && state.workspaceDraft.manualDirty ? collectProfilePayload() : null });
+}
+
+function renderWorkspaceDraft() {
+  const box = $("#workspace-draft-status");
+  if (!box) return;
+  const draft = state.workspaceDraft;
+  box.classList.toggle("hidden", !draft.pending && !draft.error && !draft.savedAt && !draft.resumed);
+  const missing = draft.validation?.missing_attachments || [];
+  const unavailableProfiles = draft.validation?.unavailable_profiles || [];
+  box.innerHTML = `<strong>${draft.pending ? "Unfinished work is saved in this browser" : draft.resumed ? "Restored inputs need fresh review" : "Unfinished work"}</strong>
+    <p>${escapeHtml(draft.error || (draft.pending ? "Resume your request details, case answers and queue, replacing any currently open inputs, or discard the saved work. PDFs, Gmail IDs and review approval are not restored."
+      : draft.resumed ? "Check the restored details and profile, then review again. Queued requests need a fresh batch preflight. Source file selections cannot be restored; reattach the original if you need to read it again."
+      : "Request inputs and the queue are saved locally in this browser. Resume them after reopening this same app workspace."))}</p>
+    ${missing.length ? `<p>Unavailable supporting files: ${missing.map(name => `<code>${escapeHtml(name)}</code>`).join(", ")}. You can restore the facts without these files, then reattach them before preparing.</p>` : ""}
+    ${draft.validation?.missing_sources?.length ? "<p>The original source file is unavailable. Reattach it to read the source again; recovered facts are retained for checking.</p>" : ""}
+    ${unavailableProfiles.length ? `<p>A saved personal profile is unavailable. Choose the intended replacement before resuming.</p><label>Profile for requests with an unavailable profile<select id="workspace-resume-profile"><option value="">Choose a profile</option>${(personalProfilesData().profiles || []).map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(personalProfileName(profile))}</option>`).join("")}</select></label>` : ""}
+    ${draft.pending || draft.readFailed ? `<div class="button-row">${draft.pending ? `<button type="button" id="resume-workspace-draft" ${draft.busy ? "disabled" : ""}>${missing.length ? "Resume without unavailable files" : "Resume unfinished work"}</button>` : ""}<button type="button" id="discard-workspace-draft" ${draft.busy ? "disabled" : ""}>Discard saved work</button></div>` : ""}
+    ${draft.resumed && (state.currentIntake || draft.manualDirty) ? '<div class="button-row"><button type="button" class="primary-button" id="review-resumed-workspace">Review restored work</button></div>' : ""}`;
+}
+
+function initializeWorkspaceDraft(workspaceId) {
+  const draft = state.workspaceDraft;
+  if (!workspaceId || draft.workspaceId === workspaceId && draft.initialized) return;
+  if (draft.workspaceId && draft.workspaceId !== workspaceId) {
+    draft.runtimeChanged = true;
+    draft.error = "The app workspace changed. Reload before continuing; your earlier saved work belongs to its original workspace.";
+    clearPreparedArtifacts("app workspace changed");
+    renderWorkspaceDraft();
+    return;
+  }
+  draft.workspaceId = workspaceId;
+  draft.initialized = true;
+  try {
+    draft.pending = readWorkspaceDraft(window.localStorage, workspaceId);
+    draft.error = "";
+  } catch (error) {
+    draft.error = `Automatic saving is unavailable: ${error.message}. Keep this page open to preserve your current work.`;
+    draft.readFailed = true;
+  }
+  renderWorkspaceDraft();
+  if (!draft.pending && !draft.readFailed) scheduleWorkspaceDraftSave();
+}
+
+function saveWorkspaceDraft() {
+  const draft = state.workspaceDraft;
+  if (!draft.initialized || draft.runtimeChanged || draft.pending || draft.busy || draft.readFailed) return;
+  if (state.currentIntake) { mergeFormIntoCurrentIntake(); persistCurrentSourceCase(); }
+  const snapshot = currentWorkspaceDraft();
+  try {
+    if (!workspaceDraftHasWork(snapshot)) {
+      window.localStorage.removeItem(workspaceDraftStorageKey(draft.workspaceId));
+      draft.savedAt = "";
+      return;
+    }
+    const record = writeWorkspaceDraft(window.localStorage, draft.workspaceId, snapshot);
+    draft.savedAt = record.saved_at;
+    draft.error = "";
+  } catch (error) {
+    draft.error = `Current changes could not be saved: ${error.message}. Keep this page open; earlier saved work was not replaced.`;
+  }
+  renderWorkspaceDraft();
+}
+
+function scheduleWorkspaceDraftSave() {
+  const draft = state.workspaceDraft;
+  if (!draft.initialized || draft.saving || draft.pending || draft.busy) return;
+  draft.saving = true;
+  Promise.resolve().then(() => { draft.saving = false; saveWorkspaceDraft(); });
+}
+
+function discardWorkspaceDraft({ saveCurrent = true } = {}) {
+  const draft = state.workspaceDraft;
+  try {
+    if (draft.workspaceId) window.localStorage.removeItem(workspaceDraftStorageKey(draft.workspaceId));
+    draft.pending = null; draft.validation = null; draft.replacementProfile = ""; draft.readFailed = false; draft.error = ""; draft.savedAt = ""; draft.resumed = false;
+  } catch (error) {
+    draft.error = `Saved work could not be discarded: ${error.message}. It remains saved in this browser.`;
+  }
+  renderWorkspaceDraft();
+  if (saveCurrent) scheduleWorkspaceDraftSave();
+}
+
+async function resumeWorkspaceDraft() {
+  const draft = state.workspaceDraft;
+  if (!draft.pending || draft.busy || draft.runtimeChanged) return null;
+  const revision = state.workflowRevision, editVersion = draft.editVersion, workspaceId = draft.workspaceId, pending = draft.pending;
+  const replacementProfile = $("#workspace-resume-profile")?.value || draft.replacementProfile || "";
+  draft.replacementProfile = replacementProfile;
+  const confirmedMissing = draft.validation?.missing_attachments || [];
+  let applying = false;
+  draft.busy = true;
+  renderWorkspaceDraft();
+  try {
+    const result = await requestJson("/api/workspace/resume", { method: "POST", body: JSON.stringify({ workspace_id: workspaceId,
+      snapshot: pending.snapshot, replacement_profile_id: replacementProfile }) });
+    if (state.workflowRevision !== revision || draft.editVersion !== editVersion || draft.workspaceId !== workspaceId || draft.pending !== pending) return null;
+    draft.validation = result;
+    if (result.unavailable_profiles?.length || result.missing_attachments?.some(name => !confirmedMissing.includes(name))) return null;
+    const snapshot = result.snapshot;
+    applying = true;
+    clearPreparedArtifacts("unfinished inputs restored; fresh review required");
+    state.currentIntake = snapshot.current_intake;
+    state.sourceCaseCandidates = snapshot.source_cases.map(row => ({ candidate_intake: row.candidate_intake,
+      review: row.evidence || {}, needs_review: true, answers: row.answers, queued_key: row.queued_key }));
+    state.sourceCaseSelectedIndex = snapshot.selected_case;
+    state.sourceTravelChoice = snapshot.travel_choice;
+    state.batchIntakes = snapshot.batch_intakes;
+    state.batchPreflight = null;
+    state.draftLifecycle = null;
+    state.lastReview = { ...(snapshot.current_evidence || {}), status: "blocked", intake: state.currentIntake,
+      message: "Restored request inputs. Check the details and run a fresh review before preparing.",
+      next_safe_action: { state: "fix_blocker", blocked: true, button_id: "review-resumed-workspace" } };
+    $("#batch-email-grouping").value = snapshot.email_grouping;
+    $("#batch-packet-mode").checked = snapshot.packet_mode;
+    if (selectedSourceCase()) selectSourceCase(snapshot.selected_case, { persist: false, focus: false });
+    else if (state.currentIntake) { fillFormFromIntake(state.currentIntake); updateHomeReviewCard(state.lastReview); }
+    else if (snapshot.manual_fields) {
+      fillFormFromIntake({ ...snapshot.manual_fields, service_profile_key: snapshot.manual_fields.profile,
+        transport: { km_one_way: snapshot.manual_fields.km_one_way } });
+      draft.manualDirty = true;
+    }
+    ["#home-numbered-answers", "#numbered-answers"].forEach(selector => {
+      const input = $(selector);
+      if (input) input.value = selectedSourceCase()?.answers || snapshot.answers || "";
+    });
+    state.workflowStale = true;
+    renderBatchQueue(); renderSourceCaseList(); renderSupportingAttachmentList();
+    if (state.batchIntakes.length) $("#batch-queue-panel").classList.remove("hidden");
+    closeReviewDrawer();
+    renderNextSafeAction(state.lastReview.next_safe_action);
+    setStatus("blocked", "Unfinished inputs restored. Review the details and run a fresh check before preparing.");
+    draft.pending = null; draft.validation = null; draft.resumed = true; draft.error = "";
+    return result;
+  } catch (error) {
+    if ((applying || state.workflowRevision === revision) && draft.pending === pending) draft.error = `Resume could not finish; the saved copy was kept: ${error.message}`;
+    return null;
+  } finally {
+    draft.busy = false;
+    renderWorkspaceDraft();
+    if (!draft.pending) scheduleWorkspaceDraftSave();
+  }
+}
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -160,7 +311,7 @@ const SAFE_ACTION_GATES = {
   },
   "add-source-cases-to-batch": {
     states: [],
-    reason: "Review and resolve every case in this photo before adding them together.",
+    reason: "Review and resolve every case in this source before adding them together.",
   },
   "prepare-batch-intakes": {
     states: [],
@@ -332,7 +483,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
         && !sourceTravelBlockedReason()
         && state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)
         && !state.sourceCaseBatchInFlight;
-      if (state.sourceCaseBatchInFlight) blockedReason = "Checking each photo case before updating the queue.";
+      if (state.sourceCaseBatchInFlight) blockedReason = "Checking each source case before updating the queue.";
     }
     if (id === "prepare-batch-intakes") {
       enabled = hasCurrentReadyBatchPreflight();
@@ -372,7 +523,9 @@ function syncActionGates(action = state.currentNextSafeAction) {
       } else if (state.gmailCreateInFlight) {
         blockedReason = "Gmail draft creation is already in progress.";
       } else if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
-        blockedReason = "This prepared payload already created a Gmail draft. Change the request or prepare again before creating another.";
+        blockedReason = ["creation_uncertain", "created_unrecorded"].includes(state.lastGmailCreateConfirmation?.status)
+          ? "Recover the existing Gmail attempt using the actions below. Another create remains blocked."
+          : "This prepared payload already created a Gmail draft. Use Recent Work to review it or prepare an intentional correction.";
       } else if (selectedEmailLifecycleBlocked()) {
         blockedReason = "A member request already has a draft or needs correction. Check every request before creating another email.";
       }
@@ -399,6 +552,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
       enabled = false;
       blockedReason = "Preparation is in progress. Wait for the reviewed result.";
     }
+    if (state.workspaceDraft.runtimeChanged) { enabled = false; blockedReason = "The app workspace changed. Reload before continuing."; }
     setActionGate(id, enabled, enabled ? actionDetail : blockedReason, actionState);
   });
   const hasReviewableIntake = Boolean(state.currentIntake);
@@ -416,6 +570,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
 function clearPreparedArtifacts(reason = "stale prepared result") {
   const hadPreparedOrPending = Boolean(state.lastPrepared || state.pendingPreparationRevision !== null);
   state.workflowRevision += 1;
+  state.sourceUploadPending = null;
   state.workflowStale = state.workflowStale || hadPreparedOrPending;
   state.pendingPreparationRevision = null;
   state.locallyRecordedPayload = "";
@@ -622,6 +777,12 @@ function mergeFormIntoCurrentIntake() {
   if (!state.currentIntake) return null;
   const payload = collectProfilePayload();
   const intake = { ...state.currentIntake };
+  const cleared = new Set(Array.isArray(intake.review_cleared_fields) ? intake.review_cleared_fields : []);
+  const trackClear = (field, value, previous) => {
+    // Retain the marker until review also reconciles dependent venue/routing
+    // fields when a removed fact is supplied again.
+    if (!String(value ?? "").trim() && String(previous ?? "").trim()) cleared.add(field);
+  };
   [
     "case_number",
     "service_date",
@@ -635,7 +796,8 @@ function mergeFormIntoCurrentIntake() {
     "source_text",
     "personal_profile_id",
   ].forEach((key) => {
-    if (payload[key] || ((selectedSourceCase() || key === "recipient_email") && Object.prototype.hasOwnProperty.call(intake, key))) intake[key] = payload[key] || "";
+    trackClear(key, payload[key], intake[key]);
+    if (payload[key] || Object.prototype.hasOwnProperty.call(intake, key)) intake[key] = payload[key] || "";
   });
   if (intake.recipient_email !== state.currentIntake.recipient_email) {
     ["court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"].forEach((field) => { intake[field] = ""; });
@@ -668,9 +830,12 @@ function mergeFormIntoCurrentIntake() {
   }
   if (payload.km_one_way) {
     intake.transport = { ...(intake.transport || {}), km_one_way: Number(payload.km_one_way) || payload.km_one_way };
-  } else if (selectedSourceCase() && Object.prototype.hasOwnProperty.call(intake.transport || {}, "km_one_way")) {
+  } else if (Object.prototype.hasOwnProperty.call(intake.transport || {}, "km_one_way")) {
     intake.transport = { ...intake.transport, km_one_way: "" };
   }
+  trackClear("transport.km_one_way", payload.km_one_way, state.currentIntake.transport?.km_one_way);
+  if (cleared.size) intake.review_cleared_fields = [...cleared];
+  else delete intake.review_cleared_fields;
   state.currentIntake = intake;
   return intake;
 }
@@ -762,11 +927,11 @@ function selectedSourceCase() {
 
 function saveSourceCaseAnswers(value) {
   const candidate = selectedSourceCase();
-  if (!candidate) return;
-  candidate.answers = String(value || "");
+  const answers = String(value || "");
+  if (candidate) candidate.answers = answers;
   ["#home-numbered-answers", "#numbered-answers"].forEach((selector) => {
     const input = $(selector);
-    if (input && input.value !== candidate.answers) input.value = candidate.answers;
+    if (input && input.value !== answers) input.value = answers;
   });
 }
 
@@ -814,12 +979,12 @@ function canPrepareSourceEmailReplacement() {
 async function prepareSourceEmailReplacement() {
   if (state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null) return null;
   const reason = String($("#source-correction-reason")?.value || "").trim();
-  if (reason.length < 8) throw new Error("Give a short correction reason of at least 8 characters before replacing this photo's email.");
+  if (reason.length < 8) throw new Error("Give a short correction reason of at least 8 characters before replacing this source's email.");
   persistCurrentSourceCase({ mergeForm: true });
   const reviewed = await refreshSourceClaimReviews();
   if (!reviewed) return null;
-  if (!canPrepareSourceEmailReplacement()) throw new Error("Resolve every case's questions and claim choices before preparing a replacement for this photo. Existing history was unchanged.");
-  if (duplicateSourceCaseIndices(reviewed).length) throw new Error("Two source rows have the same case, date and period. Correct them before replacing this photo's email.");
+  if (!canPrepareSourceEmailReplacement()) throw new Error("Resolve every case's questions and claim choices before preparing a replacement for this source. Existing history was unchanged.");
+  if (duplicateSourceCaseIndices(reviewed).length) throw new Error("Two source rows have the same case, date and period. Correct them before replacing this source's email.");
   return prepareIntake({ correctionMode: true, sourceReplacement: true, correctionReason: reason });
 }
 
@@ -1071,7 +1236,7 @@ async function addSourceCasesToBatch() {
       selectSourceCase(duplicateIndices[0], { persist: false });
       throw new Error(`Source rows ${duplicateIndices.map((index) => index + 1).join(", ")} have the same case, service date and period. Correct the case details and review them again; the batch queue was unchanged.`);
     }
-    clearPreparedArtifacts("photo cases added to batch queue");
+    clearPreparedArtifacts("source cases added to batch queue");
     reviewed.forEach((candidate) => {
       queueReviewedIntake(candidate.candidate_intake, candidate.queued_key);
       candidate.queued_key = batchIntakeKey(candidate.candidate_intake);
@@ -1109,7 +1274,7 @@ function renderBatchEmailGrouping() {
   $("#batch-email-grouping-note").textContent = currentBatchPacketMode()
     ? "Packet mode combines the PDFs into one attachment. Turn it off to keep each request as a separate PDF."
     : currentBatchEmailGrouping() === "source"
-    ? "Requests from the same photo go in one email to their reviewed recipient. Each request keeps its own PDF; different photos stay separate."
+    ? "Requests from the same source PDF or photo go in one email to their reviewed recipient. Each request keeps its own PDF; different sources stay separate."
     : "Each request has its own email and PDF.";
 }
 
@@ -1211,21 +1376,19 @@ async function uploadSupportingAttachments(files) {
     throw new Error("Choose at least one supporting declaration or proof file first.");
   }
   if (!state.currentIntake) {
-    await buildIntakeFromProfile();
+    if (!await buildIntakeFromProfile()) return null;
   }
+  const captured = { revision: state.workflowRevision };
   const uploaded = [];
   for (const file of attachmentFiles) {
     const form = new FormData();
     form.append("file", file);
-    const response = await fetch("/api/attachments/upload", {
-      method: "POST",
-      body: form,
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || data.message || `Supporting attachment upload failed: ${response.status}`);
-    }
+    const data = await requestWorkflowUpload("/api/attachments/upload", form, captured);
+    if (!data) return null;
     addSupportingAttachmentToIntake(data.attachment);
+    // Adding our own attachment invalidates prepared artifacts. Carry only that
+    // revision forward; edits, source changes and resets invalidate the next await.
+    captured.revision = state.workflowRevision;
     uploaded.push(data);
   }
   const count = uploaded.length;
@@ -1462,7 +1625,7 @@ function renderPreparedEmailTarget() {
   select.innerHTML = targets.map((item, index) => {
     const count = preparedEmailMemberIndices(state.lastPrepared, index).length;
     const attachmentCount = item.attachment_count ?? item.gmail_create_draft_args?.attachment_files?.length ?? 0;
-    const label = item.packet_mode ? "Combined packet" : grouped ? `${count} request${count === 1 ? "" : "s"}${item.source_sha256 ? " from one photo" : ""}` : item.case_number || `Request ${index + 1}`;
+    const label = item.packet_mode ? "Combined packet" : grouped ? `${count} request${count === 1 ? "" : "s"}${item.source_sha256 ? " from one source" : ""}` : item.case_number || `Request ${index + 1}`;
     return `<option value="${index}">${escapeHtml(label)} · ${escapeHtml(item.recipient || item.gmail_create_draft_args?.to || "recipient pending")} · ${escapeHtml(attachmentCount)} attachment${attachmentCount === 1 ? "" : "s"}</option>`;
   }).join("");
   select.value = String(state.preparedEmailTargetIndex);
@@ -1788,6 +1951,7 @@ function renderBatchItemInspector() {
 }
 
 function renderBatchQueue() {
+  scheduleWorkspaceDraftSave();
   renderBatchEmailGrouping();
   const list = $("#batch-queue-list");
   const chip = $("#batch-count-chip");
@@ -1885,7 +2049,7 @@ function renderBatchPreflight() {
       <div><span>Write allowed</span><strong>${data.write_allowed ? "yes" : "no"}</strong></div>
       <div><span>Send allowed</span><strong>${data.send_allowed ? "yes" : "no"}</strong></div>
       <div><span>Packet mode</span><strong>${data.packet_mode ? "yes" : "no"}</strong></div>
-      <div><span>Email grouping</span><strong>${data.packet_mode ? "one packet" : data.email_grouping === "source" ? "one email per photo" : "separate emails"}</strong></div>
+      <div><span>Email grouping</span><strong>${data.packet_mode ? "one packet" : data.email_grouping === "source" ? "one email per source" : "separate emails"}</strong></div>
     </div>
     ${packet ? `
       <div class="data-item">
@@ -2048,6 +2212,7 @@ function currentWorkflowGuidance(data = {}) {
 }
 
 function refreshHomeWorkflow() {
+  scheduleWorkspaceDraftSave();
   const review = state.lastReview || {};
   const preparedReview = preparedEmailMemberReview(state.lastPrepared,
     [review, ...state.sourceCaseCandidates.map((candidate) => candidate.review)], state.preparedEmailTargetIndex, state.preparedEmailMemberIndex);
@@ -2195,7 +2360,7 @@ function renderBeginnerReviewSummary(data) {
       <div class="source-review-title">
         <div>
           <span>Review this source</span>
-          <strong>${workflow.phase !== "review" ? escapeHtml(workflow.headline) : questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : "Ready for the next step"}</strong>
+          <strong>${workflow.phase !== "review" ? escapeHtml(workflow.headline) : questions.length ? `Confirm ${questions.length} item${questions.length === 1 ? "" : "s"}` : data.status === "ready" ? "Ready for the next step" : "Review needs attention"}</strong>
         </div>
         <span class="status-chip ${questions.length ? "blocked" : statusChipClass(data.status)}">${questions.length ? "Needs review" : escapeHtml(String(data.status || "review"))}</span>
       </div>
@@ -2226,6 +2391,10 @@ function renderBeginnerReviewSummary(data) {
 }
 
 function updateHomeReviewCard(data) {
+  scheduleWorkspaceDraftSave();
+  // The home textarea is recreated by rendering. The drawer field persists
+  // for manual requests; source cases retain their own independent answers.
+  const pendingAnswers = selectedSourceCase()?.answers ?? $("#numbered-answers")?.value ?? "";
   const workflow = currentWorkflowGuidance(data);
   if (workflow.phase !== "review") {
     data = { ...data, status: workflow.status, message: workflow.headline, questions: [] };
@@ -2260,10 +2429,11 @@ function updateHomeReviewCard(data) {
     ${duplicate}
     ${questions}
   `;
-  const candidate = selectedSourceCase();
-  if (candidate && $("#home-numbered-answers")) {
-    $("#home-numbered-answers").value = candidate.answers || "";
+  if ($("#home-numbered-answers")) {
+    $("#home-numbered-answers").value = pendingAnswers;
   }
+  // Rendering recreates disabled controls; gate them after restoring their inputs.
+  syncActionGates();
 }
 
 function renderFieldEvidence(fieldEvidence) {
@@ -2580,6 +2750,9 @@ function setServerDisconnected(error) {
 }
 
 async function requestJson(url, options = {}) {
+  if (state.workspaceDraft.runtimeChanged && String(options.method || "GET").toUpperCase() !== "GET") {
+    throw new Error("The app workspace changed. Reload before continuing.");
+  }
   let response;
   try {
     response = await fetch(url, {
@@ -2707,7 +2880,17 @@ function isEditablePasteTarget(target) {
 async function recoverLocalSourceFile(file, origin = "local source") {
   const sourceKind = inferDroppedSourceKind(file);
   setDropStatus(`Recovering ${file.name || origin}...`);
-  await uploadSource(sourceKind, { file });
+  return uploadSource(sourceKind, { file });
+}
+
+function requestWorkflowUpload(url, form, captured) {
+  if (state.workspaceDraft.runtimeChanged) throw new Error("The app workspace changed. Reload before continuing.");
+  return awaitWorkflowResponse(async () => {
+    const response = await fetch(url, { method: "POST", body: form });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
+    return data;
+  }, captured, () => ({ revision: state.workflowRevision }));
 }
 
 async function uploadSource(sourceKind, options = {}) {
@@ -2722,10 +2905,14 @@ async function uploadSource(sourceKind, options = {}) {
     if (sourceKind === "google_photos") throw new Error("Choose a Google Photos image first.");
     throw new Error("Choose a photo or screenshot first.");
   }
+  const fileKey = JSON.stringify([sourceKind, file.name, file.size, file.lastModified, file.type]);
+  if (state.sourceUploadPending?.fileKey === fileKey) return null;
   state.currentReviewOrigin = "source";
   clearPreparedArtifacts("source changed");
   clearSourceCaseReview();
   const capturedRevision = state.workflowRevision;
+  const pending = { fileKey, revision: capturedRevision };
+  state.sourceUploadPending = pending;
   const googlePhotosMetadata = sourceKind === "google_photos" ? $("#google-photos-metadata").value.trim() : "";
   const enteredSourceText = state.currentIntake?.source_sha256 ? "" : $("#source_text").value.trim();
   const visibleText = [enteredSourceText, googlePhotosMetadata, options.visibleText || ""].filter(Boolean).join("\n\n");
@@ -2741,26 +2928,26 @@ async function uploadSource(sourceKind, options = {}) {
   form.append("ai_recovery", $("#ai_recovery_mode").value || "auto");
   const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
   const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
+  const existingSourceHash = String(state.currentIntake?.source_sha256 || "").trim();
 
-  const response = await fetch("/api/sources/upload", {
-    method: "POST",
-    body: form,
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || data.message || `Upload failed: ${response.status}`);
+  let data;
+  try {
+    data = await requestWorkflowUpload("/api/sources/upload", form, { revision: capturedRevision });
+  } finally {
+    if (state.sourceUploadPending === pending) state.sourceUploadPending = null;
   }
-  if (!isWorkflowResponseCurrent(capturedRevision, state.workflowRevision)) return null;
-  adoptUploadedSource(data, existingAttachments, existingEmailBody);
+  if (!data) return null;
+  const sameSource = !existingSourceHash || existingSourceHash === String(data.source?.sha256 || data.candidate_intake?.source_sha256 || "").trim();
+  adoptUploadedSource(data, sameSource ? existingAttachments : [], sameSource ? existingEmailBody : "");
   state.lastProfileProposal = data.profile_proposal || null;
   renderSourceEvidence(data);
   renderAiRecovery(data.ai_recovery);
   if (state.sourceCaseCandidates.length > 1) {
     selectSourceCase(0, { persist: false, focus: false });
-    await refreshSourceClaimReviews();
+    if (!await refreshSourceClaimReviews()) return null;
   } else {
     fillFormFromIntake(state.currentIntake);
-    await reviewIntake({ openDrawer: false });
+    if (!await reviewIntake({ openDrawer: false })) return null;
   }
   if (data.source?.sha256 && state.currentIntake?.source_sha256 !== data.source.sha256) return null;
   setDropStatus(`Recovered ${file.name || "dropped source"}. Review what I found below before any PDF or Gmail draft step.`, "ready");
@@ -2822,8 +3009,8 @@ function bindSourceDropZone() {
       return;
     }
     try {
-      await recoverLocalSourceFile(file, "dropped source");
-      if (files.length > 1) {
+      const recovered = await recoverLocalSourceFile(file, "dropped source");
+      if (recovered && files.length > 1) {
         await uploadSupportingAttachments(files.slice(1));
       }
     } catch (error) {
@@ -2874,6 +3061,7 @@ async function loadReference() {
   renderAiStatus(state.aiStatus);
   renderGmailStatus(state.gmailStatus);
   renderBackupStatus(state.backupStatus);
+  initializeWorkspaceDraft(state.reference?.workspace_id);
 }
 
 async function loadAiStatus() {
@@ -3090,6 +3278,10 @@ function renderGmailStatus(data) {
   if (deferredPanel) {
     deferredPanel.open = recommendedMode === "gmail_api";
   }
+  const setupDetails = $("#gmail-setup-details");
+  if (setupDetails) setupDetails.open = !connected;
+  const manualDetails = $("#manual-handoff-card");
+  if (manualDetails) manualDetails.open = !connected;
   if (drawerStatus) {
     drawerStatus.textContent = `${text} Scope: ${data?.scope || "gmail.compose"}. Direct in-app creation stays optional; no send action exists.`;
   }
@@ -3167,9 +3359,10 @@ function renderGmailApiResult(data, kind = "") {
   const confirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
   const status = confirmation.status || data.status || kind || "info";
   const chipKind = statusChipClass(status === "created" ? "ready" : status);
-  const creationConfirmed = status === "created" && Boolean(confirmation.draft_id);
+  const creationConfirmed = ["created", "created_unrecorded"].includes(status) && Boolean(confirmation.draft_id);
   const outcomeText = creationConfirmed
-    ? "Created as a Gmail draft only. Review and send manually in Gmail."
+    ? status === "created_unrecorded" ? "The Gmail draft exists. Finish saving its local record; creating another draft is blocked." : "Created as a Gmail draft only. Review and send manually in Gmail."
+    : status === "creation_uncertain" ? "Check Gmail before choosing a recovery action. Reloading or preparing again will not create a second draft."
     : ["blocked", "error"].includes(status)
     ? "No Gmail draft creation was confirmed. Check Gmail before retrying if the request may have reached it."
     : "This message does not confirm that a Gmail draft was created.";
@@ -3204,6 +3397,14 @@ function renderGmailApiResult(data, kind = "") {
     ${hashes.length ? `<details><summary>Attachment hashes</summary><pre class="draft-args">${escapeHtml(JSON.stringify(Object.fromEntries(hashes), null, 2))}</pre></details>` : ""}
     ${duplicates ? `<div>Duplicate protection: <strong>${escapeHtml(duplicates)}</strong></div>` : ""}
     ${confirmation.draft_log_path ? `<div>Draft log: <code>${escapeHtml(confirmation.draft_log_path)}</code></div>` : ""}
+    ${data.attempt_id && ["creation_uncertain", "created_unrecorded"].includes(status) ? `
+      <details><summary>Original attempted email</summary><pre class="draft-args">${escapeHtml(JSON.stringify(data.gmail_create_draft_args || {}, null, 2))}</pre></details>
+      ${status === "created_unrecorded" ? `<button type="button" class="mini-button" data-recover-gmail-attempt="record">Finish local recording</button>` : `
+        <p>If the draft exists, check its recipient, text and every attachment against this original email, then enter its draft and message IDs in the manual recovery fields below.</p>
+        <button type="button" class="mini-button" data-recover-gmail-attempt="existing">Record the existing Gmail draft</button>
+        <button type="button" class="mini-button" data-recover-gmail-attempt="absent">I checked Gmail and no draft exists</button>
+      `}
+    ` : ""}
     ${confirmation.draft_id ? `
       <div class="button-row compact-button-row">
         <button type="button" class="mini-button" data-verify-created-draft="true">Verify created draft</button>
@@ -3322,6 +3523,21 @@ async function createGmailApiDraft() {
         ...currentPreparedReviewFields(target.draft_payload),
       })),
     });
+    if (["creation_uncertain", "created_unrecorded"].includes(data.status)) {
+      if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
+        showAlert(data.message + " Return to the earlier email to recover it; another create remains blocked.", "blocked");
+        return data;
+      }
+      state.gmailCreateCompletedPayload = target.draft_payload;
+      state.lastGmailCreateConfirmation = data;
+      if (data.draft_id) $("#record_draft_id").value = data.draft_id;
+      if (data.message_id) $("#record_message_id").value = data.message_id;
+      if (data.thread_id) $("#record_thread_id").value = data.thread_id;
+      renderGmailApiResult(data);
+      setStatus("blocked", data.message);
+      showAlert(data.message, "blocked");
+      return data;
+    }
     if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
       showAlert("The earlier selected email was created as a draft and recorded locally. Its IDs were not applied to the current selection. Check Recent Work for that draft.", "recorded");
       await loadReference();
@@ -3348,6 +3564,67 @@ async function createGmailApiDraft() {
       return null;
     }
     throw error;
+  } finally {
+    if (state.gmailCreateRequestId === requestId) state.gmailCreateInFlight = false;
+    syncActionGates();
+  }
+}
+
+async function recoverGmailAttempt(action, options = {}) {
+  if (state.gmailCreateInFlight) return null;
+  const previous = options.attempt || state.lastGmailCreateConfirmation || {};
+  if (!previous.attempt_id) throw new Error("No Gmail attempt is selected for recovery.");
+  const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
+  const requestId = ++state.gmailCreateRequestId;
+  const request = { gmail_handoff_reviewed: true };
+  if (action === "absent") {
+    if (!window.confirm("Have you checked Gmail Drafts and confirmed that this email does not exist? This allows a new draft to be created.")) return null;
+    Object.assign(request, { resolve_attempt_id: previous.attempt_id, confirmation_phrase: "I CHECKED GMAIL: NO DRAFT", resolution_reason: "User checked Gmail and confirmed the original attempted email does not exist." });
+  } else {
+    if (action === "existing" && !window.confirm("Have you checked that the existing Gmail draft has the original recipient, text and every reviewed attachment?")) return null;
+    Object.assign(request, { recover_attempt_id: previous.attempt_id, confirmation_phrase: "I CHECKED THE EXISTING GMAIL DRAFT",
+      draft_id: previous.draft_id || (options.history ? String(options.draft_id || "").trim() : $("#record_draft_id").value.trim()),
+      message_id: previous.message_id || (options.history ? String(options.message_id || "").trim() : $("#record_message_id").value.trim()),
+      thread_id: previous.thread_id || (options.history ? String(options.thread_id || "").trim() : $("#record_thread_id").value.trim()) });
+    if (!request.draft_id || !request.message_id) throw new Error("Enter both the existing draft ID and message ID in this recovery card.");
+  }
+  state.gmailCreateInFlight = true;
+  syncActionGates();
+  try {
+    const data = await requestJson("/api/gmail/drafts/create", { method: "POST", body: JSON.stringify(request) });
+    if (options.history) {
+      renderHistoryDraftActionResult(data, data.status === "created" ? "recorded" : "info");
+      if (state.lastGmailCreateConfirmation?.attempt_id === previous.attempt_id) {
+        state.lastGmailCreateConfirmation = data;
+        if (data.status === "not_created") state.gmailCreateCompletedPayload = "";
+        renderGmailApiResult(data);
+      }
+      await loadReference();
+      return data;
+    }
+    if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
+      showAlert(`The earlier email recovery completed: ${data.message}. The current selection was not changed.`, "info");
+      await loadReference();
+      return data;
+    }
+    state.lastGmailCreateConfirmation = data;
+    if (data.status === "not_created") {
+      state.gmailCreateCompletedPayload = "";
+      $("#record_draft_id").value = "";
+      $("#record_message_id").value = "";
+      $("#record_thread_id").value = "";
+    } else if (data.status === "created") {
+      $("#record_draft_id").value = data.draft_id || "";
+      $("#record_message_id").value = data.message_id || "";
+      $("#record_thread_id").value = data.thread_id || "";
+      $("#record_payload").value = data.draft_payload || previous.draft_payload || "";
+      state.locallyRecordedPayload = data.draft_payload || previous.draft_payload || "";
+    }
+    renderGmailApiResult(data);
+    setStatus(data.status === "created" ? "recorded" : data.status === "not_created" ? "ready" : "blocked", data.message);
+    showAlert(data.message, data.status === "created" ? "recorded" : "info");
+    await loadReference();
+    return data;
   } finally {
     if (state.gmailCreateRequestId === requestId) state.gmailCreateInFlight = false;
     syncActionGates();
@@ -4218,14 +4495,25 @@ function renderHistoryDraftActionResult(data, kind = "") {
     return;
   }
   const status = data.status || kind || "info";
-  const chipKind = statusChipClass(status === "verified" ? "ready" : status);
+  const localRecovery = Boolean(data.recovered_existing_draft);
+  const noDraftResolution = status === "not_created" && data.create_retry_allowed === true;
+  const chipKind = statusChipClass(status === "verified" || localRecovery || noDraftResolution ? "ready" : status);
+  const operationText = localRecovery
+    ? "The existing draft and duplicate protection were recorded locally. Gmail was not contacted and no new draft was created."
+    : noDraftResolution
+    ? "Your Gmail check was saved locally. Gmail was not contacted; creating another draft requires a separate action."
+    : status === "recorded"
+    ? "Local bookkeeping only. Gmail was not contacted and no email was sent."
+    : ["verified", "not_found", "reconciliation_mismatch"].includes(status)
+    ? "Read-only Gmail draft verification. No local records were changed."
+    : "Review this operation's result before continuing.";
   const duplicateCount = Number(data.recorded_duplicate_count || data.duplicate_records_created?.length || 0);
   box.className = `result-card compact-result ${chipKind}`;
   box.innerHTML = `
     <div class="result-header compact-result-header">
       <div>
         <strong>${escapeHtml(data.message || status.replaceAll("_", " "))}</strong>
-        <p>${status === "recorded" ? "Local bookkeeping only. Gmail was not contacted and no email was sent." : "Read-only Gmail draft verification. No local records were changed."}</p>
+        <p>${escapeHtml(operationText)}</p>
       </div>
       <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>
@@ -4354,7 +4642,32 @@ async function markHistoryDraftNotFound(index, source = "draft_log") {
   return data;
 }
 
+function renderPendingGmailAttempts() {
+  const box = $("#pending-gmail-attempts");
+  if (!box) return;
+  const attempts = state.reference?.pending_gmail_attempts || [];
+  box.innerHTML = attempts.map(attempt => `
+    <div class="result-card blocked" data-pending-gmail-card="${escapeHtml(attempt.attempt_id)}">
+      <strong>${attempt.status === "created_unrecorded" ? "Finish recording an existing Gmail draft" : "Check an uncertain Gmail draft"}</strong>
+      <p>${escapeHtml(attempt.message)}</p>
+      ${attempt.draft_id ? `<p>Draft ID: <code>${escapeHtml(attempt.draft_id)}</code></p>` : ""}
+      <details><summary>Original attempted email</summary><pre>${escapeHtml(JSON.stringify(attempt.gmail_create_draft_args || {}, null, 2))}</pre></details>
+      ${attempt.status === "creation_uncertain" ? `
+        <p>If the draft exists, check its recipient, text and all attachments, then enter its returned IDs.</p>
+        <label>Existing draft ID<input data-pending-draft-id autocomplete="off"></label>
+        <label>Existing message ID<input data-pending-message-id autocomplete="off"></label>
+        <label>Existing thread ID (optional)<input data-pending-thread-id autocomplete="off"></label>
+      ` : ""}
+      <div class="button-row">
+        <button type="button" data-recover-history-attempt="${escapeHtml(attempt.attempt_id)}" data-recovery-action="${attempt.status === "created_unrecorded" ? "record" : "existing"}">${attempt.status === "created_unrecorded" ? "Finish local recording" : "Record the existing Gmail draft"}</button>
+        ${attempt.status === "creation_uncertain" ? `<button type="button" data-recover-history-attempt="${escapeHtml(attempt.attempt_id)}" data-recovery-action="absent">I checked Gmail and no draft exists</button>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
 function renderReference() {
+  renderPendingGmailAttempts();
   renderSavedCourtEmailOptions();
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
@@ -4979,19 +5292,23 @@ async function buildIntakeFromProfile(options = {}) {
   clearPreparedArtifacts("new manual request");
   state.currentReviewOrigin = "manual";
   clearSourceCaseReview();
+  const capturedRevision = state.workflowRevision;
   const payload = removeEmpty(collectProfilePayload());
   if (!payload.profile) {
-    payload.profile = "court_mp_generic";
+    const profiles = Object.keys(state.reference?.service_profiles || {});
+    payload.profile = profiles.includes("court_mp_generic") ? "court_mp_generic" : profiles.length === 1 ? profiles[0] : "";
+    if (!payload.profile) throw new Error("Choose an available service profile before entering manual request details.");
   }
   const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
   const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
-  const data = await requestJson("/api/intake/from-profile", {
+  const data = await requestWorkflowJson("/api/intake/from-profile", {
     method: "POST",
     body: JSON.stringify(payload),
-  });
+  }, { revision: capturedRevision });
+  if (!data) return null;
   state.currentIntake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody), "both");
   fillFormFromIntake(state.currentIntake);
-  await reviewIntake(options);
+  return reviewIntake(options);
 }
 
 async function reviewIntake(options = {}) {
@@ -5025,7 +5342,7 @@ async function applyNumberedAnswers(options = {}) {
     body: JSON.stringify({ intake: state.currentIntake, answers }),
   }, { revision: capturedRevision });
   if (!data) return null;
-  if (selectedSourceCase()) saveSourceCaseAnswers("");
+  if (selectedSourceCase() || data.applied_fields?.length || data.status === "ready") saveSourceCaseAnswers("");
   state.currentIntake = data.intake || state.currentIntake;
   fillFormFromIntake(state.currentIntake);
   applyReview(data, { openDrawer: options.openDrawer });
@@ -5118,7 +5435,7 @@ async function addCurrentIntakeToBatch() {
   setStatus("ready", `${intake.case_number || "Request"} added to the batch queue.`);
   showAlert("Batch queue updated. Prepare the package when all related requests are queued.", "recorded");
   try {
-    await preflightBatchIntakes({ openDrawer: false, showResultAlert: false });
+    await preflightBatchIntakes({ focusResult: false, showResultAlert: false });
   } catch (_error) {
     renderBatchPreflight();
   }
@@ -5191,7 +5508,7 @@ async function preflightBatchIntakes(options = {}) {
   if (sourceCasesNeedQueueRefresh()) {
     throw new Error("Resolve and add all current source cases to the queue before checking the batch. This keeps every case and edit in the prepared PDFs.");
   }
-  const openDrawerAfter = options.openDrawer !== false;
+  const focusResult = options.focusResult !== false;
   const showResultAlert = options.showResultAlert !== false;
   const packetMode = currentBatchPacketMode();
   const emailGrouping = currentBatchEmailGrouping(packetMode);
@@ -5213,11 +5530,21 @@ async function preflightBatchIntakes(options = {}) {
     if (data.status === "blocked") {
       showAlert(data.message || "Batch preflight blocked.", "blocked");
     } else {
-      showAlert("Batch preflight clear. Review once more before preparing artifacts.", "recorded");
+      showAlert("Batch preflight clear. Select Prepare batch package to create the queued PDFs.", "recorded");
     }
   }
-  if (openDrawerAfter) {
-    openReviewDrawer();
+  if (focusResult) {
+    closeReviewDrawer();
+    $("#batch-queue-panel").classList.remove("hidden");
+    $("#toggle-advanced-workflow").textContent = "Hide batch tools";
+    const result = $("#batch-preflight-result");
+    result.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (hasCurrentReadyBatchPreflight()) {
+      $("#prepare-batch-intakes").focus();
+    } else {
+      result.setAttribute("tabindex", "-1");
+      result.focus({ preventScroll: true });
+    }
   }
   return data;
 }
@@ -5533,6 +5860,7 @@ async function recordDraft() {
 }
 
 function resetReview({ closeDrawer = true } = {}) {
+  state.workspaceDraft.manualDirty = false;
   state.currentIntake = null;
   clearSourceCaseReview();
   clearPreparedArtifacts("review reset");
@@ -5574,6 +5902,7 @@ function resetReview({ closeDrawer = true } = {}) {
 }
 
 function resetWorkspace() {
+  discardWorkspaceDraft({ saveCurrent: false });
   state.batchIntakes = [];
   state.batchSelectedIndex = null;
   state.batchPreflight = null;
@@ -5638,6 +5967,18 @@ function bindNavigation() {
 }
 
 function bindActions() {
+  $("#workspace-draft-status").addEventListener("click", async (event) => {
+    if (event.target.closest("#resume-workspace-draft")) await resumeWorkspaceDraft();
+    else if (event.target.closest("#discard-workspace-draft")) discardWorkspaceDraft();
+    else if (event.target.closest("#review-resumed-workspace")) {
+      try {
+        if (state.sourceCaseCandidates.length > 1) await refreshSourceClaimReviews();
+        else await reviewIntake({ openDrawer: false });
+        state.workspaceDraft.resumed = false;
+        renderWorkspaceDraft();
+      } catch (error) { showAlert(error.message, "blocked"); }
+    }
+  });
   bindSourceDropZone();
   $("#saved-court-email").addEventListener("change", async () => {
     try { await chooseSavedCourtEmail($("#saved-court-email").value); }
@@ -5660,6 +6001,7 @@ function bindActions() {
   $("#review-source-case-choices").addEventListener("click", claimChange(() => { persistCurrentSourceCase(); return refreshSourceClaimReviews(); }));
   const intakeChanged = (event) => {
     if (event.target?.id === "saved-court-email") return;
+    if (!state.currentIntake) state.workspaceDraft.manualDirty = true;
     clearPreparedArtifacts("intake form changed");
     sourceCaseDetailsChanged();
     renderSavedCourtEmailOptions();
@@ -6146,6 +6488,24 @@ function bindActions() {
     state.historyStatusFilter = filter;
     renderReference();
   });
+  $("#pending-gmail-attempts").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-recover-history-attempt]");
+    if (!button) return;
+    const attempt = (state.reference?.pending_gmail_attempts || []).find(item => item.attempt_id === button.dataset.recoverHistoryAttempt);
+    const card = button.closest("[data-pending-gmail-card]");
+    if (!attempt || !card) return;
+    try {
+      button.disabled = true;
+      await recoverGmailAttempt(button.dataset.recoveryAction, { history: true, attempt,
+        draft_id: card.querySelector("[data-pending-draft-id]")?.value.trim() || "",
+        message_id: card.querySelector("[data-pending-message-id]")?.value.trim() || "",
+        thread_id: card.querySelector("[data-pending-thread-id]")?.value.trim() || "" });
+    } catch (error) {
+      renderHistoryDraftActionResult({status: "blocked", message: error.message}, "blocked");
+    } finally {
+      button.disabled = false;
+    }
+  });
   const handleHistoryDraftAction = async (event) => {
     const verifyButton = event.target.closest("[data-history-verify-draft]");
     const markSentButton = event.target.closest("[data-history-mark-sent]");
@@ -6279,6 +6639,16 @@ function bindActions() {
     }
   });
   $("#gmail-api-result").addEventListener("click", async (event) => {
+    const recovery = event.target.closest("[data-recover-gmail-attempt]");
+    if (recovery) {
+      try {
+        await recoverGmailAttempt(recovery.dataset.recoverGmailAttempt);
+      } catch (error) {
+        setStatus("blocked", error.message);
+        showAlert(error.message, "blocked");
+      }
+      return;
+    }
     const button = event.target.closest("[data-verify-created-draft]");
     if (!button) return;
     try {
@@ -6631,6 +7001,15 @@ function bindActions() {
 
 bindNavigation();
 bindActions();
+document.addEventListener("input", () => { state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1; scheduleWorkspaceDraftSave(); });
+document.addEventListener("change", () => { state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1; scheduleWorkspaceDraftSave(); });
+window.addEventListener("pagehide", saveWorkspaceDraft);
+window.addEventListener("beforeunload", (event) => {
+  saveWorkspaceDraft();
+  if ((state.workspaceDraft.error || state.workspaceDraft.pending) && workspaceDraftHasWork(currentWorkspaceDraft())) {
+    event.preventDefault(); event.returnValue = "";
+  }
+});
 window.addEventListener("hashchange", () => showPanel(window.location.hash, { updateHash: false }));
 window.addEventListener("focus", () => {
   checkServerHealth().catch(() => {});

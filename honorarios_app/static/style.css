@@ -1261,6 +1261,7 @@ body[data-drawer-workflow-state="prepare_pdf"] #numbered-answer-panel,
 body[data-drawer-workflow-state="prepare_pdf"] #draft-lifecycle-panel,
 body[data-drawer-workflow-state="answer_questions"] #draft-lifecycle-panel,
 body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #manual-handoff-card,
+body:not([data-drawer-workflow-state="review_gmail_draft_args"]) .gmail-handoff-checklist,
 body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #gmail-api-deferred-panel,
 body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #manual-record-card,
 body:not([data-drawer-workflow-state="review_gmail_draft_args"]) #record-draft {

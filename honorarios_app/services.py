@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 import httpx
 from PIL import Image
 from pypdf import PdfReader
+from pypdf.generic import ContentStream
 
 from scripts.build_email_draft import (
     DEFAULT_COURT_EMAILS,
@@ -74,16 +75,19 @@ from scripts.prepare_honorarios import (
     validate_intake_before_generation,
 )
 from scripts.record_gmail_draft import main as record_gmail_draft_main, validate_superseded_request_coverage, validate_source_group_history
-from scripts.request_identity import normalize_case_number, request_identity_key
+from scripts.request_identity import normalize_case_number, request_identity_key, request_identity_keys_overlap
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
-from scripts.entity_rules import classify_entity_type, source_mentions_pj_context
+from scripts.entity_rules import build_service_place_clause, classify_entity_type, source_mentions_pj_context
 from scripts.source_parsing import explicit_service_places, service_date_evidence
-from scripts.source_classification import detect_translation_source, format_translation_rejection
+from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection, source_scope_fingerprint
 
-from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
+from .ai_recovery import (MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai,
+                          resolve_openai_config, should_attempt_ai_recovery, text_is_weak_for_pdf_ocr)
 from .source_cases import source_case_rows, valid_source_case
-from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
+from .workspace_draft import workspace_runtime_id
+from .photo_defaults import apply_photo_defaults, apply_saved_court_label, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gmail_draft_api import (
+    GmailDraftCreateError,
     create_gmail_draft_from_payload,
     gmail_oauth_callback,
     gmail_oauth_start,
@@ -91,6 +95,10 @@ from .gmail_draft_api import (
     save_gmail_local_config,
     verify_gmail_draft_exists,
 )
+from .gmail_attempts import attempt_lock, load_attempts, save_attempts, new_attempt, pending_attempt, update_attempt
+from .backup import (runtime_lock, validate_attempts, export_recovery_capsules, validate_capsules,
+                     merge_attempts, merge_history, restore_capsules, rebase_value, artifact_bindings, validate_history_coverage, TERMINAL)
+from scripts.state_store import atomic_write_json
 from .personal_profiles import (
     LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE,
     apply_profile_defaults_to_intake,
@@ -592,9 +600,9 @@ def parse_exif_date(value: Any) -> str:
     return ""
 
 
-def extract_first_date(text: str) -> str:
+def extract_first_date(text: str, *, source_kind: str = "") -> str:
     """Compatibility entry point for contextual, mixed-format date parsing."""
-    return service_date_evidence(text).value
+    return service_date_evidence(text, source_kind=source_kind).value
 
 
 def extract_visible_metadata_date(text: str) -> str:
@@ -629,7 +637,7 @@ def extract_visible_metadata_date(text: str) -> str:
     return candidate.isoformat()
 
 
-def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
+def extract_candidate_fields(text: str, paths: AppPaths, *, source_kind: str = "") -> dict[str, Any]:
     fields: dict[str, Any] = {}
     source_text = text or ""
     case_match = CASE_NUMBER_RE.search(source_text)
@@ -639,7 +647,7 @@ def extract_candidate_fields(text: str, paths: AppPaths) -> dict[str, Any]:
         fields["source_case_number"] = raw_case
         fields["case_number"] = normalize_case_number(raw_case)
 
-    service_date = extract_first_date(source_text)
+    service_date = extract_first_date(source_text, source_kind=source_kind)
     if service_date:
         fields["service_date"] = service_date
         fields["service_date_source"] = "document_text"
@@ -693,8 +701,8 @@ def _source_place_fields(text: str, paths: AppPaths) -> tuple[dict[str, Any], st
     return fields, ""
 
 
-def _source_rule_warnings(text: str, paths: AppPaths) -> list[str]:
-    date_warning = service_date_evidence(text).warning
+def _source_rule_warnings(text: str, paths: AppPaths, *, source_kind: str = "") -> list[str]:
+    date_warning = service_date_evidence(text, source_kind=source_kind).warning
     _fields, place_warning = _source_place_fields(text, paths)
     return [warning for warning in (date_warning, place_warning) if warning]
 
@@ -1007,6 +1015,51 @@ def _service_profile_defaults(profile_key: str, profiles: dict[str, Any]) -> dic
     return copy.deepcopy(defaults)
 
 
+def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any]) -> None:
+    """Retain deliberate review removals while leaving initial defaults available."""
+    allowed = {'case_number', 'service_date', 'photo_metadata_date', 'payment_entity',
+               'service_place', 'recipient_email', 'service_period_label',
+               'service_start_time', 'service_end_time', 'source_text', 'transport.km_one_way', 'closing_city'}
+    supplied = original.get('review_cleared_fields')
+    if not isinstance(supplied, list):
+        return
+    active = []
+    for field in supplied:
+        if not isinstance(field, str) or field not in allowed:
+            continue
+        transport = original.get('transport') if isinstance(original.get('transport'), dict) else {}
+        value = transport.get('km_one_way') if field == 'transport.km_one_way' else original.get(field)
+        if str(value if value is not None else '').strip():
+            if field == 'service_place':
+                entity_type = classify_entity_type(str(value))
+                merged.update(service_entity=value, service_entity_type=entity_type,
+                              entities_differ=entity_type not in {'court', 'ministerio_publico'},
+                              service_place_phrase=build_service_place_clause({'service_place': value}, str(value)))
+            elif field == 'payment_entity' and not str(original.get('addressee') or '').strip():
+                merged['addressee'] = _default_addressee(str(value))
+            continue  # A new field edit or numbered answer resolves the removal.
+        active.append(field)
+        if field == 'transport.km_one_way':
+            if not isinstance(merged.get('transport'), dict):
+                merged['transport'] = {}
+            merged.setdefault('transport', {})['km_one_way'] = ''
+        else:
+            merged[field] = ''
+        if field == 'service_date':
+            merged['photo_metadata_date_requires_confirmation'] = True
+        elif field == 'service_place':
+            merged.update(service_entity='', service_place_phrase='', service_entity_type='', entities_differ=False)
+        elif field == 'payment_entity':
+            merged.update(addressee='', recipient_email='', court_email='', court_email_key='',
+                          recipient_override_reason='', court_email_override_reason='')
+        elif field == 'recipient_email':
+            merged.update(court_email='', court_email_key='', recipient_override_reason='', court_email_override_reason='')
+    if active:
+        merged['review_cleared_fields'] = sorted(set(active))
+    else:
+        merged.pop('review_cleared_fields', None)
+
+
 def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     """Review an intake and include non-writing service-profile evidence.
 
@@ -1015,6 +1068,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     saving reference data or skipping the normal duplicate/PDF/Gmail guards.
     """
     intake = copy.deepcopy(intake)
+    preserve_review_field_clears(intake, intake)
     reconcile_photo_venue_edit(intake)
     _normalize_source_case_confirmation(intake)
     profiles = _load_available_service_profiles(paths)
@@ -1050,17 +1104,20 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
         preserve_photo_routing(intake, reviewed_intake)
         reviewed_intake["service_profile_key"] = profile_key
         reviewed_intake.setdefault("closing_date", app_current_date())
+    preserve_review_field_clears(intake, reviewed_intake)
     reviewed_intake["auto_profile"] = profile_decision
 
     review = review_intake(reviewed_intake, paths)
     candidate = copy.deepcopy(review.get("effective_intake") or reviewed_intake)
     candidate.setdefault("auto_profile", profile_decision)
 
-    deterministic_fields = extract_candidate_fields(str(candidate.get("source_text") or evidence_text), paths)
+    deterministic_fields = extract_candidate_fields(str(candidate.get("source_text") or evidence_text), paths,
+                                                    source_kind=str(candidate.get("source_kind") or ""))
     metadata = {}
     if str(candidate.get("photo_metadata_date") or "").strip():
         metadata["visible_metadata_date"] = str(candidate.get("photo_metadata_date") or "").strip()
-    source_warnings = _source_rule_warnings(str(candidate.get("source_text") or ""), paths)
+    source_warnings = _source_rule_warnings(str(candidate.get("source_text") or ""), paths,
+                                          source_kind=str(candidate.get("source_kind") or ""))
     profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
     field_evidence = build_field_evidence(
         candidate=candidate,
@@ -1170,7 +1227,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
     raw_visible_text = str(ai_recovery.get("raw_visible_text") or "").strip()
     if raw_visible_text:
         intake["source_text"] = combine_text_parts(str(intake.get("source_text") or ""), raw_visible_text)
-    date_evidence = service_date_evidence(str(intake.get("source_text") or ""))
+    date_evidence = service_date_evidence(str(intake.get("source_text") or ""),
+                                        source_kind=str(intake.get("source_kind") or ""))
 
     raw_case = _first_ai_field(ai_recovery, "raw_case_number", "source_case_number", "case_number").upper()
     if raw_case and not intake.get("case_number") and valid_source_case(raw_case):
@@ -1179,7 +1237,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         intake["case_number"] = normalize_case_number(raw_case)
 
     photo_metadata_date = _first_ai_field(ai_recovery, "photo_metadata_date", "metadata_date")
-    if photo_metadata_date and _looks_like_iso_date(photo_metadata_date) and not intake.get("photo_metadata_date"):
+    if (intake.get("source_kind") != "notification_pdf" and photo_metadata_date
+            and _looks_like_iso_date(photo_metadata_date) and not intake.get("photo_metadata_date")):
         intake["photo_metadata_date"] = photo_metadata_date
 
     service_date = _first_ai_field(ai_recovery, "service_date")
@@ -1199,19 +1258,23 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
 
     court_email = _first_ai_field(ai_recovery, "court_email", "recipient_email")
     source_emails = {email.lower() for email in EMAIL_RE.findall(str(intake.get('source_text') or ''))}
-    if len(source_emails) <= 1 and court_email and _looks_like_email(court_email):
-        raw_text = raw_visible_text.casefold()
-        existing_email = str(intake.get("recipient_email") or "").strip()
-        if not existing_email or court_email.casefold() in raw_text:
+    if court_email and _looks_like_email(court_email) and not str(intake.get("recipient_email") or "").strip():
+        if len(source_emails) == 1 and court_email.lower() in source_emails:
             intake["recipient_email"] = court_email.lower()
+        else:
+            intake["ai_recovery"].setdefault("warnings", []).append(
+                "The AI-suggested email was not the single visible source email and was not selected. Choose a verified court contact."
+            )
 
     fill_if_missing = {
         "payment_entity": _first_ai_field(ai_recovery, "payment_entity"),
         "service_entity": _first_ai_field(ai_recovery, "service_entity"),
         "service_entity_type": _first_ai_field(ai_recovery, "service_entity_type"),
         "service_place": _first_ai_field(ai_recovery, "service_place", "locality"),
-        "service_place_phrase": _first_ai_field(ai_recovery, "service_place_phrase"),
     }
+    # Source prose can be a future summons rather than a completed-service
+    # clause. Keep that evidence under ai_recovery; render a location from the
+    # resolved venue unless an existing profile/manual clause was supplied.
     for key, value in fill_if_missing.items():
         existing_value = str(intake.get(key) or "").strip()
         if key == "service_entity_type" and value and existing_value == "court" and value in {"gnr", "psp", "police", "other"}:
@@ -1245,12 +1308,21 @@ def image_metadata_from_bytes(content: bytes) -> dict[str, Any]:
             orientation = exif.get(274)
             if orientation not in (None, ""):
                 metadata["exif_orientation"] = int(orientation)
-            for tag in (36867, 36868, 306):
-                exif_date = parse_exif_date(exif.get(tag))
+            # Cameras normally store DateTimeOriginal in the nested Exif IFD.
+            # Top-level DateTime is the image modification time, not capture.
+            try:
+                capture_exif = exif.get_ifd(34665)
+            except (KeyError, TypeError, ValueError, OSError):
+                capture_exif = {}
+            for value in (capture_exif.get(36867), exif.get(36867),
+                          capture_exif.get(36868), exif.get(36868)):
+                exif_date = parse_exif_date(value)
                 if exif_date:
                     metadata["exif_date"] = exif_date
                     break
             warnings: list[str] = []
+            if not metadata.get('exif_date') and parse_exif_date(exif.get(306)):
+                warnings.append('The image has an EXIF modification date but no capture date. Confirm the actual photo/service date.')
             min_side = min(image.width, image.height)
             max_side = max(image.width, image.height)
             if min_side < 320:
@@ -1266,18 +1338,73 @@ def image_metadata_from_bytes(content: bytes) -> dict[str, Any]:
         raise IntakeError("Uploaded photo/screenshot is not a readable image.") from exc
 
 
-def pdf_text_from_bytes(content: bytes) -> str:
+MAX_PDF_TEXT_PAGES = 8
+
+
+def _pdf_page_has_substantial_raster(page: Any) -> bool:
+    """Require image reading for scanned bodies even beneath readable headers."""
+    page_area = max(1.0, float(page.cropbox.width) * float(page.cropbox.height))
+
+    def resolved(value: Any) -> Any:
+        return value.get_object() if hasattr(value, "get_object") else value
+
+    def area_scale(matrix: Any) -> float:
+        return abs(float(matrix[0]) * float(matrix[3]) - float(matrix[1]) * float(matrix[2]))
+
+    def raster_area(stream: Any, resources: Any, scale: float = 1.0, depth: int = 0) -> float:
+        if stream is None:
+            return 0.0
+        if depth > 10:
+            # Do not certify text coverage of a recursive/unreadable form tree.
+            return page_area
+        content = stream if isinstance(stream, ContentStream) else ContentStream(stream, page.pdf)
+        resources = resolved(resources)
+        stack: list[float] = []
+        total = 0.0
+        for operands, operator in content.operations:
+            if operator == b"q":
+                stack.append(scale)
+            elif operator == b"Q" and stack:
+                scale = stack.pop()
+            elif operator == b"cm":
+                scale *= area_scale(operands)
+            elif operator == b"INLINE IMAGE":
+                total += scale
+            elif operator == b"Do":
+                objects = resolved(resources.get("/XObject", {}))
+                obj = resolved(objects[operands[0]])
+                if obj.get("/Subtype") == "/Image":
+                    total += scale
+                elif obj.get("/Subtype") == "/Form":
+                    form_scale = area_scale(obj.get("/Matrix", [1, 0, 0, 1, 0, 0]))
+                    total += raster_area(obj, obj.get("/Resources", resources), scale * form_scale, depth + 1)
+        return total
+
+    # Measure the image's drawn size, not its pixel resolution, so ordinary
+    # small court logos do not turn a complete text notification into a scan.
+    return raster_area(page.get_contents(), page.get("/Resources", {})) >= page_area * 0.20
+
+
+def _pdf_text_and_page_count(content: bytes) -> tuple[str, int, list[int]]:
     try:
         reader = PdfReader(BytesIO(content))
         pages = []
-        for page in reader.pages[:8]:
+        unread_pages = []
+        for number, page in enumerate(reader.pages[:MAX_PDF_TEXT_PAGES], start=1):
             pages.append(page.extract_text() or "")
-        return "\n".join(pages).strip()
+            # A readable header cannot establish that the raster body was read.
+            if len(re.sub(r"\s+", "", pages[-1])) < 20 or _pdf_page_has_substantial_raster(page):
+                unread_pages.append(number)
+        return "\n".join(pages).strip(), len(reader.pages), unread_pages
     except Exception as exc:  # pypdf raises several parser-specific exceptions.
         raise IntakeError("Uploaded notification PDF could not be read.") from exc
 
 
-def render_pdf_pages_for_source(pdf_path: Path, *, max_pages: int = 3) -> tuple[list[Path], list[str]]:
+def pdf_text_from_bytes(content: bytes) -> str:
+    return _pdf_text_and_page_count(content)[0]
+
+
+def render_pdf_pages_for_source(pdf_path: Path, *, max_pages: int = MAX_PDF_OCR_PAGES) -> tuple[list[Path], list[str]]:
     warnings: list[str] = []
     pdftoppm = shutil.which("pdftoppm")
     if not pdftoppm:
@@ -1369,7 +1496,7 @@ def store_supporting_attachment_upload(
 
 def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     candidate = result['candidate_intake']
-    rows = source_case_rows(result['extracted_text'], result['ai_recovery']) if result['source']['source_kind'] == 'photo' else []
+    rows = source_case_rows(result['extracted_text'], result['ai_recovery'])
     if not rows:
         existing_case = str(candidate.get('case_number') or '')
         rows = [{'case_number': existing_case, 'raw_case_number': str(candidate.get('raw_case_number') or existing_case)}]
@@ -1386,7 +1513,8 @@ def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, A
         child_review = review_intake(child, paths)
         child = copy.deepcopy(child_review.get('effective_intake') or child)
         evidence = build_field_evidence(
-            candidate=child, deterministic_fields=extract_candidate_fields(result['extracted_text'], paths),
+            candidate=child, deterministic_fields=extract_candidate_fields(result['extracted_text'], paths,
+                                                                           source_kind=result['source']['source_kind']),
             metadata=result['source']['metadata'], ai_recovery=result['ai_recovery'],
             profile_decision=child.get('auto_profile') or {}, profiles=_load_available_service_profiles(paths),
         )
@@ -1491,10 +1619,16 @@ def build_partial_intake_from_profile(
     intake["source_file"] = str(stored_path.resolve())
     intake["source_kind"] = source_kind
     intake["source_sha256"] = digest
+    if source_kind == "notification_pdf":
+        # A notification's appointment must come from this document, never a
+        # recurring profile's date or photo/capture metadata.
+        intake.update(service_date="", service_date_source="")
+        for field in ("photo_metadata_date", "photo_metadata_date_requires_confirmation", "photo_defaults_applied"):
+            intake.pop(field, None)
     if extracted_text.strip():
         intake["source_text"] = extracted_text.strip()
 
-    fields = extract_candidate_fields(extracted_text, paths)
+    fields = extract_candidate_fields(extracted_text, paths, source_kind=source_kind)
     # Consider both independent text and recovered visible text before choosing
     # a source contact. Saved profile contacts are retained when sources conflict.
     if contact_text is not None and len({email.lower() for email in EMAIL_RE.findall(contact_text)}) > 1:
@@ -1516,7 +1650,7 @@ def build_partial_intake_from_profile(
         intake["transport"] = transport
 
     photo_metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or "").strip()
-    if photo_metadata_date:
+    if source_kind == "photo" and photo_metadata_date:
         intake["photo_metadata_date"] = photo_metadata_date
         if intake.get("service_date") and intake.get("service_date") == photo_metadata_date:
             intake["service_date_source"] = "document_text_and_photo_metadata"
@@ -1552,7 +1686,14 @@ def recover_source_upload(
     extracted_text = ""
     metadata: dict[str, Any] = {}
     if source_kind == "notification_pdf":
-        extracted_text = pdf_text_from_bytes(content)
+        extracted_text, page_count, unread_pages = _pdf_text_and_page_count(content)
+        metadata["pdf_page_count"] = page_count
+        metadata["pdf_pages_without_useful_text"] = unread_pages
+        if page_count > MAX_PDF_TEXT_PAGES:
+            raise IntakeError(
+                f"This notification has {page_count} pages, but this upload can review only the first {MAX_PDF_TEXT_PAGES} text pages. "
+                "Later pages may change the cases or appointment date. Upload a shorter PDF containing the relevant pages, "
+                "or enter the complete reviewed source text using manual intake. No request was prepared.")
     else:
         metadata = image_metadata_from_bytes(content)
     if visible_text.strip():
@@ -1563,7 +1704,23 @@ def recover_source_upload(
         metadata["visible_metadata_date"] = visible_metadata_date
 
     rendered_page_paths: list[Path] = []
-    if source_kind == "notification_pdf" and text_is_weak_for_pdf_ocr(extracted_text):
+    unread_pdf_pages = metadata.get("pdf_pages_without_useful_text") or []
+    pdf_image_review_enabled = False
+    if source_kind == "notification_pdf":
+        config = resolve_openai_config(paths.ai_config)
+        pdf_image_review_enabled = bool(config.configured and config.package_available and should_attempt_ai_recovery(
+            source_kind, ai_recovery_mode, extracted_text, unread_pdf_pages=bool(unread_pdf_pages)))
+    if source_kind == "notification_pdf" and (unread_pdf_pages or (pdf_image_review_enabled and text_is_weak_for_pdf_ocr(extracted_text))):
+        if metadata['pdf_page_count'] > MAX_PDF_OCR_PAGES:
+            raise IntakeError(
+                f"This notification has {metadata['pdf_page_count']} pages and needs image review, which covers only the first {MAX_PDF_OCR_PAGES} pages. "
+                "Later pages may change the cases or appointment date. Upload a shorter PDF containing the relevant pages, "
+                "or enter the complete reviewed source text using manual intake. No request was prepared.")
+        if not pdf_image_review_enabled:
+            raise IntakeError(
+                "This PDF contains pages that need image reading, but AI reading is off or unavailable. "
+                "Enable AI reading and retry, upload a readable PDF, or enter the complete reviewed source text using manual intake. "
+                "No request was prepared.")
         rendered_page_paths, render_warnings = render_pdf_pages_for_source(stored_path)
         metadata["rendered_page_count"] = len(rendered_page_paths)
         if rendered_page_paths:
@@ -1579,8 +1736,12 @@ def recover_source_upload(
             )
         if render_warnings:
             metadata.setdefault("warnings", []).extend(render_warnings)
+        if unread_pdf_pages and len(rendered_page_paths) != metadata["pdf_page_count"]:
+            raise IntakeError(
+                "This PDF contains pages without readable text, and not every page could be rendered for image review. "
+                "Upload a readable PDF, or enter the complete reviewed source text using manual intake. No request was prepared.")
 
-    deterministic_fields = extract_candidate_fields(extracted_text, paths)
+    deterministic_fields = extract_candidate_fields(extracted_text, paths, source_kind=source_kind)
     ai_recovery = recover_source_with_openai(
         filename=filename,
         content_type=content_type,
@@ -1592,6 +1753,11 @@ def recover_source_upload(
         source_metadata=metadata,
         rendered_page_images=[str(path.resolve()) for path in rendered_page_paths],
     )
+    if unread_pdf_pages and (ai_recovery.get("status") != "ok" or not str(ai_recovery.get("raw_visible_text") or "").strip()):
+        raise IntakeError(
+            "This PDF contains pages without readable text, and AI image reading did not complete. "
+            "Enable AI reading and retry, upload a readable PDF, or enter the complete reviewed source text using manual intake. "
+            "No request was prepared.")
     profile_decision = choose_service_profile(
         requested_profile=profile_name,
         extracted_text=extracted_text,
@@ -1615,6 +1781,8 @@ def recover_source_upload(
         ai_recovery=ai_recovery, directory=read_json_list(paths.court_emails),
         explicit_profile=profile_decision.get('mode') == 'explicit_profile',
     )
+    apply_saved_court_label(candidate, load_photo_defaults(paths.ai_config),
+                           explicit_profile=profile_decision.get('mode') == 'explicit_profile')
     if (
         str(candidate.get("photo_metadata_date") or "").strip()
         and not str(candidate.get("service_date") or "").strip()
@@ -1641,7 +1809,7 @@ def recover_source_upload(
     source_warnings = [
         *[str(item) for item in metadata.get("warnings", []) if str(item).strip()],
         *[str(item) for item in candidate.get("ai_recovery", {}).get("warnings", []) if str(item).strip()],
-        *_source_rule_warnings(combined_text, paths),
+        *_source_rule_warnings(combined_text, paths, source_kind=source_kind),
     ]
     source_attention = build_source_attention(
         candidate=candidate,
@@ -1960,6 +2128,7 @@ def managed_backup_counts(paths: AppPaths) -> dict[str, int]:
         key: read_backup_dataset(path, expected_type)
         for key, (path, expected_type) in backup_dataset_paths(paths).items()
     }
+    datasets["gmail_attempts"] = load_attempts(paths.draft_log)
     return backup_counts(datasets)
 
 
@@ -2195,16 +2364,26 @@ def diagnostics_status_payload() -> dict[str, Any]:
     }
 
 
-def backup_payload(paths: AppPaths) -> dict[str, Any]:
+def _backup_payload_unlocked(paths: AppPaths) -> dict[str, Any]:
     datasets = {
         key: read_backup_dataset(path, expected_type)
         for key, (path, expected_type) in backup_dataset_paths(paths).items()
     }
+    # The first-run legacy profile is usable without a saved store; back it up
+    # as a valid explicit store rather than installing an unreadable {} later.
+    if not paths.personal_profiles.exists():
+        datasets["personal_profiles"] = load_personal_profiles(paths)
+    attempts = load_attempts(paths.draft_log)
+    datasets["gmail_attempts"] = attempts
+    capsules = export_recovery_capsules(attempts, paths)
+    warnings = _backup_recovery_warnings(capsules, attempts)
     return {
         "kind": BACKUP_KIND,
         "schema_version": BACKUP_SCHEMA_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "datasets": datasets,
+        "gmail_attempt_recovery": capsules,
+        "warnings": warnings,
         "counts": backup_counts(datasets),
         "contains_private_local_data": True,
         "notes": "Local honorários backup for private app data. Do not publish this file.",
@@ -2212,19 +2391,37 @@ def backup_payload(paths: AppPaths) -> dict[str, Any]:
     }
 
 
+def backup_payload(paths: AppPaths) -> dict[str, Any]:
+    with runtime_lock(paths.draft_log):
+        return _backup_payload_unlocked(paths)
+
+
+def _backup_recovery_warnings(capsules: dict[str, Any] | None, attempts: list[dict[str, Any]]) -> list[str]:
+    entries = {row["attempt_id"]: row for row in (capsules or {}).get("entries", [])}
+    incomplete = [row for row in attempts if row["state"] not in TERMINAL and (
+        row["attempt_id"] not in entries or entries[row["attempt_id"]].get("omitted")
+        or {item["path"] for item in entries[row["attempt_id"]].get("artifacts", [])} != set(artifact_bindings(row)))]
+    warnings = ["This backup includes local records and pending Gmail recovery files, not a complete document archive or Gmail credentials."]
+    if incomplete:
+        warnings.append(f"{len(incomplete)} pending Gmail attempt(s) lack some original reviewed files. Duplicate protection is preserved; keep the original files or obtain a complete backup before finishing local recording on another computer.")
+    return warnings
+
+
 def write_backup_file(backup: dict[str, Any], paths: AppPaths, *, prefix: str = "honorarios-backup") -> Path:
     paths.backup_output_dir.mkdir(parents=True, exist_ok=True)
     path = paths.backup_output_dir / f"{prefix}-{timestamp_slug()}-{secrets.token_hex(4)}.json"
-    path.write_text(json.dumps(backup, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, backup)
     return path
 
 
 def export_local_backup(paths: AppPaths) -> dict[str, Any]:
-    backup = backup_payload(paths)
-    backup_file = write_backup_file(backup, paths)
+    with runtime_lock(paths.draft_log):
+        backup = _backup_payload_unlocked(paths)
+        backup_file = write_backup_file(backup, paths)
     return {
         "status": "exported",
-        "message": "Local backup exported. Keep this file private.",
+        "message": "Local backup exported. Keep this file private. " + " ".join(backup["warnings"]),
+        "warnings": backup["warnings"],
         "backup_file": str(backup_file),
         "backup": backup,
         "counts": backup["counts"],
@@ -2259,7 +2456,7 @@ def validate_backup_payload(payload: dict[str, Any], paths: AppPaths) -> dict[st
         raise IntakeError("Backup must include a datasets object.")
 
     allowed = backup_dataset_paths(paths)
-    unknown = sorted(set(datasets) - set(allowed))
+    unknown = sorted(set(datasets) - set(allowed) - {"gmail_attempts"})
     if unknown:
         raise IntakeError(f"Backup contains unsupported dataset(s): {', '.join(unknown)}")
     if not datasets:
@@ -2267,17 +2464,42 @@ def validate_backup_payload(payload: dict[str, Any], paths: AppPaths) -> dict[st
 
     validated: dict[str, Any] = {}
     for key, value in datasets.items():
+        if key == "gmail_attempts":
+            validated[key] = validate_attempts(value)
+            continue
         expected_type = allowed[key][1]
         if not isinstance(value, expected_type):
             type_name = "object" if expected_type is dict else "list"
             raise IntakeError(f"Backup dataset {key} must be a JSON {type_name}.")
+        if key == "personal_profiles":
+            profiles = value.get("profiles")
+            records = list(profiles.values()) if isinstance(profiles, dict) else profiles
+            if not isinstance(records, list) or not records or not all(isinstance(row, dict) for row in records):
+                raise IntakeError("Backup personal profiles have an invalid structure. Keep at least one editable profile before restoring.")
         validated[key] = value
+
+    attempts = validated.get("gmail_attempts", [])
+    capsules = validate_capsules(backup.get("gmail_attempt_recovery"), attempts)
+    for key in ("gmail_draft_log", "duplicate_index"):
+        if key in validated:
+            merge_history([], validated[key], duplicate=key == "duplicate_index")
+    validate_history_coverage(validated)
+    for attempt in attempts:
+        if attempt["state"] == "recorded":
+            draft_id = attempt["gmail_result"]["draft_id"]
+            log = next((row for row in validated.get("gmail_draft_log", []) if row.get("draft_id") == draft_id), None)
+            if not log or log.get("message_id") != attempt["gmail_result"]["message_id"]:
+                raise IntakeError("Backup recorded Gmail attempt is missing its draft history. Restore a complete backup.")
+            if sorted(request_identity_key(row) for row in attempt["requests"]) != sorted(request_identity_key(row) for row in log.get("underlying_requests") or [log]):
+                raise IntakeError("Backup recorded Gmail attempt does not match its draft history requests.")
 
     return {
         "backup": backup,
         "datasets": validated,
         "counts": backup_counts(validated),
         "dataset_names": list(validated.keys()),
+        "capsules": capsules,
+        "warnings": _backup_recovery_warnings(backup.get("gmail_attempt_recovery"), attempts),
     }
 
 
@@ -2285,7 +2507,8 @@ def preview_local_backup_import(payload: dict[str, Any], paths: AppPaths) -> dic
     validation = validate_backup_payload(payload, paths)
     return {
         "status": "ready",
-        "message": "Backup import is valid. Preview only; no local files were changed.",
+        "message": "Backup import is valid. Preview only; no local files were changed. Existing Gmail attempts and newer draft history will be preserved. " + " ".join(validation["warnings"]),
+        "warnings": validation["warnings"],
         "counts": validation["counts"],
         "dataset_names": validation["dataset_names"],
         "restore_requirements": {
@@ -4039,24 +4262,73 @@ def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
     restore_reason = str(payload.get("restore_reason") or "").strip()
     if not restore_reason:
         raise IntakeError("Backup restore requires a short restore_reason explaining why this rollback is safe.")
-    validation = validate_backup_payload(payload, paths)
-    pre_restore_backup = backup_payload(paths)
-    pre_restore_backup["reason"] = f"Automatic backup before local restore. Restore reason: {restore_reason}"
-    pre_restore_file = write_backup_file(pre_restore_backup, paths, prefix="pre-restore-backup")
-
-    dataset_paths = backup_dataset_paths(paths)
-    for key, data in validation["datasets"].items():
-        target_path, expected_type = dataset_paths[key]
-        if expected_type is dict:
-            write_json_object(target_path, data)
-        else:
-            write_json_list(target_path, data)
+    with runtime_lock(paths.draft_log):
+        validation = validate_backup_payload(payload, paths)
+        datasets = copy.deepcopy(validation["datasets"])
+        local_attempts = load_attempts(paths.draft_log)
+        attempts = merge_attempts(local_attempts, datasets.get("gmail_attempts", []))
+        incoming_by_id = {row["attempt_id"]: row for row in datasets.get("gmail_attempts", [])}
+        for attempt in attempts:
+            incoming = incoming_by_id.get(attempt["attempt_id"], {})
+            if attempt.get("backup_restore_recorded_pending") and incoming.get("state") == "recorded":
+                # A prior interrupted restore reserved this identity. The final
+                # journal may close it only after this restore writes history.
+                attempt["state"] = "recorded"
+                attempt.pop("backup_restore_recorded_pending", None)
+        dataset_paths = backup_dataset_paths(paths)
+        # Validate every history merge before writing artifacts or any local data.
+        for key in ("gmail_draft_log", "duplicate_index"):
+            if key in datasets:
+                datasets[key] = merge_history(read_backup_dataset(dataset_paths[key][0], list), datasets[key], duplicate=key == "duplicate_index")
+        pre_restore_backup = _backup_payload_unlocked(paths)
+        pre_restore_backup["reason"] = f"Automatic backup before local restore. Restore reason: {restore_reason}"
+        pre_restore_file = write_backup_file(pre_restore_backup, paths, prefix="pre-restore-backup")
+        # Rebase incoming snapshots only. A newer local attempt keeps its original
+        # files and cannot silently acquire an older backup's artifact binding.
+        imported_ids = {row["attempt_id"] for row in attempts if row not in local_attempts or row.get("backup_capsule_pending")}
+        for row in attempts:
+            if row["attempt_id"] in imported_ids and row["state"] not in TERMINAL:
+                row["backup_capsule_pending"] = True
+        local_recorded_ids = {row["attempt_id"] for row in local_attempts if row["state"] == "recorded"}
+        def save_reservations():
+            reservations = copy.deepcopy(attempts)
+            for row in reservations:
+                if row["state"] == "recorded" and row["attempt_id"] not in local_recorded_ids:
+                    row["state"] = "created_unrecorded"
+                    row["backup_restore_recorded_pending"] = True
+                    row["backup_recovery_warning"] = "A backup restore was interrupted before all history was saved. Restore that same backup again to finish safely."
+            if "gmail_attempts" in datasets or reservations:
+                save_attempts(paths.draft_log, reservations)
+        # Reserve before even copying recovery files: a disk interruption during
+        # materialization must still leave the imported request protected.
+        save_reservations()
+        imported = [row for row in attempts if row["attempt_id"] in imported_ids]
+        restored, mapping, hashes = restore_capsules(imported, validation["capsules"], paths)
+        restored_by_id = {row["attempt_id"]: row for row in restored}
+        attempts = [restored_by_id.get(row["attempt_id"], row) for row in attempts]
+        for key in ("gmail_draft_log", "duplicate_index"):
+            if key in datasets:
+                datasets[key] = rebase_value(datasets[key], mapping, hashes)
+        # Commit the validated rebased paths before history. Recorded imports
+        # remain pending until all datasets below have been written.
+        save_reservations()
+        for key in ("gmail_draft_log", "duplicate_index"):
+            if key in datasets:
+                atomic_write_json(dataset_paths[key][0], datasets[key])
+        for key, data in datasets.items():
+            if key not in {"gmail_attempts", "gmail_draft_log", "duplicate_index"}:
+                atomic_write_json(dataset_paths[key][0], data)
+        if "gmail_attempts" in datasets or attempts:
+            save_attempts(paths.draft_log, attempts)
+        if "gmail_attempts" in datasets:
+            datasets["gmail_attempts"] = attempts
 
     return {
         "status": "restored",
-        "message": "Backup restored locally. A pre-restore backup was written first.",
+        "message": "Backup restored locally. A pre-restore backup was written first. Existing Gmail attempts and newer draft history were preserved. " + " ".join(validation["warnings"]),
+        "warnings": validation["warnings"],
         "restored_datasets": validation["dataset_names"],
-        "counts": validation["counts"],
+        "counts": backup_counts(datasets),
         "pre_restore_backup_file": str(pre_restore_file),
         "restore_reason": restore_reason,
         "backup_status": backup_status_payload(paths),
@@ -4802,6 +5074,13 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
     if not value:
         return
 
+    if field == 'mixed_notice_scope':
+        if value.lower() not in {'interpreting-only', 'translation-only'}:
+            raise IntakeError('Choose interpreting-only for the separate in-person service, or translation-only to set this notice aside.')
+        intake[field] = value.lower()
+        intake['mixed_notice_scope_fingerprint'] = source_scope_fingerprint(intake)
+        return
+
     if field == "service_date_source":
         folded = fold_match_text(value)
         if folded in {"metadata", "photo", "foto", "image", "imagem"}:
@@ -5194,13 +5473,19 @@ def _normalize_source_case_confirmation(intake: dict[str, Any]) -> None:
 
 def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     intake = copy.deepcopy(intake)
+    preserve_review_field_clears(intake, intake)
     reconcile_photo_venue_edit(intake)
     _normalize_source_case_confirmation(intake)
     profile = selected_personal_profile(paths, intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
+    preserve_review_field_clears(intake, effective)
+    if 'transport.km_one_way' in effective.get('review_cleared_fields', []):
+        provenance['applied'] = [field for field in provenance['applied'] if field != 'transport.km_one_way']
+        provenance['distance_source'] = ''
     generator_profile = profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
     saved_closing_city = str(_legacy_profile_defaults(paths).get("default_closing_city") or "").strip()
-    if intake.get("photo_defaults_applied") and not str(effective.get("closing_city") or "").strip() and saved_closing_city:
+    if (not str(effective.get("closing_city") or "").strip() and saved_closing_city
+            and 'closing_city' not in effective.get('review_cleared_fields', [])):
         effective["closing_city"] = saved_closing_city
         provenance["applied"].append("closing_city")
     return effective, generator_profile, provenance
@@ -5629,6 +5914,8 @@ def _gmail_create_lock_for_payload(draft_payload: dict[str, Any]):
 def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not bool(payload.get("gmail_handoff_reviewed")):
         raise IntakeError("Review the PDF preview and exact Gmail draft args before creating a Gmail draft.")
+    if payload.get("recover_attempt_id") or payload.get("resolve_attempt_id"):
+        return reconcile_gmail_create_attempt(payload, paths)
     raw_payload_path = payload.get("payload") or payload.get("draft_payload")
     prepared_review = require_current_prepared_review(payload, raw_payload_path, paths)
     supersedes = _coerce_supersedes(payload.get("supersedes"))
@@ -5639,21 +5926,51 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
     if explicit_correction_reason and prepared_correction_reason and explicit_correction_reason != prepared_correction_reason:
         raise IntakeError("Gmail draft correction reason does not match the prepared review. Prepare the replacement again.")
     payload_path, draft_payload = _load_prepared_draft_payload(raw_payload_path)
-    with _gmail_create_lock_for_payload(draft_payload):
+    with attempt_lock(paths.draft_log), _gmail_create_lock_for_payload(draft_payload):
+        attempts = load_attempts(paths.draft_log)
+        prior = pending_attempt(attempts, _prepared_payload_request_identities(draft_payload))
+        if prior:
+            return gmail_attempt_response(prior)
         duplicate_check = _assert_gmail_create_duplicate_clear(
             request_payload=payload,
             draft_payload=draft_payload,
             paths=paths,
         )
+        manifest = load_json(Path(prepared_review["manifest"]))
+        target = next(item for item in manifest["prepared_review_material"]["targets"]
+                      if item["draft_payload"] == str(payload_path))
+        attempt = new_attempt(_prepared_payload_request_identities(draft_payload),
+                              payload=str(payload_path), target=target, prepared_review=prepared_review,
+                              gmail_create_draft_args=draft_payload["gmail_create_draft_args"],
+                              request_payload={key: payload[key] for key in ("notes", "supersedes", "correction_reason") if key in payload})
+        attempts.append(attempt)
+        # A durable reservation precedes the external side effect. A crash or lost
+        # response therefore cannot silently make a second create safe to retry.
+        save_attempts(paths.draft_log, attempts)
         try:
             result = create_gmail_draft_from_payload(draft_payload, paths.gmail_config)
-        except IntakeError:
+        except GmailDraftCreateError as exc:
+            update_attempt(attempt, state="uncertain" if exc.may_have_created else "not_created", error=str(exc))
+            save_attempts(paths.draft_log, attempts)
+            if exc.may_have_created:
+                return gmail_attempt_response(attempt)
+            raise
+        except IntakeError as exc:
+            # MIME validation and OAuth fail before users.drafts.create is called.
+            update_attempt(attempt, state="not_created", error=str(exc))
+            save_attempts(paths.draft_log, attempts)
             raise
         except Exception as exc:
-            raise IntakeError(
-                "Gmail Draft API could not create the draft. No local draft record or duplicate-index entry was written. "
-                "Check Gmail connection status before trying again."
-            ) from exc
+            update_attempt(attempt, state="uncertain", error="The creation outcome could not be confirmed.")
+            save_attempts(paths.draft_log, attempts)
+            return gmail_attempt_response(attempt)
+        update_attempt(attempt, state="created_unrecorded", gmail_result=result)
+        try:
+            save_attempts(paths.draft_log, attempts)
+        except OSError:
+            # The earlier reservation still blocks another create. Return known
+            # IDs even when the disk cannot persist this second checkpoint.
+            return gmail_attempt_response(attempt, error="Gmail created the draft, but its returned IDs could not be saved. Copy these IDs and recover local recording after fixing local storage.")
         record_payload = {
             "payload": str(payload_path),
             "draft_id": result["draft_id"],
@@ -5666,7 +5983,16 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
             "prepared_review_token": prepared_review["prepared_review_token"],
             "review_fingerprint": prepared_review["review_fingerprint"],
         }
-        record_result = record_draft(record_payload, paths)
+        try:
+            record_result = record_draft(record_payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            update_attempt(attempt, error=str(exc))
+            with contextlib.suppress(OSError):
+                save_attempts(paths.draft_log, attempts)
+            return gmail_attempt_response(attempt)
+        update_attempt(attempt, state="recorded")
+        with contextlib.suppress(OSError):
+            save_attempts(paths.draft_log, attempts)
         confirmation = _gmail_create_confirmation(
             gmail_result=result,
             record_result=record_result,
@@ -5699,10 +6025,110 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
         }
 
 
+def gmail_attempt_response(attempt: dict[str, Any], *, error: str = "") -> dict[str, Any]:
+    result = attempt.get("gmail_result") or {}
+    confirmed = bool(result.get("draft_id") and result.get("message_id"))
+    status = "created_unrecorded" if confirmed else "creation_uncertain"
+    message = ("Gmail created this draft, but local recording is incomplete. Finish local recording; do not create another draft."
+               if confirmed else "Gmail may already have created this email. Check Gmail, then record the existing draft or explicitly confirm that no draft exists. Another create is blocked until then.")
+    if attempt.get("backup_recovery_warning"):
+        message += " " + attempt["backup_recovery_warning"]
+    return {**result, "status": status, "message": error or message,
+            "recording_error": str(attempt.get("error") or ""), "attempt_id": attempt["attempt_id"],
+            "draft_payload": attempt["payload"], "create_retry_allowed": False,
+            "local_recording_recovery_allowed": confirmed, "uncertain_resolution_required": not confirmed,
+            "gmail_create_draft_args": dict(attempt.get("gmail_create_draft_args") or {}),
+            "draft_only": True, "send_allowed": False}
+
+
+def _validate_attempt_artifacts(attempt: dict[str, Any]) -> dict[str, Any]:
+    target = attempt["target"]
+    payload_path = Path(attempt["payload"])
+    expected_paths = [payload_path, *(Path(raw) for raw in {**target.get("attachment_sha256", {}), **target.get("child_payload_sha256", {})})]
+    if any(not path.is_file() for path in expected_paths):
+        raise IntakeError("Original reviewed recovery files are missing. This attempt remains blocked to prevent a duplicate. Restore a complete backup made on the original computer, or restore the original reviewed files at their recorded paths, then finish local recording.")
+    if file_sha256(payload_path) != target["draft_payload_sha256"]:
+        raise IntakeError("The original attempted email payload changed. Recover its saved original files before recording this draft.")
+    for raw_path, expected in {**target.get("attachment_sha256", {}), **target.get("child_payload_sha256", {})}.items():
+        if file_sha256(Path(raw_path)) != expected:
+            raise IntakeError("An original attempted attachment or child payload changed. Recover the reviewed original before recording.")
+    loaded = load_json(payload_path)
+    errors = validate_draft_payload(loaded)
+    if errors:
+        raise IntakeError("The original attempted email is invalid: " + "; ".join(errors))
+    return loaded
+
+
+def reconcile_gmail_create_attempt(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    attempt_id = str(payload.get("recover_attempt_id") or payload.get("resolve_attempt_id") or "")
+    with attempt_lock(paths.draft_log):
+        attempts = load_attempts(paths.draft_log)
+        attempt = next((item for item in attempts if item["attempt_id"] == attempt_id), None)
+        if not attempt or attempt.get("state") in {"not_created", "confirmed_not_created"}:
+            raise IntakeError("This Gmail attempt is not pending recovery.")
+        if payload.get("resolve_attempt_id"):
+            if attempt.get("gmail_result") or attempt.get("state") == "recorded":
+                raise IntakeError("This attempt has confirmed Gmail IDs. Finish local recording instead.")
+            if payload.get("confirmation_phrase") != "I CHECKED GMAIL: NO DRAFT" or not str(payload.get("resolution_reason") or "").strip():
+                raise IntakeError("Check Gmail first, then confirm I CHECKED GMAIL: NO DRAFT and give a short reason before retrying creation.")
+            allowed_old_ids = set(_coerce_supersedes(attempt.get("request_payload", {}).get("supersedes")))
+            for request in attempt["requests"]:
+                lifecycle = draft_lifecycle_for_intake(request, paths)
+                existing_ids = set(_lifecycle_blocking_draft_ids(lifecycle))
+                if lifecycle["status"] != "clear" and (not existing_ids or not existing_ids.issubset(allowed_old_ids)):
+                    raise IntakeError("Local history already records one of these requests. Reconcile that draft before confirming no draft exists.")
+            update_attempt(attempt, state="confirmed_not_created", resolution_reason=str(payload["resolution_reason"]).strip())
+            save_attempts(paths.draft_log, attempts)
+            return {"status": "not_created", "message": "Your no-draft check was recorded. You can now create the reviewed email.",
+                    "attempt_id": attempt_id, "create_retry_allowed": True,
+                    "gmail_api_action": "local_attempt_resolution", "local_records_changed": True, "send_allowed": False}
+        draft_payload = _validate_attempt_artifacts(attempt)
+        result = attempt.get("gmail_result") or {}
+        if not result:
+            if payload.get("confirmation_phrase") != "I CHECKED THE EXISTING GMAIL DRAFT":
+                raise IntakeError("Check the existing Gmail draft's recipient, text and every attachment against the original attempted email before recording its IDs.")
+            draft_id = str(payload.get("draft_id") or "").strip()
+            message_id = str(payload.get("message_id") or "").strip()
+            if not draft_id or not message_id:
+                raise IntakeError("Enter both returned Gmail draft and message IDs for the existing draft.")
+            args = draft_payload["gmail_create_draft_args"]
+            result = {"draft_id": draft_id, "message_id": message_id, "thread_id": str(payload.get("thread_id") or ""),
+                      "gmail_api_action": "manual_existing_draft_record", "to": args["to"], "subject": args["subject"],
+                      "attachment_files": draft_payload["attachment_files"], "attachment_sha256": draft_payload.get("attachment_sha256", {}),
+                      "attachment_basenames": draft_payload.get("attachment_basenames", []), "draft_only": True, "send_allowed": False}
+            update_attempt(attempt, state="created_unrecorded", gmail_result=result)
+            save_attempts(paths.draft_log, attempts)
+        record_payload = {**attempt.get("request_payload", {}), "payload": attempt["payload"], "status": "active",
+                          "draft_id": result["draft_id"], "message_id": result["message_id"], "thread_id": result.get("thread_id", "")}
+        previous = next((row for row in load_draft_log(paths.draft_log) if row.get("draft_id") == result["draft_id"]), None)
+        if previous and previous.get("status") not in {"active", "drafted"}:
+            raise IntakeError("This Gmail draft was already sent or retired locally. Recovery cannot restore it to active.")
+        try:
+            recorded = record_draft(record_payload, paths, _trusted_prepared_recovery=attempt["prepared_review"])
+        except (IntakeError, OSError, ValueError) as exc:
+            update_attempt(attempt, error=str(exc))
+            with contextlib.suppress(OSError):
+                save_attempts(paths.draft_log, attempts)
+            return gmail_attempt_response(attempt)
+        update_attempt(attempt, state="recorded")
+        with contextlib.suppress(OSError):
+            save_attempts(paths.draft_log, attempts)
+        recovery_result = {**result, "gmail_api_action": "local_record_recovery"}
+        confirmation = _gmail_create_confirmation(gmail_result=recovery_result, record_result=recorded, payload_path=Path(attempt["payload"]),
+                                                  duplicate_check={"requests": attempt["requests"]}, paths=paths)
+        return {**recovery_result, "status": "created", "message": "The existing Gmail draft is now recorded locally. No new Gmail draft was created.",
+                "attempt_id": attempt_id, "recovered_existing_draft": True, "draft_payload": attempt["payload"],
+                "record": recorded, "confirmation": confirmation, "duplicate_keys": recorded["duplicate_keys"],
+                "recorded_duplicate_count": recorded["recorded_duplicate_count"], "local_records_changed": True, "send_allowed": False}
+
+
 def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     raw_payload_path = payload.get("payload") or payload.get("draft_payload")
     prepared_review = require_current_prepared_review(payload, raw_payload_path, paths)
     payload_path, draft_payload = _load_prepared_draft_payload(raw_payload_path)
+    with attempt_lock(paths.draft_log):
+        if pending_attempt(load_attempts(paths.draft_log), _prepared_payload_request_identities(draft_payload)):
+            raise IntakeError("Recover the pending Gmail attempt for these requests before building another manual handoff.")
     if draft_payload.get('email_grouping') == 'source':
         if _coerce_supersedes(payload.get('supersedes')) and not prepared_review.get('correction_mode'):
             raise IntakeError('Group replacement requires a prepared review created in correction mode.')
@@ -5761,12 +6187,15 @@ def load_app_reference(paths: AppPaths) -> dict[str, Any]:
     duplicate_records = read_json_list(paths.duplicate_index)
     draft_records = read_json_list(paths.draft_log)
     return {
+        "workspace_id": workspace_runtime_id(paths),
         "personal_profiles": personal_profiles_summary(paths),
         "service_profiles": load_profiles(paths.service_profiles),
         "court_emails": read_json_list(paths.court_emails),
         "known_destinations": load_known_destinations(paths),
         "duplicates": duplicate_records,
         "draft_log": draft_records,
+        "pending_gmail_attempts": [gmail_attempt_response(attempt) for attempt in load_attempts(paths.draft_log)
+                                   if attempt.get("state") not in {"recorded", "not_created", "confirmed_not_created"}],
         "profile_change_log": read_json_list(paths.profile_change_log),
         "gmail": {
             "tool": "_create_draft",
@@ -5896,7 +6325,9 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
 
     return {
         "status": "ready",
-        "message": "Ready for PDF generation and Gmail draft payload preparation.",
+        "message": ("Ready for the in-person interpreting request only. Written translation in this notice is excluded."
+                    if classify_source_work(effective_intake) == 'mixed_interpreting'
+                    else "Ready for PDF generation and Gmail draft payload preparation."),
         "case_number": rendered.case_number,
         "service_date": str(effective_intake.get("service_date") or effective_intake.get("photo_metadata_date") or ""),
         "payment_entity": str(effective_intake.get("payment_entity") or ""),
@@ -5913,7 +6344,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
 
 
 def planned_intake_paths(intakes: list[dict[str, Any]], paths: AppPaths) -> list[Path]:
-    stamp = timestamp_slug()
+    stamp = f'{timestamp_slug()}-{secrets.token_hex(8)}'
     planned: list[Path] = []
     for index, intake in enumerate(intakes, start=1):
         stem = default_output_path(intake).stem
@@ -5962,7 +6393,7 @@ def source_email_group_plan(intakes: list[dict[str, Any]], recipients: list[dict
             raise IntakeError("Every source email group member needs a validated recipient.")
         group = by_source.get(source) if source else None
         if group and (group["recipient"] != recipient or group["personal_profile_id"] != profile):
-            raise IntakeError("Requests from the same source photo have different recipients or personal profiles. Align the selections or choose individual emails.")
+            raise IntakeError("Requests from the same source have different recipients or personal profiles. Align the selections or choose individual emails.")
         if group is None:
             group = {"source_sha256": source, "recipient": recipient, "personal_profile_id": profile,
                      "member_indices": []}
@@ -6287,8 +6718,9 @@ def preflight_intakes(
                 allow_existing_draft=effective_allow_existing_draft,
                 correction_reason=normalized_correction_reason,
             )
-            if key in seen_keys:
-                raise IntakeError(f"Duplicate request appears more than once in this batch: item {index} duplicates {seen_keys[key]}")
+            overlapping_key = next((previous for previous in seen_keys if request_identity_keys_overlap(key, previous)), None)
+            if overlapping_key is not None:
+                raise IntakeError(f"Duplicate request or overlapping service in this batch: item {index} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
             seen_keys[key] = f"item {index}"
             recipient, recipient_source = resolve_recipient(intake, email_config, court_directory)
             items.append(preflight_item_summary(
@@ -6457,8 +6889,9 @@ def prepare_intakes(
             allow_existing_draft=effective_allow_existing_draft,
             correction_reason=normalized_correction_reason,
         )
-        if key in seen_keys:
-            raise IntakeError(f"Duplicate request appears more than once in this batch: {intake_path} duplicates {seen_keys[key]}")
+        overlapping_key = next((previous for previous in seen_keys if request_identity_keys_overlap(key, previous)), None)
+        if overlapping_key is not None:
+            raise IntakeError(f"Duplicate request or overlapping service in this batch: {intake_path} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
         seen_keys[key] = intake_path
 
     if packet_mode:
@@ -6526,7 +6959,7 @@ def prepare_intakes(
     email_groups = build_source_email_groups(plans=email_group_plans, intakes=effective_intakes, items=items,
                                             profiles=generator_profiles, paths=paths) if email_group_plans else []
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"
+    manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}-{secrets.token_hex(8)}.json"
     gmail_status = gmail_api_status(paths)
     prepared_review_material = _prepared_review_material(
         effective_intakes=effective_intakes,
@@ -6700,6 +7133,7 @@ def record_draft(
     paths: AppPaths,
     *,
     require_handoff_reviewed_for_prepared_payload: bool = False,
+    _trusted_prepared_recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload_path = str(payload.get("payload") or "").strip()
     status = str(payload.get("status") or "active").strip()
@@ -6713,7 +7147,8 @@ def record_draft(
                 payload = {**payload, 'payload': str(alias)}
                 payload_path = str(alias)
     if payload_path and (status in {"active", "drafted"} or (status == 'sent' and not existing_sent_transition and _load_draft_payload_for_response(payload).get('email_grouping') == 'source')):
-        review = require_current_prepared_review(payload, payload_path, paths)
+        review = (_trusted_prepared_recovery if _trusted_prepared_recovery is not None
+                  else require_current_prepared_review(payload, payload_path, paths))
         if require_handoff_reviewed_for_prepared_payload and not bool(payload.get("gmail_handoff_reviewed")):
             raise IntakeError("Review the PDF preview and exact Gmail draft args before local recording.")
         _, draft_data = _load_prepared_draft_payload(payload_path)

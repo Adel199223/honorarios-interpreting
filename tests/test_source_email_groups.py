@@ -72,6 +72,47 @@ class SourceEmailGroupsTests(unittest.TestCase):
                           self.paths.manifest_dir, self.paths.intake_output_dir, self.paths.packet_output_dir):
             self.assertFalse(directory.exists() and any(directory.iterdir()), str(directory))
 
+    def test_repreparing_same_cases_preserves_all_previous_reviewed_artifacts(self):
+        rows = self.rows(2)
+        with patch('honorarios_app.services.timestamp_slug', return_value='20261001T120000Z'):
+            original = self.prepare(rows)
+            preserved = {Path(original['manifest'])}
+            for item in original['items']:
+                preserved.update(Path(item[key]) for key in ('pdf', 'html_preview', 'draft_payload', 'intake'))
+            preserved.update(Path(group['draft_payload']) for group in original['email_groups'])
+            before = {path: path.read_bytes() for path in preserved}
+            changed = copy.deepcopy(rows)
+            changed[0]['transport']['km_one_way'] = 99
+            revised = self.prepare(changed)
+        self.assertNotEqual(original['manifest'], revised['manifest'])
+        self.assertEqual({path: path.read_bytes() for path in preserved}, before)
+        for old, new in zip(original['items'], revised['items']):
+            self.assertNotEqual(old['pdf'], new['pdf'])
+            self.assertNotEqual(old['draft_payload'], new['draft_payload'])
+        for group in original['email_groups']:
+            require_current_prepared_review(self.request(original, group), group['draft_payload'], self.paths)
+        for group in revised['email_groups']:
+            require_current_prepared_review(self.request(revised, group), group['draft_payload'], self.paths)
+
+    def test_correction_preserves_recorded_attachment_and_payload_bytes(self):
+        rows = self.rows(1)
+        original = self.prepare(rows)
+        target = original['email_groups'][0]
+        self.assertEqual(self.record(target), 0)
+        preserved = {Path(original['manifest']), self.paths.draft_log, self.paths.duplicate_index,
+                     Path(target['draft_payload']), Path(target['pdf'])}
+        for item in original['items']:
+            preserved.update(Path(item[key]) for key in ('pdf', 'html_preview', 'draft_payload', 'intake'))
+        before = {path: path.read_bytes() for path in preserved}
+        changed = copy.deepcopy(rows)
+        changed[0]['transport']['km_one_way'] = 99
+        revised = self.prepare(changed, correction_reason='Correcting the fictional recorded distance.')
+        self.assertEqual({path: path.read_bytes() for path in preserved}, before)
+        self.assertNotEqual(revised['items'][0]['pdf'], original['items'][0]['pdf'])
+        original_payload = json.loads(Path(target['draft_payload']).read_text(encoding='utf-8'))
+        self.assertEqual(validate_draft_payload(original_payload), [])
+        require_current_prepared_review(self.request(original, target), target['draft_payload'], self.paths)
+
     def test_six_requests_form_two_targets_with_each_separate_pdf_and_exact_members(self):
         prepared = self.prepare()
         groups = prepared['email_groups']
@@ -258,7 +299,7 @@ class SourceEmailGroupsTests(unittest.TestCase):
             self.assertEqual(transport.call_count, 1)
 
     def test_http_preflight_prepare_and_active_check_preserve_group_contract(self):
-        client = TestClient(create_app(**runtime_path_overrides(self.root)))
+        client = TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1')
         rows = self.rows(3)[1:]
         preflight = client.post('/api/prepare/preflight', json={'intakes': rows, 'email_grouping': 'source'})
         self.assertEqual(preflight.status_code, 200)
@@ -435,6 +476,346 @@ class SourceEmailGroupsTests(unittest.TestCase):
                                'message_id': 'fictional-group-message', 'status': 'sent'}, self.paths)
         self.assertEqual(result['recorded_duplicate_count'], 2)
         self.assertEqual([row['status'] for row in json.loads(self.paths.duplicate_index.read_text(encoding='utf-8'))], ['sent', 'sent'])
+
+
+class BatchPeriodOverlapTests(unittest.TestCase):
+    """Unknown period overlaps a named period in one batch, just as in history."""
+    setUp = SourceEmailGroupsTests.setUp
+    rows = SourceEmailGroupsTests.rows
+    request = SourceEmailGroupsTests.request
+    assert_no_artifacts = SourceEmailGroupsTests.assert_no_artifacts
+
+    def period_rows(self, periods):
+        rows = self.rows(2)
+        for row, period in zip(rows, periods):
+            row.update(case_number='970/26.0TSTXX', service_period_label=period,
+                       source_kind='notification_pdf', source_sha256='c' * 64, claim_transport=False)
+            row.pop('travel_group_id', None)
+        # Normalized case spelling must not evade the common identity guard.
+        rows[1]['case_number'] = '0970/26.0tstxx'
+        return rows
+
+    def test_blank_named_or_equivalent_periods_pause_all_prepare_modes_before_writes(self):
+        for periods in (('', 'morning'), ('morning', ''), (' Morning ', 'morning')):
+            for grouping, packet in (('individual', False), ('source', False), ('individual', True)):
+                with self.subTest(periods=periods, grouping=grouping, packet=packet):
+                    rows = self.period_rows(periods)
+                    checked = preflight_intakes(rows, self.paths, email_grouping=grouping, packet_mode=packet)
+                    self.assertEqual(checked['status'], 'blocked')
+                    self.assertIn('overlaps', checked['message'])
+                    with self.assertRaisesRegex(IntakeError, 'overlaps'):
+                        prepare_intakes(rows, self.paths, email_grouping=grouping, packet_mode=packet)
+                    self.assert_no_artifacts()
+
+    def test_distinct_named_periods_remain_two_valid_recorded_requests(self):
+        rows = self.period_rows(('morning', 'afternoon'))
+        rows[0].update(service_start_time='09:00', service_end_time='10:00')
+        rows[1].update(service_start_time='14:00', service_end_time='15:00')
+        checked = preflight_intakes(rows, self.paths, email_grouping='source')
+        self.assertEqual(checked['status'], 'ready')
+        prepared = prepare_intakes(rows, self.paths, email_grouping='source')
+        group = prepared['email_groups'][0]
+        result = record_draft({**self.request(prepared, group), 'draft_id': 'fictional-two-periods',
+                               'message_id': 'fictional-two-periods-message'}, self.paths)
+        self.assertEqual(len(prepared['items']), 2)
+        self.assertEqual(result['recorded_duplicate_count'], 2)
+        saved = json.loads(self.paths.duplicate_index.read_text(encoding='utf-8'))
+        self.assertEqual([row['service_period_label'] for row in saved], ['morning', 'afternoon'])
+
+    def test_group_and_packet_payloads_reject_overlap_before_mime_or_record(self):
+        from honorarios_app.gmail_draft_api import gmail_draft_resource_from_payload
+        for packet_mode in (False, True):
+            with self.subTest(packet_mode=packet_mode):
+                prepared = prepare_intakes(self.period_rows(('morning', 'afternoon')), self.paths,
+                                           packet_mode=packet_mode, email_grouping='source')
+                target = prepared['packet'] if packet_mode else prepared['email_groups'][0]
+                path = Path(target['draft_payload'])
+                payload = json.loads(path.read_text(encoding='utf-8'))
+                payload['underlying_requests'][1]['service_period_label'] = ''
+                path.write_text(json.dumps(payload), encoding='utf-8')
+                self.assertTrue(any('overlaps' in error for error in validate_draft_payload(payload)))
+                with patch('honorarios_app.gmail_draft_api.build_mime_message') as mime:
+                    with self.assertRaisesRegex(IntakeError, 'overlaps'):
+                        gmail_draft_resource_from_payload(payload)
+                mime.assert_not_called()
+                before = self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()
+                with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+                    code = record_cli(['--payload', str(path), '--draft-id', 'fictional-overlap',
+                                       '--message-id', 'fictional-overlap-message', '--log', str(self.paths.draft_log),
+                                       '--duplicate-index', str(self.paths.duplicate_index)])
+                self.assertEqual(code, 2)
+                self.assertIn('overlaps', errors.getvalue())
+                self.assertEqual((self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()), before)
+
+    def test_direct_prepare_cli_uses_same_conservative_period_guard(self):
+        from scripts.prepare_honorarios import main as prepare_cli
+        input_paths = []
+        for index, row in enumerate(self.period_rows(('', 'morning'))):
+            path = self.root / f'fictional-period-{index}.json'
+            path.write_text(json.dumps(row), encoding='utf-8')
+            input_paths.append(str(path))
+        args = [*input_paths]
+        for flag, value in (('profile', self.paths.profile), ('template', self.paths.template),
+                            ('duplicate-index', self.paths.duplicate_index), ('draft-log', self.paths.draft_log),
+                            ('email-config', self.paths.email_config), ('court-emails', self.paths.court_emails),
+                            ('output-dir', self.paths.output_dir), ('html-dir', self.paths.html_dir),
+                            ('draft-output-dir', self.paths.draft_output_dir), ('render-dir', self.paths.render_dir),
+                            ('manifest', self.paths.manifest_dir / 'fictional-cli.json')):
+            args.extend(['--' + flag, str(value)])
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+            code = prepare_cli(args)
+        self.assertEqual(code, 2)
+        self.assertIn('overlaps', errors.getvalue())
+        self.assert_no_artifacts()
+
+
+class GmailAttemptRecoveryTests(unittest.TestCase):
+    """Offline transport faults exercise real create/recovery endpoints."""
+    setUp = SourceEmailGroupsTests.setUp
+    rows = SourceEmailGroupsTests.rows
+    prepare = SourceEmailGroupsTests.prepare
+    request = SourceEmailGroupsTests.request
+
+    def client(self):
+        return TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1')
+
+    def prepared_request(self):
+        prepared = self.prepare(self.rows(1))
+        return self.request(prepared, prepared['email_groups'][0])
+
+    def fake_transport(self, *, timeout_first=False, http_status=200):
+        import httpx
+        from contextlib import ExitStack
+        self.remote = []
+        original_client = httpx.Client
+        def handler(request):
+            self.assertEqual(request.method, 'POST')
+            self.assertEqual(request.url.path, '/gmail/v1/users/me/drafts')
+            if http_status != 200:
+                return httpx.Response(http_status, json={'error': {'message': 'Fictional provider rejection'}})
+            number = len(self.remote) + 1
+            result = {'id': f'fictional-created-{number}', 'message': {'id': f'fictional-message-{number}', 'threadId': f'fictional-thread-{number}'}}
+            self.remote.append(result)
+            if timeout_first and number == 1:
+                raise httpx.ReadTimeout('Lost response after committing the fictional draft', request=request)
+            return httpx.Response(200, json=result)
+        def client_factory(*args, **kwargs):
+            kwargs['transport'] = httpx.MockTransport(handler)
+            return original_client(*args, **kwargs)
+        stack = ExitStack()
+        stack.enter_context(patch('honorarios_app.gmail_draft_api.gmail_access_token', return_value=('fictional-token', {})))
+        stack.enter_context(patch('honorarios_app.gmail_draft_api.fake_gmail_draft_api_enabled', return_value=False))
+        stack.enter_context(patch('honorarios_app.gmail_draft_api.httpx.Client', side_effect=client_factory))
+        return stack
+
+    def test_lost_response_blocks_retry_reprepare_and_restarted_signer(self):
+        request = self.prepared_request()
+        with self.fake_transport(timeout_first=True):
+            first = self.client().post('/api/gmail/drafts/create', json=request).json()
+            self.assertEqual(first['status'], 'creation_uncertain')
+            with patch('honorarios_app.services._PREPARED_REVIEW_SECRET', b'fictional-new-process-signing-key'):
+                fresh = self.prepared_request()
+                second = self.client().post('/api/gmail/drafts/create', json=fresh).json()
+            self.assertEqual(second['attempt_id'], first['attempt_id'])
+            self.assertEqual(second['status'], 'creation_uncertain')
+            self.assertEqual(len(self.remote), 1)
+        self.assertEqual(json.loads(self.paths.draft_log.read_text()), [])
+
+    def test_process_interruption_keeps_durable_started_reservation(self):
+        request = self.prepared_request()
+        with patch('honorarios_app.services.create_gmail_draft_from_payload', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                create_and_record_gmail_api_draft(request, self.paths)
+        with patch('honorarios_app.services.create_gmail_draft_from_payload') as transport:
+            result = create_and_record_gmail_api_draft(self.prepared_request(), self.paths)
+        transport.assert_not_called()
+        self.assertEqual(result['status'], 'creation_uncertain')
+
+    def test_pending_attempt_also_blocks_another_manual_handoff(self):
+        request = self.prepared_request()
+        with self.fake_transport(timeout_first=True):
+            self.client().post('/api/gmail/drafts/create', json=request)
+        with self.assertRaisesRegex(IntakeError, 'pending Gmail attempt'):
+            manual_handoff_packet(request, self.paths)
+
+    def test_confirmed_remote_ids_survive_log_failure_and_recover_without_new_create(self):
+        from honorarios_app.gmail_attempts import load_attempts
+        request = self.prepared_request()
+        with self.fake_transport():
+            with patch('scripts.record_gmail_draft.write_log', side_effect=PermissionError('Fictional locked log')):
+                first = self.client().post('/api/gmail/drafts/create', json=request).json()
+            self.assertEqual(first['status'], 'created_unrecorded')
+            self.assertEqual(first['draft_id'], self.remote[0]['id'])
+            with patch('honorarios_app.services._PREPARED_REVIEW_SECRET', b'fictional-new-process-signing-key'):
+                recovered = self.client().post('/api/gmail/drafts/create', json={'recover_attempt_id': first['attempt_id'], 'gmail_handoff_reviewed': True}).json()
+            self.assertTrue(recovered['recovered_existing_draft'])
+            self.assertEqual(recovered['draft_id'], first['draft_id'])
+            self.assertEqual(recovered['gmail_api_action'], 'local_record_recovery')
+            self.assertEqual(recovered['confirmation']['gmail_api_action'], 'local_record_recovery')
+            self.assertEqual(load_attempts(self.paths.draft_log)[0]['gmail_result']['gmail_api_action'], 'users.drafts.create')
+            self.assertEqual(len(self.remote), 1)
+        self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
+        self.assertEqual(len(json.loads(self.paths.duplicate_index.read_text())), 1)
+
+    def test_partial_history_write_recovers_both_files_without_second_draft(self):
+        request = self.prepared_request()
+        with self.fake_transport():
+            with patch('scripts.record_gmail_draft.write_duplicate_index', side_effect=PermissionError('Fictional locked index')):
+                first = self.client().post('/api/gmail/drafts/create', json=request).json()
+            self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
+            self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), [])
+            reference = self.client().get('/api/reference').json()
+            self.assertEqual(reference['pending_gmail_attempts'][0]['attempt_id'], first['attempt_id'])
+            self.assertEqual(reference['pending_gmail_attempts'][0]['status'], 'created_unrecorded')
+            result = self.client().post('/api/gmail/drafts/create', json={'recover_attempt_id': first['attempt_id'], 'gmail_handoff_reviewed': True}).json()
+            self.assertEqual(result['status'], 'created')
+            self.assertEqual(len(self.remote), 1)
+        self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
+        self.assertEqual(len(json.loads(self.paths.duplicate_index.read_text())), 1)
+        self.assertEqual(self.client().get('/api/reference').json()['pending_gmail_attempts'], [])
+
+    def test_uncertain_correction_can_resolve_absent_without_changing_old_draft(self):
+        request = self.prepared_request()
+        with self.fake_transport():
+            original = self.client().post('/api/gmail/drafts/create', json=request).json()
+        prepared = self.prepare(self.rows(1), correction_reason='Fictional approved correction')
+        correction = self.request(prepared, prepared['email_groups'][0])
+        correction.update(supersedes=[original['draft_id']], correction_reason='Fictional approved correction')
+        before = self.paths.draft_log.read_bytes()
+        with self.fake_transport(timeout_first=True):
+            pending = self.client().post('/api/gmail/drafts/create', json=correction).json()
+            self.assertEqual(pending['status'], 'creation_uncertain')
+            resolved = self.client().post('/api/gmail/drafts/create', json={
+                'resolve_attempt_id': pending['attempt_id'], 'gmail_handoff_reviewed': True,
+                'confirmation_phrase': 'I CHECKED GMAIL: NO DRAFT', 'resolution_reason': 'Fictional user found only the old draft'}).json()
+        self.assertEqual(resolved['status'], 'not_created')
+        self.assertEqual(before, self.paths.draft_log.read_bytes())
+
+    def test_recovery_rejects_changed_original_attachment(self):
+        request = self.prepared_request()
+        with self.fake_transport():
+            with patch('scripts.record_gmail_draft.write_log', side_effect=PermissionError('Fictional locked log')):
+                first = self.client().post('/api/gmail/drafts/create', json=request).json()
+            pdf = Path(first['attachment_files'][0])
+            pdf.write_bytes(pdf.read_bytes() + b'fictional changed attachment')
+            recovered = self.client().post('/api/gmail/drafts/create', json={'recover_attempt_id': first['attempt_id'], 'gmail_handoff_reviewed': True})
+            self.assertEqual(recovered.status_code, 400)
+            self.assertIn('original', recovered.json()['message'])
+            self.assertEqual(len(self.remote), 1)
+
+    def test_explicit_absent_resolution_is_required_before_new_create(self):
+        request = self.prepared_request()
+        with self.fake_transport(timeout_first=True):
+            first = self.client().post('/api/gmail/drafts/create', json=request).json()
+            args = {'resolve_attempt_id': first['attempt_id'], 'gmail_handoff_reviewed': True}
+            self.assertEqual(self.client().post('/api/gmail/drafts/create', json=args).status_code, 400)
+            args.update(confirmation_phrase='I CHECKED GMAIL: NO DRAFT', resolution_reason='Fictional user checked the mailbox')
+            resolved = self.client().post('/api/gmail/drafts/create', json=args).json()
+            self.assertTrue(resolved['create_retry_allowed'])
+            self.assertEqual(resolved['gmail_api_action'], 'local_attempt_resolution')
+            result = self.client().post('/api/gmail/drafts/create', json=request).json()
+            self.assertEqual(result['status'], 'created')
+            self.assertEqual(len(self.remote), 2)
+
+    def test_uncertain_result_can_record_confirmed_existing_ids_without_another_post(self):
+        request = self.prepared_request()
+        with self.fake_transport(timeout_first=True):
+            first = self.client().post('/api/gmail/drafts/create', json=request).json()
+            args = {'recover_attempt_id': first['attempt_id'], 'gmail_handoff_reviewed': True,
+                    'draft_id': self.remote[0]['id'], 'message_id': self.remote[0]['message']['id']}
+            self.assertEqual(self.client().post('/api/gmail/drafts/create', json=args).status_code, 400)
+            args['confirmation_phrase'] = 'I CHECKED THE EXISTING GMAIL DRAFT'
+            result = self.client().post('/api/gmail/drafts/create', json=args).json()
+            self.assertEqual(result['status'], 'created')
+            self.assertEqual(len(self.remote), 1)
+
+    def test_provider_rejection_does_not_leave_uncertain_reservation(self):
+        from honorarios_app.gmail_attempts import load_attempts
+        request = self.prepared_request()
+        with self.fake_transport(http_status=401):
+            response = self.client().post('/api/gmail/drafts/create', json=request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(load_attempts(self.paths.draft_log)[-1]['state'], 'not_created')
+        with self.fake_transport():
+            self.assertEqual(self.client().post('/api/gmail/drafts/create', json=request).json()['status'], 'created')
+
+    def test_concurrent_same_request_creates_only_one_remote_draft(self):
+        from concurrent.futures import ThreadPoolExecutor
+        request = self.prepared_request()
+        def run():
+            try:
+                return create_and_record_gmail_api_draft(request, self.paths)['status']
+            except IntakeError:
+                return 'blocked'
+        with self.fake_transport(), ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: run(), range(2)))
+            self.assertEqual(sorted(results), ['blocked', 'created'])
+            self.assertEqual(len(self.remote), 1)
+
+    def test_recorded_attempt_cannot_reactivate_sent_history(self):
+        from honorarios_app.gmail_attempts import load_attempts
+        request = self.prepared_request()
+        with self.fake_transport():
+            result = self.client().post('/api/gmail/drafts/create', json=request).json()
+        record_draft({'payload': request['payload'], 'draft_id': result['draft_id'], 'message_id': result['message_id'], 'status': 'sent'}, self.paths)
+        attempt_id = load_attempts(self.paths.draft_log)[0]['attempt_id']
+        recovered = self.client().post('/api/gmail/drafts/create', json={'recover_attempt_id': attempt_id, 'gmail_handoff_reviewed': True})
+        self.assertEqual(recovered.status_code, 400)
+        self.assertEqual(json.loads(self.paths.draft_log.read_text())[0]['status'], 'sent')
+
+    def test_atomic_write_failure_keeps_previous_complete_history(self):
+        from scripts.state_store import atomic_write_json
+        original = self.paths.draft_log.read_bytes()
+        with patch('scripts.state_store.os.replace', side_effect=PermissionError('Fictional locked target')):
+            with self.assertRaises(PermissionError):
+                atomic_write_json(self.paths.draft_log, [{'fictional': 'new value'}])
+        self.assertEqual(self.paths.draft_log.read_bytes(), original)
+
+    def test_attempt_lock_excludes_another_local_app_process(self):
+        import subprocess
+        import sys
+        from scripts.state_store import state_file_lock
+        lock_path = self.root / 'fictional-cross-process.lock'
+        script = "from pathlib import Path\nimport sys\nfrom scripts.state_store import state_file_lock\nwith state_file_lock(Path(sys.argv[1])):\n print('locked', flush=True)\n sys.stdin.read(1)\n"
+        child = subprocess.Popen([sys.executable, '-u', '-c', script, str(lock_path)], cwd=ROOT,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), 'locked')
+            with self.assertRaises(TimeoutError):
+                with state_file_lock(lock_path, timeout=0.1):
+                    self.fail('A second process acquired the held attempt lock')
+        finally:
+            _stdout, stderr = child.communicate('\n', timeout=5)
+        self.assertEqual(child.returncode, 0, stderr)
+
+    def test_profile_tax_selection_reaches_review_and_pdf(self):
+        from honorarios_app.services import load_personal_profiles
+        from pypdf import PdfReader
+        profile = dict(load_personal_profiles(self.paths)['profiles'][0])
+        profile.update(iva_text='13%', irs_text='Retenção de 25%')
+        response = self.client().post('/api/profiles/save', json={'profile': profile, 'make_main': True})
+        self.assertEqual(response.status_code, 200)
+        review = self.client().post('/api/review', json={'intake': self.intake}).json()
+        self.assertIn('IVA de 13%', review['draft_text'])
+        self.assertIn('Retenção de 25%', review['draft_text'])
+        prepared = self.prepare(self.rows(1))
+        text = '\n'.join(page.extract_text() for page in PdfReader(prepared['items'][0]['pdf']).pages)
+        self.assertIn('IVA de 13%', text)
+        self.assertIn('Retenção de 25%', text)
+        self.assertNotIn('não está sujeito a retenção', text)
+
+    def test_ai_only_recipient_is_not_promoted_and_existing_manual_choice_is_preserved(self):
+        from honorarios_app.services import merge_ai_recovery_into_intake
+        unseen = SYNTHETIC_COURT_EMAIL.replace('court@', 'fictional-unseen@')
+        recovery = {'status': 'ok', 'fields': {'court_email': unseen}, 'raw_visible_text': 'Fictional court document without a printed email.', 'warnings': []}
+        row = copy.deepcopy(self.intake)
+        row.pop('recipient_email', None)
+        merged = merge_ai_recovery_into_intake(row, recovery)
+        self.assertFalse(merged.get('recipient_email'))
+        self.assertTrue(merged['ai_recovery']['warnings'])
+        recovery['raw_visible_text'] = unseen
+        merged = merge_ai_recovery_into_intake(copy.deepcopy(self.intake), recovery)
+        self.assertEqual(merged['recipient_email'], SYNTHETIC_COURT_EMAIL)
 
 
 if __name__ == '__main__':

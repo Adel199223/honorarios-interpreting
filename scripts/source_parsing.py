@@ -11,7 +11,12 @@ except ModuleNotFoundError:
     from entity_rules import normalize_text
 
 
-DATE_RE = re.compile(r"\b(?:(20\d{2})-(\d{2})-(\d{2})|(\d{1,2})/(\d{1,2})/(20\d{2}))\b")
+PORTUGUESE_MONTHS = {name: number for number, name in enumerate(
+    ("janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto",
+     "setembro", "outubro", "novembro", "dezembro"), start=1)}
+DATE_RE = re.compile(
+    r"\b(?:(20\d{2})-(\d{2})-(\d{2})|(\d{1,2})[/-](\d{1,2})[/-](20\d{2})|"
+    r"(\d{1,2})\s+de\s+(" + "|".join(PORTUGUESE_MONTHS) + r")\s+de\s+(20\d{2}))\b")
 SERVICE_DATE_RE = re.compile(
     r"\b(?:servico(?: de interpretacao)?|interpretacao|diligencia|audiencia|"
     r"service date|interpreting service|provided|prestou|compareceu|"
@@ -22,6 +27,26 @@ OTHER_DATE_RE = re.compile(
     r"data (?:do documento|da notificacao|de fecho)|assinatura|pede deferimento|closing date|issued|"
     r"agendad[oa]|marcad[oa]|designad[oa]|convocad[oa]|comparecer|"
     r"scheduled|appointment|captura|metadados|metadata|fotografia|photo)\b"
+)
+APPOINTMENT_DATE_RE = re.compile(
+    r"\b(?:agendad[oa]|marcad[oa]|designad[oa]|convocad[oa]|comparecer|scheduled|appointment)\b"
+)
+DOCUMENT_DATE_RE = re.compile(
+    r"\b(?:emitid[oa]|emissao|expedid[oa]|assinad[oa]|enviad[oa]|"
+    r"data (?:do documento|da notificacao|de fecho)|assinatura|pede deferimento|closing date|issued|"
+    r"certificacao|citius|captura|metadados|metadata|fotografia|photo)\b|\bdata\s*:"
+)
+INTERPRETING_CONTEXT_RE = re.compile(r"\b(?:interprete|interpretacao|interpreting)\b")
+CANCELLED_DATE_RE = re.compile(
+    r"\b(?:cancelad[oa]|anulad[oa]|adiad[oa]|suspens[oa]|sem efeito|"
+    r"nao\s+(?:(?:se|foi|sera)\s+)?(?:realizou|realizad[oa]|ocorreu|decorreu|compareceu)|"
+    r"nao\s+(?:deve|devem|devera|deverao)\s+comparecer|dispensad[oa]s?\s+de\s+comparecer)\b"
+)
+OTHER_ATTENDEE_RE = re.compile(
+    r"\b(?:arguid[oa]s?|testemunhas?|ofendid[oa]s?|assistentes?|demandad[oa]s?)\s+"
+    r"(?:(?:foi|fica|ficam|foram)\s+(?:notificad[oa]s?|convocad[oa]s?)|"
+    r"(?:deve|devem|devera|deverao)\s+comparecer|comparec(?:eu|era|em))\b|"
+    r"\bnotifica-se\s+(?:o|a|os|as)\s+(?:arguid[oa]s?|testemunhas?|ofendid[oa]s?)\b"
 )
 WRAPPED_DATE_LINK_RE = re.compile(r"(?:\b(?:em|no dia|na data|data de)\s*|:)\s*$")
 PLACE_ANCHOR_RE = re.compile(
@@ -58,7 +83,7 @@ class ServiceDateEvidence:
         return bool(self.candidates and not self.value)
 
 
-def _date_role(text: str, start: int, end: int) -> str:
+def _date_role(text: str, start: int, end: int, *, notification: bool = False) -> str:
     # Limit labels to this clause, so a document header cannot label a later
     # service date and a service paragraph cannot relabel an issue date.
     left_boundary = max((text.rfind(char, 0, start) for char in "\n;.!?"), default=-1) + 1
@@ -74,15 +99,27 @@ def _date_role(text: str, start: int, end: int) -> str:
         # completed sentence, or unrelated header that has no date connector.
         if WRAPPED_DATE_LINK_RE.search(previous_clause) and (
             SERVICE_DATE_RE.search(previous_clause) or OTHER_DATE_RE.search(previous_clause)
+            or DOCUMENT_DATE_RE.search(previous_clause)
         ):
             left_boundary = previous_clause_start
     right_positions = [position for char in "\n;.!?" if (position := text.find(char, end)) >= 0]
     right_boundary = min(right_positions, default=len(text))
     clause = text[left_boundary:right_boundary]
+    if notification:
+        # An interpreter mentioned in an unrelated part of the file does not
+        # establish whose hearing/attendance a later date describes.
+        paragraph_break = text.rfind("\n\n", 0, start)
+        paragraph_start = max(paragraph_break + 2 if paragraph_break >= 0 else 0, start - 500)
+        context = text[paragraph_start:right_boundary]
+        if (not INTERPRETING_CONTEXT_RE.search(context) or CANCELLED_DATE_RE.search(clause)
+                or OTHER_ATTENDEE_RE.search(clause)):
+            return "other"
     relative_start = start - left_boundary
     relative_end = end - left_boundary
     labels: list[tuple[int, str]] = []
-    for expression, role in ((SERVICE_DATE_RE, "service"), (OTHER_DATE_RE, "other")):
+    expressions = ((SERVICE_DATE_RE, "service"), (DOCUMENT_DATE_RE, "other"),
+                   (APPOINTMENT_DATE_RE, "appointment" if notification else "other"))
+    for expression, role in expressions:
         for match in expression.finditer(clause):
             if match.end() <= relative_start:
                 distance = relative_start - match.end()
@@ -97,27 +134,35 @@ def _date_role(text: str, start: int, end: int) -> str:
     return min(labels, key=lambda item: (item[0], item[1] != "other"))[1]
 
 
-def service_date_evidence(text: str) -> ServiceDateEvidence:
+def service_date_evidence(text: str, *, source_kind: str = "") -> ServiceDateEvidence:
     normalized = normalize_text(text or "")
+    notification = source_kind == "notification_pdf"
     found: list[tuple[str, str]] = []
     for match in DATE_RE.finditer(normalized):
-        iso_year, iso_month, iso_day, eu_day, eu_month, eu_year = match.groups()
+        iso_year, iso_month, iso_day, eu_day, eu_month, eu_year, named_day, named_month, named_year = match.groups()
         try:
-            value = datetime(int(iso_year or eu_year), int(iso_month or eu_month), int(iso_day or eu_day)).date().isoformat()
+            value = datetime(int(iso_year or eu_year or named_year),
+                             int(iso_month or eu_month or PORTUGUESE_MONTHS.get(named_month, 0)),
+                             int(iso_day or eu_day or named_day)).date().isoformat()
         except ValueError:
             continue
-        found.append((value, _date_role(normalized, match.start(), match.end())))
+        found.append((value, _date_role(normalized, match.start(), match.end(), notification=notification)))
     candidates = tuple(dict.fromkeys(value for value, _role in found))
-    service_dates = tuple(dict.fromkeys(value for value, role in found if role == "service"))
+    service_dates = tuple(dict.fromkeys(value for value, role in found
+                                       if role in {"service", "appointment"}))
     if len(service_dates) == 1:
         return ServiceDateEvidence(value=service_dates[0], candidates=candidates)
     if len(service_dates) > 1:
         return ServiceDateEvidence(candidates=candidates, warning="Several service dates appear in the source. Confirm the date of the interpreting service before PDF creation.")
-    if len(candidates) == 1 and any(role == "unknown" for _value, role in found):
+    if not notification and len(candidates) == 1 and any(role == "unknown" for _value, role in found):
         # Preserve the single unlabelled-date case; explicit issue, appointment
         # and capture labels never supply the service date by themselves.
         return ServiceDateEvidence(value=candidates[0], candidates=candidates)
     if candidates:
+        if notification:
+            return ServiceDateEvidence(candidates=candidates, warning=(
+                "The notification needs one explicit interpreting appointment or performed-service date. "
+                "The document's issue, certification or capture date cannot supply it. Confirm the service date before PDF creation."))
         warning = (
             "The source contains several dates without one clear service date. Confirm the date of the interpreting service before PDF creation."
             if len(candidates) > 1 else

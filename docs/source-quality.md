@@ -1,6 +1,18 @@
 # Source decisions and AI reading
 
-The app should identify the date and place of the interpreting service, distinguish the paying authority from the physical host, and ask when an important fact is missing or conflicting. A document's issue date, closing date, appointment or photo capture date does not by itself establish when the service happened. Familiar profiles must not replace an unfamiliar court or city.
+The app should identify the date and place of the interpreting service, distinguish the paying authority from the physical host, and ask when an important fact is missing or conflicting. Notification PDFs use an explicit interpreting appointment date as the editable service-date default. Issue, certification, closing and file dates do not supply that default. Photos follow the separate saved capture-day rule below. Familiar profiles must not replace an unfamiliar court or city.
+
+## Notification PDFs and mixed work
+
+For a notification, read the interpreter's attendance or performed-service clause, including Portuguese written dates, independently of the notice's issue date. Missing, conflicting, cancelled or unrelated appointments require review. A scheduled appointment supplies a drafting default; it is not proof that interpreting took place. The claim selector remains authoritative for interpreting, travel or both.
+
+A notice can assign in-person interpreting and separate written translation. When the interpreting assignment is explicit, prepare only that interpreting request and explain that written translation is excluded. Ambiguous mixed notices ask a numbered scope question; its answer is tied to that source. Translation-only notices remain set aside. Classification does not waive date, case, venue, recipient or duplicate checks.
+
+Every visible PDF case is reviewed separately, like a multi-case photo, and produces its own PDF. One email per source groups compatible child attachments; differing dates/venues do not automatically establish a shared trip. Replacing a source clears its old supporting files and custom email text; re-reading the same source keeps them.
+
+Source reading remains bounded: at most eight text pages or three pages requiring image recovery. If pages remain unread, rendering/OCR fails, or the PDF exceeds those limits, upload stops and explains how to supply a shorter relevant-page PDF or complete reviewed text. A readable first page cannot establish that the rest was read. Source-read limits are separate from generated-request page counts.
+
+Configured short ordinary-court labels can also apply to a notification when the visible court and exact recipient uniquely match that saved preference. Raw source wording remains evidence; specialized courts, unknown recipients and different physical hosts are not shortened by guesswork. The saved closing city applies independently of source/service-profile detection, while explicit edits and clears remain authoritative. AI-extracted summons instructions remain evidence and cannot become the fee request's location clause.
 
 The beginner review shows case, service date, paying authority, service place and recipient together. Its origin labels describe how each value was obtained. AI-read values still need checking; an AI model repeating its own reading is not independent confirmation. The labels are categories, not measured probabilities. Capture metadata and explicit user confirmation remain distinct evidence.
 

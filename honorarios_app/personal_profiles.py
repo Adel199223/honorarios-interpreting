@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from scripts.generate_pdf import IntakeError
+from scripts.entity_rules import normalize_text
+from scripts.state_store import atomic_write_json
 
 
 DEFAULT_PRIMARY_PROFILE_ID = "primary"
@@ -210,7 +212,15 @@ def load_profile_store(
     legacy_profile = load_json_if_exists(legacy_profile_path, {})
     fallback = synthesize_profile_from_legacy(legacy_profile, known_destinations if isinstance(known_destinations, list) else [])
     if profile_store_path.exists():
-        return normalize_profile_store(load_json_if_exists(profile_store_path, {}), fallback_profile=fallback)
+        try:
+            stored = json.loads(profile_store_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            raise IntakeError('The saved personal profiles could not be read. Restore or repair the profile file before saving or preparing requests.') from exc
+        profiles = stored.get('profiles') if isinstance(stored, dict) else None
+        records = list(profiles.values()) if isinstance(profiles, dict) else profiles
+        if not isinstance(records, list) or not records or not all(isinstance(record, dict) for record in records):
+            raise IntakeError('The saved personal profiles have an invalid structure. Restore or repair the profile file before saving or preparing requests.')
+        return normalize_profile_store(stored)
     return normalize_profile_store({"primary_profile_id": DEFAULT_PRIMARY_PROFILE_ID, "profiles": [fallback]}, fallback_profile=fallback)
 
 
@@ -255,8 +265,6 @@ def vat_irs_phrase(profile: dict[str, Any], legacy_defaults: dict[str, Any] | No
         return iva
     if "sem reten" in irs.casefold() or "não está sujeito" in irs.casefold() or "nao esta sujeito" in irs.casefold():
         return f"Este serviço inclui a taxa de IVA de {iva} e não está sujeito a retenção de IRS."
-    if legacy_defaults and _text(legacy_defaults.get("vat_irs_phrase")):
-        return _text(legacy_defaults.get("vat_irs_phrase"))
     return f"Este serviço inclui a taxa de IVA de {iva} e {irs}."
 
 
@@ -298,14 +306,9 @@ def save_profile_store(
     normalized = normalize_profile_store(store)
     for profile in normalized["profiles"]:
         validate_profile(profile)
-    profile_store_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_store_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(profile_store_path, normalized)
     selected = main_profile(normalized)
-    legacy_profile_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_profile_path.write_text(
-        json.dumps(profile_to_generator_profile(selected, legacy_defaults), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(legacy_profile_path, profile_to_generator_profile(selected, legacy_defaults))
     return normalized
 
 
@@ -329,17 +332,32 @@ def lookup_profile_distance(profile: dict[str, Any], destination: str) -> tuple[
     if not query:
         return None, ""
     distances = profile.get("travel_distances_by_city") if isinstance(profile.get("travel_distances_by_city"), dict) else {}
-    query_fold = query.casefold()
+    query_fold = ' '.join(normalize_text(query).split())
+    matches: list[tuple[str, str, Any]] = []
     for label, km in distances.items():
         label_text = _text(label)
         if not label_text:
             continue
-        label_fold = label_text.casefold()
-        if query_fold == label_fold or query_fold in label_fold or label_fold in query_fold:
-            try:
-                return int(km), label_text
-            except (TypeError, ValueError):
-                return None, ""
+        label_fold = ' '.join(normalize_text(label_text).split())
+        if query_fold == label_fold:
+            matches.append((label_fold, label_text, km))
+    # Exact destinations precede longer institution descriptions. Substring
+    # aliases cannot choose the first of overlapping or conflicting cities.
+    if not matches and re.match(r'^(?:tribunal|juizo|posto|esquadra|gnr|psp|hospital|gabinete|instituto|ministerio publico)\b', query_fold):
+        for label, km in distances.items():
+            label_text = _text(label)
+            label_fold = ' '.join(normalize_text(label_text).split())
+            if label_fold and re.search(r'(?<!\w)' + re.escape(label_fold) + r'\s*[.,;]*$', query_fold):
+                matches.append((label_fold, label_text, km))
+        matches = [match for match in matches if not any(
+            match[0] != other[0] and re.search(r'(?<!\w)' + re.escape(match[0]) + r'(?!\w)', other[0])
+            for other in matches
+        )]
+    if len(matches) == 1:
+        try:
+            return int(matches[0][2]), matches[0][1]
+        except (TypeError, ValueError):
+            pass
     return None, ""
 
 

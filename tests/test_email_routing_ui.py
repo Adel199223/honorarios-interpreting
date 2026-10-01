@@ -18,7 +18,7 @@ const element=selector=>{
   }return elements.get(selector);
 };
 const calls=[],copied=[];let deferred=null;let responseOverride=null;let responseFailure=null;let routeOverrides={};let deferredRoute='';
-const context={...g,console,JSON,Map,Set,Date,window:{},referenceLoads:0,navigator:{clipboard:{writeText:async text=>copied.push(text)}},
+const context={...g,console,FormData,JSON,Map,Set,Date,window:{},referenceLoads:0,navigator:{clipboard:{writeText:async text=>copied.push(text)}},
   document:{querySelector:element,querySelectorAll(){return []},getElementById:id=>element('#'+id),body:{dataset:{}}},
   fetch:async(url,options)=>{
     const body=options?.body?JSON.parse(options.body):{};calls.push({url,body});if(deferred&&(!deferredRoute||deferredRoute===url))await deferred;
@@ -45,10 +45,12 @@ const listenerSource=(id,event='click')=>{
 };
 ['#check-active-drafts','#create-gmail-api-draft','#record-draft','#record-parsed-prepared-draft','#prepare-source-email-replacement'].forEach(id=>{app+='\n'+listenerSource(id);});
 app+='\n'+listenerSource('#saved-court-email','change');
+app+='\n'+listenerSource('#preflight-batch-intakes');
 app+='\n'+listenerSource('#batch-email-grouping','change')+'\n'+listenerSource('#prepared-email-member','change');
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
-app+='\nloadReference=async()=>{referenceLoads+=1};this.api={state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
+app+='\nloadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
+app+='\nthis.api.recoverGmailAttempt=recoverGmailAttempt;this.api.renderGmailStatus=renderGmailStatus;this.api.renderHistoryDraftActionResult=renderHistoryDraftActionResult;';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
@@ -68,6 +70,141 @@ class EmailRoutingUiTests(unittest.TestCase):
         result=subprocess.run(['node','--input-type=module','-'],input=script,text=True,encoding='utf-8',capture_output=True,timeout=20,cwd=ROOT)
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
+
+    def test_late_supporting_proof_never_attaches_to_a_new_request(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);
+let release;const gate=new Promise(resolve=>release=resolve);
+context.fetch=async()=>{await gate;return {ok:true,json:async()=>({attachment:{stored_path:'/fictional/alpha-proof.pdf'}})}};
+const pending=a.uploadSupportingAttachments([{name:'alpha-proof.pdf'}]);
+a.clearPreparedArtifacts('source changed');a.state.currentIntake={...beta};a.fillFormFromIntake(beta);
+release();const result=await pending;
+console.log(JSON.stringify({result,current:a.state.currentIntake.case_number,attachments:a.state.currentIntake.additional_attachment_files||[]}));
+""")
+        self.assertIsNone(result['result'])
+        self.assertEqual(result['current'], '711/26.0TSTXX')
+        self.assertEqual(result['attachments'], [])
+
+    def test_new_pdf_upload_does_not_inherit_another_sources_proofs_or_body(self):
+        result = self.run_js("""
+const results=[];const originalFetch=context.fetch;
+for(const previousHash of [alpha.source_sha256,beta.source_sha256,'']){
+ a.state.currentIntake={...alpha,source_sha256:previousHash,additional_attachment_files:['/fictional/alpha-proof.pdf'],email_body:'Previous explanation'};a.fillFormFromIntake(a.state.currentIntake);
+ context.fetch=async(url,options)=>url==='/api/sources/upload'?{ok:true,json:async()=>({candidate_intake:{...beta,source_kind:'notification_pdf'},review:{status:'ready',intake:beta,next_safe_action:{state:'prepare_pdf'}},source:{sha256:beta.source_sha256,source_kind:'notification_pdf'}})}:originalFetch(url,options);
+ await a.uploadSource('notification_pdf',{file:{name:'beta.pdf',size:20,lastModified:2,type:'application/pdf'}});
+ results.push({previousHash,case:a.state.currentIntake.case_number,attachments:a.state.currentIntake.additional_attachment_files||[],body:a.state.currentIntake.email_body||''});
+}
+console.log(JSON.stringify({results,reviewBodies:calls.filter(row=>row.url==='/api/review').map(row=>({attachments:row.body.intake.additional_attachment_files||[],body:row.body.intake.email_body||''}))}));
+""")
+        self.assertEqual(result['results'][0]['case'], '711/26.0TSTXX')
+        self.assertEqual(result['results'][0]['attachments'], [])
+        self.assertEqual(result['results'][0]['body'], '')
+        self.assertEqual(result['reviewBodies'][0], {'attachments': [], 'body': ''})
+        for row in result['results'][1:]:
+            self.assertEqual(row['attachments'], ['/fictional/alpha-proof.pdf'])
+            self.assertEqual(row['body'], 'Previous explanation')
+
+    def test_pdf_multiple_cases_follow_existing_review_and_shared_trip_ui(self):
+        result = self.run_js("""
+const rows=photoRows().slice(1,3).map(row=>({...row,source_kind:'notification_pdf',service_date:'2026-09-28',transport:{origin:'Example home',destination:'Beta',km_one_way:12}}));
+const originalFetch=context.fetch;
+context.fetch=async(url,options)=>url==='/api/sources/upload'?{ok:true,json:async()=>({candidate_intake:rows[0],case_count:2,case_candidates:rows.map(intake=>({candidate_intake:intake,review:{status:'ready',intake,next_safe_action:{state:'prepare_pdf'}}})),source:{sha256:rows[0].source_sha256,source_kind:'notification_pdf',filename:'fictional-two-cases.pdf'}})}:originalFetch(url,options);
+routeOverrides['/api/review']=body=>({status:'ready',intake:body.intake,next_safe_action:{state:'prepare_pdf'}});
+await a.uploadSource('notification_pdf',{file:{name:'two-cases.pdf',size:20,lastModified:2,type:'application/pdf'}});
+console.log(JSON.stringify({cases:a.state.sourceCaseCandidates.map(row=>({case:row.candidate_intake.case_number,kind:row.candidate_intake.source_kind,date:row.candidate_intake.service_date,travel:row.candidate_intake.claim_transport,status:row.review.status})),owner:a.state.sourceTravelChoice.ownerIndex,addDisabled:element('#add-source-cases-to-batch').disabled,reviewed:calls.filter(row=>row.url==='/api/review').map(row=>row.body.intake.case_number)}));
+""")
+        self.assertEqual([row['case'] for row in result['cases']], ['711/26.0TSTXX', '712/26.0TSTXX'])
+        self.assertTrue(all(row['kind'] == 'notification_pdf' and row['date'] == '2026-09-28' and row['status'] == 'ready' for row in result['cases']))
+        self.assertEqual([row['travel'] for row in result['cases']], [True, False])
+        self.assertEqual(result['owner'], 0)
+        self.assertFalse(result['addDisabled'])
+        self.assertEqual(result['reviewed'], ['711/26.0TSTXX', '712/26.0TSTXX'])
+
+    def test_late_pdf_upload_cannot_restore_old_supplemental_files_after_source_change(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha,additional_attachment_files:['/fictional/alpha-proof.pdf'],email_body:'Alpha explanation'};a.fillFormFromIntake(a.state.currentIntake);
+let release;const gate=new Promise(resolve=>release=resolve);
+context.fetch=async()=>{await gate;return {ok:true,json:async()=>({candidate_intake:alpha,source:{sha256:alpha.source_sha256,source_kind:'notification_pdf'}})}};
+const pending=a.uploadSource('notification_pdf',{file:{name:'alpha.pdf',size:20,lastModified:2,type:'application/pdf'}});
+a.clearPreparedArtifacts('changed source');a.state.currentIntake={...beta,additional_attachment_files:['/fictional/beta-proof.pdf'],email_body:'Beta explanation'};
+release();const result=await pending;
+console.log(JSON.stringify({result,current:a.state.currentIntake,cases:a.state.sourceCaseCandidates.length}));
+""")
+        self.assertIsNone(result['result'])
+        self.assertEqual(result['current']['case_number'], '711/26.0TSTXX')
+        self.assertEqual(result['current']['additional_attachment_files'], ['/fictional/beta-proof.pdf'])
+        self.assertEqual(result['current']['email_body'], 'Beta explanation')
+        self.assertEqual(result['cases'], 0)
+
+    def test_current_multiple_proofs_attach_but_stale_upload_error_is_ignored(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);let uploaded=0;
+context.fetch=async()=>({ok:true,json:async()=>({attachment:{stored_path:`/fictional/proof-${++uploaded}.pdf`}})});
+await a.uploadSupportingAttachments([{name:'one.pdf'},{name:'two.pdf'}]);
+const attachments=a.state.currentIntake.additional_attachment_files;
+let release;const gate=new Promise(resolve=>release=resolve);
+context.fetch=async()=>{await gate;throw new Error('obsolete upload failure')};
+const pending=a.uploadSupportingAttachments([{name:'old.pdf'}]);
+a.clearPreparedArtifacts('reset');a.state.currentIntake=null;release();const stale=await pending;
+console.log(JSON.stringify({attachments,stale,current:a.state.currentIntake}));
+""")
+        self.assertEqual(result['attachments'], ['/fictional/proof-1.pdf', '/fictional/proof-2.pdf'])
+        self.assertIsNone(result['stale'])
+        self.assertIsNone(result['current'])
+
+    def test_late_manual_profile_result_cannot_replace_current_source(self):
+        result = self.run_js("""
+a.state.reference={service_profiles:{example_interpreting:{}}};a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);
+let release;const gate=new Promise(resolve=>release=resolve);const requests=[];
+context.fetch=async(url,options)=>{requests.push({url,body:JSON.parse(options.body)});await gate;return {ok:true,json:async()=>({intake:alpha})}};
+const pending=a.buildIntakeFromProfile({openDrawer:false});
+a.clearPreparedArtifacts('new source');a.state.currentIntake={...beta};a.fillFormFromIntake(beta);release();const stale=await pending;
+console.log(JSON.stringify({stale,current:a.state.currentIntake.case_number,requests}));
+""")
+        self.assertIsNone(result['stale'])
+        self.assertEqual(result['current'], '711/26.0TSTXX')
+        self.assertEqual(len(result['requests']), 1)
+        self.assertEqual(result['requests'][0]['body']['profile'], 'example_interpreting')
+
+    def test_upload_double_click_is_one_request_and_old_errors_cannot_block_new_source(self):
+        result = self.run_js("""
+let release;const gate=new Promise(resolve=>release=resolve);let count=0;
+context.fetch=async()=>{count++;await gate;return {ok:false,status:503,json:async()=>({message:'obsolete source failure'})}};
+const file={name:'one.png',size:10,lastModified:1,type:'image/png'};
+const first=a.uploadSource('photo',{file});const repeated=await a.uploadSource('photo',{file});
+a.clearPreparedArtifacts('reset');a.state.currentIntake={...beta};release();const stale=await first;
+let currentError='';try {await a.uploadSource('photo',{file})}catch(error){currentError=error.message}
+console.log(JSON.stringify({count,repeated,stale,currentError,current:a.state.currentIntake.case_number,pending:a.state.sourceUploadPending}));
+""")
+        self.assertEqual(result['count'], 2, 'One original upload and one deliberate retry after reset')
+        self.assertIsNone(result['repeated'])
+        self.assertIsNone(result['stale'])
+        self.assertEqual(result['currentError'], 'obsolete source failure')
+        self.assertEqual(result['current'], '711/26.0TSTXX')
+        self.assertIsNone(result['pending'])
+
+    def test_cleared_single_case_fields_reach_review_as_explicit_removals(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha,transport:{km_one_way:42}};a.fillFormFromIntake(a.state.currentIntake);
+for(const id of ['case_number','service_date','payment_entity','service_place','km_one_way'])element('#'+id).value='';
+a.mergeFormIntoCurrentIntake();const cleared=JSON.parse(JSON.stringify(a.state.currentIntake));
+element('#case_number').value='712/26.0TSTXX';a.mergeFormIntoCurrentIntake();
+console.log(JSON.stringify({cleared,resolved:a.state.currentIntake.review_cleared_fields}));
+""")
+        for field in ['case_number', 'service_date', 'payment_entity', 'service_place']:
+            self.assertEqual(result['cleared'][field], '')
+            self.assertIn(field, result['cleared']['review_cleared_fields'])
+        self.assertEqual(result['cleared']['transport']['km_one_way'], '')
+        self.assertIn('transport.km_one_way', result['cleared']['review_cleared_fields'])
+        self.assertIn('case_number', result['resolved'], 'Review resolves the intent marker after reconciling dependent fields')
+
+    def test_error_review_never_advertises_readiness(self):
+        result = self.run_js("""
+a.state.currentIntake={...alpha};a.updateHomeReviewCard({status:'error',message:'Unknown service profile',questions:[]});
+console.log(JSON.stringify({card:element('#interpretation-review-home-result').innerHTML}));
+""")
+        self.assertIn('Review needs attention', result['card'])
+        self.assertNotIn('Ready for the next step', result['card'])
 
     def test_saved_picker_matches_filled_email_refreshes_and_escapes_without_rewriting_text(self):
         result=self.run_js("""
@@ -263,6 +400,117 @@ const panels=cases.map(data=>{a.renderGmailApiResult(data);return element('#gmai
         self.assertIn('fictional-draft',result['panels'][4])
         self.assertEqual(result['calls'],0)
 
+    def test_uncertain_creation_blocks_new_create_without_claiming_local_recording(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
+responseOverride={status:'creation_uncertain',attempt_id:'fictional-attempt',message:'Check Gmail before retrying.',gmail_create_draft_args:{to:'alpha@example.test'}};
+await a.createGmailApiDraft();console.log(JSON.stringify({recorded:a.state.locallyRecordedPayload,disabled:element('#create-gmail-api-draft').disabled,panel:element('#gmail-api-result').innerHTML,ids:element('#record_draft_id').value,status:element('#status-pill').textContent}));
+""")
+        self.assertEqual(result['recorded'],'')
+        self.assertEqual(result['ids'],'')
+        self.assertTrue(result['disabled'])
+        self.assertEqual(result['status'],'blocked')
+        self.assertIn('I checked Gmail and no draft exists',result['panel'])
+        self.assertNotIn('Created as a Gmail draft only',result['panel'])
+
+    def test_known_creation_failure_retains_ids_and_recovers_only_original_attempt(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
+responseOverride={status:'created_unrecorded',attempt_id:'fictional-attempt',draft_id:'fictional-created',message_id:'fictional-message',draft_payload:'/fictional/alpha.json',message:'Finish local recording.'};
+await a.createGmailApiDraft();const firstPanel=element('#gmail-api-result').innerHTML;const firstRecorded=a.state.locallyRecordedPayload;
+responseOverride={status:'created',draft_id:'fictional-created',message_id:'fictional-message',draft_payload:'/fictional/alpha.json',recovered_existing_draft:true,message:'Existing draft recorded. No new Gmail draft was created.'};
+await a.recoverGmailAttempt('record');console.log(JSON.stringify({firstPanel,firstRecorded,calls,recorded:a.state.locallyRecordedPayload,ids:element('#record_draft_id').value}));
+""")
+        self.assertIn('The Gmail draft exists',result['firstPanel'])
+        self.assertIn('Finish local recording',result['firstPanel'])
+        self.assertEqual(result['firstRecorded'],'')
+        self.assertEqual(result['calls'][1]['body']['recover_attempt_id'],'fictional-attempt')
+        self.assertNotIn('payload',result['calls'][1]['body'])
+        self.assertEqual(result['recorded'],'/fictional/alpha.json')
+        self.assertEqual(result['ids'],'fictional-created')
+
+    def test_no_draft_resolution_requires_confirmation_and_reenables_create(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
+responseOverride={status:'creation_uncertain',attempt_id:'fictional-attempt',message:'Check Gmail first.'};await a.createGmailApiDraft();
+context.window.confirm=()=>false;await a.recoverGmailAttempt('absent');const cancelledCount=calls.length;
+context.window.confirm=()=>true;responseOverride={status:'not_created',create_retry_allowed:true,message:'No-draft check recorded.'};await a.recoverGmailAttempt('absent');
+console.log(JSON.stringify({cancelledCount,calls,disabled:element('#create-gmail-api-draft').disabled,completed:a.state.gmailCreateCompletedPayload}));
+""")
+        self.assertEqual(result['cancelledCount'],1)
+        self.assertEqual(result['calls'][1]['body']['confirmation_phrase'],'I CHECKED GMAIL: NO DRAFT')
+        self.assertFalse(result['disabled'])
+        self.assertEqual(result['completed'],'')
+
+    def test_connected_gmail_hides_setup_and_keeps_one_checklist_before_primary_action(self):
+        result=self.run_js("""
+a.renderGmailStatus({connected:true,configured:true,recommended_mode:'gmail_api'});console.log(JSON.stringify({setup:element('#gmail-setup-details').open,manual:element('#manual-handoff-card').open,direct:element('#gmail-api-deferred-panel').open}));
+""")
+        self.assertEqual(result,{'setup':False,'manual':False,'direct':True})
+        page=(ROOT/'honorarios_app/templates/index.html').read_text(encoding='utf-8')
+        self.assertEqual(page.count('id="gmail_handoff_reviewed"'),1)
+        self.assertLess(page.index('id="gmail_handoff_reviewed"'),page.index('id="create-gmail-api-draft"'))
+        self.assertLess(page.index('id="create-gmail-api-draft"'),page.index('id="gmail-client-id"'))
+
+    def test_recent_work_recovery_is_available_after_restart_without_prepared_workspace(self):
+        result=self.run_js("""
+const attempt={status:'created_unrecorded',attempt_id:'fictional-restart-attempt',draft_id:'fictional-existing',message_id:'fictional-message',message:'Finish local recording.',gmail_create_draft_args:{to:'court@example.test',body:'Original <email>'}};
+a.state.reference={pending_gmail_attempts:[attempt]};a.renderReference();const panel=element('#pending-gmail-attempts').innerHTML;
+responseOverride={status:'created',draft_id:'fictional-existing',message_id:'fictional-message',draft_payload:'/fictional/original.json',recovered_existing_draft:true,message:'Recovered existing draft locally.'};
+await a.recoverGmailAttempt('record',{history:true,attempt});console.log(JSON.stringify({panel,calls,prepared:a.state.lastPrepared,recorded:a.state.locallyRecordedPayload,loads:context.referenceLoads}));
+""")
+        self.assertIn('Finish local recording',result['panel'])
+        self.assertIn('Original &lt;email&gt;',result['panel'])
+        self.assertIsNone(result['prepared'])
+        self.assertEqual(result['recorded'],'')
+        self.assertEqual(result['calls'][0]['body']['recover_attempt_id'],'fictional-restart-attempt')
+        self.assertEqual(result['loads'],1)
+
+    def test_history_recovery_and_no_draft_results_describe_local_writes_truthfully(self):
+        result=self.run_js("""
+const cases=[{status:'created',recovered_existing_draft:true,gmail_api_action:'local_record_recovery',recorded_duplicate_count:5},
+{status:'not_created',create_retry_allowed:true,gmail_api_action:'local_attempt_resolution'},
+{status:'verified',gmail_api_action:'users.drafts.get'}];
+const panels=cases.map(data=>{a.renderHistoryDraftActionResult(data);return element('#history-draft-action-result').innerHTML;});console.log(JSON.stringify({panels}));
+""")
+        recovered,resolved,verified=result['panels']
+        self.assertIn('recorded locally',recovered)
+        self.assertIn('no new draft was created',recovered)
+        self.assertIn('local_record_recovery',recovered)
+        self.assertIn('Duplicate records updated: <strong>5',recovered)
+        self.assertIn('Your Gmail check was saved locally',resolved)
+        self.assertIn('separate action',resolved)
+        self.assertIn('local_attempt_resolution',resolved)
+        for panel in (recovered,resolved):
+            self.assertNotIn('Read-only Gmail draft verification',panel)
+            self.assertNotIn('No local records were changed',panel)
+            self.assertNotIn('users.drafts.create',panel)
+        self.assertIn('Read-only Gmail draft verification',verified)
+
+    def test_history_recovery_never_borrows_another_workspaces_ids(self):
+        result=self.run_js("""
+element('#record_draft_id').value='fictional-unrelated-draft';element('#record_message_id').value='fictional-unrelated-message';element('#record_thread_id').value='fictional-unrelated-thread';context.window.confirm=()=>true;
+let error='';try{await a.recoverGmailAttempt('existing',{history:true,attempt:{attempt_id:'fictional-old-attempt'},draft_id:'',message_id:''});}catch(exc){error=exc.message;}
+responseOverride={status:'created',message:'Recorded existing draft.'};await a.recoverGmailAttempt('existing',{history:true,attempt:{attempt_id:'fictional-old-attempt'},draft_id:'fictional-intended-draft',message_id:'fictional-intended-message'});
+console.log(JSON.stringify({error,calls}));
+""")
+        self.assertIn('both the existing draft ID and message ID',result['error'])
+        self.assertEqual(len(result['calls']),1)
+        self.assertEqual(result['calls'][0]['body']['draft_id'],'fictional-intended-draft')
+        self.assertEqual(result['calls'][0]['body']['thread_id'],'')
+
+    def test_late_pending_creation_does_not_overwrite_new_target_or_claim_success(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());element('#gmail_handoff_reviewed').checked=true;let release;deferred=new Promise(resolve=>release=resolve);const pending=a.createGmailApiDraft();a.selectPreparedEmailTarget(1);
+responseOverride={status:'created_unrecorded',attempt_id:'fictional-attempt',draft_id:'earlier-draft',message_id:'earlier-message',message:'Earlier draft needs local recording.'};release();await pending;
+console.log(JSON.stringify({ids:element('#record_draft_id').value,payload:element('#record_payload').value,recorded:a.state.locallyRecordedPayload,alert:element('#alert').textContent}));
+""")
+        self.assertEqual(result['ids'],'')
+        self.assertEqual(result['payload'],'/fictional/beta.json')
+        self.assertEqual(result['recorded'],'')
+        self.assertIn('needs local recording',result['alert'])
+        self.assertNotIn('created as a draft and recorded',result['alert'])
+
     def test_record_clicks_report_prior_http_failure_without_blocking_new_target(self):
         for control,route in [('#record-draft','/api/drafts/status'),('#record-parsed-prepared-draft','/api/drafts/record')]:
             with self.subTest(control=control):
@@ -306,6 +554,31 @@ console.log(JSON.stringify({packetTarget,disabled,rejected,reset,cleared:a.prepa
 """)
         self.assertEqual(result,{'packetTarget':'/fictional/packet.json','disabled':True,'rejected':True,'reset':'/fictional/alpha.json','cleared':True,'args':''})
 
+    def test_batch_preflight_handler_keeps_ready_action_and_blockers_in_batch_workspace(self):
+        for status in ('ready', 'blocked'):
+            with self.subTest(status=status):
+                result=self.run_js("const status="+json.dumps(status)+";"+"""
+a.state.batchIntakes=photoRows();context.document.body.dataset.interpretationReviewDrawer='open';
+let focused='',batchVisible=false,scrolled=false;
+element('#prepare-batch-intakes').focus=()=>{focused='prepare'};
+element('#batch-preflight-result').focus=()=>{focused='result'};
+element('#batch-preflight-result').scrollIntoView=()=>{scrolled=true};
+element('#batch-queue-panel').classList.remove=name=>{if(name==='hidden')batchVisible=true};
+routeOverrides['/api/prepare/preflight']={status,message:status==='ready'?'All queued requests are ready.':'Fictional recipient needs review.',
+ preflight_review:status==='ready'?{token:'fictional-preflight'}:null,next_safe_action:{state:status==='ready'?'prepare_batch':'fix_blocker'},
+ blockers:status==='blocked'?[{message:'Fictional recipient needs review.'}]:[]};
+await element('#preflight-batch-intakes').listeners.click();
+console.log(JSON.stringify({focused,batchVisible,scrolled,drawer:context.document.body.dataset.interpretationReviewDrawer,
+ disabled:element('#prepare-batch-intakes').disabled,result:element('#batch-preflight-result').innerHTML,calls}));
+""")
+                self.assertEqual(result['drawer'],'closed')
+                self.assertTrue(result['batchVisible'])
+                self.assertTrue(result['scrolled'])
+                self.assertEqual(result['focused'],'prepare' if status=='ready' else 'result')
+                self.assertEqual(result['disabled'],status!='ready')
+                self.assertIn('All queued requests are ready.' if status=='ready' else 'Fictional recipient needs review.',result['result'])
+                self.assertEqual([call['url'] for call in result['calls']],['/api/prepare/preflight'])
+
     def test_source_grouping_is_signed_without_combining_individual_pdfs(self):
         result=self.run_js("""
 a.state.batchIntakes=photoRows();const original=JSON.stringify(a.state.batchIntakes);
@@ -314,7 +587,7 @@ console.log(JSON.stringify({calls,unchanged:JSON.stringify(a.state.batchIntakes)
 """)
         self.assertTrue(result['unchanged'])
         self.assertEqual((result['items'],result['groups']),(6,2))
-        self.assertIn('5 requests from one photo',result['options'])
+        self.assertIn('5 requests from one source',result['options'])
         for call in result['calls']:
             self.assertEqual(call['body']['email_grouping'],'source')
             self.assertFalse(call['body']['packet_mode'])

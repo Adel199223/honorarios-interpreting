@@ -57,7 +57,9 @@ Use the resulting project interpreter for all commands. The environment checker 
 
 ## Optional capabilities
 
-PDF page rendering needs `pdftoppm`; browser click-through needs the documented browser adapter or Playwright tooling. A missing optional capability must be reported as a blocker for that check. API-level isolated smoke remains useful without a browser.
+PDF page rendering needs `pdftoppm` (Poppler) on `PATH`. It is required for AI reading of scanned or partly scanned PDF notices, and optional for generated-PDF previews. Without it, an unreadable-page notice stops before preparation; a readable PDF or complete reviewed manual text remains usable. The Python lock does not install this native tool. Portable domain tests replay the renderer boundary and test the missing-tool stop; real rendering acceptance must separately exercise an installed Poppler.
+
+Browser click-through needs the documented browser adapter or Playwright tooling. A missing optional capability must be reported as a blocker for that check. API-level isolated smoke remains useful without a browser.
 
 AI, Google Photos and direct Gmail OAuth are optional, private local configuration. This setup does not configure credentials or make provider calls. If an existing OAuth configuration uses the historical port, its callback and chosen launch port must agree; changing that provider configuration is a separate reviewed operation. Manual Draft Handoff remains available without Gmail OAuth.
 

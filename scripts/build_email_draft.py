@@ -13,10 +13,12 @@ try:
     from scripts.entity_rules import normalize_text, resolve_entities
     from scripts.generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
     from scripts.claim_options import ClaimError, claim_metadata, profile_binding, validate_claims, validate_travel_payload_groups
+    from scripts.request_identity import validate_distinct_request_members
 except ModuleNotFoundError:
     from entity_rules import normalize_text, resolve_entities
     from generate_pdf import ROOT, DEFAULT_PROFILE, IntakeError, get_service_date_value, load_json, resolve_json_path
     from claim_options import ClaimError, claim_metadata, profile_binding, validate_claims, validate_travel_payload_groups
+    from request_identity import validate_distinct_request_members
 
 
 DEFAULT_EMAIL_CONFIG = ROOT / "config" / "email.json"
@@ -231,8 +233,10 @@ def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
         errors.extend(source_email_group_errors(payload))
     try:
         children = payload.get('underlying_requests')
+        if isinstance(children, list) and children:
+            validate_distinct_request_members(children)
         validate_travel_payload_groups(children if isinstance(children, list) and children else [payload])
-    except ClaimError as exc:
+    except ValueError as exc:
         errors.append(str(exc))
     if payload.get("gmail_tool") != "_create_draft":
         errors.append("gmail_tool must be _create_draft.")
@@ -269,6 +273,10 @@ def source_email_group_errors(payload: dict[str, Any]) -> list[str]:
     children = payload.get('underlying_requests')
     if not isinstance(children, list) or not children:
         return ['Source email group requires a nonempty underlying_requests array.']
+    try:
+        validate_distinct_request_members(children)
+    except ValueError as exc:
+        errors.append(str(exc))
     if not str(payload.get('email_group_id') or '').strip():
         errors.append('Source email group requires email_group_id.')
     source_hash = str(payload.get('source_sha256') or '')
