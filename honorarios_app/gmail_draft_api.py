@@ -521,6 +521,12 @@ def gmail_draft_resource_from_payload(payload: dict[str, Any]) -> dict[str, Any]
     return {"message": {"raw": base64url_message(message)}}
 
 
+class GmailDraftCreateError(IntakeError):
+    def __init__(self, message: str, *, may_have_created: bool):
+        super().__init__(message)
+        self.may_have_created = may_have_created
+
+
 def create_gmail_draft_from_payload(payload: dict[str, Any], config_path: Path) -> dict[str, Any]:
     request_body = gmail_draft_resource_from_payload(payload)
     if fake_gmail_draft_api_enabled():
@@ -553,16 +559,19 @@ def create_gmail_draft_from_payload(payload: dict[str, Any], config_path: Path) 
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = _google_error_message(exc.response, "Google rejected the draft creation request.")
-            raise IntakeError(f"Gmail Draft API create failed: {detail}. No local draft record or duplicate-index entry was written.") from exc
+            raise GmailDraftCreateError(f"Gmail Draft API create failed: {detail}.",
+                                        may_have_created=exc.response.status_code >= 500) from exc
         except httpx.RequestError as exc:
-            raise IntakeError("Gmail Draft API create failed because the network request did not complete. No local draft record or duplicate-index entry was written.") from exc
+            raise GmailDraftCreateError("The Gmail response was not received. A draft may already exist; check Gmail before creating another.",
+                                        may_have_created=True) from exc
         data = response.json()
     message = data.get("message") if isinstance(data.get("message"), dict) else {}
     draft_id = str(data.get("id") or "").strip()
     message_id = str(message.get("id") or "").strip()
     thread_id = str(message.get("threadId") or message.get("thread_id") or "").strip()
     if not draft_id or not message_id:
-        raise IntakeError("Gmail Draft API response did not include draft and message IDs.")
+        raise GmailDraftCreateError("Gmail returned an incomplete creation response. A draft may already exist; check Gmail before creating another.",
+                                    may_have_created=True)
     args = payload.get("gmail_create_draft_args") if isinstance(payload.get("gmail_create_draft_args"), dict) else {}
     return {
         "status": "created",

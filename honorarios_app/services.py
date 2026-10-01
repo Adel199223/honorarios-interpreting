@@ -84,6 +84,7 @@ from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_
 from .source_cases import source_case_rows, valid_source_case
 from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gmail_draft_api import (
+    GmailDraftCreateError,
     create_gmail_draft_from_payload,
     gmail_oauth_callback,
     gmail_oauth_start,
@@ -91,6 +92,7 @@ from .gmail_draft_api import (
     save_gmail_local_config,
     verify_gmail_draft_exists,
 )
+from .gmail_attempts import attempt_lock, load_attempts, save_attempts, new_attempt, pending_attempt, update_attempt
 from .personal_profiles import (
     LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE,
     apply_profile_defaults_to_intake,
@@ -1246,11 +1248,13 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
 
     court_email = _first_ai_field(ai_recovery, "court_email", "recipient_email")
     source_emails = {email.lower() for email in EMAIL_RE.findall(str(intake.get('source_text') or ''))}
-    if len(source_emails) <= 1 and court_email and _looks_like_email(court_email):
-        raw_text = raw_visible_text.casefold()
-        existing_email = str(intake.get("recipient_email") or "").strip()
-        if not existing_email or court_email.casefold() in raw_text:
+    if court_email and _looks_like_email(court_email) and not str(intake.get("recipient_email") or "").strip():
+        if len(source_emails) == 1 and court_email.lower() in source_emails:
             intake["recipient_email"] = court_email.lower()
+        else:
+            intake["ai_recovery"].setdefault("warnings", []).append(
+                "The AI-suggested email was not the single visible source email and was not selected. Choose a verified court contact."
+            )
 
     fill_if_missing = {
         "payment_entity": _first_ai_field(ai_recovery, "payment_entity"),
@@ -5690,6 +5694,8 @@ def _gmail_create_lock_for_payload(draft_payload: dict[str, Any]):
 def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not bool(payload.get("gmail_handoff_reviewed")):
         raise IntakeError("Review the PDF preview and exact Gmail draft args before creating a Gmail draft.")
+    if payload.get("recover_attempt_id") or payload.get("resolve_attempt_id"):
+        return reconcile_gmail_create_attempt(payload, paths)
     raw_payload_path = payload.get("payload") or payload.get("draft_payload")
     prepared_review = require_current_prepared_review(payload, raw_payload_path, paths)
     supersedes = _coerce_supersedes(payload.get("supersedes"))
@@ -5700,21 +5706,51 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
     if explicit_correction_reason and prepared_correction_reason and explicit_correction_reason != prepared_correction_reason:
         raise IntakeError("Gmail draft correction reason does not match the prepared review. Prepare the replacement again.")
     payload_path, draft_payload = _load_prepared_draft_payload(raw_payload_path)
-    with _gmail_create_lock_for_payload(draft_payload):
+    with attempt_lock(paths.draft_log), _gmail_create_lock_for_payload(draft_payload):
+        attempts = load_attempts(paths.draft_log)
+        prior = pending_attempt(attempts, _prepared_payload_request_identities(draft_payload))
+        if prior:
+            return gmail_attempt_response(prior)
         duplicate_check = _assert_gmail_create_duplicate_clear(
             request_payload=payload,
             draft_payload=draft_payload,
             paths=paths,
         )
+        manifest = load_json(Path(prepared_review["manifest"]))
+        target = next(item for item in manifest["prepared_review_material"]["targets"]
+                      if item["draft_payload"] == str(payload_path))
+        attempt = new_attempt(_prepared_payload_request_identities(draft_payload),
+                              payload=str(payload_path), target=target, prepared_review=prepared_review,
+                              gmail_create_draft_args=draft_payload["gmail_create_draft_args"],
+                              request_payload={key: payload[key] for key in ("notes", "supersedes", "correction_reason") if key in payload})
+        attempts.append(attempt)
+        # A durable reservation precedes the external side effect. A crash or lost
+        # response therefore cannot silently make a second create safe to retry.
+        save_attempts(paths.draft_log, attempts)
         try:
             result = create_gmail_draft_from_payload(draft_payload, paths.gmail_config)
-        except IntakeError:
+        except GmailDraftCreateError as exc:
+            update_attempt(attempt, state="uncertain" if exc.may_have_created else "not_created", error=str(exc))
+            save_attempts(paths.draft_log, attempts)
+            if exc.may_have_created:
+                return gmail_attempt_response(attempt)
+            raise
+        except IntakeError as exc:
+            # MIME validation and OAuth fail before users.drafts.create is called.
+            update_attempt(attempt, state="not_created", error=str(exc))
+            save_attempts(paths.draft_log, attempts)
             raise
         except Exception as exc:
-            raise IntakeError(
-                "Gmail Draft API could not create the draft. No local draft record or duplicate-index entry was written. "
-                "Check Gmail connection status before trying again."
-            ) from exc
+            update_attempt(attempt, state="uncertain", error="The creation outcome could not be confirmed.")
+            save_attempts(paths.draft_log, attempts)
+            return gmail_attempt_response(attempt)
+        update_attempt(attempt, state="created_unrecorded", gmail_result=result)
+        try:
+            save_attempts(paths.draft_log, attempts)
+        except OSError:
+            # The earlier reservation still blocks another create. Return known
+            # IDs even when the disk cannot persist this second checkpoint.
+            return gmail_attempt_response(attempt, error="Gmail created the draft, but its returned IDs could not be saved. Copy these IDs and recover local recording after fixing local storage.")
         record_payload = {
             "payload": str(payload_path),
             "draft_id": result["draft_id"],
@@ -5727,7 +5763,16 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
             "prepared_review_token": prepared_review["prepared_review_token"],
             "review_fingerprint": prepared_review["review_fingerprint"],
         }
-        record_result = record_draft(record_payload, paths)
+        try:
+            record_result = record_draft(record_payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            update_attempt(attempt, error=str(exc))
+            with contextlib.suppress(OSError):
+                save_attempts(paths.draft_log, attempts)
+            return gmail_attempt_response(attempt)
+        update_attempt(attempt, state="recorded")
+        with contextlib.suppress(OSError):
+            save_attempts(paths.draft_log, attempts)
         confirmation = _gmail_create_confirmation(
             gmail_result=result,
             record_result=record_result,
@@ -5760,10 +5805,102 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
         }
 
 
+def gmail_attempt_response(attempt: dict[str, Any], *, error: str = "") -> dict[str, Any]:
+    result = attempt.get("gmail_result") or {}
+    confirmed = bool(result.get("draft_id") and result.get("message_id"))
+    status = "created_unrecorded" if confirmed else "creation_uncertain"
+    message = ("Gmail created this draft, but local recording is incomplete. Finish local recording; do not create another draft."
+               if confirmed else "Gmail may already have created this email. Check Gmail, then record the existing draft or explicitly confirm that no draft exists. Another create is blocked until then.")
+    return {**result, "status": status, "message": error or message,
+            "recording_error": str(attempt.get("error") or ""), "attempt_id": attempt["attempt_id"],
+            "draft_payload": attempt["payload"], "create_retry_allowed": False,
+            "local_recording_recovery_allowed": confirmed, "uncertain_resolution_required": not confirmed,
+            "gmail_create_draft_args": dict(attempt.get("gmail_create_draft_args") or {}),
+            "draft_only": True, "send_allowed": False}
+
+
+def _validate_attempt_artifacts(attempt: dict[str, Any]) -> dict[str, Any]:
+    target = attempt["target"]
+    payload_path = Path(attempt["payload"])
+    if file_sha256(payload_path) != target["draft_payload_sha256"]:
+        raise IntakeError("The original attempted email payload changed. Recover its saved original files before recording this draft.")
+    for raw_path, expected in {**target.get("attachment_sha256", {}), **target.get("child_payload_sha256", {})}.items():
+        if file_sha256(Path(raw_path)) != expected:
+            raise IntakeError("An original attempted attachment or child payload changed. Recover the reviewed original before recording.")
+    loaded = load_json(payload_path)
+    errors = validate_draft_payload(loaded)
+    if errors:
+        raise IntakeError("The original attempted email is invalid: " + "; ".join(errors))
+    return loaded
+
+
+def reconcile_gmail_create_attempt(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    attempt_id = str(payload.get("recover_attempt_id") or payload.get("resolve_attempt_id") or "")
+    with attempt_lock(paths.draft_log):
+        attempts = load_attempts(paths.draft_log)
+        attempt = next((item for item in attempts if item["attempt_id"] == attempt_id), None)
+        if not attempt or attempt.get("state") in {"not_created", "confirmed_not_created"}:
+            raise IntakeError("This Gmail attempt is not pending recovery.")
+        if payload.get("resolve_attempt_id"):
+            if attempt.get("gmail_result") or attempt.get("state") == "recorded":
+                raise IntakeError("This attempt has confirmed Gmail IDs. Finish local recording instead.")
+            if payload.get("confirmation_phrase") != "I CHECKED GMAIL: NO DRAFT" or not str(payload.get("resolution_reason") or "").strip():
+                raise IntakeError("Check Gmail first, then confirm I CHECKED GMAIL: NO DRAFT and give a short reason before retrying creation.")
+            allowed_old_ids = set(_coerce_supersedes(attempt.get("request_payload", {}).get("supersedes")))
+            for request in attempt["requests"]:
+                lifecycle = draft_lifecycle_for_intake(request, paths)
+                existing_ids = set(_lifecycle_blocking_draft_ids(lifecycle))
+                if lifecycle["status"] != "clear" and (not existing_ids or not existing_ids.issubset(allowed_old_ids)):
+                    raise IntakeError("Local history already records one of these requests. Reconcile that draft before confirming no draft exists.")
+            update_attempt(attempt, state="confirmed_not_created", resolution_reason=str(payload["resolution_reason"]).strip())
+            save_attempts(paths.draft_log, attempts)
+            return {"status": "not_created", "message": "Your no-draft check was recorded. You can now create the reviewed email.",
+                    "attempt_id": attempt_id, "create_retry_allowed": True, "send_allowed": False}
+        draft_payload = _validate_attempt_artifacts(attempt)
+        result = attempt.get("gmail_result") or {}
+        if not result:
+            if payload.get("confirmation_phrase") != "I CHECKED THE EXISTING GMAIL DRAFT":
+                raise IntakeError("Check the existing Gmail draft's recipient, text and every attachment against the original attempted email before recording its IDs.")
+            draft_id = str(payload.get("draft_id") or "").strip()
+            message_id = str(payload.get("message_id") or "").strip()
+            if not draft_id or not message_id:
+                raise IntakeError("Enter both returned Gmail draft and message IDs for the existing draft.")
+            args = draft_payload["gmail_create_draft_args"]
+            result = {"draft_id": draft_id, "message_id": message_id, "thread_id": str(payload.get("thread_id") or ""),
+                      "gmail_api_action": "manual_existing_draft_record", "to": args["to"], "subject": args["subject"],
+                      "attachment_files": draft_payload["attachment_files"], "attachment_sha256": draft_payload.get("attachment_sha256", {}),
+                      "attachment_basenames": draft_payload.get("attachment_basenames", []), "draft_only": True, "send_allowed": False}
+            update_attempt(attempt, state="created_unrecorded", gmail_result=result)
+            save_attempts(paths.draft_log, attempts)
+        record_payload = {**attempt.get("request_payload", {}), "payload": attempt["payload"], "status": "active",
+                          "draft_id": result["draft_id"], "message_id": result["message_id"], "thread_id": result.get("thread_id", "")}
+        previous = next((row for row in load_draft_log(paths.draft_log) if row.get("draft_id") == result["draft_id"]), None)
+        if previous and previous.get("status") not in {"active", "drafted"}:
+            raise IntakeError("This Gmail draft was already sent or retired locally. Recovery cannot restore it to active.")
+        try:
+            recorded = record_draft(record_payload, paths, _trusted_prepared_recovery=attempt["prepared_review"])
+        except (IntakeError, OSError, ValueError) as exc:
+            update_attempt(attempt, error=str(exc))
+            with contextlib.suppress(OSError):
+                save_attempts(paths.draft_log, attempts)
+            return gmail_attempt_response(attempt)
+        update_attempt(attempt, state="recorded")
+        with contextlib.suppress(OSError):
+            save_attempts(paths.draft_log, attempts)
+        confirmation = _gmail_create_confirmation(gmail_result=result, record_result=recorded, payload_path=Path(attempt["payload"]),
+                                                  duplicate_check={"requests": attempt["requests"]}, paths=paths)
+        return {**result, "status": "created", "message": "The existing Gmail draft is now recorded locally. No new Gmail draft was created.",
+                "attempt_id": attempt_id, "recovered_existing_draft": True, "draft_payload": attempt["payload"],
+                "record": recorded, "confirmation": confirmation, "duplicate_keys": recorded["duplicate_keys"], "send_allowed": False}
+
+
 def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     raw_payload_path = payload.get("payload") or payload.get("draft_payload")
     prepared_review = require_current_prepared_review(payload, raw_payload_path, paths)
     payload_path, draft_payload = _load_prepared_draft_payload(raw_payload_path)
+    with attempt_lock(paths.draft_log):
+        if pending_attempt(load_attempts(paths.draft_log), _prepared_payload_request_identities(draft_payload)):
+            raise IntakeError("Recover the pending Gmail attempt for these requests before building another manual handoff.")
     if draft_payload.get('email_grouping') == 'source':
         if _coerce_supersedes(payload.get('supersedes')) and not prepared_review.get('correction_mode'):
             raise IntakeError('Group replacement requires a prepared review created in correction mode.')
@@ -5828,6 +5965,8 @@ def load_app_reference(paths: AppPaths) -> dict[str, Any]:
         "known_destinations": load_known_destinations(paths),
         "duplicates": duplicate_records,
         "draft_log": draft_records,
+        "pending_gmail_attempts": [gmail_attempt_response(attempt) for attempt in load_attempts(paths.draft_log)
+                                   if attempt.get("state") not in {"recorded", "not_created", "confirmed_not_created"}],
         "profile_change_log": read_json_list(paths.profile_change_log),
         "gmail": {
             "tool": "_create_draft",
@@ -6761,6 +6900,7 @@ def record_draft(
     paths: AppPaths,
     *,
     require_handoff_reviewed_for_prepared_payload: bool = False,
+    _trusted_prepared_recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload_path = str(payload.get("payload") or "").strip()
     status = str(payload.get("status") or "active").strip()
@@ -6774,7 +6914,8 @@ def record_draft(
                 payload = {**payload, 'payload': str(alias)}
                 payload_path = str(alias)
     if payload_path and (status in {"active", "drafted"} or (status == 'sent' and not existing_sent_transition and _load_draft_payload_for_response(payload).get('email_grouping') == 'source')):
-        review = require_current_prepared_review(payload, payload_path, paths)
+        review = (_trusted_prepared_recovery if _trusted_prepared_recovery is not None
+                  else require_current_prepared_review(payload, payload_path, paths))
         if require_handoff_reviewed_for_prepared_payload and not bool(payload.get("gmail_handoff_reviewed")):
             raise IntakeError("Review the PDF preview and exact Gmail draft args before local recording.")
         _, draft_data = _load_prepared_draft_payload(payload_path)

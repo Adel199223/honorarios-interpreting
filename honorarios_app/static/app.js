@@ -373,7 +373,9 @@ function syncActionGates(action = state.currentNextSafeAction) {
       } else if (state.gmailCreateInFlight) {
         blockedReason = "Gmail draft creation is already in progress.";
       } else if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
-        blockedReason = "This prepared payload already created a Gmail draft. Change the request or prepare again before creating another.";
+        blockedReason = ["creation_uncertain", "created_unrecorded"].includes(state.lastGmailCreateConfirmation?.status)
+          ? "Recover the existing Gmail attempt using the actions below. Another create remains blocked."
+          : "This prepared payload already created a Gmail draft. Use Recent Work to review it or prepare an intentional correction.";
       } else if (selectedEmailLifecycleBlocked()) {
         blockedReason = "A member request already has a draft or needs correction. Check every request before creating another email.";
       }
@@ -3111,6 +3113,10 @@ function renderGmailStatus(data) {
   if (deferredPanel) {
     deferredPanel.open = recommendedMode === "gmail_api";
   }
+  const setupDetails = $("#gmail-setup-details");
+  if (setupDetails) setupDetails.open = !connected;
+  const manualDetails = $("#manual-handoff-card");
+  if (manualDetails) manualDetails.open = !connected;
   if (drawerStatus) {
     drawerStatus.textContent = `${text} Scope: ${data?.scope || "gmail.compose"}. Direct in-app creation stays optional; no send action exists.`;
   }
@@ -3188,9 +3194,10 @@ function renderGmailApiResult(data, kind = "") {
   const confirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
   const status = confirmation.status || data.status || kind || "info";
   const chipKind = statusChipClass(status === "created" ? "ready" : status);
-  const creationConfirmed = status === "created" && Boolean(confirmation.draft_id);
+  const creationConfirmed = ["created", "created_unrecorded"].includes(status) && Boolean(confirmation.draft_id);
   const outcomeText = creationConfirmed
-    ? "Created as a Gmail draft only. Review and send manually in Gmail."
+    ? status === "created_unrecorded" ? "The Gmail draft exists. Finish saving its local record; creating another draft is blocked." : "Created as a Gmail draft only. Review and send manually in Gmail."
+    : status === "creation_uncertain" ? "Check Gmail before choosing a recovery action. Reloading or preparing again will not create a second draft."
     : ["blocked", "error"].includes(status)
     ? "No Gmail draft creation was confirmed. Check Gmail before retrying if the request may have reached it."
     : "This message does not confirm that a Gmail draft was created.";
@@ -3225,6 +3232,14 @@ function renderGmailApiResult(data, kind = "") {
     ${hashes.length ? `<details><summary>Attachment hashes</summary><pre class="draft-args">${escapeHtml(JSON.stringify(Object.fromEntries(hashes), null, 2))}</pre></details>` : ""}
     ${duplicates ? `<div>Duplicate protection: <strong>${escapeHtml(duplicates)}</strong></div>` : ""}
     ${confirmation.draft_log_path ? `<div>Draft log: <code>${escapeHtml(confirmation.draft_log_path)}</code></div>` : ""}
+    ${data.attempt_id && ["creation_uncertain", "created_unrecorded"].includes(status) ? `
+      <details><summary>Original attempted email</summary><pre class="draft-args">${escapeHtml(JSON.stringify(data.gmail_create_draft_args || {}, null, 2))}</pre></details>
+      ${status === "created_unrecorded" ? `<button type="button" class="mini-button" data-recover-gmail-attempt="record">Finish local recording</button>` : `
+        <p>If the draft exists, check its recipient, text and every attachment against this original email, then enter its draft and message IDs in the manual recovery fields below.</p>
+        <button type="button" class="mini-button" data-recover-gmail-attempt="existing">Record the existing Gmail draft</button>
+        <button type="button" class="mini-button" data-recover-gmail-attempt="absent">I checked Gmail and no draft exists</button>
+      `}
+    ` : ""}
     ${confirmation.draft_id ? `
       <div class="button-row compact-button-row">
         <button type="button" class="mini-button" data-verify-created-draft="true">Verify created draft</button>
@@ -3343,6 +3358,21 @@ async function createGmailApiDraft() {
         ...currentPreparedReviewFields(target.draft_payload),
       })),
     });
+    if (["creation_uncertain", "created_unrecorded"].includes(data.status)) {
+      if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
+        showAlert(data.message + " Return to the earlier email to recover it; another create remains blocked.", "blocked");
+        return data;
+      }
+      state.gmailCreateCompletedPayload = target.draft_payload;
+      state.lastGmailCreateConfirmation = data;
+      if (data.draft_id) $("#record_draft_id").value = data.draft_id;
+      if (data.message_id) $("#record_message_id").value = data.message_id;
+      if (data.thread_id) $("#record_thread_id").value = data.thread_id;
+      renderGmailApiResult(data);
+      setStatus("blocked", data.message);
+      showAlert(data.message, "blocked");
+      return data;
+    }
     if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
       showAlert("The earlier selected email was created as a draft and recorded locally. Its IDs were not applied to the current selection. Check Recent Work for that draft.", "recorded");
       await loadReference();
@@ -3369,6 +3399,67 @@ async function createGmailApiDraft() {
       return null;
     }
     throw error;
+  } finally {
+    if (state.gmailCreateRequestId === requestId) state.gmailCreateInFlight = false;
+    syncActionGates();
+  }
+}
+
+async function recoverGmailAttempt(action, options = {}) {
+  if (state.gmailCreateInFlight) return null;
+  const previous = options.attempt || state.lastGmailCreateConfirmation || {};
+  if (!previous.attempt_id) throw new Error("No Gmail attempt is selected for recovery.");
+  const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
+  const requestId = ++state.gmailCreateRequestId;
+  const request = { gmail_handoff_reviewed: true };
+  if (action === "absent") {
+    if (!window.confirm("Have you checked Gmail Drafts and confirmed that this email does not exist? This allows a new draft to be created.")) return null;
+    Object.assign(request, { resolve_attempt_id: previous.attempt_id, confirmation_phrase: "I CHECKED GMAIL: NO DRAFT", resolution_reason: "User checked Gmail and confirmed the original attempted email does not exist." });
+  } else {
+    if (action === "existing" && !window.confirm("Have you checked that the existing Gmail draft has the original recipient, text and every reviewed attachment?")) return null;
+    Object.assign(request, { recover_attempt_id: previous.attempt_id, confirmation_phrase: "I CHECKED THE EXISTING GMAIL DRAFT",
+      draft_id: previous.draft_id || (options.history ? String(options.draft_id || "").trim() : $("#record_draft_id").value.trim()),
+      message_id: previous.message_id || (options.history ? String(options.message_id || "").trim() : $("#record_message_id").value.trim()),
+      thread_id: previous.thread_id || (options.history ? String(options.thread_id || "").trim() : $("#record_thread_id").value.trim()) });
+    if (!request.draft_id || !request.message_id) throw new Error("Enter both the existing draft ID and message ID in this recovery card.");
+  }
+  state.gmailCreateInFlight = true;
+  syncActionGates();
+  try {
+    const data = await requestJson("/api/gmail/drafts/create", { method: "POST", body: JSON.stringify(request) });
+    if (options.history) {
+      renderHistoryDraftActionResult(data, data.status === "created" ? "recorded" : "info");
+      if (state.lastGmailCreateConfirmation?.attempt_id === previous.attempt_id) {
+        state.lastGmailCreateConfirmation = data;
+        if (data.status === "not_created") state.gmailCreateCompletedPayload = "";
+        renderGmailApiResult(data);
+      }
+      await loadReference();
+      return data;
+    }
+    if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
+      showAlert(`The earlier email recovery completed: ${data.message}. The current selection was not changed.`, "info");
+      await loadReference();
+      return data;
+    }
+    state.lastGmailCreateConfirmation = data;
+    if (data.status === "not_created") {
+      state.gmailCreateCompletedPayload = "";
+      $("#record_draft_id").value = "";
+      $("#record_message_id").value = "";
+      $("#record_thread_id").value = "";
+    } else if (data.status === "created") {
+      $("#record_draft_id").value = data.draft_id || "";
+      $("#record_message_id").value = data.message_id || "";
+      $("#record_thread_id").value = data.thread_id || "";
+      $("#record_payload").value = data.draft_payload || previous.draft_payload || "";
+      state.locallyRecordedPayload = data.draft_payload || previous.draft_payload || "";
+    }
+    renderGmailApiResult(data);
+    setStatus(data.status === "created" ? "recorded" : data.status === "not_created" ? "ready" : "blocked", data.message);
+    showAlert(data.message, data.status === "created" ? "recorded" : "info");
+    await loadReference();
+    return data;
   } finally {
     if (state.gmailCreateRequestId === requestId) state.gmailCreateInFlight = false;
     syncActionGates();
@@ -4375,7 +4466,32 @@ async function markHistoryDraftNotFound(index, source = "draft_log") {
   return data;
 }
 
+function renderPendingGmailAttempts() {
+  const box = $("#pending-gmail-attempts");
+  if (!box) return;
+  const attempts = state.reference?.pending_gmail_attempts || [];
+  box.innerHTML = attempts.map(attempt => `
+    <div class="result-card blocked" data-pending-gmail-card="${escapeHtml(attempt.attempt_id)}">
+      <strong>${attempt.status === "created_unrecorded" ? "Finish recording an existing Gmail draft" : "Check an uncertain Gmail draft"}</strong>
+      <p>${escapeHtml(attempt.message)}</p>
+      ${attempt.draft_id ? `<p>Draft ID: <code>${escapeHtml(attempt.draft_id)}</code></p>` : ""}
+      <details><summary>Original attempted email</summary><pre>${escapeHtml(JSON.stringify(attempt.gmail_create_draft_args || {}, null, 2))}</pre></details>
+      ${attempt.status === "creation_uncertain" ? `
+        <p>If the draft exists, check its recipient, text and all attachments, then enter its returned IDs.</p>
+        <label>Existing draft ID<input data-pending-draft-id autocomplete="off"></label>
+        <label>Existing message ID<input data-pending-message-id autocomplete="off"></label>
+        <label>Existing thread ID (optional)<input data-pending-thread-id autocomplete="off"></label>
+      ` : ""}
+      <div class="button-row">
+        <button type="button" data-recover-history-attempt="${escapeHtml(attempt.attempt_id)}" data-recovery-action="${attempt.status === "created_unrecorded" ? "record" : "existing"}">${attempt.status === "created_unrecorded" ? "Finish local recording" : "Record the existing Gmail draft"}</button>
+        ${attempt.status === "creation_uncertain" ? `<button type="button" data-recover-history-attempt="${escapeHtml(attempt.attempt_id)}" data-recovery-action="absent">I checked Gmail and no draft exists</button>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
 function renderReference() {
+  renderPendingGmailAttempts();
   renderSavedCourtEmailOptions();
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
@@ -6171,6 +6287,24 @@ function bindActions() {
     state.historyStatusFilter = filter;
     renderReference();
   });
+  $("#pending-gmail-attempts").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-recover-history-attempt]");
+    if (!button) return;
+    const attempt = (state.reference?.pending_gmail_attempts || []).find(item => item.attempt_id === button.dataset.recoverHistoryAttempt);
+    const card = button.closest("[data-pending-gmail-card]");
+    if (!attempt || !card) return;
+    try {
+      button.disabled = true;
+      await recoverGmailAttempt(button.dataset.recoveryAction, { history: true, attempt,
+        draft_id: card.querySelector("[data-pending-draft-id]")?.value.trim() || "",
+        message_id: card.querySelector("[data-pending-message-id]")?.value.trim() || "",
+        thread_id: card.querySelector("[data-pending-thread-id]")?.value.trim() || "" });
+    } catch (error) {
+      renderHistoryDraftActionResult({status: "blocked", message: error.message}, "blocked");
+    } finally {
+      button.disabled = false;
+    }
+  });
   const handleHistoryDraftAction = async (event) => {
     const verifyButton = event.target.closest("[data-history-verify-draft]");
     const markSentButton = event.target.closest("[data-history-mark-sent]");
@@ -6304,6 +6438,16 @@ function bindActions() {
     }
   });
   $("#gmail-api-result").addEventListener("click", async (event) => {
+    const recovery = event.target.closest("[data-recover-gmail-attempt]");
+    if (recovery) {
+      try {
+        await recoverGmailAttempt(recovery.dataset.recoverGmailAttempt);
+      } catch (error) {
+        setStatus("blocked", error.message);
+        showAlert(error.message, "blocked");
+      }
+      return;
+    }
     const button = event.target.closest("[data-verify-created-draft]");
     if (!button) return;
     try {

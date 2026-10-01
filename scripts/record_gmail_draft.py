@@ -12,10 +12,12 @@ try:
     from scripts.request_identity import normalize_case_number, normalize_period_label, request_identity_key
     from scripts.claim_options import recorded_travel_requests, validate_travel_payload_groups
     from scripts.build_email_draft import source_email_group_errors
+    from scripts.state_store import atomic_write_json, state_file_lock
 except ModuleNotFoundError:
     from request_identity import normalize_case_number, normalize_period_label, request_identity_key
     from claim_options import recorded_travel_requests, validate_travel_payload_groups
     from build_email_draft import source_email_group_errors
+    from state_store import atomic_write_json, state_file_lock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,8 +38,7 @@ def load_log(path: Path) -> list[dict[str, Any]]:
 
 
 def write_log(path: Path, records: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, records)
 
 
 def duplicate_status_for_draft_status(status: str) -> str:
@@ -58,8 +59,7 @@ def load_duplicate_index(path: Path) -> list[dict[str, Any]]:
 
 
 def write_duplicate_index(path: Path, records: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, records)
 
 
 def upsert_record(records: list[dict[str, Any]], record: dict[str, Any]) -> None:
@@ -223,7 +223,7 @@ def validate_source_group_history(payload: dict[str, Any], records: list[dict[st
         raise ValueError('A grouped request already has an active/drafted record. Use correction mode with a reason and every blocking draft ID before recording.')
 
 
-def main(argv: list[str] | None = None) -> int:
+def _record_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Record or update a Gmail draft created for an honorários PDF.")
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG)
     parser.add_argument("--duplicate-index", type=Path, default=DEFAULT_DUPLICATE_INDEX)
@@ -312,6 +312,21 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Recorded Gmail draft {args.draft_id} as {args.status}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if "--help" in arguments or "-h" in arguments:
+        return _record_main(arguments)
+    lock_parser = argparse.ArgumentParser(add_help=False)
+    lock_parser.add_argument("--log", type=Path, default=DEFAULT_LOG)
+    selected, _ = lock_parser.parse_known_args(arguments)
+    try:
+        with state_file_lock(selected.log.with_name(".gmail-history.lock")):
+            return _record_main(arguments)
+    except OSError as exc:
+        print(f"Cannot record Gmail draft: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

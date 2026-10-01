@@ -831,6 +831,7 @@
               </div>
             </div>
           </div>
+          <div id="pending-gmail-attempts"></div>
           <div class="panel history-filter-panel">
             <div class="panel-header">
               <div>
@@ -1136,14 +1137,22 @@
           </div>
         </div>
 
-        <div class="result-card" id="manual-handoff-card">
-          <div class="result-header">
+        <label class="checkbox-card gmail-handoff-checklist" for="gmail_handoff_reviewed" aria-label="Gmail handoff checklist">
+          <input type="checkbox" id="gmail_handoff_reviewed">
+          <span>
+            <strong>Ready to create the email draft</strong>
+            <small>I reviewed every request's PDF preview and the exact `_create_draft` args shown above, including recipient, body, and all attachments.</small>
+          </span>
+        </label>
+
+        <details class="result-card" id="manual-handoff-card">
+          <summary class="result-header">
             <div>
               <strong>Manual Draft Handoff</strong>
               <p>Manual Draft Handoff is always available as the safe fallback: review the PDF preview, copy the exact `_create_draft` args, create the draft manually, then record the returned IDs locally.</p>
             </div>
             <span class="status-chip ready" id="manual-handoff-chip">Recommended</span>
-          </div>
+          </summary>
           <p id="manual-handoff-status">Manual handoff is always draft-only and never sends email automatically.</p>
           <ol class="handoff-steps">
             <li>Review the generated PDF preview and recipient.</li>
@@ -1155,7 +1164,7 @@
             <button type="button" id="copy-manual-handoff-prompt">Copy handoff prompt</button>
           </div>
           <div class="result-card compact-result hidden" id="manual-handoff-packet"></div>
-        </div>
+        </details>
 
         <details class="result-card gmail-api-deferred-panel" id="gmail-api-deferred-panel">
           <summary>
@@ -1167,6 +1176,12 @@
           </summary>
           <div id="gmail-api-card" class="gmail-api-deferred-body">
             <p id="gmail-api-drawer-status">Checking Gmail Draft API status...</p>
+            <div class="button-row">
+              <button type="button" class="primary-button" id="create-gmail-api-draft">Create Gmail Draft</button>
+            </div>
+            <div class="result-card compact-result hidden" id="gmail-api-result"></div>
+            <details id="gmail-setup-details">
+              <summary>Gmail connection settings</summary>
             <div class="gmail-setup-card" id="gmail-setup-card">
               <div class="result-header compact-result-header">
                 <div>
@@ -1198,9 +1213,8 @@
             </div>
             <div class="button-row">
               <button type="button" id="connect-gmail-oauth">Connect Gmail Draft API</button>
-              <button type="button" class="primary-button" id="create-gmail-api-draft">Create Gmail Draft</button>
             </div>
-            <div class="result-card compact-result hidden" id="gmail-api-result"></div>
+            </details>
             <div class="record-autofill-note">
               <div>
                 <strong>Verify Gmail draft exists</strong>
@@ -1221,13 +1235,6 @@
             </div>
             <span class="status-chip info">Local log</span>
           </div>
-          <label class="checkbox-card gmail-handoff-checklist" for="gmail_handoff_reviewed">
-            <input type="checkbox" id="gmail_handoff_reviewed">
-            <span>
-              <strong>Gmail handoff checklist</strong>
-              <small>I reviewed every request's PDF preview and the exact `_create_draft` args shown above, including recipient, body, and all attachments.</small>
-            </span>
-          </label>
           <div class="gmail-response-parser">
             <div>
               <strong>Paste Gmail _create_draft response</strong>

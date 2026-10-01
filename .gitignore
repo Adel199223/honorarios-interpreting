@@ -27,6 +27,7 @@ data/court-emails.json
 data/known-destinations.json
 data/service-profiles.json
 data/*.local.json
+data/.gmail-*.lock
 
 # Generated PDFs, draft payloads, manifests, intake snapshots, and previews.
 output/

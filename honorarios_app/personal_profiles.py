@@ -256,8 +256,6 @@ def vat_irs_phrase(profile: dict[str, Any], legacy_defaults: dict[str, Any] | No
         return iva
     if "sem reten" in irs.casefold() or "não está sujeito" in irs.casefold() or "nao esta sujeito" in irs.casefold():
         return f"Este serviço inclui a taxa de IVA de {iva} e não está sujeito a retenção de IRS."
-    if legacy_defaults and _text(legacy_defaults.get("vat_irs_phrase")):
-        return _text(legacy_defaults.get("vat_irs_phrase"))
     return f"Este serviço inclui a taxa de IVA de {iva} e {irs}."
 
 

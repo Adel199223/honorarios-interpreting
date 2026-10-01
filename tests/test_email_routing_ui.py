@@ -49,6 +49,7 @@ app+='\n'+listenerSource('#batch-email-grouping','change')+'\n'+listenerSource('
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
 app+='\nloadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
+app+='\nthis.api.recoverGmailAttempt=recoverGmailAttempt;this.api.renderGmailStatus=renderGmailStatus;';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
@@ -346,6 +347,96 @@ const panels=cases.map(data=>{a.renderGmailApiResult(data);return element('#gmai
         self.assertIn('Created as a Gmail draft only',result['panels'][4])
         self.assertIn('fictional-draft',result['panels'][4])
         self.assertEqual(result['calls'],0)
+
+    def test_uncertain_creation_blocks_new_create_without_claiming_local_recording(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
+responseOverride={status:'creation_uncertain',attempt_id:'fictional-attempt',message:'Check Gmail before retrying.',gmail_create_draft_args:{to:'alpha@example.test'}};
+await a.createGmailApiDraft();console.log(JSON.stringify({recorded:a.state.locallyRecordedPayload,disabled:element('#create-gmail-api-draft').disabled,panel:element('#gmail-api-result').innerHTML,ids:element('#record_draft_id').value,status:element('#status-pill').textContent}));
+""")
+        self.assertEqual(result['recorded'],'')
+        self.assertEqual(result['ids'],'')
+        self.assertTrue(result['disabled'])
+        self.assertEqual(result['status'],'blocked')
+        self.assertIn('I checked Gmail and no draft exists',result['panel'])
+        self.assertNotIn('Created as a Gmail draft only',result['panel'])
+
+    def test_known_creation_failure_retains_ids_and_recovers_only_original_attempt(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
+responseOverride={status:'created_unrecorded',attempt_id:'fictional-attempt',draft_id:'fictional-created',message_id:'fictional-message',draft_payload:'/fictional/alpha.json',message:'Finish local recording.'};
+await a.createGmailApiDraft();const firstPanel=element('#gmail-api-result').innerHTML;const firstRecorded=a.state.locallyRecordedPayload;
+responseOverride={status:'created',draft_id:'fictional-created',message_id:'fictional-message',draft_payload:'/fictional/alpha.json',recovered_existing_draft:true,message:'Existing draft recorded. No new Gmail draft was created.'};
+await a.recoverGmailAttempt('record');console.log(JSON.stringify({firstPanel,firstRecorded,calls,recorded:a.state.locallyRecordedPayload,ids:element('#record_draft_id').value}));
+""")
+        self.assertIn('The Gmail draft exists',result['firstPanel'])
+        self.assertIn('Finish local recording',result['firstPanel'])
+        self.assertEqual(result['firstRecorded'],'')
+        self.assertEqual(result['calls'][1]['body']['recover_attempt_id'],'fictional-attempt')
+        self.assertNotIn('payload',result['calls'][1]['body'])
+        self.assertEqual(result['recorded'],'/fictional/alpha.json')
+        self.assertEqual(result['ids'],'fictional-created')
+
+    def test_no_draft_resolution_requires_confirmation_and_reenables_create(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
+responseOverride={status:'creation_uncertain',attempt_id:'fictional-attempt',message:'Check Gmail first.'};await a.createGmailApiDraft();
+context.window.confirm=()=>false;await a.recoverGmailAttempt('absent');const cancelledCount=calls.length;
+context.window.confirm=()=>true;responseOverride={status:'not_created',create_retry_allowed:true,message:'No-draft check recorded.'};await a.recoverGmailAttempt('absent');
+console.log(JSON.stringify({cancelledCount,calls,disabled:element('#create-gmail-api-draft').disabled,completed:a.state.gmailCreateCompletedPayload}));
+""")
+        self.assertEqual(result['cancelledCount'],1)
+        self.assertEqual(result['calls'][1]['body']['confirmation_phrase'],'I CHECKED GMAIL: NO DRAFT')
+        self.assertFalse(result['disabled'])
+        self.assertEqual(result['completed'],'')
+
+    def test_connected_gmail_hides_setup_and_keeps_one_checklist_before_primary_action(self):
+        result=self.run_js("""
+a.renderGmailStatus({connected:true,configured:true,recommended_mode:'gmail_api'});console.log(JSON.stringify({setup:element('#gmail-setup-details').open,manual:element('#manual-handoff-card').open,direct:element('#gmail-api-deferred-panel').open}));
+""")
+        self.assertEqual(result,{'setup':False,'manual':False,'direct':True})
+        page=(ROOT/'honorarios_app/templates/index.html').read_text(encoding='utf-8')
+        self.assertEqual(page.count('id="gmail_handoff_reviewed"'),1)
+        self.assertLess(page.index('id="gmail_handoff_reviewed"'),page.index('id="create-gmail-api-draft"'))
+        self.assertLess(page.index('id="create-gmail-api-draft"'),page.index('id="gmail-client-id"'))
+
+    def test_recent_work_recovery_is_available_after_restart_without_prepared_workspace(self):
+        result=self.run_js("""
+const attempt={status:'created_unrecorded',attempt_id:'fictional-restart-attempt',draft_id:'fictional-existing',message_id:'fictional-message',message:'Finish local recording.',gmail_create_draft_args:{to:'court@example.test',body:'Original <email>'}};
+a.state.reference={pending_gmail_attempts:[attempt]};a.renderReference();const panel=element('#pending-gmail-attempts').innerHTML;
+responseOverride={status:'created',draft_id:'fictional-existing',message_id:'fictional-message',draft_payload:'/fictional/original.json',recovered_existing_draft:true,message:'Recovered existing draft locally.'};
+await a.recoverGmailAttempt('record',{history:true,attempt});console.log(JSON.stringify({panel,calls,prepared:a.state.lastPrepared,recorded:a.state.locallyRecordedPayload,loads:context.referenceLoads}));
+""")
+        self.assertIn('Finish local recording',result['panel'])
+        self.assertIn('Original &lt;email&gt;',result['panel'])
+        self.assertIsNone(result['prepared'])
+        self.assertEqual(result['recorded'],'')
+        self.assertEqual(result['calls'][0]['body']['recover_attempt_id'],'fictional-restart-attempt')
+        self.assertEqual(result['loads'],1)
+
+    def test_history_recovery_never_borrows_another_workspaces_ids(self):
+        result=self.run_js("""
+element('#record_draft_id').value='fictional-unrelated-draft';element('#record_message_id').value='fictional-unrelated-message';element('#record_thread_id').value='fictional-unrelated-thread';context.window.confirm=()=>true;
+let error='';try{await a.recoverGmailAttempt('existing',{history:true,attempt:{attempt_id:'fictional-old-attempt'},draft_id:'',message_id:''});}catch(exc){error=exc.message;}
+responseOverride={status:'created',message:'Recorded existing draft.'};await a.recoverGmailAttempt('existing',{history:true,attempt:{attempt_id:'fictional-old-attempt'},draft_id:'fictional-intended-draft',message_id:'fictional-intended-message'});
+console.log(JSON.stringify({error,calls}));
+""")
+        self.assertIn('both the existing draft ID and message ID',result['error'])
+        self.assertEqual(len(result['calls']),1)
+        self.assertEqual(result['calls'][0]['body']['draft_id'],'fictional-intended-draft')
+        self.assertEqual(result['calls'][0]['body']['thread_id'],'')
+
+    def test_late_pending_creation_does_not_overwrite_new_target_or_claim_success(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());element('#gmail_handoff_reviewed').checked=true;let release;deferred=new Promise(resolve=>release=resolve);const pending=a.createGmailApiDraft();a.selectPreparedEmailTarget(1);
+responseOverride={status:'created_unrecorded',attempt_id:'fictional-attempt',draft_id:'earlier-draft',message_id:'earlier-message',message:'Earlier draft needs local recording.'};release();await pending;
+console.log(JSON.stringify({ids:element('#record_draft_id').value,payload:element('#record_payload').value,recorded:a.state.locallyRecordedPayload,alert:element('#alert').textContent}));
+""")
+        self.assertEqual(result['ids'],'')
+        self.assertEqual(result['payload'],'/fictional/beta.json')
+        self.assertEqual(result['recorded'],'')
+        self.assertIn('needs local recording',result['alert'])
+        self.assertNotIn('created as a draft and recorded',result['alert'])
 
     def test_record_clicks_report_prior_http_failure_without_blocking_new_target(self):
         for control,route in [('#record-draft','/api/drafts/status'),('#record-parsed-prepared-draft','/api/drafts/record')]:
