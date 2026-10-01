@@ -4330,14 +4330,25 @@ function renderHistoryDraftActionResult(data, kind = "") {
     return;
   }
   const status = data.status || kind || "info";
-  const chipKind = statusChipClass(status === "verified" ? "ready" : status);
+  const localRecovery = Boolean(data.recovered_existing_draft);
+  const noDraftResolution = status === "not_created" && data.create_retry_allowed === true;
+  const chipKind = statusChipClass(status === "verified" || localRecovery || noDraftResolution ? "ready" : status);
+  const operationText = localRecovery
+    ? "The existing draft and duplicate protection were recorded locally. Gmail was not contacted and no new draft was created."
+    : noDraftResolution
+    ? "Your Gmail check was saved locally. Gmail was not contacted; creating another draft requires a separate action."
+    : status === "recorded"
+    ? "Local bookkeeping only. Gmail was not contacted and no email was sent."
+    : ["verified", "not_found", "reconciliation_mismatch"].includes(status)
+    ? "Read-only Gmail draft verification. No local records were changed."
+    : "Review this operation's result before continuing.";
   const duplicateCount = Number(data.recorded_duplicate_count || data.duplicate_records_created?.length || 0);
   box.className = `result-card compact-result ${chipKind}`;
   box.innerHTML = `
     <div class="result-header compact-result-header">
       <div>
         <strong>${escapeHtml(data.message || status.replaceAll("_", " "))}</strong>
-        <p>${status === "recorded" ? "Local bookkeeping only. Gmail was not contacted and no email was sent." : "Read-only Gmail draft verification. No local records were changed."}</p>
+        <p>${escapeHtml(operationText)}</p>
       </div>
       <span class="status-chip ${chipKind}">${escapeHtml(status.replaceAll("_", " "))}</span>
     </div>

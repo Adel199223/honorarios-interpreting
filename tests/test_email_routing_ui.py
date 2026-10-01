@@ -50,7 +50,7 @@ app+='\n'+listenerSource('#batch-email-grouping','change')+'\n'+listenerSource('
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
 app+='\nloadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
-app+='\nthis.api.recoverGmailAttempt=recoverGmailAttempt;this.api.renderGmailStatus=renderGmailStatus;';
+app+='\nthis.api.recoverGmailAttempt=recoverGmailAttempt;this.api.renderGmailStatus=renderGmailStatus;this.api.renderHistoryDraftActionResult=renderHistoryDraftActionResult;';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
@@ -414,6 +414,27 @@ await a.recoverGmailAttempt('record',{history:true,attempt});console.log(JSON.st
         self.assertEqual(result['recorded'],'')
         self.assertEqual(result['calls'][0]['body']['recover_attempt_id'],'fictional-restart-attempt')
         self.assertEqual(result['loads'],1)
+
+    def test_history_recovery_and_no_draft_results_describe_local_writes_truthfully(self):
+        result=self.run_js("""
+const cases=[{status:'created',recovered_existing_draft:true,gmail_api_action:'local_record_recovery',recorded_duplicate_count:5},
+{status:'not_created',create_retry_allowed:true,gmail_api_action:'local_attempt_resolution'},
+{status:'verified',gmail_api_action:'users.drafts.get'}];
+const panels=cases.map(data=>{a.renderHistoryDraftActionResult(data);return element('#history-draft-action-result').innerHTML;});console.log(JSON.stringify({panels}));
+""")
+        recovered,resolved,verified=result['panels']
+        self.assertIn('recorded locally',recovered)
+        self.assertIn('no new draft was created',recovered)
+        self.assertIn('local_record_recovery',recovered)
+        self.assertIn('Duplicate records updated: <strong>5',recovered)
+        self.assertIn('Your Gmail check was saved locally',resolved)
+        self.assertIn('separate action',resolved)
+        self.assertIn('local_attempt_resolution',resolved)
+        for panel in (recovered,resolved):
+            self.assertNotIn('Read-only Gmail draft verification',panel)
+            self.assertNotIn('No local records were changed',panel)
+            self.assertNotIn('users.drafts.create',panel)
+        self.assertIn('Read-only Gmail draft verification',verified)
 
     def test_history_recovery_never_borrows_another_workspaces_ids(self):
         result=self.run_js("""

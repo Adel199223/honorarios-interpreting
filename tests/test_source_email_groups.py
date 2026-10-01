@@ -548,6 +548,7 @@ class GmailAttemptRecoveryTests(unittest.TestCase):
             manual_handoff_packet(request, self.paths)
 
     def test_confirmed_remote_ids_survive_log_failure_and_recover_without_new_create(self):
+        from honorarios_app.gmail_attempts import load_attempts
         request = self.prepared_request()
         with self.fake_transport():
             with patch('scripts.record_gmail_draft.write_log', side_effect=PermissionError('Fictional locked log')):
@@ -558,6 +559,9 @@ class GmailAttemptRecoveryTests(unittest.TestCase):
                 recovered = self.client().post('/api/gmail/drafts/create', json={'recover_attempt_id': first['attempt_id'], 'gmail_handoff_reviewed': True}).json()
             self.assertTrue(recovered['recovered_existing_draft'])
             self.assertEqual(recovered['draft_id'], first['draft_id'])
+            self.assertEqual(recovered['gmail_api_action'], 'local_record_recovery')
+            self.assertEqual(recovered['confirmation']['gmail_api_action'], 'local_record_recovery')
+            self.assertEqual(load_attempts(self.paths.draft_log)[0]['gmail_result']['gmail_api_action'], 'users.drafts.create')
             self.assertEqual(len(self.remote), 1)
         self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
         self.assertEqual(len(json.loads(self.paths.duplicate_index.read_text())), 1)
@@ -617,6 +621,7 @@ class GmailAttemptRecoveryTests(unittest.TestCase):
             args.update(confirmation_phrase='I CHECKED GMAIL: NO DRAFT', resolution_reason='Fictional user checked the mailbox')
             resolved = self.client().post('/api/gmail/drafts/create', json=args).json()
             self.assertTrue(resolved['create_retry_allowed'])
+            self.assertEqual(resolved['gmail_api_action'], 'local_attempt_resolution')
             result = self.client().post('/api/gmail/drafts/create', json=request).json()
             self.assertEqual(result['status'], 'created')
             self.assertEqual(len(self.remote), 2)

@@ -5855,7 +5855,8 @@ def reconcile_gmail_create_attempt(payload: dict[str, Any], paths: AppPaths) -> 
             update_attempt(attempt, state="confirmed_not_created", resolution_reason=str(payload["resolution_reason"]).strip())
             save_attempts(paths.draft_log, attempts)
             return {"status": "not_created", "message": "Your no-draft check was recorded. You can now create the reviewed email.",
-                    "attempt_id": attempt_id, "create_retry_allowed": True, "send_allowed": False}
+                    "attempt_id": attempt_id, "create_retry_allowed": True,
+                    "gmail_api_action": "local_attempt_resolution", "local_records_changed": True, "send_allowed": False}
         draft_payload = _validate_attempt_artifacts(attempt)
         result = attempt.get("gmail_result") or {}
         if not result:
@@ -5887,11 +5888,13 @@ def reconcile_gmail_create_attempt(payload: dict[str, Any], paths: AppPaths) -> 
         update_attempt(attempt, state="recorded")
         with contextlib.suppress(OSError):
             save_attempts(paths.draft_log, attempts)
-        confirmation = _gmail_create_confirmation(gmail_result=result, record_result=recorded, payload_path=Path(attempt["payload"]),
+        recovery_result = {**result, "gmail_api_action": "local_record_recovery"}
+        confirmation = _gmail_create_confirmation(gmail_result=recovery_result, record_result=recorded, payload_path=Path(attempt["payload"]),
                                                   duplicate_check={"requests": attempt["requests"]}, paths=paths)
-        return {**result, "status": "created", "message": "The existing Gmail draft is now recorded locally. No new Gmail draft was created.",
+        return {**recovery_result, "status": "created", "message": "The existing Gmail draft is now recorded locally. No new Gmail draft was created.",
                 "attempt_id": attempt_id, "recovered_existing_draft": True, "draft_payload": attempt["payload"],
-                "record": recorded, "confirmation": confirmation, "duplicate_keys": recorded["duplicate_keys"], "send_allowed": False}
+                "record": recorded, "confirmation": confirmation, "duplicate_keys": recorded["duplicate_keys"],
+                "recorded_duplicate_count": recorded["recorded_duplicate_count"], "local_records_changed": True, "send_allowed": False}
 
 
 def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
