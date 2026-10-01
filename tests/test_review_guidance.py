@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from honorarios_app.services import apply_answer_to_intake
 from scripts.generate_pdf import get_service_date_value
@@ -458,9 +459,22 @@ class MultiCaseReviewGuidanceTests(unittest.TestCase):
         module_url = (ROOT / 'honorarios_app/static/review_guidance.js').as_uri()
         script = 'import * as g from ' + json.dumps(module_url) + ';\n' + body
         result = subprocess.run(['node', '--input-type=module', '-e', script],
-                                capture_output=True, text=True, timeout=30, check=False)
+                                capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_node_unicode_round_trip_ignores_windows_default_text_encoding(self):
+        expected = 'S\u00e3o Jo\u00e3o \u00b7 \u6771\u4eac'
+        actual_run = subprocess.run
+
+        def run_with_windows_default(*args, **kwargs):
+            if kwargs.get('text') and not kwargs.get('encoding'):
+                kwargs['encoding'] = 'cp1252'
+            return actual_run(*args, **kwargs)
+
+        with patch.object(subprocess, 'run', side_effect=run_with_windows_default):
+            result = self.run_guidance('console.log(JSON.stringify(' + json.dumps(expected, ensure_ascii=False) + '));')
+        self.assertEqual(result, expected)
 
     def test_upload_case_list_retains_unreadable_rows_and_clones_source_state(self):
         result = self.run_guidance("""
@@ -560,6 +574,6 @@ const intake = {photo_defaults_applied:{service_place:'Tribunal de Capture City'
 console.log(JSON.stringify(['Tribunal de Capture City','Esquadra de Manual City',''].map(value =>
   g.reviewFactOrigin('service_place',value,{},intake))));
 """)
-        self.assertEqual(result[0], {'kind': 'default', 'label': 'Your photo-city court venue default · editable'})
+        self.assertEqual(result[0], {'kind': 'default', 'label': 'Your photo-city court venue default \u00b7 editable'})
         self.assertNotEqual(result[1]['kind'], 'default')
         self.assertEqual(result[2]['kind'], 'missing')
