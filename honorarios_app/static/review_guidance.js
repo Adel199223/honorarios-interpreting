@@ -494,3 +494,5 @@ export function duplicateSourceCaseIndices(candidates = []) {
   });
   return [...duplicates].sort((left, right) => left - right);
 }
+export { workspaceInputCopy, workspaceReviewEvidence, workspaceDraftSnapshot, workspaceDraftHasWork,
+  workspaceDraftStorageKey, readWorkspaceDraft, writeWorkspaceDraft } from "./workspace_draft.js";

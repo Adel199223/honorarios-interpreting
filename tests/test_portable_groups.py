@@ -24,7 +24,7 @@ EXPECTED = {
     'quality': ['test_source_decisions.py', 'test_photo_defaults.py', 'test_multi_case_sources.py'],
     'pdf': ['test_pdf_rules.py', 'test_claim_options.py'],
     'email': ['test_email_rules.py', 'test_public_email.py', 'test_claim_options.py', 'test_email_routing.py', 'test_source_email_groups.py'],
-    'ui': ['test_browser_iab_smoke.py', 'test_review_guidance.py', 'test_public_ui.py', 'test_claim_options_ui.py', 'test_email_routing_ui.py'],
+    'ui': ['test_workspace_draft.py', 'test_browser_iab_smoke.py', 'test_review_guidance.py', 'test_public_ui.py', 'test_claim_options_ui.py', 'test_email_routing_ui.py'],
     'package': ['test_dev_environment.py', 'test_installed_wheel.py', 'test_prepared_candidate.py',
                 'test_public_repo_gate.py', 'test_public_publication.py'],
     'integration': ['test_public_adapter.py'],

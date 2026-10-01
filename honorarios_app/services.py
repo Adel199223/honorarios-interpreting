@@ -82,6 +82,7 @@ from scripts.source_classification import detect_translation_source, format_tran
 
 from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
 from .source_cases import source_case_rows, valid_source_case
+from .workspace_draft import workspace_runtime_id
 from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gmail_draft_api import (
     GmailDraftCreateError,
@@ -5962,6 +5963,7 @@ def load_app_reference(paths: AppPaths) -> dict[str, Any]:
     duplicate_records = read_json_list(paths.duplicate_index)
     draft_records = read_json_list(paths.draft_log)
     return {
+        "workspace_id": workspace_runtime_id(paths),
         "personal_profiles": personal_profiles_summary(paths),
         "service_profiles": load_profiles(paths.service_profiles),
         "court_emails": read_json_list(paths.court_emails),

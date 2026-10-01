@@ -83,6 +83,7 @@ from .services import (
     upsert_service_profile,
 )
 from .runtime import SYNTHETIC_RUNTIME_ATTESTATION, create_synthetic_runtime, runtime_path_overrides
+from .workspace_draft import validate_workspace_resume
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -199,6 +200,13 @@ def create_app(**path_overrides: Any) -> FastAPI:
             "write_allowed": False,
             "managed_data_changed": False,
         }
+
+    @app.post("/api/workspace/resume")
+    async def api_workspace_resume(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return validate_workspace_resume(payload, paths, personal_profiles_summary(paths))
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/reference")
     async def api_reference() -> dict[str, Any]:

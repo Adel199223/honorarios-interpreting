@@ -32,7 +32,9 @@ import {
   sharedSourceTravelEligibility,
   sourceCasesWithTravelChoice,
   sourceTravelGroupId,
-  sourceCasesMatchSharedTravelChoice
+  sourceCasesMatchSharedTravelChoice,
+  workspaceInputCopy, workspaceDraftSnapshot, workspaceDraftHasWork, workspaceDraftStorageKey,
+  readWorkspaceDraft, writeWorkspaceDraft
 } from "./review_guidance.js";
 
 const state = {
@@ -43,6 +45,7 @@ const state = {
   sourceCaseBatchInFlight: false,
   sourceTravelChoice: null,
   sourceUploadPending: null,
+  workspaceDraft: { workspaceId: "", pending: null, error: "", initialized: false, saving: false, busy: false, validation: null, runtimeChanged: false },
   batchIntakes: [],
   batchSelectedIndex: null,
   batchPreflight: null,
@@ -80,6 +83,153 @@ const state = {
     message: "",
   },
 };
+
+function currentWorkspaceDraft() {
+  return workspaceDraftSnapshot(state, { answers: $("#home-numbered-answers")?.value || $("#numbered-answers")?.value || "",
+    email_grouping: currentBatchEmailGrouping(), packet_mode: currentBatchPacketMode(),
+    manual_fields: !state.currentIntake && state.workspaceDraft.manualDirty ? collectProfilePayload() : null });
+}
+
+function renderWorkspaceDraft() {
+  const box = $("#workspace-draft-status");
+  if (!box) return;
+  const draft = state.workspaceDraft;
+  box.classList.toggle("hidden", !draft.pending && !draft.error && !draft.savedAt && !draft.resumed);
+  const missing = draft.validation?.missing_attachments || [];
+  const unavailableProfiles = draft.validation?.unavailable_profiles || [];
+  box.innerHTML = `<strong>${draft.pending ? "Unfinished work is saved in this browser" : draft.resumed ? "Restored inputs need fresh review" : "Unfinished work"}</strong>
+    <p>${escapeHtml(draft.error || (draft.pending ? "Resume your request details, case answers and queue, replacing any currently open inputs, or discard the saved work. PDFs, Gmail IDs and review approval are not restored."
+      : draft.resumed ? "Check the restored details and profile, then review again. Queued requests need a fresh batch preflight. Source file selections cannot be restored; reattach the original if you need to read it again."
+      : "Request inputs and the queue are saved locally in this browser. Resume them after reopening this same app workspace."))}</p>
+    ${missing.length ? `<p>Unavailable supporting files: ${missing.map(name => `<code>${escapeHtml(name)}</code>`).join(", ")}. You can restore the facts without these files, then reattach them before preparing.</p>` : ""}
+    ${draft.validation?.missing_sources?.length ? "<p>The original source file is unavailable. Reattach it to read the source again; recovered facts are retained for checking.</p>" : ""}
+    ${unavailableProfiles.length ? `<p>A saved personal profile is unavailable. Choose the intended replacement before resuming.</p><label>Profile for requests with an unavailable profile<select id="workspace-resume-profile"><option value="">Choose a profile</option>${(personalProfilesData().profiles || []).map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(personalProfileName(profile))}</option>`).join("")}</select></label>` : ""}
+    ${draft.pending || draft.readFailed ? `<div class="button-row">${draft.pending ? `<button type="button" id="resume-workspace-draft" ${draft.busy ? "disabled" : ""}>${missing.length ? "Resume without unavailable files" : "Resume unfinished work"}</button>` : ""}<button type="button" id="discard-workspace-draft" ${draft.busy ? "disabled" : ""}>Discard saved work</button></div>` : ""}
+    ${draft.resumed && (state.currentIntake || draft.manualDirty) ? '<button type="button" id="review-resumed-workspace">Review restored work</button>' : ""}`;
+}
+
+function initializeWorkspaceDraft(workspaceId) {
+  const draft = state.workspaceDraft;
+  if (!workspaceId || draft.workspaceId === workspaceId && draft.initialized) return;
+  if (draft.workspaceId && draft.workspaceId !== workspaceId) {
+    draft.runtimeChanged = true;
+    draft.error = "The app workspace changed. Reload before continuing; your earlier saved work belongs to its original workspace.";
+    clearPreparedArtifacts("app workspace changed");
+    renderWorkspaceDraft();
+    return;
+  }
+  draft.workspaceId = workspaceId;
+  draft.initialized = true;
+  try {
+    draft.pending = readWorkspaceDraft(window.localStorage, workspaceId);
+    draft.error = "";
+  } catch (error) {
+    draft.error = `Automatic saving is unavailable: ${error.message}. Keep this page open to preserve your current work.`;
+    draft.readFailed = true;
+  }
+  renderWorkspaceDraft();
+  if (!draft.pending && !draft.readFailed) scheduleWorkspaceDraftSave();
+}
+
+function saveWorkspaceDraft() {
+  const draft = state.workspaceDraft;
+  if (!draft.initialized || draft.runtimeChanged || draft.pending || draft.busy || draft.readFailed) return;
+  if (state.currentIntake) { mergeFormIntoCurrentIntake(); persistCurrentSourceCase(); }
+  const snapshot = currentWorkspaceDraft();
+  try {
+    if (!workspaceDraftHasWork(snapshot)) {
+      window.localStorage.removeItem(workspaceDraftStorageKey(draft.workspaceId));
+      draft.savedAt = "";
+      return;
+    }
+    const record = writeWorkspaceDraft(window.localStorage, draft.workspaceId, snapshot);
+    draft.savedAt = record.saved_at;
+    draft.error = "";
+  } catch (error) {
+    draft.error = `Current changes could not be saved: ${error.message}. Keep this page open; earlier saved work was not replaced.`;
+  }
+  renderWorkspaceDraft();
+}
+
+function scheduleWorkspaceDraftSave() {
+  const draft = state.workspaceDraft;
+  if (!draft.initialized || draft.saving || draft.pending || draft.busy) return;
+  draft.saving = true;
+  Promise.resolve().then(() => { draft.saving = false; saveWorkspaceDraft(); });
+}
+
+function discardWorkspaceDraft({ saveCurrent = true } = {}) {
+  const draft = state.workspaceDraft;
+  try {
+    if (draft.workspaceId) window.localStorage.removeItem(workspaceDraftStorageKey(draft.workspaceId));
+    draft.pending = null; draft.validation = null; draft.replacementProfile = ""; draft.readFailed = false; draft.error = ""; draft.savedAt = ""; draft.resumed = false;
+  } catch (error) {
+    draft.error = `Saved work could not be discarded: ${error.message}. It remains saved in this browser.`;
+  }
+  renderWorkspaceDraft();
+  if (saveCurrent) scheduleWorkspaceDraftSave();
+}
+
+async function resumeWorkspaceDraft() {
+  const draft = state.workspaceDraft;
+  if (!draft.pending || draft.busy || draft.runtimeChanged) return null;
+  const revision = state.workflowRevision, editVersion = draft.editVersion, workspaceId = draft.workspaceId, pending = draft.pending;
+  const replacementProfile = $("#workspace-resume-profile")?.value || draft.replacementProfile || "";
+  draft.replacementProfile = replacementProfile;
+  const confirmedMissing = draft.validation?.missing_attachments || [];
+  let applying = false;
+  draft.busy = true;
+  renderWorkspaceDraft();
+  try {
+    const result = await requestJson("/api/workspace/resume", { method: "POST", body: JSON.stringify({ workspace_id: workspaceId,
+      snapshot: pending.snapshot, replacement_profile_id: replacementProfile }) });
+    if (state.workflowRevision !== revision || draft.editVersion !== editVersion || draft.workspaceId !== workspaceId || draft.pending !== pending) return null;
+    draft.validation = result;
+    if (result.unavailable_profiles?.length || result.missing_attachments?.some(name => !confirmedMissing.includes(name))) return null;
+    const snapshot = result.snapshot;
+    applying = true;
+    clearPreparedArtifacts("unfinished inputs restored; fresh review required");
+    state.currentIntake = snapshot.current_intake;
+    state.sourceCaseCandidates = snapshot.source_cases.map(row => ({ candidate_intake: row.candidate_intake,
+      review: row.evidence || {}, needs_review: true, answers: row.answers, queued_key: row.queued_key }));
+    state.sourceCaseSelectedIndex = snapshot.selected_case;
+    state.sourceTravelChoice = snapshot.travel_choice;
+    state.batchIntakes = snapshot.batch_intakes;
+    state.batchPreflight = null;
+    state.draftLifecycle = null;
+    state.lastReview = { ...(snapshot.current_evidence || {}), status: "blocked", intake: state.currentIntake,
+      message: "Restored request inputs. Check the details and run a fresh review before preparing.",
+      next_safe_action: { state: "fix_blocker", blocked: true, button_id: "review-resumed-workspace" } };
+    $("#batch-email-grouping").value = snapshot.email_grouping;
+    $("#batch-packet-mode").checked = snapshot.packet_mode;
+    if (selectedSourceCase()) selectSourceCase(snapshot.selected_case, { persist: false, focus: false });
+    else if (state.currentIntake) { fillFormFromIntake(state.currentIntake); updateHomeReviewCard(state.lastReview); }
+    else if (snapshot.manual_fields) {
+      fillFormFromIntake({ ...snapshot.manual_fields, service_profile_key: snapshot.manual_fields.profile,
+        transport: { km_one_way: snapshot.manual_fields.km_one_way } });
+      draft.manualDirty = true;
+    }
+    ["#home-numbered-answers", "#numbered-answers"].forEach(selector => {
+      const input = $(selector);
+      if (input) input.value = selectedSourceCase()?.answers || snapshot.answers || "";
+    });
+    state.workflowStale = true;
+    renderBatchQueue(); renderSourceCaseList(); renderSupportingAttachmentList();
+    if (state.batchIntakes.length) $("#batch-queue-panel").classList.remove("hidden");
+    closeReviewDrawer();
+    renderNextSafeAction(state.lastReview.next_safe_action);
+    setStatus("blocked", "Unfinished inputs restored. Review the details and run a fresh check before preparing.");
+    draft.pending = null; draft.validation = null; draft.resumed = true; draft.error = "";
+    return result;
+  } catch (error) {
+    if ((applying || state.workflowRevision === revision) && draft.pending === pending) draft.error = `Resume could not finish; the saved copy was kept: ${error.message}`;
+    return null;
+  } finally {
+    draft.busy = false;
+    renderWorkspaceDraft();
+    if (!draft.pending) scheduleWorkspaceDraftSave();
+  }
+}
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -402,6 +552,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
       enabled = false;
       blockedReason = "Preparation is in progress. Wait for the reviewed result.";
     }
+    if (state.workspaceDraft.runtimeChanged) { enabled = false; blockedReason = "The app workspace changed. Reload before continuing."; }
     setActionGate(id, enabled, enabled ? actionDetail : blockedReason, actionState);
   });
   const hasReviewableIntake = Boolean(state.currentIntake);
@@ -1800,6 +1951,7 @@ function renderBatchItemInspector() {
 }
 
 function renderBatchQueue() {
+  scheduleWorkspaceDraftSave();
   renderBatchEmailGrouping();
   const list = $("#batch-queue-list");
   const chip = $("#batch-count-chip");
@@ -2060,6 +2212,7 @@ function currentWorkflowGuidance(data = {}) {
 }
 
 function refreshHomeWorkflow() {
+  scheduleWorkspaceDraftSave();
   const review = state.lastReview || {};
   const preparedReview = preparedEmailMemberReview(state.lastPrepared,
     [review, ...state.sourceCaseCandidates.map((candidate) => candidate.review)], state.preparedEmailTargetIndex, state.preparedEmailMemberIndex);
@@ -2238,6 +2391,7 @@ function renderBeginnerReviewSummary(data) {
 }
 
 function updateHomeReviewCard(data) {
+  scheduleWorkspaceDraftSave();
   const workflow = currentWorkflowGuidance(data);
   if (workflow.phase !== "review") {
     data = { ...data, status: workflow.status, message: workflow.headline, questions: [] };
@@ -2592,6 +2746,9 @@ function setServerDisconnected(error) {
 }
 
 async function requestJson(url, options = {}) {
+  if (state.workspaceDraft.runtimeChanged && String(options.method || "GET").toUpperCase() !== "GET") {
+    throw new Error("The app workspace changed. Reload before continuing.");
+  }
   let response;
   try {
     response = await fetch(url, {
@@ -2723,6 +2880,7 @@ async function recoverLocalSourceFile(file, origin = "local source") {
 }
 
 function requestWorkflowUpload(url, form, captured) {
+  if (state.workspaceDraft.runtimeChanged) throw new Error("The app workspace changed. Reload before continuing.");
   return awaitWorkflowResponse(async () => {
     const response = await fetch(url, { method: "POST", body: form });
     const data = await response.json();
@@ -2897,6 +3055,7 @@ async function loadReference() {
   renderAiStatus(state.aiStatus);
   renderGmailStatus(state.gmailStatus);
   renderBackupStatus(state.backupStatus);
+  initializeWorkspaceDraft(state.reference?.workspace_id);
 }
 
 async function loadAiStatus() {
@@ -5695,6 +5854,7 @@ async function recordDraft() {
 }
 
 function resetReview({ closeDrawer = true } = {}) {
+  state.workspaceDraft.manualDirty = false;
   state.currentIntake = null;
   clearSourceCaseReview();
   clearPreparedArtifacts("review reset");
@@ -5736,6 +5896,7 @@ function resetReview({ closeDrawer = true } = {}) {
 }
 
 function resetWorkspace() {
+  discardWorkspaceDraft({ saveCurrent: false });
   state.batchIntakes = [];
   state.batchSelectedIndex = null;
   state.batchPreflight = null;
@@ -5800,6 +5961,18 @@ function bindNavigation() {
 }
 
 function bindActions() {
+  $("#workspace-draft-status").addEventListener("click", async (event) => {
+    if (event.target.closest("#resume-workspace-draft")) await resumeWorkspaceDraft();
+    else if (event.target.closest("#discard-workspace-draft")) discardWorkspaceDraft();
+    else if (event.target.closest("#review-resumed-workspace")) {
+      try {
+        if (state.sourceCaseCandidates.length > 1) await refreshSourceClaimReviews();
+        else await reviewIntake({ openDrawer: false });
+        state.workspaceDraft.resumed = false;
+        renderWorkspaceDraft();
+      } catch (error) { showAlert(error.message, "blocked"); }
+    }
+  });
   bindSourceDropZone();
   $("#saved-court-email").addEventListener("change", async () => {
     try { await chooseSavedCourtEmail($("#saved-court-email").value); }
@@ -5822,6 +5995,7 @@ function bindActions() {
   $("#review-source-case-choices").addEventListener("click", claimChange(() => { persistCurrentSourceCase(); return refreshSourceClaimReviews(); }));
   const intakeChanged = (event) => {
     if (event.target?.id === "saved-court-email") return;
+    if (!state.currentIntake) state.workspaceDraft.manualDirty = true;
     clearPreparedArtifacts("intake form changed");
     sourceCaseDetailsChanged();
     renderSavedCourtEmailOptions();
@@ -6821,6 +6995,15 @@ function bindActions() {
 
 bindNavigation();
 bindActions();
+document.addEventListener("input", () => { state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1; scheduleWorkspaceDraftSave(); });
+document.addEventListener("change", () => { state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1; scheduleWorkspaceDraftSave(); });
+window.addEventListener("pagehide", saveWorkspaceDraft);
+window.addEventListener("beforeunload", (event) => {
+  saveWorkspaceDraft();
+  if ((state.workspaceDraft.error || state.workspaceDraft.pending) && workspaceDraftHasWork(currentWorkspaceDraft())) {
+    event.preventDefault(); event.returnValue = "";
+  }
+});
 window.addEventListener("hashchange", () => showPanel(window.location.hash, { updateHash: false }));
 window.addEventListener("focus", () => {
   checkServerHealth().catch(() => {});

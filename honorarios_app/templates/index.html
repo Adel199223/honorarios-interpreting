@@ -111,6 +111,8 @@
             <li><span>5</span><strong>Draft email</strong><small>Draft-only, never send</small></li>
           </ol>
 
+          <div class="result-card hidden" id="workspace-draft-status" aria-live="polite"></div>
+
           <div class="task-switcher hidden beginner-hidden" role="tablist" aria-label="Job type">
             <button type="button" class="task-button inactive">Translation</button>
             <button type="button" class="task-button active">Interpretation</button>
@@ -1297,7 +1299,7 @@
       </section>
     </div>
 
-    <script type="importmap">{"imports":{"/static/review_guidance.js":"/static/review_guidance.js?v={{ asset_version }}"}}</script>
+    <script type="importmap">{"imports":{"/static/review_guidance.js":"/static/review_guidance.js?v={{ asset_version }}","/static/workspace_draft.js":"/static/workspace_draft.js?v={{ asset_version }}"}}</script>
     <script type="module" src="/static/app.js?v={{ asset_version }}"></script>
   </body>
 </html>

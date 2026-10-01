@@ -25,3 +25,4 @@ test_claim_options_ui.py
 test_email_routing.py
 test_email_routing_ui.py
 test_source_email_groups.py
+test_workspace_draft.py
