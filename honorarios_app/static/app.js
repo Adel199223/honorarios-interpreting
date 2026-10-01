@@ -927,11 +927,11 @@ function selectedSourceCase() {
 
 function saveSourceCaseAnswers(value) {
   const candidate = selectedSourceCase();
-  if (!candidate) return;
-  candidate.answers = String(value || "");
+  const answers = String(value || "");
+  if (candidate) candidate.answers = answers;
   ["#home-numbered-answers", "#numbered-answers"].forEach((selector) => {
     const input = $(selector);
-    if (input && input.value !== candidate.answers) input.value = candidate.answers;
+    if (input && input.value !== answers) input.value = answers;
   });
 }
 
@@ -2392,6 +2392,9 @@ function renderBeginnerReviewSummary(data) {
 
 function updateHomeReviewCard(data) {
   scheduleWorkspaceDraftSave();
+  // The home textarea is recreated by rendering. The drawer field persists
+  // for manual requests; source cases retain their own independent answers.
+  const pendingAnswers = selectedSourceCase()?.answers ?? $("#numbered-answers")?.value ?? "";
   const workflow = currentWorkflowGuidance(data);
   if (workflow.phase !== "review") {
     data = { ...data, status: workflow.status, message: workflow.headline, questions: [] };
@@ -2426,9 +2429,8 @@ function updateHomeReviewCard(data) {
     ${duplicate}
     ${questions}
   `;
-  const candidate = selectedSourceCase();
-  if (candidate && $("#home-numbered-answers")) {
-    $("#home-numbered-answers").value = candidate.answers || "";
+  if ($("#home-numbered-answers")) {
+    $("#home-numbered-answers").value = pendingAnswers;
   }
 }
 
@@ -5336,7 +5338,7 @@ async function applyNumberedAnswers(options = {}) {
     body: JSON.stringify({ intake: state.currentIntake, answers }),
   }, { revision: capturedRevision });
   if (!data) return null;
-  if (selectedSourceCase()) saveSourceCaseAnswers("");
+  if (selectedSourceCase() || data.applied_fields?.length || data.status === "ready") saveSourceCaseAnswers("");
   state.currentIntake = data.intake || state.currentIntake;
   fillFormFromIntake(state.currentIntake);
   applyReview(data, { openDrawer: options.openDrawer });

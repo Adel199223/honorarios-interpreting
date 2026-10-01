@@ -112,8 +112,10 @@ class WorkspaceDraftDomainTests(unittest.TestCase):
 
 class WorkspaceDraftUiTests(unittest.TestCase):
     def run_js(self, body):
-        harness = HARNESS.replace("this.api={", "this.api={initializeWorkspaceDraft,currentWorkspaceDraft,saveWorkspaceDraft,discardWorkspaceDraft,resumeWorkspaceDraft,resetWorkspace,resetReview,requestJson,")
+        harness = HARNESS.replace("this.api={", "this.api={initializeWorkspaceDraft,currentWorkspaceDraft,saveWorkspaceDraft,discardWorkspaceDraft,resumeWorkspaceDraft,resetWorkspace,resetReview,requestJson,saveSourceCaseAnswers,applyNumberedAnswers,")
+        harness = harness.replace("vm.runInNewContext(app,context)", "app+='\\n'+listenerSource('#workspace-draft-status');vm.runInNewContext(app,context)")
         harness = harness.replace("if(url==='/api/review')", "if(url==='/api/workspace/resume')result={snapshot:body.snapshot,missing_attachments:[],unavailable_profiles:[]};else if(url==='/api/review')")
+        harness = harness.replace("else if(url==='/api/review')", "else if(url==='/api/review/apply-answers')result={status:'ready',intake:body.intake,applied_fields:['case_number'],next_safe_action:{state:'prepare_pdf'}};else if(url==='/api/review')")
         script = 'import * as g from '+json.dumps((ROOT/'honorarios_app/static/review_guidance.js').as_uri())+';\n'+harness+"""
 const storage=new Map();context.window.localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
 context.window.location={hash:'#new-job'};
@@ -156,6 +158,41 @@ await a.resumeWorkspaceDraft();console.log(JSON.stringify({saved:saved.snapshot.
         self.assertEqual(result['case'], '715/26.0TSTXX')
         self.assertEqual(result['text'], 'Fictional typed source')
         self.assertIn('Review restored work', result['panel'])
+
+    def test_manual_pending_answers_survive_resume_then_production_review_click(self):
+        result = self.run_js("""
+const answers='1. 850/26.0TSTXX\\n2. 2026-09-28';
+const snapshot=makeSnapshot();snapshot.current_intake={...alpha,case_number:'',service_date:''};snapshot.batch_intakes=[];snapshot.answers=answers;
+storage.set(g.workspaceDraftStorageKey(workspace),savedRecord(snapshot));a.initializeWorkspaceDraft(workspace);
+// The real question textarea is replaced when its parent gets new innerHTML.
+const card=element('#interpretation-review-home-result');Object.defineProperty(card,'innerHTML',{get(){return this._html||''},set(value){this._html=value;element('#home-numbered-answers').value=''}});
+await a.resumeWorkspaceDraft();const resumed=element('#numbered-answers').value;
+await element('#workspace-draft-status').listeners.click({target:{closest:selector=>selector==='#review-resumed-workspace'?{}:null}});
+await Promise.resolve();
+console.log(JSON.stringify({resumed,home:element('#home-numbered-answers').value,drawer:element('#numbered-answers').value,
+ saved:JSON.parse(storage.get(g.workspaceDraftStorageKey(workspace))).snapshot.answers,cases:a.state.sourceCaseCandidates.length,calls:calls.map(row=>row.url)}));
+""")
+        answers = '1. 850/26.0TSTXX\n2. 2026-09-28'
+        self.assertEqual(result['resumed'], answers)
+        self.assertEqual(result['home'], answers)
+        self.assertEqual(result['drawer'], answers)
+        self.assertEqual(result['saved'], answers)
+        self.assertEqual(result['cases'], 0)
+        self.assertEqual(result['calls'], ['/api/workspace/resume', '/api/review'])
+
+    def test_manual_answer_edits_sync_and_consumed_answers_do_not_reappear(self):
+        result = self.run_js("""
+a.state.currentIntake=alpha;a.fillFormFromIntake(alpha);const typed='1. 850/26.0TSTXX';
+a.saveSourceCaseAnswers(typed);const mirrored=element('#numbered-answers').value;
+await a.applyNumberedAnswers({sourceSelector:'#home-numbered-answers',openDrawer:false});
+const applied={home:element('#home-numbered-answers').value,drawer:element('#numbered-answers').value};
+a.saveSourceCaseAnswers(typed);a.saveSourceCaseAnswers('');a.updateHomeReviewCard({status:'needs_info',intake:alpha,questions:[{field:'service_date'}]});
+console.log(JSON.stringify({mirrored,applied,cleared:element('#home-numbered-answers').value,calls:calls.map(row=>row.url)}));
+""")
+        self.assertEqual(result['mirrored'], '1. 850/26.0TSTXX')
+        self.assertEqual(result['applied'], {'home': '', 'drawer': ''})
+        self.assertEqual(result['cleared'], '')
+        self.assertEqual(result['calls'], ['/api/review/apply-answers'])
 
     def test_five_case_resume_without_conditional_home_answer_control_finishes(self):
         result = self.run_js("""
