@@ -100,6 +100,28 @@ Finally, open the draft in Gmail, check the recipient and attachments again, and
 
 ## Start another request
 
-Use **Change source** to keep queued requests while clearing the current review for another photo or document. Use **Reset workspace** for a clean visible workspace; it clears the current review and queue without deleting stored request history, generated files or Gmail drafts. If the app reports that its server is disconnected, restart the normal launcher and reload the page before continuing.
+Use **Change source** to keep queued requests while clearing the current review for another photo or document. Use **Reset workspace** for a clean workspace; it clears the current review, queue and saved unfinished session without deleting stored request history, generated files or Gmail drafts. If the app reports that its server is disconnected, restart the normal launcher and reload the page before continuing.
 
 Batch tools, detailed source evidence, reference editing and direct Gmail setup are advanced paths. They can stay closed while you complete a single ordinary request.
+
+## Resume unfinished work
+
+The app automatically saves request inputs, source evidence, each case's unfinished answers, claim and shared-trip choices, and the batch queue in this browser. Manual fields are saved even before you build the request. This saved session belongs to the same browser address and app workspace; a test workspace or another data folder cannot automatically pick it up. Browser storage is separate from the app's exported backups.
+
+After reopening or reloading, use **Resume unfinished work** near the top of the page, or **Discard saved work**. Resuming replaces any currently open request inputs. It restores inputs only: prepared PDFs, Gmail IDs, email review approval and earlier preflight results are not restored as usable actions.
+
+Check the restored facts and selected profile, then click **Review restored work**. For several cases, review any questions, use **Add all cases to batch** to update the queue, and run **Check batch preflight** before **Prepare batch package**. The selected shared-trip owner and interpreting choices are retained; check them alongside each PDF.
+
+File selections cannot be restored. Existing supporting files are reused only when they still exist in this workspace's upload folder. If supporting files are unavailable, the app names them and waits for **Resume without unavailable files**; this lets you recover the facts and reattach the documents before preparing. If the original source is missing, reattach it when you need to read it again. An unavailable personal profile requires you to select its intended replacement before resuming.
+
+If automatic saving reports an error, keep the page open. Your current inputs remain visible and an earlier saved copy is retained. A damaged saved session offers an explicit discard action; it is not silently overwritten. Clearing browser storage or using a different browser/address can make that browser's saved session unavailable.
+
+## Back up local records and pending Gmail attempts
+
+Use **Export backup** to make a private local backup. To restore one, paste its JSON, choose **Preview backup import**, inspect the result, and provide the displayed confirmation phrase and reason before **Restore backup after preview**. The app creates a backup of the current data before restoring.
+
+Backups include Gmail attempts that still need reconciliation. Where the original files are available and permitted, they also include the reviewed email payload and supporting PDF/image files needed to finish recording those attempts on another machine. Credentials, the complete archive of finished documents, unrelated photos and the browser's unfinished session are not included.
+
+Restoring an older backup preserves newer local draft history and pending attempts. Conflicting identities or statuses pause the restore instead of removing duplicate protection. After a move or restart, use **Recent Work** to finish local recording of known Gmail IDs or reconcile an uncertain attempt; restoring does not create another Gmail draft or reinstate an old creation approval.
+
+Read warnings in export, preview and restore results. Missing, changed, unsupported or oversized files can leave an attempt protected but unable to finish local recording. Keep the original files or obtain a complete backup from the original computer. The recovery-file limits are 25 MiB per file, 100 MiB in total and 256 entries; a successful backup is not a complete document archive.

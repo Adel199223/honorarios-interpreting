@@ -67,6 +67,14 @@ These checks use disposable runtime roots and synthetic fixtures. The adapter ch
 
 Optional Browser/IAB or Playwright checks remain documented in [the roadmap/process references](process-optimizations.md). Use the [workflow acceptance checklist](workflow-acceptance.md) for the actual guided journey and rendered PDF. Run any artifact-writing browser path through the isolated launcher. If the adapter lacks a required capability, record the tooling blocker; do not substitute private files or real draft records.
 
+## Resume and backup recovery checks
+
+`tests/test_workspace_draft.py` covers the editable browser snapshot, opaque per-runtime namespace, explicit resume, manual fields, per-case answers/evidence and shared-trip bindings. It checks missing/out-of-root files, explicit replacement profiles, stale responses, corrupt/quota-limited storage, Change source/Reset, the absent conditional home answer box, and the served dependency import-map version. The focused `ui` group runs these checks. Keep new static modules in both package/source-only copies and the versioned browser dependency graph.
+
+Use ordinary browser controls to review a five-case source, move its travel owner, queue it, reload and resume. Confirm that all five rows return as needing review and that no previous PDF/email approval becomes actionable. Review again, refresh the queue, run batch preflight, prepare and inspect all five PDFs and the single email target. Repeat with manual fields entered before Build/Review. At a narrow viewport, check the resume banner and action remain above the reordered source panel. Exercise missing-file/profile repair in synthetic data; allow recovery of facts without silently accepting a different profile or missing attachment.
+
+For backup changes, use isolated source and destination runtimes with fake Gmail transport. Export pending attempts, restore reviewed JSON/PDF/image recovery files, then complete local recording without another provider create. Verify old/legacy backup restore retains newer active/sent history and pending reservations, conflicts pause, incomplete recovery files remain blocked, and same-backup retry handles interruption. Check export/preview/restore warnings and the bounded file limits. Browser-local unfinished sessions and server-side attempt backups have separate storage and must not be reported as interchangeable. Current integrated test totals and actual browser evidence belong in the handoff/active plan, not inferred from this checklist.
+
 ## Tracked-content privacy checks
 
 Before a commit or public update, stage paths explicitly and run:
