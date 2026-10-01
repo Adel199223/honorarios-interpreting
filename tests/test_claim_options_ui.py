@@ -227,7 +227,7 @@ a.state.batchIntakes=[prepared];a.resetReview();
 console.log(JSON.stringify({freshMode,home,resetChoice:element('#request-claim-mode').value,group:a.state.sourceTravelChoice,queue:a.state.batchIntakes.length}));
 """, app=True)
         self.assertEqual(result['freshMode'], 'both')
-        self.assertIn('Travel only — attended, no interpreting', result['home'])
+        self.assertIn('Travel only', result['home'])
         self.assertNotIn('Interpreting + travel', result['home'])
         self.assertEqual(result['resetChoice'], 'both')
         self.assertIsNone(result['group'])
@@ -239,6 +239,10 @@ console.log(JSON.stringify({freshMode,home,resetChoice:element('#request-claim-m
         self.assertIn('id="request-claim-mode"', review)
         self.assertIn('id="source-travel-mode"', review)
         self.assertIn('id="source-travel-owner"', review)
+        self.assertIn('Travel only requests travel expenses without asking for interpreting fees.', review)
+        self.assertIn('Interpreting only requests interpreting fees without travel expenses.', review)
+        self.assertNotIn('no interpreting work took place', review)
+        self.assertNotIn('covered elsewhere', review)
         result = self.run_js("""
 const data=upload([710,711]);data.case_candidates[1].candidate_intake.case_number='<img src=x onerror=alert(1)>';
 a.adoptUploadedSource(data);a.selectSourceCase(0,{persist:false,focus:false});

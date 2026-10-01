@@ -762,7 +762,7 @@ function renderClaimChoices() {
   const caption = $("#request-claim-caption");
   if (caption) caption.textContent = claimMode(state.currentIntake || {}) === "neither"
     ? "This case currently claims neither interpreting nor travel. Choose a claim before it can be queued or prepared."
-    : "Interpreting only means travel is covered elsewhere. Travel only means you arrived but no interpreting work took place. In a shared trip, choosing travel here moves the trip to this case.";
+    : "Interpreting only requests interpreting fees without travel expenses. Travel only requests travel expenses without asking for interpreting fees. In a shared trip, choosing travel here moves the trip to this case.";
   const choice = state.sourceTravelChoice;
   if (!choice || state.sourceCaseCandidates.length <= 1) return;
   const travelMode = $("#source-travel-mode");
@@ -780,7 +780,7 @@ function renderClaimChoices() {
     ? (choice.ownerIndex === null ? "No case currently claims this shared trip. Select a case above to claim it, or keep travel unclaimed. Each interpreting choice stays separate."
       : "Editable source-group default: these cases share one visit. Only the selected case claims travel; each interpreting choice stays separate. Choose Separate trips if they were different visits.")
     : choice.mode === "separate" ? "Trips are treated separately. Each request's claim choice controls whether it includes travel. Use this when the cases involved separate visits."
-      : "No source case claims travel. Interpreting choices stay as selected; a case with no interpreting must choose a valid claim.");
+      : "No source case claims travel. Interpreting choices stay as selected; a case excluding interpreting fees must choose a valid claim.");
 }
 
 async function refreshSourceClaimReviews() {

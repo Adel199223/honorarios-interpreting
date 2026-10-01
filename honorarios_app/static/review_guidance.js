@@ -341,7 +341,7 @@ export function claimMode(intake = {}) {
 }
 
 export function claimModeLabel(intake = {}) {
-  return { both: "Interpreting + travel", interpreting_only: "Interpreting only", travel_only: "Travel only — attended, no interpreting", neither: "Choose a claim" }[claimMode(intake)];
+  return { both: "Interpreting + travel", interpreting_only: "Interpreting only", travel_only: "Travel only", neither: "Choose a claim" }[claimMode(intake)];
 }
 
 export function intakeWithClaimMode(intake, mode) {
