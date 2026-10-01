@@ -270,6 +270,12 @@ def build_field_evidence(
                     excerpt=_line_excerpt(text, station), reason='The source names this specific police station. Check the venue for this appointment; the city-court fallback was not used.')
                 break
 
+    court_label = candidate.get('court_label_preference') or {}
+    if isinstance(court_label, dict):
+        for field, original in (court_label.get('original_fields') or {}).items():
+            if field in {'payment_entity', 'service_entity', 'service_place'} and candidate.get(field) == court_label.get('label'):
+                add(field, candidate[field], source='saved_court_label', confidence='medium', raw_value=original,
+                    reason='Your saved short court label matches this ordinary court and its exact recipient. The original source wording is retained; you can edit this label.')
     photo_defaults = candidate.get("photo_defaults_applied") or {}
     if isinstance(photo_defaults, dict):
         for field in ("service_date", "payment_entity", "recipient_email", "service_place"):

@@ -83,7 +83,7 @@ from scripts.source_classification import classify_source_work, detect_translati
 from .ai_recovery import MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
 from .source_cases import source_case_rows, valid_source_case
 from .workspace_draft import workspace_runtime_id
-from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
+from .photo_defaults import apply_photo_defaults, apply_saved_court_label, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gmail_draft_api import (
     GmailDraftCreateError,
     create_gmail_draft_from_payload,
@@ -1725,6 +1725,8 @@ def recover_source_upload(
         ai_recovery=ai_recovery, directory=read_json_list(paths.court_emails),
         explicit_profile=profile_decision.get('mode') == 'explicit_profile',
     )
+    apply_saved_court_label(candidate, load_photo_defaults(paths.ai_config),
+                           explicit_profile=profile_decision.get('mode') == 'explicit_profile')
     if (
         str(candidate.get("photo_metadata_date") or "").strip()
         and not str(candidate.get("service_date") or "").strip()

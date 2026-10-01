@@ -16,6 +16,7 @@ from reportlab.lib.utils import ImageReader
 
 from honorarios_app.ai_recovery import _prompt_for_source, should_attempt_ai_recovery
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
+from honorarios_app.photo_defaults import apply_saved_court_label
 from honorarios_app.services import (
     AppPaths, apply_answer_to_intake, apply_numbered_answers, recover_source_upload,
     prepare_intakes, review_intake, review_intake_with_profile_evidence,
@@ -44,6 +45,48 @@ def write_json(path, value):
 
 def court_record(entity=CAPTURE_COURT, recipient=CAPTURE_RECIPIENT):
     return {'payment_entity': entity, 'addressee': entity, 'recipient_email': recipient}
+
+
+class SavedCourtLabelTests(unittest.TestCase):
+    def candidate(self):
+        court = 'Tribunal Judicial da Comarca de District City - Juizo de Competencia Generica de Capture City'
+        return {'source_kind': 'notification_pdf', 'source_text': court + '\nServico em 2026-09-28.',
+                'payment_entity': court, 'service_place': court, 'service_entity': court,
+                'recipient_email': CAPTURE_RECIPIENT, 'service_date': '2026-09-28'}
+
+    def test_exact_saved_court_shortens_labels_without_changing_date_or_contact(self):
+        candidate = self.candidate()
+        original = copy.deepcopy(candidate)
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+        for field in ('payment_entity', 'addressee', 'service_place', 'service_entity'):
+            self.assertEqual(candidate[field], CAPTURE_COURT)
+        for field in ('source_text', 'recipient_email', 'service_date'):
+            self.assertEqual(candidate[field], original[field])
+        self.assertEqual(candidate['court_label_preference']['original_fields']['payment_entity'], original['payment_entity'])
+        self.assertNotIn('photo_defaults_applied', candidate)
+
+    def test_specialized_unmatched_unmapped_and_ungrounded_courts_stay_unchanged(self):
+        for changes in ({'payment_entity': 'Tribunal do Trabalho de Capture City'},
+                        {'recipient_email': DEFAULT_RECIPIENT}, {'source_text': 'Unrelated source'},
+                        {'payment_entity': 'Tribunal de Other City'}, {'source_kind': 'photo'}):
+            with self.subTest(changes=changes):
+                candidate = {**self.candidate(), **changes}
+                original = copy.deepcopy(candidate)
+                apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+                self.assertEqual(candidate, original)
+        candidate = self.candidate()
+        original = copy.deepcopy(candidate)
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}}, explicit_profile=True)
+        self.assertEqual(candidate, original)
+
+    def test_physical_address_and_station_are_not_replaced_by_court_label(self):
+        candidate = self.candidate()
+        candidate.update(service_place='Rua Example, 12', service_entity='Posto da GNR de Capture City', service_place_phrase='na Rua Example, 12')
+        apply_saved_court_label(candidate, {'city_courts': {CAPTURE_CITY: court_record()}})
+        self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(candidate['service_place'], 'Rua Example, 12')
+        self.assertEqual(candidate['service_entity'], 'Posto da GNR de Capture City')
+        self.assertEqual(candidate['service_place_phrase'], 'na Rua Example, 12')
 
 
 class PhotoDefaultTests(unittest.TestCase):
@@ -282,6 +325,25 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['candidate_intake']['service_date'], PRINTED_DATE)
         self.assertEqual(result['candidate_intake']['payment_entity'], 'Example Court')
         self.assertNotEqual(result['candidate_intake'].get('recipient_email'), CAPTURE_RECIPIENT)
+
+    def test_pdf_saved_short_court_label_survives_fresh_review_with_original_evidence(self):
+        self.enable()
+        write_json(self.paths.service_profiles, {'first': {'defaults': {}}, 'second': {'defaults': {}}})
+        court = 'Tribunal Judicial da Comarca de District City - Juizo de Competencia Generica de Capture City'
+        text = (f'Processo {CASE_NUMBER}\n{court}\n{CAPTURE_RECIPIENT}\n'
+                'Servico de interpretacao realizado em 28/09/2026.')
+        result = self.upload(source_kind='notification_pdf', visible_text=text, ai_fields={
+            'payment_entity': court, 'service_entity': court, 'service_place': court, 'service_entity_type': 'court'})
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(candidate['service_place'], CAPTURE_CITY, 'A bare recovered locality is not proof of the court venue.')
+        self.assertIn(court, candidate['source_text'])
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['intake']['payment_entity'], CAPTURE_COURT)
+        payer = next(row for row in review['review_evidence']['field_evidence'] if row['field'] == 'payment_entity')
+        self.assertEqual(payer['source'], 'saved_court_label')
+        self.assertEqual(payer['raw_value'], court)
+        self.assertEqual(review['intake']['service_date'], '2026-09-28')
 
     def test_notification_appointment_reaches_actual_pdf_without_photo_date_contamination(self):
         self.enable(venue=True)
