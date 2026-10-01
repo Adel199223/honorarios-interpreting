@@ -1017,7 +1017,7 @@ def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any
     """Retain deliberate review removals while leaving initial defaults available."""
     allowed = {'case_number', 'service_date', 'photo_metadata_date', 'payment_entity',
                'service_place', 'recipient_email', 'service_period_label',
-               'service_start_time', 'service_end_time', 'source_text', 'transport.km_one_way'}
+               'service_start_time', 'service_end_time', 'source_text', 'transport.km_one_way', 'closing_city'}
     supplied = original.get('review_cleared_fields')
     if not isinstance(supplied, list):
         return
@@ -5409,7 +5409,8 @@ def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tup
         provenance['distance_source'] = ''
     generator_profile = profile_to_generator_profile(profile, _legacy_profile_defaults(paths))
     saved_closing_city = str(_legacy_profile_defaults(paths).get("default_closing_city") or "").strip()
-    if intake.get("photo_defaults_applied") and not str(effective.get("closing_city") or "").strip() and saved_closing_city:
+    if (not str(effective.get("closing_city") or "").strip() and saved_closing_city
+            and 'closing_city' not in effective.get('review_cleared_fields', [])):
         effective["closing_city"] = saved_closing_city
         provenance["applied"].append("closing_city")
     return effective, generator_profile, provenance
