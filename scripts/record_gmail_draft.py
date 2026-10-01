@@ -11,9 +11,11 @@ from typing import Any
 try:
     from scripts.request_identity import normalize_case_number, normalize_period_label, request_identity_key
     from scripts.claim_options import recorded_travel_requests, validate_travel_payload_groups
+    from scripts.build_email_draft import source_email_group_errors
 except ModuleNotFoundError:
     from request_identity import normalize_case_number, normalize_period_label, request_identity_key
     from claim_options import recorded_travel_requests, validate_travel_payload_groups
+    from build_email_draft import source_email_group_errors
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,7 @@ DEFAULT_LOG = ROOT / "data" / "gmail-draft-log.json"
 DEFAULT_DUPLICATE_INDEX = ROOT / "data" / "duplicate-index.json"
 STATUSES = {"active", "trashed", "superseded", "not_found", "sent"}
 CLAIM_FIELDS = ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding')
+EMAIL_GROUP_FIELDS = ('email_grouping', 'email_group_id', 'source_sha256', 'personal_profile_id')
 
 
 def load_log(path: Path) -> list[dict[str, Any]]:
@@ -142,6 +145,7 @@ def build_duplicate_record(record: dict[str, Any]) -> dict[str, Any]:
     if record.get("sent_date"):
         duplicate["sent_date"] = record["sent_date"]
     duplicate.update({key: record[key] for key in CLAIM_FIELDS if key in record})
+    duplicate.update({key: record[key] for key in EMAIL_GROUP_FIELDS if key in record})
     return duplicate
 
 
@@ -158,6 +162,12 @@ def duplicate_records_for_log_record(record: dict[str, Any], payload: dict[str, 
         for key in CLAIM_FIELDS:
             child.pop(key, None)
         child.update({key: item[key] for key in CLAIM_FIELDS if key in item})
+        # Packets historically use the packet PDF; source groups retain each separate request PDF.
+        if record.get('email_grouping') == 'source':
+            for key in ('pdf', 'pdf_sha256', 'draft_payload'):
+                if not item.get(key):
+                    raise ValueError(f'Source email group child is missing {key}.')
+                child[key] = item[key]
         for key in ("case_number", "service_date", "service_period_label", "service_start_time", "service_end_time"):
             if key in {'service_period_label', 'service_start_time', 'service_end_time'}:
                 child[key] = item.get(key, '')
@@ -165,6 +175,52 @@ def duplicate_records_for_log_record(record: dict[str, Any], payload: dict[str, 
                 child[key] = item[key]
         records.append(build_duplicate_record(child))
     return records
+
+
+def validate_superseded_request_coverage(requests: list[dict[str, Any]], records: list[dict[str, Any]], supersedes: list[str]) -> None:
+    new_keys = {request_identity_key(row) for row in requests}
+    known = {str(row.get('draft_id') or ''): row for row in records}
+    for draft_id in supersedes:
+        previous = known.get(draft_id)
+        if not previous:
+            raise ValueError('Correction references an unknown local draft ID.')
+        if previous.get('status') == 'sent':
+            raise ValueError('A sent draft cannot be superseded by a correction.')
+        children = previous.get('underlying_requests') or [previous]
+        if not isinstance(children, list) or any(not isinstance(child, dict) for child in children):
+            raise ValueError('The draft being superseded has unclear request membership.')
+        if not {request_identity_key(child) for child in children}.issubset(new_keys):
+            raise ValueError('Correction must include every request in the grouped draft being superseded. Include its remaining cases before replacing that email.')
+
+
+def validate_source_group_history(payload: dict[str, Any], records: list[dict[str, Any]], index: list[dict[str, Any]],
+                                  *, draft_id: str, supersedes: list[str], reason: str, status: str = 'active') -> None:
+    requests = payload.get('underlying_requests') or []
+    validate_superseded_request_coverage(requests, records, supersedes)
+    previous = next((row for row in records if row.get('draft_id') == draft_id), None)
+    if previous and previous.get('status') not in {'active', 'drafted'} and status != previous.get('status'):
+        raise ValueError('An already sent or retired group draft cannot be restored by an active recording retry.')
+    if previous and (previous.get('email_group_id') != payload.get('email_group_id') or
+                     previous.get('underlying_requests') != requests or previous.get('recipient') != payload.get('to')):
+        raise ValueError('An existing draft ID cannot be rebound to different source email requests or PDFs.')
+    request_keys = {request_identity_key(row) for row in requests}
+    blocking = []
+    for row in [*records, *index]:
+        if row.get('draft_id') == draft_id or str(row.get('status') or 'sent') not in {'active', 'drafted', 'sent'}:
+            continue
+        children = row.get('underlying_requests') or [row]
+        if not isinstance(children, list) or any(not isinstance(child, dict) for child in children):
+            raise ValueError('A blocking history record has unclear request membership. Review that record before recording this email.')
+        # A missing period on either side blocks every period of the same case/date,
+        # matching the canonical app/CLI duplicate guard rather than exact-set lookup.
+        child_keys = [request_identity_key(child) for child in children]
+        if any(old[:2] == new[:2] and (not old[2] or not new[2] or old[2] == new[2]) for old in child_keys for new in request_keys):
+            blocking.append(row)
+    if any(str(row.get('status') or 'sent') == 'sent' for row in blocking):
+        raise ValueError('A grouped request is already sent. Stop before recording this email.')
+    required = {str(row.get('draft_id') or '') for row in blocking}
+    if required and ('' in required or not required.issubset(set(supersedes)) or len(reason.strip()) < 8):
+        raise ValueError('A grouped request already has an active/drafted record. Use correction mode with a reason and every blocking draft ID before recording.')
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -223,15 +279,31 @@ def main(argv: list[str] | None = None) -> int:
         previous = next((existing for existing in records if existing.get('draft_id') == args.draft_id), {})
         record.update({key: previous[key] for key in CLAIM_FIELDS if key in previous})
         record.update({key: payload[key] for key in CLAIM_FIELDS if key in payload})
+        record.update({key: previous[key] for key in EMAIL_GROUP_FIELDS if key in previous})
+        record.update({key: payload[key] for key in EMAIL_GROUP_FIELDS if key in payload})
         underlying = payload.get('underlying_requests') or previous.get('underlying_requests')
         if isinstance(underlying, list) and underlying:
             record['underlying_requests'] = underlying
         if args.status in {'active', 'sent'}:
+            if record.get('email_grouping') == 'source':
+                if not payload:
+                    raise ValueError('Source email group recording requires its reviewed payload.')
+                errors = source_email_group_errors(payload)
+                if errors:
+                    raise ValueError('; '.join(errors))
+                validate_source_group_history(payload, records, duplicate_records, draft_id=args.draft_id,
+                                              supersedes=args.supersedes, reason=args.notes, status=args.status)
+                if previous and str(previous.get('message_id') or '') != args.message_id:
+                    raise ValueError('An existing group draft ID cannot be rebound to another message ID.')
+                for key, value in (('case_number', record['case_number']), ('service_date', record['service_date']), ('to', record['recipient'])):
+                    if str(payload.get(key) or '') != str(value):
+                        raise ValueError('Source email group record overrides do not match its payload.')
             validate_travel_payload_groups(underlying if isinstance(underlying, list) and underlying else [record],
                                           prior_requests=recorded_travel_requests(records, duplicate_records))
+        child_records = duplicate_records_for_log_record(record, payload)
         upsert_record(records, record)
         write_log(args.log, records)
-        for duplicate_record in duplicate_records_for_log_record(record, payload):
+        for duplicate_record in child_records:
             upsert_duplicate_record(duplicate_records, duplicate_record)
         write_duplicate_index(args.duplicate_index, duplicate_records)
     except (OSError, ValueError, json.JSONDecodeError) as exc:

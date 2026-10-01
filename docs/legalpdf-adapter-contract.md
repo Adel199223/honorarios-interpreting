@@ -6,6 +6,8 @@ Current contract version: `2026-05-10.optional-gmail-boundary.v4`
 
 Optional intake claims are additive: `claim_interpreting` defaults to `true`, alongside existing `claim_transport`. Optional `travel_group_id` identifies an explicitly shared visit; callers must retain it and the claim flags throughout reviewed preparation and draft recording. All group members must have coherent visit/profile facts, and no group can request transport twice. Claim choices do not change the existing case/date/period duplicate identity, route paths or required payload keys. Use the shared review/preflight boundaries; do not independently infer trips from matching city/date or generate a second reimbursement claim.
 
+Preflight and preparation accept additive `email_grouping: "source" | "individual"`; omitted mode preserves individual emails for existing callers. Source mode returns `email_groups` alongside unchanged individual PDF `items`. A group requires the same nonempty `source_sha256`, validated recipient and personal profile; missing hashes remain separate. Same-source recipient/profile conflicts pause. Packet mode retains its combined-PDF behavior. Pass the selected group's `draft_payload` through the existing guarded handoff/create/record endpoints. Keep its `underlying_requests`, including each child's own PDF/hash and payload path/hash, so recording protects every case with its correct document.
+
 ## Boundary
 
 LegalPDF Translate remains read-only from this app. The Honorários app owns:
@@ -61,7 +63,7 @@ The future LegalPDF adapter may call the Honorários app endpoints, but it must 
 - `/api/prepare/preflight` returns `preflight_review`.
 - `/api/prepare` must receive the current `preflight_review` and returns `prepared_review`.
 - `/api/gmail/manual-handoff`, `/api/gmail/drafts/create`, and prepared-payload `/api/drafts/record` require `prepared_manifest`, `prepared_review_token`, and `review_fingerprint`.
-- Any source, intake, queue, packet-mode, payload, manifest, PDF, or attachment change makes the old prepared review stale.
+- Any source, intake, queue, packet-mode, email-grouping mode/membership, payload, manifest, PDF, or attachment change makes the old prepared review stale. Group review binds every child payload and attachment, not only the first request.
 - A stale or mismatched token must block before returning a handoff packet, calling Gmail, or writing local draft/duplicate records.
 
 ## Required Safety Rules
@@ -71,7 +73,7 @@ The future LegalPDF adapter may call the Honorários app endpoints, but it must 
 - Metadata/document date conflicts must block generation until the user confirms the correct date.
 - `drafted` and `sent` duplicate records must block generation.
 - Active drafts must block normal generation unless correction mode has a short reason.
-- Packet drafts must keep `underlying_requests` so every case/date/period receives duplicate protection.
+- Packet and source-group drafts must keep `underlying_requests` so every case/date/period receives duplicate protection. All children must pass duplicate/correction checks before an external draft call or local recording; partial replacement cannot silently remove an uncovered sibling's protection.
 - Prepared PDFs, previews, draft payloads, manual handoff packets, and record-helper values are stale after source, review, profile, queue, packet-mode, or intake changes.
 - Gmail OAuth is optional. Manual Draft Handoff is the always-available Gmail boundary for this contract.
 - The nested `gmail_boundary` must remain explicit: `required_tool: "_create_draft"`, `draft_only: true`, and `send_allowed: false`.

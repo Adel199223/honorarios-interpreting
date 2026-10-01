@@ -23,11 +23,13 @@ The browser and CLI share the domain rules. The services facade retains existing
 - Ignored `config/photo-defaults.local.json` optionally supplies the user's capture-day/service-day and capture-city/local-court policy. `honorarios_app/photo_defaults.py` applies it after photo reading, retains provenance and coherent routing through re-review; unresolved photo routing cannot use the general email fallback. See [source quality](docs/source-quality.md#saved-photo-defaults).
 - Personal profiles contain the applicant/payment/address/travel information. The selected profile is adapted into the existing generator profile contract.
 - Service profiles contain recurring interpreting service/payment/recipient patterns.
-- Duplicate records and draft lifecycle records protect both drafted and sent requests; packet requests retain their underlying identities.
+- Duplicate records and draft lifecycle records protect both drafted and sent requests; packet and source-group emails retain every underlying identity and each source-group child's own PDF/hash.
 - Prepared PDF/payload/manifest files and review tokens belong to the same reviewed request snapshot. Source, intake, queue, profile or attachment changes invalidate that snapshot.
 - Private overlays, tokens, source documents, generated output, backups and reports remain local and ignored. Public fixtures and tests must be synthetic.
 
 Future integrations must use the app boundary rather than directly edit these files.
+
+Source email grouping keeps individual PDF `items` and adds frozen `email_groups` when explicitly requested through preflight/prepare. The normal browser defaults to one email per photo, with separate emails available. Groups use exact nonempty source hashes and coherent recipient/profile choices; city/date alone cannot combine sources. Signed review covers all child payloads/PDFs, and draft/record guards check every member. See the [source-email plan](docs/assistant/exec_plans/completed/2026-10-01_source_email_groups.md) for current implementation/acceptance status.
 
 ## Workflow and safety
 

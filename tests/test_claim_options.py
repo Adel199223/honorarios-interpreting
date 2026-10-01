@@ -375,6 +375,106 @@ class ClaimOptionsTests(unittest.TestCase):
         self.assertEqual(preflight_intakes([owner], self.paths)['status'], 'blocked')
         self.assertEqual(review_intake(owner, self.paths)['status'], 'duplicate')
 
+    def court_row(self, number=101, venue='Tribunal de Vila Fictícia', **fields):
+        return self.row(number, travel_group_id='fictional-explicit-visit',
+                        service_place=venue, service_entity=venue, service_entity_type='court',
+                        service_place_phrase=f'em diligência realizada no {venue}', **fields)
+
+    def test_ordinary_local_court_names_match_only_for_shared_trip_comparison(self):
+        names = (
+            'Tribunal Judicial de Vila Fictícia',
+            'Juízo de Competência Genérica de Vila Fictícia',
+            'Tribunal Judicial da Comarca de Cidade Exemplo — Juízo de Competência Genérica de Vila Fictícia',
+            'Tribunal Judicial da Comarca de Cidade Exemplo - Juízo de Competência Genérica de Vila Fictícia',
+            'Tribunal Judicial da Comarca de Cidade Exemplo\nJuízo de Competência Genérica de Vila Fictícia',
+        )
+        current = self.court_row(claim_transport=True)
+        for name in names:
+            with self.subTest(name=name):
+                original = self.court_row(venue=name, claim_transport=True)
+                prior = self.prior(original)
+                before = copy.deepcopy((current, prior))
+                validate_shared_travel_groups([current], prior_requests=[prior])
+                self.assertEqual((current, prior), before)
+                self.assertEqual(prior['travel_group_binding'], claim_metadata(original)['travel_group_binding'])
+                self.assertNotEqual(prior['travel_group_binding'][1], claim_metadata(current)['travel_group_binding'][1])
+
+    def test_same_owner_short_court_correction_prepares_without_rewriting_history(self):
+        formal = 'Tribunal Judicial da Comarca de Cidade Exemplo — Juízo de Competência Genérica de Vila Fictícia'
+        old = [self.court_row(number, formal, claim_transport=number == 101) for number in (101, 102)]
+        prior = [self.prior(row) for row in old]
+        for path in (self.paths.draft_log, self.paths.duplicate_index):
+            self.write(path, prior)
+        before = self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()
+        current = [self.court_row(number, claim_transport=number == 101) for number in (101, 102)]
+        self.assertEqual(review_intake(current[0], self.paths)['status'], 'duplicate')
+        self.assertEqual(preflight_intakes(current, self.paths)['status'], 'blocked')
+        self.assert_no_artifacts()
+        reason = 'Fictional court display-name correction; visit and travel owner unchanged.'
+        self.assertEqual(preflight_intakes(current, self.paths, correction_reason=reason)['status'], 'ready')
+        prepared = prepare_intakes(current, self.paths, correction_reason=reason)
+        self.assertEqual(len(prepared['items']), 2)
+        for row, item in zip(current, prepared['items']):
+            payload = json.loads(Path(item['draft_payload']).read_text(encoding='utf-8'))
+            self.assertEqual(payload['travel_group_binding'], claim_metadata(row)['travel_group_binding'])
+            self.assertEqual(payload['claim_transport'], row['claim_transport'])
+            self.assertTrue(item['correction_mode'])
+            self.assertEqual(validate_draft_payload(payload), [])
+        self.assertEqual((self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()), before)
+
+    def test_equivalent_court_cannot_transfer_a_recorded_travel_claim_to_another_identity(self):
+        owner = self.court_row(venue='Juízo de Competência Genérica de Vila Fictícia', claim_transport=True)
+        prior = self.prior(owner)
+        for current in (self.court_row(102, claim_transport=True),
+                        self.court_row(claim_transport=True, service_period_label='manhã')):
+            with self.subTest(identity=request_identity_key(current)):
+                with self.assertRaisesRegex(ClaimError, 'already recorded on another request'):
+                    validate_shared_travel_groups([current], prior_requests=[prior])
+
+    def test_equivalent_court_cannot_hide_other_recorded_trip_fact_changes(self):
+        old = self.court_row(venue='Juízo de Competência Genérica de Vila Fictícia', claim_transport=True)
+        prior = self.prior(old)
+        for field in ('service_date', 'service_place', 'personal_profile_id', 'destination', 'origin'):
+            with self.subTest(field=field):
+                current = self.court_row(claim_transport=True)
+                if field in ('destination', 'origin'):
+                    current['transport'][field] = 'Other Fictional City'
+                else:
+                    current[field] = {'service_date': '2026-01-16',
+                                      'service_place': 'Tribunal de Outra Vila',
+                                      'personal_profile_id': 'fictional-other-profile'}[field]
+                with self.assertRaisesRegex(ClaimError, 'conflicting or unclear'):
+                    validate_shared_travel_groups([current], prior_requests=[prior])
+
+    def test_specialised_unknown_station_or_comarca_only_names_remain_distinct(self):
+        for name in (
+            'Tribunal do Trabalho de Vila Fictícia',
+            'Tribunal de Família e Menores de Vila Fictícia',
+            'Tribunal de Vila Fictícia — Juízo do Trabalho',
+            'Juízo Local Criminal de Vila Fictícia',
+            'Tribunal Judicial da Comarca de Vila Fictícia',
+            'Posto da GNR de Vila Fictícia',
+            'Unknown Fictional Hall',
+            'Tribunal de Vila Fictícia e Outra Vila',
+            'Tribunal de Vila Fictícia, Edifício Anexo',
+        ):
+            with self.subTest(name=name):
+                original = self.court_row(venue=name, claim_transport=True)
+                prior = self.prior(original)
+                validate_shared_travel_groups([original], prior_requests=[prior])
+                with self.assertRaisesRegex(ClaimError, 'conflicting or unclear'):
+                    validate_shared_travel_groups([self.court_row(claim_transport=True)], prior_requests=[prior])
+
+    def test_equivalent_current_court_spellings_still_allow_only_one_travel_owner(self):
+        rows = [self.court_row(claim_transport=True),
+                self.court_row(102, venue='Juízo de Competência Genérica de Vila Fictícia', claim_transport=False)]
+        before = copy.deepcopy(rows)
+        validate_shared_travel_groups(rows)
+        self.assertEqual(rows, before)
+        rows[1]['claim_transport'] = True
+        with self.assertRaisesRegex(ClaimError, 'More than one request'):
+            validate_shared_travel_groups(rows)
+
     def test_malformed_recorded_binding_stops_actionably_without_type_errors(self):
         first, sibling = self.rows()[:2]
         for index, value in ((4, []), (2, 123), (0, ''), (1, ' '), (2, ''), (3, '')):

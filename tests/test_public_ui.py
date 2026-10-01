@@ -11,6 +11,16 @@ from test_public_candidate_smoke import PublicCandidateSmokeTests
 
 
 class PublicUiTests(PublicCandidateSmokeTests):
+    def test_nested_review_module_uses_the_same_cache_version_as_the_entry_module(self):
+        page = self.make_client().get("/").text
+        match = re.search(r'<script type="importmap">(.*?)</script>', page, re.S)
+        self.assertIsNotNone(match)
+        mapping = json.loads(match.group(1))['imports']['/static/review_guidance.js']
+        entry = re.search(r'<script type="module" src="/static/app.js\?v=([^"\s]+)"', page)
+        self.assertIsNotNone(entry)
+        self.assertEqual(mapping, '/static/review_guidance.js?v=' + entry.group(1))
+        self.assertLess(match.start(), entry.start())
+
     def test_homepage_exposes_browser_flow_landmarks(self):
         client = self.make_client()
         response = client.get("/")
@@ -565,8 +575,8 @@ class PublicUiTests(PublicCandidateSmokeTests):
         self.assertLess(preflight_index, binding_index)
         self.assertLess(binding_index, prepare_index)
         self.assertLess(prepare_index, accepted_index)
-        self.assertIn('intakes: [cloneIntake(requestIntake)]', prepare_body)
-        self.assertIn('const requestPayload = { intakes: [requestIntake], render_previews: true }', prepare_body)
+        self.assertIn('intakes: requestIntakes.map(cloneIntake)', prepare_body)
+        self.assertIn('const requestPayload = { intakes: requestIntakes, render_previews: true, email_grouping: emailGrouping }', prepare_body)
         self.assertEqual(prepare_body.count('}, { revision: capturedRevision })'), 2)
         self.assertIn('if (!preflight) return null;', prepare_body[preflight_index:prepare_index])
         self.assertIn('if (!data) return null;', prepare_body[prepare_index:accepted_index])
@@ -596,6 +606,7 @@ function reset() {
 }
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 function mergeFormIntoCurrentIntake() {}
+function currentBatchEmailGrouping() { return "source"; }
 function beginPreparation() { return state.workflowRevision; }
 function finishPreparationWait() {}
 async function buildIntakeFromProfile() { throw new Error('Unexpected profile construction'); }
@@ -713,8 +724,8 @@ console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
         page = (root / "honorarios_app" / "templates" / "index.html").read_text(encoding="utf-8")
         for text in [
             "Gmail handoff checklist",
-            "I reviewed the PDF preview",
-            "I used the exact `_create_draft` args shown above",
+            "I reviewed every request's PDF preview",
+            "the exact `_create_draft` args shown above",
             "gmail_handoff_reviewed",
             "Review the PDF preview and exact Gmail args before local recording.",
         ]:

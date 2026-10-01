@@ -23,6 +23,9 @@ import {
   duplicateSourceCaseIndices,
   preparedFirstRequestReview,
   preparedRequestReview,
+  preparedEmailTargets,
+  preparedEmailMemberIndices,
+  preparedEmailMemberReview,
   claimMode,
   claimModeLabel,
   intakeWithClaimMode,
@@ -44,6 +47,7 @@ const state = {
   batchPreflight: null,
   lastPrepared: null,
   preparedEmailTargetIndex: 0,
+  preparedEmailMemberIndex: 0,
   lastReview: null,
   workflowRevision: 0,
   workflowStale: false,
@@ -206,6 +210,10 @@ const SERVER_GATED_SELECTORS = [
   "#review-intake",
   "#saved-court-email",
   "#prepared-email-target",
+  "#prepared-email-member",
+  "#batch-email-grouping",
+  "#source-correction-reason",
+  "#prepare-source-email-replacement",
   "#review-source-case-choices",
   "#request-claim-mode",
   "#source-travel-mode",
@@ -308,6 +316,10 @@ function syncActionGates(action = state.currentNextSafeAction) {
   const actionState = String(action?.state || "idle");
   const actionDetail = String(action?.detail || "");
   syncDrawerProgressiveDisclosure(action);
+  setActionGate("prepare-source-email-replacement", canPrepareSourceEmailReplacement()
+    && String($("#source-correction-reason")?.value || "").trim().length >= 8
+    && !state.sourceCaseBatchInFlight && state.pendingPreparationRevision === null,
+  "Review every source case and give a short correction reason before preparing its replacement email.", actionState);
   Object.entries(SAFE_ACTION_GATES).forEach(([id, gate]) => {
     let enabled = (gate.states || []).includes(actionState);
     let blockedReason = gate.reason;
@@ -343,6 +355,8 @@ function syncActionGates(action = state.currentNextSafeAction) {
     }
     if (id === "build-manual-handoff") {
       enabled = enabled && Boolean(preparedRecordTarget()?.draft_payload);
+      if (selectedEmailLifecycleBlocked()) blockedReason = "A member request already has a draft or needs correction. Check this email's requests before another handoff.";
+      enabled = enabled && !selectedEmailLifecycleBlocked();
     }
     if (id === "copy-manual-handoff-prompt") {
       enabled = enabled && Boolean(state.lastManualHandoff?.copyable_prompt);
@@ -359,12 +373,15 @@ function syncActionGates(action = state.currentNextSafeAction) {
         blockedReason = "Gmail draft creation is already in progress.";
       } else if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
         blockedReason = "This prepared payload already created a Gmail draft. Change the request or prepare again before creating another.";
+      } else if (selectedEmailLifecycleBlocked()) {
+        blockedReason = "A member request already has a draft or needs correction. Check every request before creating another email.";
       }
       enabled = enabled
         && handoffReviewed
         && connected
         && Boolean(targetPayload)
         && !state.gmailCreateInFlight
+        && !selectedEmailLifecycleBlocked()
         && state.gmailCreateCompletedPayload !== targetPayload;
     }
     if (id === "record-draft") {
@@ -404,6 +421,7 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
   state.locallyRecordedPayload = "";
   state.lastPrepared = null;
   state.preparedEmailTargetIndex = 0;
+  state.preparedEmailMemberIndex = 0;
   renderPreparedEmailTarget();
   state.draftLifecycle = null;
   state.gmailCreateInFlight = false;
@@ -783,6 +801,28 @@ function sourceTravelBlockedReason() {
   return sharedSourceTravelEligibility(state.sourceCaseCandidates).reason;
 }
 
+function canPrepareSourceEmailReplacement() {
+  return state.sourceCaseCandidates.length > 1 && !sourceTravelBlockedReason()
+    && state.sourceCaseCandidates.every((candidate) => !candidate.needs_review
+      && ["ready", "duplicate", "active_draft"].includes(candidate.review?.status)
+      && !(candidate.review?.questions || []).length
+      && String(candidate.candidate_intake?.case_number || "").trim()
+      && String(candidate.candidate_intake?.service_date || "").trim()
+      && claimMode(candidate.candidate_intake || {}) !== "neither");
+}
+
+async function prepareSourceEmailReplacement() {
+  if (state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null) return null;
+  const reason = String($("#source-correction-reason")?.value || "").trim();
+  if (reason.length < 8) throw new Error("Give a short correction reason of at least 8 characters before replacing this photo's email.");
+  persistCurrentSourceCase({ mergeForm: true });
+  const reviewed = await refreshSourceClaimReviews();
+  if (!reviewed) return null;
+  if (!canPrepareSourceEmailReplacement()) throw new Error("Resolve every case's questions and claim choices before preparing a replacement for this photo. Existing history was unchanged.");
+  if (duplicateSourceCaseIndices(reviewed).length) throw new Error("Two source rows have the same case, date and period. Correct them before replacing this photo's email.");
+  return prepareIntake({ correctionMode: true, sourceReplacement: true, correctionReason: reason });
+}
+
 function reconcileSourceTravelChoice() {
   const choice = state.sourceTravelChoice;
   if (choice?.mode !== "shared" || sourceTravelBlockedReason()) return false;
@@ -915,6 +955,7 @@ function renderSourceCaseList() {
     return;
   }
   const readyCount = candidates.filter((candidate) => sourceCaseReadiness(candidate).ready).length;
+  $("#source-email-correction")?.classList.toggle("hidden", !candidates.some((candidate) => ["duplicate", "active_draft"].includes(candidate.review?.status)));
   $("#source-case-heading").textContent = `${candidates.length} cases found in this source`;
   $("#source-case-summary").textContent = `${readyCount} of ${candidates.length} ready. Review each case below; each will have its own fee-request PDF.`;
   $("#source-case-next-action").textContent = sourceTravelBlockedReason() || (state.sourceCaseBatchInFlight
@@ -954,6 +995,7 @@ function selectSourceCase(index, { persist = true, focus = true } = {}) {
 }
 
 function clearSourceCaseReview() {
+  if ($("#source-correction-reason")) $("#source-correction-reason").value = "";
   state.sourceCaseCandidates = [];
   state.sourceCaseSelectedIndex = null;
   state.sourceCaseBatchInFlight = false;
@@ -1055,9 +1097,26 @@ function currentBatchPacketMode() {
   return Boolean($("#batch-packet-mode")?.checked);
 }
 
-function batchPreflightSignature(packetMode = currentBatchPacketMode(), intakes = state.batchIntakes) {
+function currentBatchEmailGrouping(packetMode = currentBatchPacketMode()) {
+  return packetMode || $("#batch-email-grouping")?.value === "individual" ? "individual" : "source";
+}
+
+function renderBatchEmailGrouping() {
+  const select = $("#batch-email-grouping");
+  if (!select) return;
+  if (!select.value) select.value = "source";
+  select.disabled = currentBatchPacketMode() || state.serverConnection?.connected === false;
+  $("#batch-email-grouping-note").textContent = currentBatchPacketMode()
+    ? "Packet mode combines the PDFs into one attachment. Turn it off to keep each request as a separate PDF."
+    : currentBatchEmailGrouping() === "source"
+    ? "Requests from the same photo go in one email to their reviewed recipient. Each request keeps its own PDF; different photos stay separate."
+    : "Each request has its own email and PDF.";
+}
+
+function batchPreflightSignature(packetMode = currentBatchPacketMode(), intakes = state.batchIntakes, emailGrouping = currentBatchEmailGrouping(packetMode)) {
   return JSON.stringify({
     packet_mode: Boolean(packetMode),
+    email_grouping: emailGrouping,
     intakes: (Array.isArray(intakes) ? intakes : []).map(cloneIntake),
   });
 }
@@ -1358,11 +1417,26 @@ function applyParsedGmailDraftIds(ids) {
 }
 
 function preparedRecordTarget() {
-  return state.lastPrepared?.packet || state.lastPrepared?.items?.[state.preparedEmailTargetIndex] || null;
+  const target = preparedEmailTargets(state.lastPrepared)[state.preparedEmailTargetIndex] || null;
+  if (state.lastPrepared?.email_groups?.length && !state.lastPrepared?.packet
+    && !preparedEmailMemberIndices(state.lastPrepared, state.preparedEmailTargetIndex).length) return null;
+  return target;
 }
 
 function preparedTargetIntake() {
-  return preparedRequestReview(state.lastPrepared, [], state.lastPrepared?.packet ? 0 : state.preparedEmailTargetIndex)?.effective_intake || null;
+  return preparedEmailMemberReview(state.lastPrepared, [], state.preparedEmailTargetIndex, state.preparedEmailMemberIndex)?.effective_intake || null;
+}
+
+function preparedTargetIntakes() {
+  return preparedEmailMemberIndices(state.lastPrepared, state.preparedEmailTargetIndex)
+    .map((_itemIndex, memberIndex) => preparedEmailMemberReview(state.lastPrepared, [], state.preparedEmailTargetIndex, memberIndex)?.effective_intake)
+    .filter(Boolean);
+}
+
+function selectedEmailLifecycleBlocked() {
+  return Boolean(state.lastPrepared?.email_groups?.length && !state.lastPrepared?.correction_mode
+    && state.draftLifecycle && (state.draftLifecycle.can_create_new_draft === false
+      || ["blocked", "duplicate", "active_draft", "sent"].includes(state.draftLifecycle.status)));
 }
 
 async function copyPreparedDraftArgs() {
@@ -1375,26 +1449,65 @@ function renderPreparedEmailTarget() {
   const card = $("#prepared-email-target-card");
   const select = $("#prepared-email-target");
   if (!card || !select) return;
-  const targets = state.lastPrepared?.packet ? [state.lastPrepared.packet] : (state.lastPrepared?.items || []);
+  const targets = preparedEmailTargets(state.lastPrepared);
   card.classList.toggle("hidden", !targets.length);
   if (!targets.length) {
     select.innerHTML = "";
-    ["#prepared-email-target-summary", "#prepared-email-target-args", "#prepared-email-target-preview"].forEach((id) => { $(id).textContent = ""; });
+    ["#prepared-email-target-summary", "#prepared-email-target-args", "#prepared-email-target-preview", "#prepared-email-target-members"].forEach((id) => { $(id).textContent = ""; });
+    $("#prepared-email-member").innerHTML = "";
     return;
   }
   if (!targets[state.preparedEmailTargetIndex]) state.preparedEmailTargetIndex = 0;
-  select.innerHTML = targets.map((item, index) => `<option value="${index}">${escapeHtml(item.packet_mode ? "Combined packet" : item.case_number || `Request ${index + 1}`)} · ${escapeHtml(item.recipient || item.gmail_create_draft_args?.to || "recipient pending")} · ${escapeHtml(item.attachment_count ?? item.gmail_create_draft_args?.attachment_files?.length ?? 0)} attachment(s)</option>`).join("");
+  const grouped = Boolean(state.lastPrepared?.email_groups?.length && !state.lastPrepared?.packet);
+  select.innerHTML = targets.map((item, index) => {
+    const count = preparedEmailMemberIndices(state.lastPrepared, index).length;
+    const attachmentCount = item.attachment_count ?? item.gmail_create_draft_args?.attachment_files?.length ?? 0;
+    const label = item.packet_mode ? "Combined packet" : grouped ? `${count} request${count === 1 ? "" : "s"}${item.source_sha256 ? " from one photo" : ""}` : item.case_number || `Request ${index + 1}`;
+    return `<option value="${index}">${escapeHtml(label)} · ${escapeHtml(item.recipient || item.gmail_create_draft_args?.to || "recipient pending")} · ${escapeHtml(attachmentCount)} attachment${attachmentCount === 1 ? "" : "s"}</option>`;
+  }).join("");
   select.value = String(state.preparedEmailTargetIndex);
   select.disabled = targets.length === 1;
   const target = preparedRecordTarget();
+  if (!target) {
+    $("#prepared-email-target-summary").textContent = "Prepared email membership is incomplete. Prepare the reviewed requests again before drafting.";
+    $("#prepared-email-target-members").textContent = "";
+    $("#prepared-email-target-args").textContent = "";
+    $("#prepared-email-target-preview").textContent = "";
+    $("#prepared-email-member").innerHTML = "";
+    return;
+  }
+  const memberIndices = preparedEmailMemberIndices(state.lastPrepared, state.preparedEmailTargetIndex);
+  if (state.preparedEmailMemberIndex >= memberIndices.length) state.preparedEmailMemberIndex = 0;
+  const members = memberIndices.map((itemIndex) => state.lastPrepared.items[itemIndex]);
+  const label = target.packet_mode ? "One packet email" : grouped ? `${members.length} request${members.length === 1 ? "" : "s"} in one email` : target.case_number || "Selected request";
   const files = target.gmail_create_draft_args?.attachment_files || [target.pdf].filter(Boolean);
-  $("#recipient-summary").textContent = `${target.case_number || "Packet"} · To: ${target.recipient || target.gmail_create_draft_args?.to || "recipient pending"}`;
+  $("#recipient-summary").textContent = `${label} · To: ${target.recipient || target.gmail_create_draft_args?.to || "recipient pending"}`;
   $("#draft-text").textContent = target.gmail_create_draft_args?.body || "Review this selected prepared email's exact draft args and PDF below.";
-  $("#prepared-email-target-summary").textContent = `${target.packet_mode ? "One packet email" : target.case_number || "Selected request"} to ${target.recipient || target.gmail_create_draft_args?.to || "recipient pending"}. Attachments: ${files.map(pathBasename).join(", ") || "none"}. All draft and recording actions below use this selection.`;
+  $("#prepared-email-target-summary").textContent = `${label} to ${target.recipient || target.gmail_create_draft_args?.to || "recipient pending"}. Attachments: ${files.map(pathBasename).join(", ") || "none"}. All draft and recording actions below use this selection and its member requests.`;
   $("#prepared-email-target-args").textContent = JSON.stringify(target.gmail_create_draft_args || {}, null, 2);
-  $("#prepared-email-target-preview").innerHTML = target.png_preview_urls?.[0]
-    ? `<figure class="pdf-preview-figure"><img class="pdf-preview-image" src="${escapeHtml(target.png_preview_urls[0])}" alt="Selected email PDF for ${escapeHtml(target.case_number || "packet")}"><figcaption>${escapeHtml(pathBasename(target.pdf))} · ${escapeHtml(target.recipient || "")}</figcaption></figure>`
-    : `<p>${escapeHtml(pathBasename(target.pdf) || "Prepared PDF")} — inspect the prepared PDF before drafting.</p>`;
+  $("#prepared-email-target-members").innerHTML = grouped ? `<strong>Requests included in this email</strong><ul>${memberIndices.map((_itemIndex, memberIndex) => {
+    const review = preparedEmailMemberReview(state.lastPrepared, [], state.preparedEmailTargetIndex, memberIndex);
+    const intake = review?.effective_intake || {};
+    return `<li><strong>${escapeHtml(intake.case_number || "Case pending")} · ${escapeHtml(intake.service_date || "Date pending")}</strong><div>${escapeHtml(claimModeLabel(intake))} · ${escapeHtml(intake.payment_entity || "Payer pending")} · ${escapeHtml(intake.service_place || "Venue pending")}</div><code>${escapeHtml(pathBasename(members[memberIndex]?.pdf))}</code></li>`;
+  }).join("")}</ul>` : "";
+  const memberSelect = $("#prepared-email-member");
+  memberSelect.innerHTML = target.packet_mode ? `<option value="0">Combined packet PDF</option>` : members.map((item, memberIndex) => `<option value="${memberIndex}">${escapeHtml(item.case_number || `Request ${memberIndex + 1}`)} · ${escapeHtml(pathBasename(item.pdf))}</option>`).join("");
+  memberSelect.value = String(target.packet_mode ? 0 : state.preparedEmailMemberIndex);
+  memberSelect.disabled = target.packet_mode || members.length <= 1;
+  const previewItem = target.packet_mode ? target : members[state.preparedEmailMemberIndex] || target;
+  const previewUrls = previewItem.png_preview_urls || [];
+  $("#prepared-email-target-preview").innerHTML = previewUrls.length
+    ? previewUrls.map((url) => `<figure class="pdf-preview-figure"><img class="pdf-preview-image" src="${escapeHtml(url)}" alt="Selected email PDF for ${escapeHtml(previewItem.case_number || "packet")}"><figcaption>${escapeHtml(pathBasename(previewItem.pdf))} · ${escapeHtml(target.recipient || "")}</figcaption></figure>`).join("")
+    : `<p>${escapeHtml(pathBasename(previewItem.pdf) || "Prepared PDF")} — inspect this PDF before drafting.</p>`;
+}
+
+function selectPreparedEmailMember(index) {
+  const indices = preparedEmailMemberIndices(state.lastPrepared, state.preparedEmailTargetIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= indices.length) return false;
+  state.preparedEmailMemberIndex = index;
+  renderPreparedEmailTarget();
+  refreshHomeWorkflow();
+  return true;
 }
 
 function resetPreparedEmailTargetState() {
@@ -1415,14 +1528,26 @@ function resetPreparedEmailTargetState() {
     $("#record_payload").value = target.draft_payload || "";
     $("#record_notes").value = preparedRecordNote(target);
     state.draftLifecycle = target.draft_lifecycle || null;
+    if (state.lastPrepared?.correction_mode) {
+      const memberIndices = preparedEmailMemberIndices(state.lastPrepared, state.preparedEmailTargetIndex);
+      const memberChecks = memberIndices.map((index) => state.lastPrepared.items[index]?.draft_lifecycle || state.lastPrepared.items[index] || {});
+      const uniqueRecords = (field) => [...new Map(memberChecks.flatMap((check) => check[field] || [])
+        .map((record) => [record.draft_id || JSON.stringify(record), record])).values()];
+      $("#correction_reason").value = state.lastPrepared.correction_reason || "";
+      $("#record_notes").value = state.lastPrepared.correction_reason || preparedRecordNote(target);
+      state.draftLifecycle = { status: "blocked", message: `Replacement prepared for ${memberIndices.length} request(s). ${state.lastPrepared.correction_reason || ""}`,
+        active_gmail_drafts: uniqueRecords("active_gmail_drafts"), duplicate_records: uniqueRecords("duplicate_records"),
+        replacement_allowed: true, send_allowed: false };
+    }
     if (state.draftLifecycle) renderDraftLifecycle(state.draftLifecycle);
   }
 }
 
 function selectPreparedEmailTarget(index) {
-  if (!Number.isInteger(index) || state.lastPrepared?.packet || !state.lastPrepared?.items?.[index]) return false;
+  if (!Number.isInteger(index) || state.lastPrepared?.packet || !preparedEmailTargets(state.lastPrepared)?.[index]) return false;
   if (index === state.preparedEmailTargetIndex) return true;
   state.preparedEmailTargetIndex = index;
+  state.preparedEmailMemberIndex = 0;
   state.workflowRevision += 1;
   resetPreparedEmailTargetState();
   renderPreparedEmailTarget();
@@ -1503,11 +1628,16 @@ async function buildManualHandoffPacket() {
   if (!target?.draft_payload) {
     throw new Error("Prepare a PDF and Gmail draft payload before building the manual handoff packet.");
   }
+  if (selectedEmailLifecycleBlocked()) throw new Error("A member request needs correction before another handoff can be built.");
   const data = await requestWorkflowJson("/api/gmail/manual-handoff", {
     method: "POST",
     body: JSON.stringify({
       payload: target.draft_payload,
       ...currentPreparedReviewFields(target.draft_payload),
+      ...(state.lastPrepared?.correction_mode ? {
+        supersedes: $("#record_supersedes").value.split(",").map((item) => item.trim()).filter(Boolean),
+        correction_reason: state.lastPrepared.correction_reason || $("#correction_reason").value.trim(),
+      } : {}),
     }),
   }, { revision: capturedRevision, prepared: capturedPrepared });
   if (!data) return null;
@@ -1522,6 +1652,9 @@ async function buildManualHandoffPacket() {
 }
 
 function preparedRecordNote(target) {
+  if (target?.group_id) {
+    return `Prepared email for ${target.underlying_requests?.length || 1} request(s) with separate PDF attachments.`;
+  }
   if (!target) return "";
   if (target.packet_mode) {
     const count = target.underlying_requests?.length || 0;
@@ -1655,6 +1788,7 @@ function renderBatchItemInspector() {
 }
 
 function renderBatchQueue() {
+  renderBatchEmailGrouping();
   const list = $("#batch-queue-list");
   const chip = $("#batch-count-chip");
   if (!list || !chip) return;
@@ -1726,7 +1860,7 @@ function renderBatchPreflight() {
       <div class="result-header">
         <div>
           <strong>Batch preflight is stale</strong>
-          <p>The batch queue or packet mode changed after the last non-writing check. Run batch preflight again before preparing artifacts.</p>
+          <p>The batch queue, email grouping or packet mode changed after the last non-writing check. Run batch preflight again before preparing artifacts.</p>
         </div>
         <span class="status-chip blocked">stale</span>
       </div>
@@ -1751,6 +1885,7 @@ function renderBatchPreflight() {
       <div><span>Write allowed</span><strong>${data.write_allowed ? "yes" : "no"}</strong></div>
       <div><span>Send allowed</span><strong>${data.send_allowed ? "yes" : "no"}</strong></div>
       <div><span>Packet mode</span><strong>${data.packet_mode ? "yes" : "no"}</strong></div>
+      <div><span>Email grouping</span><strong>${data.packet_mode ? "one packet" : data.email_grouping === "source" ? "one email per photo" : "separate emails"}</strong></div>
     </div>
     ${packet ? `
       <div class="data-item">
@@ -1802,6 +1937,9 @@ function renderDraftLifecycle(data) {
     `<div>${escapeHtml(lifecycle.message || "Draft lifecycle checked.")}</div>`,
     `<div>Replacement allowed: <strong>${lifecycle.replacement_allowed ? "yes" : "no"}</strong></div>`,
   ];
+  if (Array.isArray(lifecycle.member_checks)) {
+    rows.push(`<div><strong>All ${lifecycle.member_checks.length} requests in this email were checked.</strong><ul>${lifecycle.member_checks.map((check) => `<li>${escapeHtml(check.case_number || "Case pending")} · ${escapeHtml(check.service_date || "Date pending")} · <strong>${escapeHtml(check.status || "blocked")}</strong> ${escapeHtml(check.message || "")}</li>`).join("")}</ul></div>`);
+  }
   active.forEach((record) => {
     rows.push(`<div class="data-item"><strong>Active draft</strong><code>${escapeHtml(record.draft_id || "")}</code><span>${escapeHtml(record.recipient || "")}</span></div>`);
   });
@@ -1911,8 +2049,8 @@ function currentWorkflowGuidance(data = {}) {
 
 function refreshHomeWorkflow() {
   const review = state.lastReview || {};
-  const preparedReview = preparedRequestReview(state.lastPrepared,
-    [review, ...state.sourceCaseCandidates.map((candidate) => candidate.review)], state.lastPrepared?.packet ? 0 : state.preparedEmailTargetIndex);
+  const preparedReview = preparedEmailMemberReview(state.lastPrepared,
+    [review, ...state.sourceCaseCandidates.map((candidate) => candidate.review)], state.preparedEmailTargetIndex, state.preparedEmailMemberIndex);
   if (preparedReview) {
     updateHomeReviewCard(preparedReview);
     return;
@@ -3161,6 +3299,7 @@ async function createGmailApiDraft() {
   if (!target?.draft_payload) {
     throw new Error("Prepare a PDF and Gmail draft payload before creating a Gmail draft.");
   }
+  if (selectedEmailLifecycleBlocked()) throw new Error("A member request needs correction before another email can be created.");
   const supersedes = $("#record_supersedes").value
     .split(",")
     .map((item) => item.trim())
@@ -4934,6 +5073,9 @@ function focusDateAnswerBox() {
 }
 
 async function activeCheck() {
+  const target = preparedRecordTarget();
+  const grouped = Boolean(state.lastPrepared?.email_groups?.length && !state.lastPrepared?.packet);
+  if (grouped && (!target || !target.underlying_requests?.length)) throw new Error("Prepare every member request again before checking this email.");
   const preparedIntake = preparedTargetIntake();
   if (!preparedIntake && !state.currentIntake) {
     await buildIntakeFromProfile();
@@ -4942,12 +5084,13 @@ async function activeCheck() {
   const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
   let data = await requestWorkflowJson("/api/drafts/active-check", {
     method: "POST",
-    body: JSON.stringify({ intake: preparedIntake || state.currentIntake }),
+    body: JSON.stringify(grouped ? { underlying_requests: target.underlying_requests } : { intake: preparedIntake || state.currentIntake }),
   }, captured);
   if (!data) return null;
   if (state.lastPrepared?.packet) data = { ...data, message: `${data.message || "Draft lifecycle checked."} This check covers the first underlying packet request; creating the packet draft checks all members.` };
   state.draftLifecycle = data;
   renderDraftLifecycle(data);
+  syncActionGates();
   return data;
 }
 
@@ -5010,6 +5153,7 @@ async function prepareBatchIntakes() {
     throw new Error("Run a current ready batch preflight before preparing artifacts.");
   }
   const packetMode = currentBatchPacketMode();
+  const emailGrouping = currentBatchEmailGrouping(packetMode);
   const intakes = state.batchIntakes.map(cloneIntake);
   const capturedRevision = beginPreparation();
   try {
@@ -5019,12 +5163,13 @@ async function prepareBatchIntakes() {
         intakes,
         render_previews: true,
         packet_mode: packetMode,
+        email_grouping: emailGrouping,
         preflight_review: state.batchPreflight?.preflight_review || null,
       }),
     }, { revision: capturedRevision });
     if (!data) return null;
     state.lastPrepared = data;
-    const modeText = packetMode ? "as one packet PDF" : "as separate Gmail draft payloads";
+    const modeText = packetMode ? "as one packet PDF" : emailGrouping === "source" ? `as separate PDFs in ${data.email_groups?.length || 0} email(s), grouped by photo` : "as separate Gmail draft payloads";
     setStatus(data.status, `${state.batchIntakes.length} queued request${state.batchIntakes.length === 1 ? "" : "s"} prepared ${modeText}.`);
     showAlert("", "");
     renderPrepared(data);
@@ -5049,19 +5194,20 @@ async function preflightBatchIntakes(options = {}) {
   const openDrawerAfter = options.openDrawer !== false;
   const showResultAlert = options.showResultAlert !== false;
   const packetMode = currentBatchPacketMode();
+  const emailGrouping = currentBatchEmailGrouping(packetMode);
   const intakes = state.batchIntakes.map(cloneIntake);
   const requestSignature = batchPreflightSignature(packetMode, intakes);
   const capturedRevision = state.workflowRevision;
   const capturedPrepared = state.lastPrepared;
   const data = await requestWorkflowJson("/api/prepare/preflight", {
     method: "POST",
-    body: JSON.stringify({ intakes, packet_mode: packetMode }),
+    body: JSON.stringify({ intakes, packet_mode: packetMode, email_grouping: emailGrouping }),
   }, { revision: capturedRevision, prepared: capturedPrepared });
   if (!data || requestSignature !== batchPreflightSignature(currentBatchPacketMode(), state.batchIntakes)) return null;
   state.batchPreflight = { ...data, request_signature: requestSignature };
   renderBatchPreflight();
   renderNextSafeAction(data.next_safe_action || null);
-  const modeText = packetMode ? "packet mode" : "separate-payload mode";
+  const modeText = packetMode ? "packet mode" : emailGrouping === "source" ? "one-email-per-photo mode" : "separate-email mode";
   setStatus(data.status, `Batch preflight checked in ${modeText}; no PDFs or draft payloads were created.`);
   if (showResultAlert) {
     if (data.status === "blocked") {
@@ -5134,17 +5280,23 @@ async function prepareIntake(options = {}) {
   }
   mergeFormIntoCurrentIntake();
   const requestIntake = cloneIntake(options.correctionMode ? preparedTargetIntake() || state.currentIntake : state.currentIntake);
-  const requestPayload = { intakes: [requestIntake], render_previews: true };
+  const groupReplacement = Boolean(options.sourceReplacement || options.correctionMode && state.lastPrepared?.email_groups?.length && !state.lastPrepared?.packet);
+  const requestIntakes = options.sourceReplacement ? state.sourceCaseCandidates.map((candidate) => cloneIntake(candidate.candidate_intake))
+    : groupReplacement ? preparedTargetIntakes().map(cloneIntake) : [requestIntake];
+  if (!requestIntakes.length) throw new Error("Prepare every member request again before replacing this email.");
+  const emailGrouping = groupReplacement ? "source" : currentBatchEmailGrouping(false);
+  const requestPayload = { intakes: requestIntakes, render_previews: true, email_grouping: emailGrouping };
   if (options.correctionMode) {
     requestPayload.correction_mode = true;
-    requestPayload.correction_reason = ($("#correction_reason").value || "").trim();
+    requestPayload.correction_reason = String(options.correctionReason || $("#correction_reason").value || "").trim();
     if (!requestPayload.correction_reason) {
       throw new Error("Correction mode requires a reason before preparing a replacement draft.");
     }
   }
   const preflightPayload = {
-    intakes: [cloneIntake(requestIntake)],
+    intakes: requestIntakes.map(cloneIntake),
     packet_mode: false,
+    email_grouping: emailGrouping,
   };
   if (requestPayload.correction_mode) {
     preflightPayload.correction_mode = true;
@@ -5189,6 +5341,7 @@ async function prepareIntake(options = {}) {
 function renderPrepared(data) {
   state.lastPrepared = data;
   state.preparedEmailTargetIndex = 0;
+  state.preparedEmailMemberIndex = 0;
   resetPreparedEmailTargetState();
   renderPreparedEmailTarget();
   state.pendingPreparationRevision = null;
@@ -5256,7 +5409,7 @@ function renderPrepared(data) {
       <div class="result-header">
         <div>
           <strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong>
-          <p>${packet ? "Source PDF generated for the packet." : "Prepared for Gmail _create_draft. No send action exists here."}</p>
+          <p>${packet ? "Source PDF generated for the packet." : data.email_groups?.length ? "Individual PDF included in a photo email. Draft actions use the email selected above." : "Prepared for Gmail _create_draft. No send action exists here."}</p>
         </div>
         <span class="status-chip ready">prepared</span>
       </div>
@@ -5264,27 +5417,17 @@ function renderPrepared(data) {
         <div>Request includes: <strong>${escapeHtml(claimModeLabel(data.prepared_review_material?.effective_intakes?.[index] || item))}</strong></div>
         <div>Recipient: <code>${escapeHtml(item.recipient)}</code></div>
         <div>PDF: <code>${escapeHtml(item.pdf)}</code></div>
-        <div>Payload: <code>${escapeHtml(item.draft_payload)}</code></div>
+        ${data.email_groups?.length ? "" : `<div>Payload: <code>${escapeHtml(item.draft_payload)}</code></div>`}
         <div>Attachment count: ${escapeHtml(item.attachment_count)}</div>
       </div>
-      <strong>Exact gmail_create_draft_args</strong>
-      <pre class="draft-args">${escapeHtml(JSON.stringify(item.gmail_create_draft_args || {}, null, 2))}</pre>
+      ${data.email_groups?.length ? "" : `<strong>Exact gmail_create_draft_args</strong><pre class="draft-args">${escapeHtml(JSON.stringify(item.gmail_create_draft_args || {}, null, 2))}</pre>`}
     </div>`
   )).join("");
   $("#prepare-results").innerHTML = packetCard + itemCards;
   if (preparedRecordTarget()?.draft_payload) {
     $("#record_payload").value = preparedRecordTarget().draft_payload;
   }
-  if (data.correction_mode) {
-    renderDraftLifecycle({
-      status: "blocked",
-      message: `Replacement payload prepared. Reason: ${data.correction_reason || "not provided"}`,
-      active_gmail_drafts: first?.active_gmail_drafts || first?.draft_lifecycle?.active_gmail_drafts || [],
-      duplicate_records: first?.draft_lifecycle?.duplicate_records || [],
-      replacement_allowed: true,
-      send_allowed: false,
-    });
-  }
+  if (data.correction_mode) renderDraftLifecycle(state.draftLifecycle);
   syncActionGates();
   refreshHomeWorkflow();
 }
@@ -5328,6 +5471,7 @@ function draftRecordPayloadFromForm() {
     sent_date: $("#record_sent_date").value,
     notes: $("#record_notes").value.trim(),
     supersedes,
+    ...(state.lastPrepared?.correction_mode ? { correction_reason: state.lastPrepared.correction_reason || $("#correction_reason").value.trim() } : {}),
     ...currentPreparedReviewFields(payloadPath),
   };
 }
@@ -5435,6 +5579,7 @@ function resetWorkspace() {
   state.batchPreflight = null;
   const packetMode = $("#batch-packet-mode");
   if (packetMode) packetMode.checked = false;
+  if ($("#batch-email-grouping")) $("#batch-email-grouping").value = "source";
   try {
     resetReview({ closeDrawer: false });
   } catch (error) {
@@ -5499,6 +5644,12 @@ function bindActions() {
     catch (error) { showAlert(error.message, "blocked"); }
   });
   $("#prepared-email-target").addEventListener("change", () => selectPreparedEmailTarget(Number($("#prepared-email-target").value)));
+  $("#prepared-email-member").addEventListener("change", () => selectPreparedEmailMember(Number($("#prepared-email-member").value)));
+  $("#source-correction-reason").addEventListener("input", () => syncActionGates());
+  $("#prepare-source-email-replacement").addEventListener("click", async () => {
+    try { await prepareSourceEmailReplacement(); }
+    catch (error) { setStatus("blocked", error.message); showAlert(error.message, "blocked"); }
+  });
   const claimChange = (action) => async () => {
     try { await action(); }
     catch (error) { setStatus("blocked", error.message); showAlert(error.message, "blocked"); }
@@ -6255,6 +6406,7 @@ function bindActions() {
     state.batchPreflight = null;
     clearPreparedArtifacts("batch queue cleared");
     $("#batch-packet-mode").checked = false;
+    $("#batch-email-grouping").value = "source";
     renderBatchQueue();
     setStatus("idle", "Batch queue cleared.");
     showAlert("Batch queue cleared.", "recorded");
@@ -6269,6 +6421,14 @@ function bindActions() {
   packetMode.addEventListener("change", () => {
     state.batchPreflight = null;
     clearPreparedArtifacts("batch packet mode changed");
+    renderBatchPreflight();
+    renderBatchEmailGrouping();
+    syncActionGates();
+  });
+  $("#batch-email-grouping").addEventListener("change", () => {
+    state.batchPreflight = null;
+    clearPreparedArtifacts("batch email grouping changed");
+    renderBatchEmailGrouping();
     renderBatchPreflight();
     syncActionGates();
   });

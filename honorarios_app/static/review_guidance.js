@@ -432,6 +432,29 @@ export function preparedFirstRequestReview(prepared = {}, reviews = []) {
   return preparedRequestReview(prepared, reviews, 0);
 }
 
+export function preparedEmailTargets(prepared = {}) {
+  if (prepared?.packet) return [prepared.packet];
+  if (Array.isArray(prepared?.email_groups) && prepared.email_groups.length) return prepared.email_groups;
+  return Array.isArray(prepared?.items) ? prepared.items : [];
+}
+
+export function preparedEmailMemberIndices(prepared = {}, index = 0) {
+  if (prepared?.packet) return (prepared.items || []).map((_item, itemIndex) => itemIndex);
+  if (Array.isArray(prepared?.email_groups) && prepared.email_groups.length) {
+    const indices = prepared.email_groups[index]?.member_indices;
+    if (!Array.isArray(indices) || !indices.length || new Set(indices).size !== indices.length
+      || indices.some((itemIndex) => !Number.isInteger(itemIndex) || !prepared.items?.[itemIndex])) return [];
+    return [...indices];
+  }
+  return prepared?.items?.[index] ? [index] : [];
+}
+
+export function preparedEmailMemberReview(prepared = {}, reviews = [], targetIndex = 0, memberIndex = 0) {
+  const indices = preparedEmailMemberIndices(prepared, targetIndex);
+  if (!indices[memberIndex] && indices[memberIndex] !== 0) return null;
+  return preparedRequestReview(prepared, reviews, indices[memberIndex]);
+}
+
 export function preparedRequestReview(prepared = {}, reviews = [], index = 0) {
   const first = prepared?.items?.[index];
   if (!first) return null;
