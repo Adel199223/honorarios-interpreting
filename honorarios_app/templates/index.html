@@ -275,9 +275,33 @@
                 <span class="status-chip info" id="status-pill">idle</span>
               </div>
               <p class="panel-copy" id="review-status">Upload a source or enter details manually to begin.</p>
+              <section class="result-card claim-choice-card" aria-labelledby="request-claim-heading">
+                <label id="request-claim-heading" for="request-claim-mode"><strong>What does this request claim?</strong></label>
+                <select id="request-claim-mode">
+                  <option value="both">Interpreting + travel</option>
+                  <option value="interpreting_only">Interpreting only</option>
+                  <option value="travel_only">Travel only — attended, no interpreting</option>
+                  <option value="neither" hidden disabled>Choose a claim</option>
+                </select>
+                <p class="field-hint" id="request-claim-caption">Interpreting + travel claims both. Choose interpreting only when travel is covered elsewhere; choose travel only when you arrived but no interpreting work took place.</p>
+              </section>
               <section class="result-card source-case-review hidden" id="source-case-review" aria-labelledby="source-case-heading">
                 <strong id="source-case-heading">Cases found in this source</strong>
                 <p id="source-case-summary"></p>
+                <div class="source-travel-choice claim-choice-card">
+                  <label for="source-travel-mode"><strong>Travel for these source cases</strong></label>
+                  <select id="source-travel-mode">
+                    <option value="shared">One shared trip</option>
+                    <option value="separate">Separate trips</option>
+                    <option value="none">No travel</option>
+                  </select>
+                  <div id="source-travel-owner-field">
+                    <label for="source-travel-owner">Case that claims the shared trip</label>
+                    <select id="source-travel-owner"></select>
+                  </div>
+                  <p class="field-hint" id="source-travel-caption" aria-live="polite"></p>
+                  <button type="button" class="mini-button" id="review-source-case-choices">Review all case choices</button>
+                </div>
                 <ul id="source-case-list" class="source-case-list"></ul>
                 <p class="field-hint" id="source-case-next-action" aria-live="polite"></p>
                 <div class="button-row compact-button-row">

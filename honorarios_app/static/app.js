@@ -21,7 +21,12 @@ import {
   browserRequestIdentityKey,
   mergeSourceReviewEvidence,
   duplicateSourceCaseIndices,
-  preparedFirstRequestReview
+  preparedFirstRequestReview,
+  claimMode,
+  claimModeLabel,
+  intakeWithClaimMode,
+  sharedSourceTravelEligibility,
+  sourceCasesWithTravelChoice
 } from "./review_guidance.js";
 
 const state = {
@@ -30,6 +35,7 @@ const state = {
   sourceCaseCandidates: [],
   sourceCaseSelectedIndex: null,
   sourceCaseBatchInFlight: false,
+  sourceTravelChoice: null,
   batchIntakes: [],
   batchSelectedIndex: null,
   batchPreflight: null,
@@ -193,6 +199,10 @@ const SERVER_DISCONNECTED_MESSAGE = "Local server disconnected. This browser tab
 const SERVER_GATED_SELECTORS = [
   "#refresh-reference",
   "#review-intake",
+  "#review-source-case-choices",
+  "#request-claim-mode",
+  "#source-travel-mode",
+  "#source-travel-owner",
   "#build-profile",
   "#source-upload-form button[type=submit]",
   "#notification-upload-form button[type=submit]",
@@ -300,6 +310,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
     }
     if (id === "add-source-cases-to-batch") {
       enabled = state.sourceCaseCandidates.length > 1
+        && !sourceTravelBlockedReason()
         && state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)
         && !state.sourceCaseBatchInFlight;
       if (state.sourceCaseBatchInFlight) blockedReason = "Checking each photo case before updating the queue.";
@@ -725,7 +736,7 @@ function sourceCaseDisplayReview(candidate) {
   const intake = candidate.candidate_intake;
   const review = { ...candidate.review, intake, effective_intake: intake,
     case_number: intake.case_number || "", service_date: intake.service_date || "", recipient: intake.recipient_email || "" };
-  if (!candidate.needs_review) return review;
+  if (!candidate.needs_review && claimMode(intake) !== "neither") return review;
   return { ...review, status: "blocked", questions: [],
     message: "Details changed. Review recovered details to check this case again.",
     draft_text: "", question_text: "",
@@ -733,7 +744,112 @@ function sourceCaseDisplayReview(candidate) {
       title: "Review the edited case", detail: "Use Review recovered details before adding this case or creating its PDF." } };
 }
 
+function sourceTravelBlockedReason() {
+  if (state.sourceTravelChoice?.mode !== "shared") return "";
+  return sharedSourceTravelEligibility(state.sourceCaseCandidates).reason;
+}
+
+function renderClaimChoices() {
+  const unavailable = state.serverConnection?.connected === false || state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null;
+  const heading = $("#request-claim-heading");
+  if (heading) heading.textContent = state.currentIntake?.case_number
+    ? `${state.currentIntake.case_number} — what does this request claim?` : "What does this request claim?";
+  const mode = $("#request-claim-mode");
+  if (mode) {
+    mode.value = claimMode(state.currentIntake || {});
+    mode.disabled = !state.currentIntake || unavailable;
+  }
+  const caption = $("#request-claim-caption");
+  if (caption) caption.textContent = claimMode(state.currentIntake || {}) === "neither"
+    ? "This case currently claims neither interpreting nor travel. Choose a claim before it can be queued or prepared."
+    : "Interpreting only means travel is covered elsewhere. Travel only means you arrived but no interpreting work took place. In a shared trip, choosing travel here moves the trip to this case.";
+  const choice = state.sourceTravelChoice;
+  if (!choice || state.sourceCaseCandidates.length <= 1) return;
+  const travelMode = $("#source-travel-mode");
+  const owner = $("#source-travel-owner");
+  if (!travelMode || !owner) return;
+  travelMode.value = choice.mode;
+  owner.innerHTML = `<option value="" disabled>Shared trip currently unclaimed</option>` + state.sourceCaseCandidates.map((candidate, index) => `<option value="${index}">${escapeHtml(candidate.candidate_intake.case_number || candidate.candidate_intake.raw_case_number || `Unclear case ${index + 1}`)}</option>`).join("");
+  owner.value = choice.ownerIndex === null ? "" : String(choice.ownerIndex);
+  travelMode.disabled = owner.disabled = unavailable;
+  $("#source-travel-owner-field")?.classList.toggle("hidden", choice.mode !== "shared");
+  const blocker = sourceTravelBlockedReason();
+  const reviewButton = $("#review-source-case-choices");
+  if (reviewButton) reviewButton.disabled = Boolean(blocker) || unavailable;
+  $("#source-travel-caption").textContent = blocker || (choice.mode === "shared"
+    ? (choice.ownerIndex === null ? "No case currently claims this shared trip. Select a case above to claim it, or keep travel unclaimed. Each interpreting choice stays separate."
+      : "Editable source-group default: these cases share one visit. Only the selected case claims travel; each interpreting choice stays separate. Choose Separate trips if they were different visits.")
+    : choice.mode === "separate" ? "Trips are treated separately. Each request's claim choice controls whether it includes travel. Use this when the cases involved separate visits."
+      : "No source case claims travel. Interpreting choices stay as selected; a case with no interpreting must choose a valid claim.");
+}
+
+async function refreshSourceClaimReviews() {
+  if (sourceTravelBlockedReason()) return null;
+  clearPreparedArtifacts("source claims reviewed");
+  state.batchPreflight = null;
+  const capturedRevision = state.workflowRevision;
+  state.sourceCaseBatchInFlight = true;
+  renderSourceCaseList();
+  try {
+    const reviewed = await reviewSourceCaseCandidates(state.sourceCaseCandidates,
+      (intake) => requestJson("/api/review", { method: "POST", body: JSON.stringify({ intake }) }),
+      () => isWorkflowResponseCurrent(capturedRevision, state.workflowRevision));
+    if (!reviewed) return null;
+    state.sourceCaseCandidates = reviewed;
+    selectSourceCase(state.sourceCaseSelectedIndex || 0, { persist: false, focus: false });
+    return reviewed;
+  } finally {
+    state.sourceCaseBatchInFlight = false;
+    renderSourceCaseList();
+  }
+}
+
+async function changeSourceTravelChoice(mode, ownerIndex = state.sourceTravelChoice?.ownerIndex || 0) {
+  if (state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null) return null;
+  persistCurrentSourceCase();
+  clearPreparedArtifacts("source travel choice changed");
+  state.batchPreflight = null;
+  state.sourceTravelChoice = { ...state.sourceTravelChoice, mode, ownerIndex };
+  const result = sourceCasesWithTravelChoice(state.sourceCaseCandidates, mode, ownerIndex, state.sourceTravelChoice.groupId);
+  state.sourceCaseCandidates = result.candidates;
+  state.sourceCaseCandidates.forEach((candidate) => { candidate.needs_review = true; });
+  selectSourceCase(state.sourceCaseSelectedIndex || 0, { persist: false, focus: false });
+  renderBatchPreflight();
+  if (result.blocked_reason) {
+    showAlert(result.blocked_reason, "blocked");
+    return null;
+  }
+  return refreshSourceClaimReviews();
+}
+
+async function changeRequestClaimMode(mode) {
+  if (!state.currentIntake || state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null) return null;
+  clearPreparedArtifacts("request claim choice changed");
+  state.batchPreflight = null;
+  state.currentIntake = intakeWithClaimMode(state.currentIntake, mode);
+  state.workflowStale = true;
+  persistCurrentSourceCase();
+  if (!selectedSourceCase()) {
+    renderClaimChoices();
+    refreshHomeWorkflow();
+    return reviewIntake({ openDrawer: false });
+  }
+  if (state.sourceTravelChoice?.mode === "shared" && state.currentIntake.claim_transport) {
+    const ownerIndex = state.sourceCaseSelectedIndex;
+    // An explicit travel-bearing choice moves the shared trip. Never turn
+    // interpreting on for its previous owner: a neither row must be corrected.
+    const reviewed = await changeSourceTravelChoice("shared", ownerIndex);
+    if (reviewed) showAlert(`The shared trip now belongs to case ${ownerIndex + 1}. Check every case's claim choice before preparing.`, "recorded");
+    return reviewed;
+  }
+  if (state.sourceTravelChoice?.mode === "shared" && state.sourceTravelChoice.ownerIndex === state.sourceCaseSelectedIndex) state.sourceTravelChoice.ownerIndex = null;
+  if (state.sourceTravelChoice?.mode === "none" && state.currentIntake.claim_transport) state.sourceTravelChoice.mode = "separate";
+  selectSourceCase(state.sourceCaseSelectedIndex, { persist: false, focus: false });
+  return refreshSourceClaimReviews();
+}
+
 function renderSourceCaseList() {
+  renderClaimChoices();
   const panel = $("#source-case-review");
   const list = $("#source-case-list");
   if (!panel || !list) return;
@@ -746,18 +862,18 @@ function renderSourceCaseList() {
   const readyCount = candidates.filter((candidate) => sourceCaseReadiness(candidate).ready).length;
   $("#source-case-heading").textContent = `${candidates.length} cases found in this source`;
   $("#source-case-summary").textContent = `${readyCount} of ${candidates.length} ready. Review each case below; each will have its own fee-request PDF.`;
-  $("#source-case-next-action").textContent = state.sourceCaseBatchInFlight
+  $("#source-case-next-action").textContent = sourceTravelBlockedReason() || (state.sourceCaseBatchInFlight
     ? "Checking every case with the normal review before adding them. No documents are being created."
     : readyCount === candidates.length
       ? "All cases are ready for the queue. Add them together, then check the batch and review its PDF step."
-      : "Open each case that needs attention and resolve its questions or edited details before adding this source to the batch.";
+      : "Open each case that needs attention and resolve its questions or edited details before adding this source to the batch.");
   list.innerHTML = candidates.map((candidate, index) => {
     const selected = index === state.sourceCaseSelectedIndex;
     const { status, ready } = sourceCaseReadiness(candidate);
     const intake = candidate.candidate_intake;
     const label = intake.case_number || intake.raw_case_number || "Unclear case";
     return `<li class="source-case-row${selected ? " is-current" : ""}">
-      <div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(intake.service_date || "date needs review")} · ${escapeHtml(intake.service_place || "place needs review")}</small>
+      <div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(intake.service_date || "date needs review")} · ${escapeHtml(intake.service_place || "place needs review")} · ${escapeHtml(claimModeLabel(intake))}</small>
         <span class="status-chip ${ready ? "ready" : "blocked"}">${escapeHtml(status.replaceAll("_", " "))}</span></div>
       <button type="button" class="mini-button" data-review-source-case="${index}" aria-pressed="${selected ? "true" : "false"}"${state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null ? " disabled" : ""}>${selected ? "Reviewing" : "Review case"} ${index + 1}</button>
     </li>`;
@@ -786,6 +902,7 @@ function clearSourceCaseReview() {
   state.sourceCaseCandidates = [];
   state.sourceCaseSelectedIndex = null;
   state.sourceCaseBatchInFlight = false;
+  state.sourceTravelChoice = null;
   renderSourceCaseList();
 }
 
@@ -793,6 +910,7 @@ function sourceCaseDetailsChanged() {
   if (!selectedSourceCase()) return;
   persistCurrentSourceCase({ mergeForm: true });
   if (selectedSourceCase().needs_review) {
+    if (state.sourceTravelChoice?.mode === "shared") state.sourceCaseCandidates.forEach((candidate) => { candidate.needs_review = true; });
     state.batchPreflight = null;
     state.workflowStale = true;
     refreshHomeWorkflow();
@@ -804,6 +922,7 @@ function sourceCaseDetailsChanged() {
 
 function sourceCasesNeedQueueRefresh() {
   if (state.sourceCaseCandidates.length <= 1) return false;
+  if (sourceTravelBlockedReason()) return true;
   return state.sourceCaseCandidates.some((candidate) => {
     if (!sourceCaseReadiness(candidate).ready) return true;
     const queued = state.batchIntakes.find((intake) => batchIntakeKey(intake) === batchIntakeKey(candidate.candidate_intake));
@@ -830,9 +949,9 @@ function queueReviewedIntake(intake, previousKey = "") {
 async function addSourceCasesToBatch() {
   persistCurrentSourceCase();
   if (state.sourceCaseBatchInFlight) return null;
-  if (state.sourceCaseCandidates.length <= 1 || !state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)) {
+  if (sourceTravelBlockedReason() || state.sourceCaseCandidates.length <= 1 || !state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)) {
     renderSourceCaseList();
-    throw new Error("Resolve and review every case in this source before adding them together.");
+    throw new Error(sourceTravelBlockedReason() || "Resolve and review every case in this source before adding them together.");
   }
   const capturedRevision = state.workflowRevision;
   state.sourceCaseBatchInFlight = true;
@@ -1381,7 +1500,8 @@ function renderBatchItemInspector() {
       <div><span>Recipient</span><code>${escapeHtml(intake.recipient_email || "recipient pending")}</code></div>
       <div><span>Payment entity</span><strong>${escapeHtml(intake.payment_entity || "payment entity pending")}</strong></div>
       <div><span>Service place</span><strong>${escapeHtml(intake.service_place || "service place pending")}</strong></div>
-      <div><span>Transport</span><strong>${escapeHtml(intake.transport?.destination || intake.service_place || "destination pending")} · ${escapeHtml(intake.transport?.km_one_way || "km pending")} km</strong></div>
+      <div><span>Request includes</span><strong>${escapeHtml(claimModeLabel(intake))}</strong></div>
+      <div><span>Transport</span><strong>${intake.claim_transport === false ? "Not claimed in this request" : `${escapeHtml(intake.transport?.destination || intake.service_place || "destination pending")} · ${escapeHtml(intake.transport?.km_one_way || "km pending")} km`}</strong></div>
       <div><span>Source</span><strong>${escapeHtml(intake.source_filename || intake.raw_case_number || "manual/reviewed intake")}</strong></div>
     </div>
     <div class="packet-sequence">
@@ -1436,6 +1556,7 @@ function renderBatchQueue() {
             <span>${escapeHtml(intake.service_date || "date pending")}</span>
             <span>${escapeHtml(period)}</span>
             <span>${escapeHtml(intake.payment_entity || "payment entity pending")}</span>
+            <span>${escapeHtml(claimModeLabel(intake))}</span>
             <code>${escapeHtml(intake.recipient_email || "recipient pending")}</code>
           </div>
         </div>
@@ -1590,7 +1711,7 @@ function renderBeginnerFacts(data, intake, { editable = true } = {}) {
     <section class="beginner-key-facts" aria-label="Check key facts">
       <strong>Check key facts</strong>
       <p>AI-read values and suggestions still need checking against the original source. Payment entity and recipient can differ from the service place.</p>
-      <ul>${rows}</ul>
+      <ul>${rows}<li class="review-fact-row"><div><strong>Request includes</strong><span class="review-fact-value">${escapeHtml(claimModeLabel(intake))}</span><small class="review-fact-origin confirmed">Your request choice</small></div></li></ul>
       <small>${editable ? "Edit a detail, then use Review recovered details to check the request again." : "These facts belong to the first prepared request. Review the relevant source before correcting details and preparing again."}</small>
     </section>
   `;
@@ -2368,10 +2489,12 @@ async function uploadSource(sourceKind, options = {}) {
   renderAiRecovery(data.ai_recovery);
   if (state.sourceCaseCandidates.length > 1) {
     selectSourceCase(0, { persist: false, focus: false });
+    await refreshSourceClaimReviews();
   } else {
     fillFormFromIntake(state.currentIntake);
-    applyReview(data.review, { openDrawer: false });
+    await reviewIntake({ openDrawer: false });
   }
+  if (data.source?.sha256 && state.currentIntake?.source_sha256 !== data.source.sha256) return null;
   setDropStatus(`Recovered ${file.name || "dropped source"}. Review what I found below before any PDF or Gmail draft step.`, "ready");
   focusHomeReviewCard();
   return data;
@@ -2379,12 +2502,18 @@ async function uploadSource(sourceKind, options = {}) {
 
 function adoptUploadedSource(data, attachments = [], emailBody = "") {
   state.sourceCaseCandidates = sourceCaseCandidatesFromUpload(data).map((candidate) => {
-    const intake = mergeSupportingAttachmentsIntoIntake(candidate.candidate_intake, attachments, emailBody);
+    const intake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(candidate.candidate_intake, attachments, emailBody), "both");
     return { ...candidate, candidate_intake: intake,
       review: { ...candidate.review, intake, effective_intake: intake, candidate_intake: intake } };
   });
   state.sourceCaseSelectedIndex = state.sourceCaseCandidates.length > 1 ? 0 : null;
-  state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.candidate_intake, attachments, emailBody);
+  state.sourceTravelChoice = state.sourceCaseCandidates.length > 1
+    ? { mode: "shared", ownerIndex: 0, groupId: `source-trip-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` } : null;
+  if (state.sourceTravelChoice) {
+    const grouped = sourceCasesWithTravelChoice(state.sourceCaseCandidates, "shared", 0, state.sourceTravelChoice.groupId);
+    state.sourceCaseCandidates = grouped.candidates;
+  }
+  state.currentIntake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(data.candidate_intake, attachments, emailBody), "both");
   if (data.review) {
     data.review = { ...data.review, intake: state.currentIntake, effective_intake: state.currentIntake,
       source: data.review.source || data.source,
@@ -2999,8 +3128,12 @@ async function importGooglePhotosPickerSelection() {
     status: "imported",
     message: "Google Photos image imported. Review what I found below before any PDF or Gmail draft step.",
   });
-  if (state.sourceCaseCandidates.length > 1) selectSourceCase(0, { persist: false, focus: false });
-  else applyReview(data.review, { openDrawer: false });
+  if (state.sourceCaseCandidates.length > 1) {
+    selectSourceCase(0, { persist: false, focus: false });
+    await refreshSourceClaimReviews();
+  }
+  else await reviewIntake({ openDrawer: false });
+  if (data.source?.sha256 && state.currentIntake?.source_sha256 !== data.source.sha256) return null;
   focusHomeReviewCard();
   return data;
 }
@@ -4550,6 +4683,7 @@ function removeEmpty(value) {
 }
 
 async function buildIntakeFromProfile(options = {}) {
+  clearPreparedArtifacts("new manual request");
   state.currentReviewOrigin = "manual";
   clearSourceCaseReview();
   const payload = removeEmpty(collectProfilePayload());
@@ -4562,9 +4696,9 @@ async function buildIntakeFromProfile(options = {}) {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  state.currentIntake = mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody);
+  state.currentIntake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody), "both");
   fillFormFromIntake(state.currentIntake);
-  applyReview(data.review, options);
+  await reviewIntake(options);
 }
 
 async function reviewIntake(options = {}) {
@@ -4955,7 +5089,7 @@ function renderPrepared(data) {
       ${renderPacketRecordHelper(packet)}
     </div>
   ` : "";
-  const itemCards = items.map((item) => (
+  const itemCards = items.map((item, index) => (
     `<div class="result-card prepared">
       <div class="result-header">
         <div>
@@ -4965,6 +5099,7 @@ function renderPrepared(data) {
         <span class="status-chip ready">prepared</span>
       </div>
       <div class="prepared-meta">
+        <div>Request includes: <strong>${escapeHtml(claimModeLabel(data.prepared_review_material?.effective_intakes?.[index] || item))}</strong></div>
         <div>Recipient: <code>${escapeHtml(item.recipient)}</code></div>
         <div>PDF: <code>${escapeHtml(item.pdf)}</code></div>
         <div>Payload: <code>${escapeHtml(item.draft_payload)}</code></div>
@@ -5188,6 +5323,14 @@ function bindNavigation() {
 
 function bindActions() {
   bindSourceDropZone();
+  const claimChange = (action) => async () => {
+    try { await action(); }
+    catch (error) { setStatus("blocked", error.message); showAlert(error.message, "blocked"); }
+  };
+  $("#request-claim-mode").addEventListener("change", claimChange(() => changeRequestClaimMode($("#request-claim-mode").value)));
+  $("#source-travel-mode").addEventListener("change", claimChange(() => changeSourceTravelChoice($("#source-travel-mode").value, state.sourceTravelChoice?.ownerIndex ?? 0)));
+  $("#source-travel-owner").addEventListener("change", claimChange(() => changeSourceTravelChoice("shared", Number($("#source-travel-owner").value))));
+  $("#review-source-case-choices").addEventListener("click", claimChange(() => { persistCurrentSourceCase(); return refreshSourceClaimReviews(); }));
   const intakeChanged = () => {
     clearPreparedArtifacts("intake form changed");
     sourceCaseDetailsChanged();

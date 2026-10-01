@@ -162,18 +162,20 @@ const context = {...g,console,FormData,JSON,Map,Set,Date,window:{},document:{que
 }};
 let app = fs.readFileSync('honorarios_app/static/app.js','utf8').replace(/^import \\{[\\s\\S]*?\\} from "\\.\\/review_guidance\\.js";/,'');
 app = app.slice(0,app.lastIndexOf('\\nbindNavigation();'));
-app += '\\nthis.api={state,adoptUploadedSource,selectSourceCase,addSourceCasesToBatch,applyReview};';
+app += '\\nthis.api={state,adoptUploadedSource,selectSourceCase,addSourceCasesToBatch,applyReview,refreshSourceClaimReviews};';
 vm.runInNewContext(app,context);
 const a = context.api;
 a.state.batchIntakes=[{case_number:'900/26.0TSTXX',service_date:'2026-09-25'}];
 const before = JSON.stringify(a.state.batchIntakes);
 const entries = ['00710 / 26.0tstxx','710/26.0TSTXX'].map(case_number=>({candidate_intake:{case_number,
-  service_date:'2026-09-26',recipient_email:'court@example.test',source_sha256:'shared-hash'},
+  service_date:'2026-09-26',service_place:'Court Test',personal_profile_id:'main',transport:{destination:'Test City'},recipient_email:'court@example.test',source_sha256:'shared-hash'},
   review:{status:'ready',questions:[],next_safe_action:{state:'prepare_pdf',blocked:false}}}));
 a.adoptUploadedSource({candidate_intake:entries[0].candidate_intake,case_candidates:entries,
   source:{source_kind:'photo',filename:'fictional.jpg',sha256:'shared-hash'},
   source_evidence:{filename:'fictional.jpg',case_number:'old-case',attention:{status:'blocked',flags:[{code:'old-question'}]}}});
 a.selectSourceCase(0,{persist:false,focus:false});
+await a.refreshSourceClaimReviews();
+calls = 0;
 let message = '';
 try {await a.addSourceCasesToBatch();} catch(error){message=error.message;}
 a.applyReview({status:'ready',intake:a.state.currentIntake,questions:[],review_evidence:{case_number:'corrected-case',

@@ -328,10 +328,63 @@ export function sourceCaseCandidatesFromUpload(data = {}) {
 export function sourceCaseReadiness(candidate = {}) {
   const review = candidate.review || {};
   const status = candidate.needs_review ? "needs_review" : String(review.status || "blocked");
-  return { status, ready: !candidate.needs_review && review.status === "ready"
+  return { status, ready: claimMode(candidate.candidate_intake) !== "neither" && !candidate.needs_review && review.status === "ready"
     && Boolean(String(candidate.candidate_intake?.case_number || "").trim())
     && !(Array.isArray(review.questions) && review.questions.length)
     && review.next_safe_action?.blocked !== true };
+}
+
+export function claimMode(intake = {}) {
+  const interpreting = intake.claim_interpreting !== false;
+  const transport = intake.claim_transport !== false;
+  return interpreting ? (transport ? "both" : "interpreting_only") : (transport ? "travel_only" : "neither");
+}
+
+export function claimModeLabel(intake = {}) {
+  return { both: "Interpreting + travel", interpreting_only: "Interpreting only", travel_only: "Travel only — attended, no interpreting", neither: "Choose a claim" }[claimMode(intake)];
+}
+
+export function intakeWithClaimMode(intake, mode) {
+  if (!["both", "interpreting_only", "travel_only"].includes(mode)) throw new Error("Choose interpreting + travel, interpreting only, or travel only.");
+  return { ...copySourceCase(intake), claim_interpreting: mode !== "travel_only", claim_transport: mode !== "interpreting_only" };
+}
+
+export function sharedSourceTravelEligibility(candidates = []) {
+  if (candidates.length < 2) return { eligible: false, reason: "A shared trip needs more than one case from this source." };
+  const fields = ["source_sha256", "service_date", "service_place"];
+  for (const field of fields) {
+    const values = candidates.map((candidate) => String(candidate.candidate_intake?.[field] || "").trim().replace(/\s+/g, " ").toLowerCase());
+    if (!values[0] || values.some((value) => !value || value !== values[0])) {
+      return { eligible: false, reason: "Shared trip paused: every case must have the same source, service date and physical venue. Correct the visit details, or choose Separate trips." };
+    }
+  }
+  const profiles = candidates.map((candidate) => String(candidate.candidate_intake?.personal_profile_id || "").trim());
+  const destinations = candidates.map((candidate) => String(candidate.candidate_intake?.transport?.destination || "").trim().replace(/\s+/g, " ").toLowerCase());
+  const origins = candidates.map((candidate) => String(candidate.candidate_intake?.transport?.origin || "").trim().replace(/\s+/g, " ").toLowerCase());
+  if (!profiles[0] || !destinations[0] || new Set(profiles).size > 1 || new Set(destinations).size > 1 || new Set(origins).size > 1) {
+    return { eligible: false, reason: "Shared trip paused: personal profiles, travel origins or destinations differ or need review. Correct the visit details, or choose Separate trips." };
+  }
+  return { eligible: true, reason: "" };
+}
+
+export function sourceCasesWithTravelChoice(candidates, mode, ownerIndex = 0, groupId = "") {
+  const copied = copySourceCase(candidates);
+  if (!["shared", "separate", "none"].includes(mode)) throw new Error("Choose one shared trip, separate trips, or no travel.");
+  if (mode === "shared") {
+    const eligibility = sharedSourceTravelEligibility(candidates);
+    if (!eligibility.eligible) return { candidates: copied, blocked_reason: eligibility.reason };
+    if (!Number.isInteger(ownerIndex) || !copied[ownerIndex] || !groupId) throw new Error("Choose which case carries the shared trip.");
+  }
+  copied.forEach((candidate, index) => {
+    const intake = candidate.candidate_intake;
+    const before = JSON.stringify(intake);
+    intake.claim_interpreting = intake.claim_interpreting !== false;
+    intake.claim_transport = mode === "separate" || (mode === "shared" && index === ownerIndex);
+    if (mode === "shared") intake.travel_group_id = groupId;
+    else delete intake.travel_group_id;
+    if (before !== JSON.stringify(intake)) candidate.needs_review = true;
+  });
+  return { candidates: copied, blocked_reason: "" };
 }
 
 export async function reviewSourceCaseCandidates(candidates, requestReview, isCurrent = () => true) {
@@ -373,6 +426,7 @@ export function preparedFirstRequestReview(prepared = {}, reviews = []) {
       case_number: first.case_number || "", service_date: first.service_date || "",
       payment_entity: first.payment_entity || "", service_place: first.service_place || "",
       recipient_email: first.recipient || "",
+      claim_interpreting: first.claim_interpreting !== false, claim_transport: first.claim_transport !== false,
     });
   const matched = reviews.find((review) => {
     const candidate = review?.effective_intake || review?.intake || review?.candidate_intake || {};

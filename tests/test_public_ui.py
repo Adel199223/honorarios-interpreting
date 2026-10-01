@@ -169,7 +169,7 @@ class PublicUiTests(PublicCandidateSmokeTests):
             'shell.classList.add("has-review")',
             'shell.classList.remove("has-review", "source-review", "manual-review")',
             "focusHomeReviewCard",
-            "applyReview(data.review, { openDrawer: false })",
+            "await reviewIntake({ openDrawer: false })",
             "applyNumberedAnswers({ sourceSelector: \"#home-numbered-answers\", openDrawer: false })",
             "hideHomeReviewPanel();",
             "function applyReview(data, options = {})",
@@ -819,7 +819,7 @@ console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
             self.assertIsNotNone(match, name)
             functions.append(match.group(0))
         module_url = (root / "honorarios_app/static/review_guidance.js").as_uri()
-        script = "import { beginnerReviewFacts } from " + json.dumps(module_url) + ";\n"
+        script = "import { beginnerReviewFacts, claimModeLabel } from " + json.dumps(module_url) + ";\n"
         script += "\n".join(functions) + """
 const details = {open:false};
 const focused = [], lookups = [];
