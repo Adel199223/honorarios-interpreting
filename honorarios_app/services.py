@@ -95,7 +95,7 @@ from .gmail_draft_api import (
 )
 from .gmail_attempts import attempt_lock, load_attempts, save_attempts, new_attempt, pending_attempt, update_attempt
 from .backup import (runtime_lock, validate_attempts, export_recovery_capsules, validate_capsules,
-                     merge_attempts, merge_history, restore_capsules, rebase_value, artifact_bindings, TERMINAL)
+                     merge_attempts, merge_history, restore_capsules, rebase_value, artifact_bindings, validate_history_coverage, TERMINAL)
 from scripts.state_store import atomic_write_json
 from .personal_profiles import (
     LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE,
@@ -2379,6 +2379,7 @@ def validate_backup_payload(payload: dict[str, Any], paths: AppPaths) -> dict[st
     for key in ("gmail_draft_log", "duplicate_index"):
         if key in validated:
             merge_history([], validated[key], duplicate=key == "duplicate_index")
+    validate_history_coverage(validated)
     for attempt in attempts:
         if attempt["state"] == "recorded":
             draft_id = attempt["gmail_result"]["draft_id"]

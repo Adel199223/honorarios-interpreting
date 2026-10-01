@@ -228,12 +228,18 @@ def merge_attempts(local: list[dict[str, Any]], incoming: list[dict[str, Any]]) 
 
 def merge_history(local: list, incoming: list, *, duplicate: bool) -> list:
     result = {}
+    allowed_statuses = {"sent", "superseded", "trashed", "not_found"} | ({None, "", "drafted"} if duplicate else {"active"})
     for row in [*local, *incoming]:
         if (not isinstance(row, dict) or not all(request_identity_key(row)[:2])
-                or row.get("status") not in {None, "", "active", "drafted", "sent", "superseded", "trashed", "not_found"}
+                or row.get("status") not in allowed_statuses
                 or (row.get("underlying_requests") is not None and (not isinstance(row["underlying_requests"], list)
                     or any(not isinstance(item, dict) or not all(request_identity_key(item)[:2]) for item in row["underlying_requests"])))):
             raise IntakeError("Backup contains invalid draft or duplicate history.")
+        children = row.get("underlying_requests") or []
+        if not duplicate and children:
+            parent = request_identity_key(row)
+            if (len(children) == 1 and parent != request_identity_key(children[0])) or not any(parent[:2] == request_identity_key(child)[:2] for child in children):
+                raise IntakeError("Backup draft history parent identity conflicts with its underlying requests.")
         stamp = row.get("updated_at") or row.get("drafted_at") or ""
         if stamp:
             try:
@@ -263,6 +269,28 @@ def merge_history(local: list, incoming: list, *, duplicate: bool) -> list:
         else:
             result[key] = copy.deepcopy(row)
     return list(result.values())
+
+
+def validate_history_coverage(datasets: dict[str, Any]) -> None:
+    """Every recorded request must reach the actual duplicate guard after import."""
+    duplicates = datasets.get("duplicate_index", [])
+    attempts = datasets.get("gmail_attempts", [])
+    for log in datasets.get("gmail_draft_log", []):
+        if log.get("status") not in {"active", "sent"}:
+            continue
+        draft_id = log.get("draft_id")
+        requests = log.get("underlying_requests") or [log]
+        journal = next((row for row in attempts if row["state"] not in TERMINAL
+                        and (row.get("gmail_result") or {}).get("draft_id") == draft_id), None)
+        pending_keys = set(_identities(journal)) if journal else set()
+        for request in requests:
+            key = request_identity_key(request)
+            accepted = {"sent"} if log["status"] == "sent" else {"drafted", "sent"}
+            protected = any(request_identity_key(row) == key and row.get("draft_id") == draft_id
+                            and (row.get("status") or "sent") in accepted
+                            and row.get("message_id") == log.get("message_id") for row in duplicates)
+            if not protected and key not in pending_keys:
+                raise IntakeError("Backup draft history is missing matching duplicate protection for an underlying request. Restore a complete backup or reconcile the incomplete history first.")
 
 
 def rebase_value(value: Any, mapping: dict[str, str], hashes: dict[str, str]) -> Any:

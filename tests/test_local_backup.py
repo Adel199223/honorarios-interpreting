@@ -121,6 +121,47 @@ class LocalBackupTests(unittest.TestCase):
                 self.assertEqual(load_attempts(destination.draft_log), [])
                 self.assertEqual(json.loads(destination.draft_log.read_text()), [])
 
+    def test_recorded_singleton_parent_child_and_actual_blocker_coverage_must_agree(self):
+        with self.fake_transport():
+            services.create_and_record_gmail_api_draft(self.prepared_request(), self.paths)
+        original = self.snapshot()
+        for mutation in ("parents_only", "missing_index", "index_alias", "log_alias", "sent_without_index"):
+            with self.subTest(mutation=mutation):
+                snapshot = copy.deepcopy(original)
+                datasets = snapshot["datasets"]
+                if mutation == "parents_only":
+                    for key in ("gmail_draft_log", "duplicate_index"):
+                        datasets[key][0]["case_number"] = "999/26.0TSTXX"
+                elif mutation == "index_alias":
+                    datasets["duplicate_index"][0]["status"] = "active"
+                elif mutation == "log_alias":
+                    datasets["gmail_draft_log"][0]["status"] = "drafted"
+                else:
+                    datasets["duplicate_index"] = []
+                    if mutation == "sent_without_index":
+                        datasets["gmail_draft_log"][0]["status"] = "sent"
+                destination = self.destination(mutation)
+                with self.assertRaises(IntakeError):
+                    self.restore(snapshot, destination)
+                self.assertEqual(load_attempts(destination.draft_log), [])
+                self.assertEqual(json.loads(destination.draft_log.read_text()), [])
+
+    def test_recorded_group_requires_each_child_duplicate_blocker(self):
+        prepared = self.prepare(self.rows(3)[1:])
+        with self.fake_transport():
+            services.create_and_record_gmail_api_draft(self.request(prepared, prepared["email_groups"][0]), self.paths)
+        snapshot = self.snapshot()
+        destination = self.destination("complete-group")
+        self.restore(snapshot, destination)
+        for row in self.rows(3)[1:]:
+            self.assertEqual(services.draft_lifecycle_for_intake(row, destination)["status"], "blocked")
+        incomplete = copy.deepcopy(snapshot)
+        incomplete["datasets"]["duplicate_index"].pop()
+        incomplete_destination = self.destination("missing-group-child")
+        with self.assertRaisesRegex(IntakeError, "missing matching duplicate protection"):
+            self.restore(incomplete, incomplete_destination)
+        self.assertEqual(load_attempts(incomplete_destination.draft_log), [])
+
     def test_older_or_legacy_backup_cannot_erase_new_pending_or_recorded_history(self):
         old = self.snapshot()
         old["datasets"].pop("gmail_attempts")
