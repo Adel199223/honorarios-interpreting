@@ -84,7 +84,10 @@ def validate_shared_travel_groups(intakes: list[dict[str, Any]], *, personal_pro
             if prior.get('travel_group_id') != group:
                 continue
             binding = prior.get('travel_group_binding')
-            if not isinstance(binding, list) or len(binding) != 5 or tuple(binding) not in bindings or not isinstance(prior.get('claim_transport'), bool):
+            if (not isinstance(binding, list) or len(binding) != 5
+                    or not all(isinstance(value, str) for value in binding)
+                    or not all(value.strip() for value in binding[:4])
+                    or tuple(binding) not in bindings or not isinstance(prior.get('claim_transport'), bool)):
                 raise ClaimError('An already recorded shared-trip claim has conflicting or unclear details. Review that record before preparing this visit.')
             if prior['claim_transport'] and owners and request_identity_key(prior) != request_identity_key(owners[0]):
                 raise ClaimError('Transport for this explicit shared trip is already recorded on another request. Keep this request interpreting-only or review the existing travel owner.')

@@ -375,6 +375,32 @@ class ClaimOptionsTests(unittest.TestCase):
         self.assertEqual(preflight_intakes([owner], self.paths)['status'], 'blocked')
         self.assertEqual(review_intake(owner, self.paths)['status'], 'duplicate')
 
+    def test_malformed_recorded_binding_stops_actionably_without_type_errors(self):
+        first, sibling = self.rows()[:2]
+        for index, value in ((4, []), (2, 123), (0, ''), (1, ' '), (2, ''), (3, '')):
+            with self.subTest(index=index, value=value):
+                prior = self.prior(first)
+                prior['travel_group_binding'][index] = value
+                with self.assertRaisesRegex(ClaimError, 'conflicting or unclear'):
+                    validate_shared_travel_groups([sibling], prior_requests=[prior])
+                self.write(self.paths.duplicate_index, [prior])
+                self.assertEqual(preflight_intakes([sibling], self.paths)['status'], 'blocked')
+                self.assert_no_artifacts()
+
+    def test_travel_only_missing_and_conflicting_date_questions_ask_attendance_date(self):
+        missing = self.row(claim_interpreting=False)
+        missing.pop('service_date')
+        question = next(question for question in missing_questions(missing) if question['field'] == 'service_date')
+        self.assertIn('attend in person', question['question'])
+        self.assertIn('attendance date', question['answer_hint'])
+        self.assertNotIn('provide', question['question'])
+        conflicting = self.row(claim_interpreting=False, service_date_source='document_text', photo_metadata_date='2026-01-16')
+        question = next(question for question in missing_questions(conflicting) if question['field'] == 'service_date_source')
+        self.assertIn('2026-01-15', question['question'])
+        self.assertIn('2026-01-16', question['question'])
+        self.assertIn('attend in person', question['question'])
+        self.assertNotIn('provide', question['question'])
+
 
 if __name__ == '__main__':
     unittest.main()

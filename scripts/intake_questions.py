@@ -156,6 +156,7 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
 
 def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
+    travel_only = intake.get('claim_interpreting', True) is False and intake.get('claim_transport') is True
     try:
         validate_claims(intake)
     except ClaimError:
@@ -166,10 +167,12 @@ def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
         if not rule_applies(rule, intake):
             continue
         if rule.get("when") == "service_date_conflict":
+            date_label = 'document attendance date' if travel_only else 'document service date'
+            action = 'attend in person as an interpreter' if travel_only else 'provide the interpreting service'
             questions.append({**rule, "number": len(questions) + 1,
                 "question": (
-                    f"The document service date is {intake.get('service_date')} and the photo capture date is "
-                    f"{intake.get('photo_metadata_date')}. On which date did you actually provide the interpreting service?"
+                    f"The {date_label} is {intake.get('service_date')} and the photo capture date is "
+                    f"{intake.get('photo_metadata_date')}. On which date did you actually {action}?"
                 ),
                 "answer_hint": "Give the actual date in YYYY-MM-DD, or answer document or metadata.",
             })
@@ -178,7 +181,11 @@ def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
             questions.append({**rule, "number": len(questions) + 1})
             continue
         if not has_value(intake, rule["field"]):
-            questions.append({**rule, "number": len(questions) + 1})
+            question = {**rule, "number": len(questions) + 1}
+            if travel_only and rule['field'] == 'service_date':
+                question.update(question='What date did you attend in person as an interpreter?',
+                                answer_hint='Use YYYY-MM-DD. If the image metadata date is the actual attendance date, give that date.')
+            questions.append(question)
     return questions
 
 
