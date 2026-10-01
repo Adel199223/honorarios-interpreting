@@ -37,6 +37,16 @@ DOCUMENT_DATE_RE = re.compile(
     r"certificacao|citius|captura|metadados|metadata|fotografia|photo)\b|\bdata\s*:"
 )
 INTERPRETING_CONTEXT_RE = re.compile(r"\b(?:interprete|interpretacao|interpreting)\b")
+CANCELLED_DATE_RE = re.compile(
+    r"\b(?:cancelad[oa]|anulad[oa]|adiad[oa]|suspens[oa]|sem efeito|"
+    r"nao (?:se )?(?:realizou|realizad[oa]|ocorreu|decorreu|compareceu))\b"
+)
+OTHER_ATTENDEE_RE = re.compile(
+    r"\b(?:arguid[oa]s?|testemunhas?|ofendid[oa]s?|assistentes?|demandad[oa]s?)\s+"
+    r"(?:(?:foi|fica|ficam|foram)\s+(?:notificad[oa]s?|convocad[oa]s?)|"
+    r"(?:deve|devem|devera|deverao)\s+comparecer|comparec(?:eu|era|em))\b|"
+    r"\bnotifica-se\s+(?:o|a|os|as)\s+(?:arguid[oa]s?|testemunhas?|ofendid[oa]s?)\b"
+)
 WRAPPED_DATE_LINK_RE = re.compile(r"(?:\b(?:em|no dia|na data|data de)\s*|:)\s*$")
 PLACE_ANCHOR_RE = re.compile(
     r"\b(?:local(?: da diligencia| do servico| de realizacao)?\s*:|"
@@ -94,6 +104,15 @@ def _date_role(text: str, start: int, end: int, *, notification: bool = False) -
     right_positions = [position for char in "\n;.!?" if (position := text.find(char, end)) >= 0]
     right_boundary = min(right_positions, default=len(text))
     clause = text[left_boundary:right_boundary]
+    if notification:
+        # An interpreter mentioned in an unrelated part of the file does not
+        # establish whose hearing/attendance a later date describes.
+        paragraph_break = text.rfind("\n\n", 0, start)
+        paragraph_start = max(paragraph_break + 2 if paragraph_break >= 0 else 0, start - 500)
+        context = text[paragraph_start:right_boundary]
+        if (not INTERPRETING_CONTEXT_RE.search(context) or CANCELLED_DATE_RE.search(clause)
+                or OTHER_ATTENDEE_RE.search(clause)):
+            return "other"
     relative_start = start - left_boundary
     relative_end = end - left_boundary
     labels: list[tuple[int, str]] = []
@@ -117,7 +136,6 @@ def _date_role(text: str, start: int, end: int, *, notification: bool = False) -
 def service_date_evidence(text: str, *, source_kind: str = "") -> ServiceDateEvidence:
     normalized = normalize_text(text or "")
     notification = source_kind == "notification_pdf"
-    interpreting_context = bool(INTERPRETING_CONTEXT_RE.search(normalized))
     found: list[tuple[str, str]] = []
     for match in DATE_RE.finditer(normalized):
         iso_year, iso_month, iso_day, eu_day, eu_month, eu_year, named_day, named_month, named_year = match.groups()
@@ -130,8 +148,7 @@ def service_date_evidence(text: str, *, source_kind: str = "") -> ServiceDateEvi
         found.append((value, _date_role(normalized, match.start(), match.end(), notification=notification)))
     candidates = tuple(dict.fromkeys(value for value, _role in found))
     service_dates = tuple(dict.fromkeys(value for value, role in found
-                                       if (role == "service" and (not notification or interpreting_context))
-                                       or (role == "appointment" and interpreting_context)))
+                                       if role in {"service", "appointment"}))
     if len(service_dates) == 1:
         return ServiceDateEvidence(value=service_dates[0], candidates=candidates)
     if len(service_dates) > 1:

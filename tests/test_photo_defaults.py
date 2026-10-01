@@ -20,7 +20,7 @@ from honorarios_app.services import (
     AppPaths, apply_answer_to_intake, apply_numbered_answers, recover_source_upload,
     prepare_intakes, review_intake, review_intake_with_profile_evidence,
 )
-from scripts.generate_pdf import build_rendered_request
+from scripts.generate_pdf import IntakeError, build_rendered_request
 
 
 CASE_NUMBER = '710/26.0TSTXX'
@@ -349,6 +349,45 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertIn('leave photo_metadata_date and photo_metadata_city empty', pdf_prompt)
         photo_prompt = _prompt_for_source('photo', '')
         self.assertIn('Do not use the issue date, signing/closing date, a future appointment', photo_prompt)
+
+    def test_notification_beyond_read_coverage_stops_before_ocr_or_preparation(self):
+        for count, scanned, limit in ((9, False, 8), (4, True, 3)):
+            with self.subTest(page_count=count, scanned=scanned):
+                data = BytesIO()
+                document = canvas.Canvas(data)
+                for page_number in range(count):
+                    if scanned:
+                        image = Image.new('RGB', (600, 850), 'white')
+                        ImageDraw.Draw(image).text((40, 50), f'Fictional scanned page {page_number + 1}', fill='black')
+                        document.drawImage(ImageReader(image), 0, 0, width=595, height=842)
+                    else:
+                        document.drawString(40, 790, f'Processo {CASE_NUMBER}. Servico de interpretacao realizado em 24/09/2026.')
+                    document.showPage()
+                document.save()
+                with patch('honorarios_app.services.recover_source_with_openai') as provider, \
+                     patch('honorarios_app.services.render_pdf_pages_for_source') as render:
+                    with self.assertRaisesRegex(IntakeError, f'only the first {limit}'):
+                        recover_source_upload(filename='fictional-over-limit.pdf', content_type='application/pdf',
+                            content=data.getvalue(), source_kind='notification_pdf', paths=self.paths)
+                    provider.assert_not_called()
+                    render.assert_not_called()
+                for directory in (self.paths.output_dir, self.paths.intake_output_dir, self.paths.manifest_dir):
+                    self.assertEqual(list(directory.glob('*')), [])
+
+    def test_complete_text_notification_at_eight_page_limit_remains_usable(self):
+        data = BytesIO()
+        document = canvas.Canvas(data)
+        for page_number in range(8):
+            document.drawString(40, 790, f'Processo {CASE_NUMBER}. Servico de interpretacao realizado em 24/09/2026.')
+            document.drawString(40, 760, f'Fictional supporting page {page_number + 1}; same appointment and no additional requests.')
+            document.showPage()
+        document.save()
+        with patch('honorarios_app.services.recover_source_with_openai', return_value={'status': 'disabled'}) as provider:
+            result = recover_source_upload(filename='fictional-eight-pages.pdf', content_type='application/pdf',
+                content=data.getvalue(), source_kind='notification_pdf', paths=self.paths, ai_recovery_mode='off')
+        self.assertEqual(result['candidate_intake']['service_date'], '2026-09-24')
+        self.assertEqual(result['source']['metadata']['pdf_page_count'], 8)
+        self.assertEqual(provider.call_args.kwargs['rendered_page_images'], [])
 
     def test_capture_city_selects_its_court_instead_of_district_or_service_city(self):
         self.enable(mappings={

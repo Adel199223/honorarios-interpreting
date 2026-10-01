@@ -23,6 +23,7 @@ DEFAULT_OPENAI_MODEL = "gpt-6.1-sol"
 DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_TIMEOUT_SECONDS = 90
 MAX_OUTPUT_TOKENS = 8192
+MAX_PDF_OCR_PAGES = 3
 AI_RECOVERY_SCHEMA_NAME = "honorarios_source_recovery"
 AI_RECOVERY_PROMPT_VERSION = "honorarios-source-notification-date-v5"
 AI_RECOVERY_FIELD_NAMES = [
@@ -402,7 +403,7 @@ def _content_items_for_source(
 ) -> list[dict[str, Any]]:
     if source_kind == "notification_pdf" and rendered_page_images:
         items: list[dict[str, Any]] = []
-        for index, path_text in enumerate(rendered_page_images[:3], start=1):
+        for index, path_text in enumerate(rendered_page_images[:MAX_PDF_OCR_PAGES], start=1):
             path = Path(path_text)
             encoded = base64.b64encode(path.read_bytes()).decode("ascii")
             items.append({

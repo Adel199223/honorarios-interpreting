@@ -80,7 +80,7 @@ from scripts.entity_rules import build_service_place_clause, classify_entity_typ
 from scripts.source_parsing import explicit_service_places, service_date_evidence
 from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection, source_scope_fingerprint
 
-from .ai_recovery import ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
+from .ai_recovery import MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai, text_is_weak_for_pdf_ocr
 from .source_cases import source_case_rows, valid_source_case
 from .workspace_draft import workspace_runtime_id
 from .photo_defaults import apply_photo_defaults, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
@@ -1334,18 +1334,25 @@ def image_metadata_from_bytes(content: bytes) -> dict[str, Any]:
         raise IntakeError("Uploaded photo/screenshot is not a readable image.") from exc
 
 
-def pdf_text_from_bytes(content: bytes) -> str:
+MAX_PDF_TEXT_PAGES = 8
+
+
+def _pdf_text_and_page_count(content: bytes) -> tuple[str, int]:
     try:
         reader = PdfReader(BytesIO(content))
         pages = []
-        for page in reader.pages[:8]:
+        for page in reader.pages[:MAX_PDF_TEXT_PAGES]:
             pages.append(page.extract_text() or "")
-        return "\n".join(pages).strip()
+        return "\n".join(pages).strip(), len(reader.pages)
     except Exception as exc:  # pypdf raises several parser-specific exceptions.
         raise IntakeError("Uploaded notification PDF could not be read.") from exc
 
 
-def render_pdf_pages_for_source(pdf_path: Path, *, max_pages: int = 3) -> tuple[list[Path], list[str]]:
+def pdf_text_from_bytes(content: bytes) -> str:
+    return _pdf_text_and_page_count(content)[0]
+
+
+def render_pdf_pages_for_source(pdf_path: Path, *, max_pages: int = MAX_PDF_OCR_PAGES) -> tuple[list[Path], list[str]]:
     warnings: list[str] = []
     pdftoppm = shutil.which("pdftoppm")
     if not pdftoppm:
@@ -1627,7 +1634,13 @@ def recover_source_upload(
     extracted_text = ""
     metadata: dict[str, Any] = {}
     if source_kind == "notification_pdf":
-        extracted_text = pdf_text_from_bytes(content)
+        extracted_text, page_count = _pdf_text_and_page_count(content)
+        metadata['pdf_page_count'] = page_count
+        if page_count > MAX_PDF_TEXT_PAGES:
+            raise IntakeError(
+                f"This notification has {page_count} pages, but this upload can review only the first {MAX_PDF_TEXT_PAGES} text pages. "
+                "Later pages may change the cases or appointment date. Upload a shorter PDF containing the relevant pages, "
+                "or enter the complete reviewed source text using manual intake. No request was prepared.")
     else:
         metadata = image_metadata_from_bytes(content)
     if visible_text.strip():
@@ -1639,6 +1652,11 @@ def recover_source_upload(
 
     rendered_page_paths: list[Path] = []
     if source_kind == "notification_pdf" and text_is_weak_for_pdf_ocr(extracted_text):
+        if metadata['pdf_page_count'] > MAX_PDF_OCR_PAGES:
+            raise IntakeError(
+                f"This notification has {metadata['pdf_page_count']} pages and needs image review, which covers only the first {MAX_PDF_OCR_PAGES} pages. "
+                "Later pages may change the cases or appointment date. Upload a shorter PDF containing the relevant pages, "
+                "or enter the complete reviewed source text using manual intake. No request was prepared.")
         rendered_page_paths, render_warnings = render_pdf_pages_for_source(stored_path)
         metadata["rendered_page_count"] = len(rendered_page_paths)
         if rendered_page_paths:

@@ -103,6 +103,28 @@ class NotificationDateTests(unittest.TestCase):
         self.assertFalse(evidence.value)
         self.assertTrue(evidence.needs_confirmation)
 
+    def test_unrelated_interpreter_mention_cannot_claim_another_attendees_date(self):
+        for actor in ('O arguido deve comparecer', 'A testemunha foi notificada para comparecer',
+                      'Notifica-se o arguido para comparecer'):
+            with self.subTest(actor=actor):
+                evidence = self.evidence('Foi nomeado intérprete para traduzir a acusação.\n'
+                                         f'{actor} em 24-09-2026.')
+                self.assertFalse(evidence.value)
+                self.assertTrue(evidence.needs_confirmation)
+
+    def test_cancelled_or_negated_interpreting_dates_are_not_selected(self):
+        for clause in ('Audiência cancelada', 'Audiência sem efeito', 'Audiência adiada',
+                       'A audiência não se realizou'):
+            with self.subTest(clause=clause):
+                evidence = self.evidence(f'Intérprete: Example Person.\n{clause} em 24-09-2026.\nData: 16-09-2026.')
+                self.assertFalse(evidence.value)
+                self.assertTrue(evidence.needs_confirmation)
+
+    def test_unrelated_paragraph_does_not_bind_interpreter_to_later_hearing(self):
+        evidence = self.evidence('Intérprete: Example Person.\n\nAudiência designada para 24-09-2026.')
+        self.assertFalse(evidence.value)
+        self.assertTrue(evidence.needs_confirmation)
+
     def test_multiple_interpreting_dates_need_confirmation(self):
         for text in ('Nomeado intérprete, deve comparecer em 24/09/2026 e em 25/09/2026.',
                      'Interpretação realizada em 24/09/2026. Nova diligência designada para 25/09/2026.'):
