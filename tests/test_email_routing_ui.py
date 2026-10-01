@@ -10,17 +10,19 @@ import fs from 'node:fs';import vm from 'node:vm';
 const elements=new Map();
 const element=selector=>{
   if(!elements.has(selector)){
-    elements.set(selector,{checked:false,disabled:false,textContent:'',innerHTML:'',className:'',dataset:{},
+    elements.set(selector,{id:selector.slice(1),listeners:{},checked:false,disabled:false,textContent:'',innerHTML:'',className:'',dataset:{},
+      addEventListener(event,listener){this.listeners[event]=listener;},
       classList:{add(){},remove(){},toggle(){},contains(){return false}},setAttribute(){},getAttribute(){return ''},removeAttribute(){},
       focus(){},scrollIntoView(){},reset(){},querySelector(s){return element(s)},querySelectorAll(){return []}});
     Object.defineProperty(elements.get(selector),'value',{get(){return this._value||''},set(v){this._value=String(v??'')}});
   }return elements.get(selector);
 };
-const calls=[],copied=[];let deferred=null;let responseOverride=null;
+const calls=[],copied=[];let deferred=null;let responseOverride=null;let responseFailure=null;
 const context={...g,console,JSON,Map,Set,Date,window:{},referenceLoads:0,navigator:{clipboard:{writeText:async text=>copied.push(text)}},
   document:{querySelector:element,querySelectorAll(){return []},getElementById:id=>element('#'+id),body:{dataset:{}}},
   fetch:async(url,options)=>{
     const body=options?.body?JSON.parse(options.body):{};calls.push({url,body});if(deferred)await deferred;
+    if(responseFailure)return {ok:false,status:409,json:async()=>({detail:responseFailure})};
     let result={};
     if(url==='/api/review')result={status:'needs_info',intake:body.intake,effective_intake:body.intake,questions:[{field:'recipient_email'}],next_safe_action:{state:'answer_questions',blocked:true}};
     else if(url==='/api/gmail/manual-handoff')result={status:'ready',payload_path:body.payload,to:body.payload.includes('beta')?'beta@example.test':'alpha@example.test',copyable_prompt:'prompt:'+body.payload};
@@ -31,8 +33,17 @@ const context={...g,console,JSON,Map,Set,Date,window:{},referenceLoads:0,navigat
     else throw new Error('Unexpected synthetic route '+url);
     return {ok:true,json:async()=>responseOverride||result};
   }};
-let app=fs.readFileSync('honorarios_app/static/app.js','utf8').replace(/^import \{[\s\S]*?\} from "\.\/review_guidance\.js";/,'');
-app=app.slice(0,app.lastIndexOf('\nbindNavigation();'));
+const fullApp=fs.readFileSync('honorarios_app/static/app.js','utf8').replace(/^import \{[\s\S]*?\} from "\.\/review_guidance\.js";/,'');
+let app=fullApp.slice(0,fullApp.lastIndexOf('\nbindNavigation();'));
+const listenerSource=(id,event='click')=>{
+  const start=fullApp.indexOf(`$("${id}").addEventListener("${event}",`);
+  if(start<0)throw new Error('Missing production event handler '+id);
+  return fullApp.slice(start,fullApp.indexOf('\n  });',start)+6);
+};
+['#check-active-drafts','#create-gmail-api-draft','#record-draft','#record-parsed-prepared-draft'].forEach(id=>{app+='\n'+listenerSource(id);});
+app+='\n'+listenerSource('#saved-court-email','change');
+const intakeStart=fullApp.indexOf('  const intakeChanged =');
+app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
 app+='\nloadReference=async()=>{referenceLoads+=1};this.api={state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,preparedRecordTarget,preparedTargetIntake,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow};';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
@@ -77,6 +88,36 @@ console.log(JSON.stringify({intake:a.state.currentIntake,calls,prepared:a.state.
             self.assertEqual(result['intake'][field],'')
         self.assertIsNone(result['prepared'])
         self.assertEqual([call['url'] for call in result['calls']],['/api/review'])
+        self.assertEqual(result['status'],'needs_info')
+
+    def test_same_saved_recipient_selection_clears_stale_hidden_choices_before_review(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha,court_email:'beta@example.test',court_email_key:'beta',recipient_override_reason:'old',court_email_override_reason:'old'};a.fillFormFromIntake(a.state.currentIntake);
+await a.chooseSavedCourtEmail('alpha@example.test');
+console.log(JSON.stringify({intake:calls[0].body.intake,payer:a.state.currentIntake.payment_entity,venue:a.state.currentIntake.service_place}));
+""")
+        self.assertEqual(result['intake']['recipient_email'],'alpha@example.test')
+        for field in ['court_email','court_email_key','recipient_override_reason','court_email_override_reason']:
+            self.assertEqual(result['intake'].get(field,''),'')
+        self.assertEqual(result['payer'],'Court Alpha')
+        self.assertEqual(result['venue'],'Police Alpha')
+
+    def test_picker_input_then_change_preserves_choice_and_reviews_recipient_mismatch(self):
+        result=self.run_js("""
+a.state.reference={court_emails:[{email:'alpha@example.test'},{email:'beta@example.test'}]};a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);a.renderPrepared(prepare());
+const picker=element('#saved-court-email'),form=element('#intake-form');picker.value='beta@example.test';
+form.listeners.input({target:picker});const afterInput=picker.value;
+await picker.listeners.change({target:picker});form.listeners.change({target:picker});
+console.log(JSON.stringify({afterInput,selected:picker.value,recipient:element('#recipient_email').value,reviewed:calls[0].body.intake,payer:a.state.currentIntake.payment_entity,venue:a.state.currentIntake.service_place,prepared:a.state.lastPrepared,status:a.state.lastReview.status}));
+""")
+        self.assertEqual(result['afterInput'],'beta@example.test')
+        self.assertEqual(result['selected'],'beta@example.test')
+        self.assertEqual(result['recipient'],'beta@example.test')
+        self.assertEqual(result['reviewed']['recipient_email'],'beta@example.test')
+        self.assertEqual(result['reviewed']['payment_entity'],'Court Alpha')
+        self.assertEqual(result['payer'],'Court Alpha')
+        self.assertEqual(result['venue'],'Police Alpha')
+        self.assertIsNone(result['prepared'])
         self.assertEqual(result['status'],'needs_info')
 
     def test_selected_target_uses_exact_snapshot_args_attachment_preview_and_home_facts(self):
@@ -163,6 +204,72 @@ console.log(JSON.stringify({completed:completed.status,ids:element('#record_draf
         self.assertEqual(result['recorded'],'')
         self.assertFalse(result['inFlight'])
         self.assertIn('earlier selected email was created',result['alert'])
+        self.assertEqual(result['referenceLoads'],1)
+
+    def test_active_check_click_discards_late_response_without_blocking_new_target(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());let release;deferred=new Promise(resolve=>release=resolve);const pending=element('#check-active-drafts').listeners.click();a.selectPreparedEmailTarget(1);
+element('#status-pill').textContent='new-target';element('#alert').textContent='new-target-alert';release();await pending;
+console.log(JSON.stringify({status:element('#status-pill').textContent,alert:element('#alert').textContent,payload:element('#record_payload').value,caseChecked:calls[0].body.intake.case_number}));
+""")
+        self.assertEqual(result,{'status':'new-target','alert':'new-target-alert','payload':'/fictional/beta.json','caseChecked':'710/26.0TSTXX'})
+
+    def test_create_click_reports_prior_target_http_failure_without_blocking_new_target(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());element('#gmail_handoff_reviewed').checked=true;let release;deferred=new Promise(resolve=>release=resolve);const pending=element('#create-gmail-api-draft').listeners.click();a.selectPreparedEmailTarget(1);
+element('#status-pill').textContent='new-target';element('#gmail-api-result').innerHTML='new-target-panel';responseFailure='Earlier Alpha request is already drafted';release();await pending;
+console.log(JSON.stringify({status:element('#status-pill').textContent,panel:element('#gmail-api-result').innerHTML,alert:element('#alert').textContent,payload:element('#record_payload').value,createdPayload:calls[0].body.payload,inFlight:a.state.gmailCreateInFlight}));
+""")
+        self.assertEqual(result['status'],'new-target')
+        self.assertEqual(result['panel'],'new-target-panel')
+        self.assertIn('earlier selected email request failed',result['alert'])
+        self.assertIn('Earlier Alpha request is already drafted',result['alert'])
+        self.assertEqual(result['payload'],'/fictional/beta.json')
+        self.assertEqual(result['createdPayload'],'/fictional/alpha.json')
+        self.assertFalse(result['inFlight'])
+
+    def test_create_click_current_target_http_failure_still_blocks(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());element('#gmail_handoff_reviewed').checked=true;responseFailure='Selected request is already drafted';await element('#create-gmail-api-draft').listeners.click();
+console.log(JSON.stringify({status:element('#status-pill').textContent,panel:element('#gmail-api-result').innerHTML,alert:element('#alert').textContent}));
+""")
+        self.assertEqual(result['status'],'blocked')
+        self.assertIn('Selected request is already drafted',result['panel'])
+        self.assertEqual(result['alert'],'Selected request is already drafted')
+
+    def test_record_clicks_report_prior_http_failure_without_blocking_new_target(self):
+        for control,route in [('#record-draft','/api/drafts/status'),('#record-parsed-prepared-draft','/api/drafts/record')]:
+            with self.subTest(control=control):
+                result=self.run_js("""
+a.renderPrepared(prepare());element('#record_draft_id').value='alpha-draft';element('#record_message_id').value='alpha-message';element('#gmail_handoff_reviewed').checked=true;element('#gmail-response-raw').value=JSON.stringify({draft_id:'alpha-draft',message_id:'alpha-message'});
+let release;deferred=new Promise(resolve=>release=resolve);const pending=element(CONTROL).listeners.click();a.selectPreparedEmailTarget(1);element('#status-pill').textContent='new-target';responseFailure='Earlier Alpha record was rejected';release();await pending;
+console.log(JSON.stringify({status:element('#status-pill').textContent,alert:element('#alert').textContent,payload:element('#record_payload').value,recorded:a.state.locallyRecordedPayload,call:calls[0]}));
+""".replace('CONTROL',json.dumps(control)))
+                self.assertEqual(result['status'],'new-target')
+                self.assertIn('earlier selected draft recording request failed',result['alert'])
+                self.assertEqual(result['payload'],'/fictional/beta.json')
+                self.assertEqual(result['recorded'],'')
+                self.assertEqual(result['call']['url'],route)
+                self.assertEqual(result['call']['body']['payload'],'/fictional/alpha.json')
+
+    def test_record_click_current_target_http_failure_still_blocks(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());element('#record_draft_id').value='alpha-draft';responseFailure='Selected record was rejected';await element('#record-draft').listeners.click();
+console.log(JSON.stringify({status:element('#status-pill').textContent,alert:element('#alert').textContent}));
+""")
+        self.assertEqual(result,{'status':'blocked','alert':'Selected record was rejected'})
+
+    def test_parsed_record_click_acknowledges_late_success_without_applying_old_ids(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());element('#gmail_handoff_reviewed').checked=true;element('#gmail-response-raw').value=JSON.stringify({draft_id:'alpha-draft',message_id:'alpha-message'});
+let release;deferred=new Promise(resolve=>release=resolve);const pending=element('#record-parsed-prepared-draft').listeners.click();a.selectPreparedEmailTarget(1);element('#status-pill').textContent='new-target';release();await pending;
+console.log(JSON.stringify({status:element('#status-pill').textContent,alert:element('#alert').textContent,payload:element('#record_payload').value,ids:element('#record_draft_id').value,recorded:a.state.locallyRecordedPayload,referenceLoads:context.referenceLoads}));
+""")
+        self.assertEqual(result['status'],'new-target')
+        self.assertIn('earlier draft was recorded locally',result['alert'])
+        self.assertEqual(result['payload'],'/fictional/beta.json')
+        self.assertEqual(result['ids'],'')
+        self.assertEqual(result['recorded'],'')
         self.assertEqual(result['referenceLoads'],1)
 
     def test_packet_is_one_target_new_preparation_resets_selection_and_source_change_clears_it(self):

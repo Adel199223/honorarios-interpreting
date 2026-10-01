@@ -667,11 +667,13 @@ console.log(JSON.stringify({ snapshot, latePreflight, latePrepare }));
         self.assertIn("await recordPreparedDraftFromForm()", one_click_body)
         self.assertNotIn("await recordDraft()", one_click_body)
         prepared_record_body = app_js.split("async function recordPreparedDraftFromForm", 1)[1].split("async function ", 1)[0]
-        self.assertIn('requestJson("/api/drafts/record"', prepared_record_body)
+        self.assertIn('requestDraftRecord("/api/drafts/record", payload, context)', prepared_record_body)
+        draft_record_request_body = app_js.split("async function requestDraftRecord", 1)[1].split("async function ", 1)[0]
+        self.assertIn('requestJson(url,', draft_record_request_body)
         self.assertIn("gmail_handoff_reviewed: true", prepared_record_body)
         self.assertIn("...currentPreparedReviewFields(payloadPath)", prepared_record_body)
         manual_record_body = app_js.split("async function recordDraft()", 1)[1].split("function ", 1)[0]
-        self.assertIn('requestJson("/api/drafts/status"', manual_record_body)
+        self.assertIn('requestDraftRecord("/api/drafts/status", payload, context)', manual_record_body)
         self.assertNotIn("_send_email", app_js)
         self.assertNotIn("_send_draft", app_js)
 

@@ -578,6 +578,7 @@ function renderSavedCourtEmailOptions() {
 
 async function chooseSavedCourtEmail(email) {
   if (!email) return;
+  if (state.currentIntake) ["court_email", "court_email_key", "recipient_override_reason", "court_email_override_reason"].forEach((field) => { state.currentIntake[field] = ""; });
   $("#recipient_email").value = email;
   clearPreparedArtifacts("recipient changed");
   mergeFormIntoCurrentIntake();
@@ -1564,7 +1565,9 @@ async function recordFromParsedResponseAndPreparedPayload() {
   if (!ids.draft_id || !ids.message_id) {
     throw new Error("Parsed Gmail response must include draft_id and message_id before recording locally.");
   }
+  const captured = { revision: state.workflowRevision, prepared: state.lastPrepared };
   const data = await recordPreparedDraftFromForm();
+  if (!data || !isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) return null;
   return { ids, target, record: data };
 }
 
@@ -3194,6 +3197,12 @@ async function createGmailApiDraft() {
     renderGuidedStep("review_gmail_draft_args");
     await loadReference();
     return data;
+  } catch (error) {
+    if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
+      showAlert(`The earlier selected email request failed: ${error.message}. The current selection was not changed.`, "info");
+      return null;
+    }
+    throw error;
   } finally {
     if (state.gmailCreateRequestId === requestId) state.gmailCreateInFlight = false;
     syncActionGates();
@@ -5340,6 +5349,22 @@ async function finishDraftRecord(data, context) {
   return data;
 }
 
+async function requestDraftRecord(url, payload, context) {
+  try {
+    const data = await requestJson(url, {
+      method: "POST",
+      body: JSON.stringify(removeEmpty(payload)),
+    });
+    return finishDraftRecord(data, context);
+  } catch (error) {
+    if (!isWorkflowResponseCurrent(context.revision, state.workflowRevision, context.prepared, state.lastPrepared)) {
+      showAlert(`The earlier selected draft recording request failed: ${error.message}. The current selection was not changed.`, "info");
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function recordPreparedDraftFromForm() {
   const payloadPath = $("#record_payload").value.trim();
   const payload = {
@@ -5348,21 +5373,13 @@ async function recordPreparedDraftFromForm() {
     ...currentPreparedReviewFields(payloadPath),
   };
   const context = { revision: state.workflowRevision, prepared: state.lastPrepared, payload: payloadPath };
-  const data = await requestJson("/api/drafts/record", {
-    method: "POST",
-    body: JSON.stringify(removeEmpty(payload)),
-  });
-  return finishDraftRecord(data, context);
+  return requestDraftRecord("/api/drafts/record", payload, context);
 }
 
 async function recordDraft() {
   const payload = draftRecordPayloadFromForm();
   const context = { revision: state.workflowRevision, prepared: state.lastPrepared, payload: payload.payload };
-  const data = await requestJson("/api/drafts/status", {
-    method: "POST",
-    body: JSON.stringify(removeEmpty(payload)),
-  });
-  return finishDraftRecord(data, context);
+  return requestDraftRecord("/api/drafts/status", payload, context);
 }
 
 function resetReview({ closeDrawer = true } = {}) {
@@ -5484,7 +5501,8 @@ function bindActions() {
   $("#source-travel-mode").addEventListener("change", claimChange(() => changeSourceTravelChoice($("#source-travel-mode").value, state.sourceTravelChoice?.ownerIndex ?? 0)));
   $("#source-travel-owner").addEventListener("change", claimChange(() => changeSourceTravelChoice("shared", Number($("#source-travel-owner").value))));
   $("#review-source-case-choices").addEventListener("click", claimChange(() => { persistCurrentSourceCase(); return refreshSourceClaimReviews(); }));
-  const intakeChanged = () => {
+  const intakeChanged = (event) => {
+    if (event.target?.id === "saved-court-email") return;
     clearPreparedArtifacts("intake form changed");
     sourceCaseDetailsChanged();
     renderSavedCourtEmailOptions();
@@ -6325,6 +6343,7 @@ function bindActions() {
   $("#check-active-drafts").addEventListener("click", async () => {
     try {
       const data = await activeCheck();
+      if (!data) return;
       setStatus(data.status, data.message);
       if (data.status === "blocked") {
         showAlert(data.message, "blocked");
@@ -6394,6 +6413,7 @@ function bindActions() {
   $("#record-parsed-prepared-draft").addEventListener("click", async () => {
     try {
       const result = await recordFromParsedResponseAndPreparedPayload();
+      if (!result) return;
       showAlert(`Gmail draft response and prepared payload recorded locally for ${result.record.draft_id}.`, "recorded");
     } catch (error) {
       setStatus("blocked", error.message);
