@@ -10,12 +10,13 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
+from pypdf import PdfReader
 from reportlab.pdfgen import canvas
 
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
 from honorarios_app.services import (
     AppPaths, apply_answer_to_intake, apply_numbered_answers, recover_source_upload,
-    review_intake, review_intake_with_profile_evidence,
+    prepare_intakes, review_intake, review_intake_with_profile_evidence,
 )
 from scripts.generate_pdf import build_rendered_request
 
@@ -73,7 +74,7 @@ class PhotoDefaultTests(unittest.TestCase):
 
     def upload(self, *, metadata_date=CAPTURE_DATE, photo_city=CAPTURE_CITY,
                visible_text=SOURCE_TEXT, ai_fields=None, exif=False, source_kind='photo',
-               service_profile='auto'):
+               service_profile='auto', exif_values=None):
         if source_kind == 'notification_pdf':
             content = BytesIO()
             document = canvas.Canvas(content)
@@ -87,6 +88,8 @@ class PhotoDefaultTests(unittest.TestCase):
             metadata = image.getexif()
             if exif and metadata_date:
                 metadata[36867] = metadata_date.replace('-', ':') + ' 10:15:00'
+            for tag, value in (exif_values or {}).items():
+                metadata[tag] = value
             image.save(content, format='JPEG', exif=metadata)
             filename, content_type = 'fictional-photo.jpg', 'image/jpeg'
         fields = {
@@ -178,6 +181,36 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
         self.assertEqual(result['source']['metadata']['exif_date'], CAPTURE_DATE)
         self.assertEqual(result['review']['status'], 'ready')
+
+    def test_nested_exif_original_date_wins_over_modification_in_actual_pdf(self):
+        self.enable()
+        result = self.upload(metadata_date=None, exif_values={
+            34665: {36867: '2026:09:26 10:15:00', 36868: '2026:09:27 10:15:00'},
+            306: '2026:09:30 15:00:00',
+        })
+        self.assertEqual(result['source']['metadata']['exif_date'], CAPTURE_DATE)
+        self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
+        self.assertEqual(result['review']['status'], 'ready')
+        prepared = prepare_intakes([result['candidate_intake']], self.paths)
+        text = '\n'.join(page.extract_text() for page in PdfReader(prepared['items'][0]['pdf']).pages)
+        self.assertIn('26/09/2026', text)
+        self.assertNotIn('30/09/2026', text)
+
+    def test_modification_date_alone_cannot_supply_capture_or_service_date(self):
+        self.enable()
+        result = self.upload(metadata_date=None, exif_values={306: '2026:09:30 15:00:00'})
+        self.assertNotIn('exif_date', result['source']['metadata'])
+        self.assertFalse(result['candidate_intake'].get('service_date'))
+        self.assertEqual(result['review']['status'], 'needs_info')
+        self.assertIn('service_date', self.question_fields(result))
+        self.assertTrue(any('modification date' in warning for warning in result['source']['metadata']['warnings']))
+
+    def test_nested_digitized_date_is_used_only_without_original_date(self):
+        self.enable()
+        result = self.upload(metadata_date=None, exif_values={
+            34665: {36868: '2026:09:26 10:15:00'}, 306: '2026:09:30 15:00:00',
+        })
+        self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
 
     def test_user_photo_default_takes_priority_over_different_printed_service_date(self):
         self.enable()

@@ -296,6 +296,23 @@ class MultiCaseSourceTests(unittest.TestCase):
         self.assertEqual(result['review']['status'], 'ready', result['review'])
         self.assertEqual(len(result['case_candidates']), 1)
 
+    def test_spaced_suffix_does_not_create_ready_truncated_case_or_extra_row(self):
+        for declared in ([], [CASES[0]], ['710/26.0T']):
+            with self.subTest(declared=declared):
+                raw = '710/26.0T S T X X'
+                result = self.upload(case_numbers=declared, text=f'Processo {raw}')
+                self.assertEqual(result['case_count'], 1)
+                self.assertEqual(result['candidate_intake']['case_number'], '')
+                self.assertEqual(result['candidate_intake']['raw_case_number'], raw)
+                self.assertEqual(result['review']['status'], 'needs_info')
+                self.assertEqual(preflight_intakes([result['candidate_intake']], self.paths)['status'], 'blocked')
+                corrected = copy.deepcopy(result['candidate_intake'])
+                corrected['case_number'] = CASES[0]
+                reviewed = review_intake_with_profile_evidence(corrected, self.paths)
+                self.assertEqual(reviewed['status'], 'ready')
+                self.assertEqual(reviewed['intake']['case_number'], CASES[0])
+        self.assert_no_preparation_artifacts()
+
     def test_existing_duplicate_blocks_entire_batch_before_any_artifacts(self):
         candidates = self.ready_candidates(self.upload())
         write_json(self.paths.duplicate_index, [{
@@ -342,6 +359,15 @@ class MultiCaseNormalizationTests(unittest.TestCase):
         from honorarios_app.source_cases import source_case_rows
         rows = source_case_rows(f'NPP: 990/26.0TSTXX NUIPC: {CASES[0]}', {})
         self.assertEqual([row['case_number'] for row in rows], [CASES[0]])
+
+    def test_lowercase_spaced_suffix_and_normal_conjunction_remain_distinct(self):
+        from honorarios_app.source_cases import source_case_rows
+        for raw in ('710/26.0t s t x x', '710/26.0T S t X x', '710/26.0TSTX X'):
+            with self.subTest(raw=raw):
+                rows = source_case_rows('Processo ' + raw, {'case_numbers': [CASES[0]]})
+                self.assertEqual(rows, [{'case_number': '', 'raw_case_number': raw}])
+        rows = source_case_rows(f'{CASES[0]} e {CASES[1]}', {})
+        self.assertEqual([row['case_number'] for row in rows], list(CASES[:2]))
 
     def test_strict_extraction_schema_requires_a_case_list(self):
         schema = ai.AI_RECOVERY_RESPONSE_FORMAT['format']['schema']

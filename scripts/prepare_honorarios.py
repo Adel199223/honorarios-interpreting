@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shutil
 import subprocess
 import sys
@@ -270,7 +271,9 @@ def prepare_one(
                                      draft_log=draft_log, allow_duplicate=allow_duplicate,
                                      allow_existing_draft=allow_existing_draft, correction_reason=correction_reason)
     rendered = build_rendered_request(intake, profile)
-    pdf_path = output_dir / default_output_path(intake).name
+    # A later preparation or correction must never replace artifacts already
+    # bound into an earlier review or recorded draft, even within one second.
+    pdf_path = output_dir / f'{default_output_path(intake).stem}_{secrets.token_hex(8)}.pdf'
     html_path = html_dir / f"{pdf_path.stem}.html"
     render_html(template_path, rendered, html_path)
     generate_pdf(rendered, pdf_path)
@@ -374,7 +377,7 @@ def print_summary(items: list[dict[str, Any]]) -> None:
 
 def default_manifest_path() -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return DEFAULT_MANIFEST_DIR / f"prepared-{timestamp}.json"
+    return DEFAULT_MANIFEST_DIR / f"prepared-{timestamp}-{secrets.token_hex(8)}.json"
 
 
 def main(argv: list[str] | None = None) -> int:

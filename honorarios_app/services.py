@@ -1245,12 +1245,21 @@ def image_metadata_from_bytes(content: bytes) -> dict[str, Any]:
             orientation = exif.get(274)
             if orientation not in (None, ""):
                 metadata["exif_orientation"] = int(orientation)
-            for tag in (36867, 36868, 306):
-                exif_date = parse_exif_date(exif.get(tag))
+            # Cameras normally store DateTimeOriginal in the nested Exif IFD.
+            # Top-level DateTime is the image modification time, not capture.
+            try:
+                capture_exif = exif.get_ifd(34665)
+            except (KeyError, TypeError, ValueError, OSError):
+                capture_exif = {}
+            for value in (capture_exif.get(36867), exif.get(36867),
+                          capture_exif.get(36868), exif.get(36868)):
+                exif_date = parse_exif_date(value)
                 if exif_date:
                     metadata["exif_date"] = exif_date
                     break
             warnings: list[str] = []
+            if not metadata.get('exif_date') and parse_exif_date(exif.get(306)):
+                warnings.append('The image has an EXIF modification date but no capture date. Confirm the actual photo/service date.')
             min_side = min(image.width, image.height)
             max_side = max(image.width, image.height)
             if min_side < 320:
@@ -5913,7 +5922,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
 
 
 def planned_intake_paths(intakes: list[dict[str, Any]], paths: AppPaths) -> list[Path]:
-    stamp = timestamp_slug()
+    stamp = f'{timestamp_slug()}-{secrets.token_hex(8)}'
     planned: list[Path] = []
     for index, intake in enumerate(intakes, start=1):
         stem = default_output_path(intake).stem
@@ -6526,7 +6535,7 @@ def prepare_intakes(
     email_groups = build_source_email_groups(plans=email_group_plans, intakes=effective_intakes, items=items,
                                             profiles=generator_profiles, paths=paths) if email_group_plans else []
     paths.manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}.json"
+    manifest_path = paths.manifest_dir / f"web-prepared-{timestamp_slug()}-{secrets.token_hex(8)}.json"
     gmail_status = gmail_api_status(paths)
     prepared_review_material = _prepared_review_material(
         effective_intakes=effective_intakes,

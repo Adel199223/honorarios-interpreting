@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.generate_pdf import IntakeError
+from scripts.entity_rules import normalize_text
 
 
 DEFAULT_PRIMARY_PROFILE_ID = "primary"
@@ -329,17 +330,32 @@ def lookup_profile_distance(profile: dict[str, Any], destination: str) -> tuple[
     if not query:
         return None, ""
     distances = profile.get("travel_distances_by_city") if isinstance(profile.get("travel_distances_by_city"), dict) else {}
-    query_fold = query.casefold()
+    query_fold = ' '.join(normalize_text(query).split())
+    matches: list[tuple[str, str, Any]] = []
     for label, km in distances.items():
         label_text = _text(label)
         if not label_text:
             continue
-        label_fold = label_text.casefold()
-        if query_fold == label_fold or query_fold in label_fold or label_fold in query_fold:
-            try:
-                return int(km), label_text
-            except (TypeError, ValueError):
-                return None, ""
+        label_fold = ' '.join(normalize_text(label_text).split())
+        if query_fold == label_fold:
+            matches.append((label_fold, label_text, km))
+    # Exact destinations precede longer institution descriptions. Substring
+    # aliases cannot choose the first of overlapping or conflicting cities.
+    if not matches and re.match(r'^(?:tribunal|juizo|posto|esquadra|gnr|psp|hospital|gabinete|instituto|ministerio publico)\b', query_fold):
+        for label, km in distances.items():
+            label_text = _text(label)
+            label_fold = ' '.join(normalize_text(label_text).split())
+            if label_fold and re.search(r'(?<!\w)' + re.escape(label_fold) + r'\s*[.,;]*$', query_fold):
+                matches.append((label_fold, label_text, km))
+        matches = [match for match in matches if not any(
+            match[0] != other[0] and re.search(r'(?<!\w)' + re.escape(match[0]) + r'(?!\w)', other[0])
+            for other in matches
+        )]
+    if len(matches) == 1:
+        try:
+            return int(matches[0][2]), matches[0][1]
+        except (TypeError, ValueError):
+            pass
     return None, ""
 
 

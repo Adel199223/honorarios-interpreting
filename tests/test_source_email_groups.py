@@ -72,6 +72,47 @@ class SourceEmailGroupsTests(unittest.TestCase):
                           self.paths.manifest_dir, self.paths.intake_output_dir, self.paths.packet_output_dir):
             self.assertFalse(directory.exists() and any(directory.iterdir()), str(directory))
 
+    def test_repreparing_same_cases_preserves_all_previous_reviewed_artifacts(self):
+        rows = self.rows(2)
+        with patch('honorarios_app.services.timestamp_slug', return_value='20261001T120000Z'):
+            original = self.prepare(rows)
+            preserved = {Path(original['manifest'])}
+            for item in original['items']:
+                preserved.update(Path(item[key]) for key in ('pdf', 'html_preview', 'draft_payload', 'intake'))
+            preserved.update(Path(group['draft_payload']) for group in original['email_groups'])
+            before = {path: path.read_bytes() for path in preserved}
+            changed = copy.deepcopy(rows)
+            changed[0]['transport']['km_one_way'] = 99
+            revised = self.prepare(changed)
+        self.assertNotEqual(original['manifest'], revised['manifest'])
+        self.assertEqual({path: path.read_bytes() for path in preserved}, before)
+        for old, new in zip(original['items'], revised['items']):
+            self.assertNotEqual(old['pdf'], new['pdf'])
+            self.assertNotEqual(old['draft_payload'], new['draft_payload'])
+        for group in original['email_groups']:
+            require_current_prepared_review(self.request(original, group), group['draft_payload'], self.paths)
+        for group in revised['email_groups']:
+            require_current_prepared_review(self.request(revised, group), group['draft_payload'], self.paths)
+
+    def test_correction_preserves_recorded_attachment_and_payload_bytes(self):
+        rows = self.rows(1)
+        original = self.prepare(rows)
+        target = original['email_groups'][0]
+        self.assertEqual(self.record(target), 0)
+        preserved = {Path(original['manifest']), self.paths.draft_log, self.paths.duplicate_index,
+                     Path(target['draft_payload']), Path(target['pdf'])}
+        for item in original['items']:
+            preserved.update(Path(item[key]) for key in ('pdf', 'html_preview', 'draft_payload', 'intake'))
+        before = {path: path.read_bytes() for path in preserved}
+        changed = copy.deepcopy(rows)
+        changed[0]['transport']['km_one_way'] = 99
+        revised = self.prepare(changed, correction_reason='Correcting the fictional recorded distance.')
+        self.assertEqual({path: path.read_bytes() for path in preserved}, before)
+        self.assertNotEqual(revised['items'][0]['pdf'], original['items'][0]['pdf'])
+        original_payload = json.loads(Path(target['draft_payload']).read_text(encoding='utf-8'))
+        self.assertEqual(validate_draft_payload(original_payload), [])
+        require_current_prepared_review(self.request(original, target), target['draft_payload'], self.paths)
+
     def test_six_requests_form_two_targets_with_each_separate_pdf_and_exact_members(self):
         prepared = self.prepare()
         groups = prepared['email_groups']
