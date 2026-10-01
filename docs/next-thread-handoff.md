@@ -1,5 +1,12 @@
 # Next Thread Handoff
 
+## Authorized readiness publication — 2026-10-01
+
+The user explicitly authorized PR, merge and cleanup after the completed three-source live acceptance. The [publication preparation and cleanup contract](assistant/exec_plans/completed/2026-10-01_readiness_publication.md) is decision-complete. The candidate branch is `codex/fee-three-source-audit-20261001`, based on published main `668abdb`; it contains all accepted readiness, resume/backup and source-handling improvements. Final local Full passed **615 public tests and four isolated workflows**. Independent outgoing-history privacy review found no private data or significant publication blocker.
+
+Use the actual PR/head checks and ignored publication receipt for remote status. The required hosted Windows Full run must pass on the exact reviewed head before merge. After merge, fast-forward the clean main checkout, retain all primary saved-app overlays/private state, archive necessary evidence and prune only verified finished work. Preserve five dirty older worktrees, unmatched historical branches and referenced artifacts. Current publication authorization does not repeat any consumed provider or Gmail operation. Earlier dated completion sections below remain historical acceptance evidence.
+
+
 ## Completed three-source live draft run — 2026-10-01
 
 The user explicitly authorized the full app process including Gmail creation after the local three-source review. The [live acceptance plan](assistant/exec_plans/completed/2026-10-01_three_source_live_acceptance.md) is complete. All three sources were freshly read through the unchanged normal saved app, then reviewed and prepared using ordinary browser controls. Each generated one separate interpreting-plus-travel PDF and its own actual unsent Gmail draft.

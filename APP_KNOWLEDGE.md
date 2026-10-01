@@ -66,6 +66,9 @@ The first hosted [PR #61](https://github.com/Adel199223/honorarios-interpreting/
 
 ## Current preparation status
 
+Publication, merge and safe cleanup are now user-authorized. The [publication contract](docs/assistant/exec_plans/completed/2026-10-01_readiness_publication.md) records final local validation; actual PR/head checks and the publication receipt determine remote completion. The saved application already contains the accepted product changes.
+
+
 The subsequent [three-source live acceptance](docs/assistant/exec_plans/completed/2026-10-01_three_source_live_acceptance.md) completed the normal upload-to-Gmail path for all three supplied sources. Three actual drafts passed UI verification and 120 independent content/attachment/unsent checks. They are recorded locally and ready for user review; this consumed run must not be repeated without a new request.
 
 
