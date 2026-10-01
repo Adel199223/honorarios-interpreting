@@ -313,10 +313,10 @@
                   <button type="button" id="add-source-cases-to-batch" disabled aria-disabled="true">Add all reviewed cases to batch</button>
                 </div>
                 <div class="claim-choice-card" id="source-email-correction">
-                  <label for="source-correction-reason"><strong>Replace this photo's existing email</strong></label>
+                  <label for="source-correction-reason"><strong>Replace this source's existing email</strong></label>
                   <input id="source-correction-reason" placeholder="Explain the correction">
                   <p class="field-hint">If these cases already have drafts, give a reason to prepare one replacement email with every request's separate PDF. Existing drafts stay in history until the replacement is created and recorded.</p>
-                  <button type="button" id="prepare-source-email-replacement">Prepare replacement email for this photo</button>
+                  <button type="button" id="prepare-source-email-replacement">Prepare replacement email for this source</button>
                 </div>
               </section>
               <div class="result-card next-safe-action-card hidden" id="next-safe-action">
@@ -393,10 +393,10 @@
               <div class="field">
                 <label for="batch-email-grouping"><strong>Emails for queued requests</strong></label>
                 <select id="batch-email-grouping">
-                  <option value="source" selected>One email per photo</option>
+                  <option value="source" selected>One email per source</option>
                   <option value="individual">Separate emails</option>
                 </select>
-                <small id="batch-email-grouping-note">Each request keeps its own PDF. Requests from the same photo go in one email to their reviewed recipient.</small>
+                <small id="batch-email-grouping-note">Each request keeps its own PDF. Requests from the same source PDF or photo go in one email to their reviewed recipient.</small>
               </div>
               <label class="checkbox-card packet-mode-card" for="batch-packet-mode">
                 <input type="checkbox" id="batch-packet-mode">

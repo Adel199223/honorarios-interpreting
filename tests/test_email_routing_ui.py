@@ -587,7 +587,7 @@ console.log(JSON.stringify({calls,unchanged:JSON.stringify(a.state.batchIntakes)
 """)
         self.assertTrue(result['unchanged'])
         self.assertEqual((result['items'],result['groups']),(6,2))
-        self.assertIn('5 requests from one photo',result['options'])
+        self.assertIn('5 requests from one source',result['options'])
         for call in result['calls']:
             self.assertEqual(call['body']['email_grouping'],'source')
             self.assertFalse(call['body']['packet_mode'])

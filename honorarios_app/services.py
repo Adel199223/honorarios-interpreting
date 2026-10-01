@@ -6279,7 +6279,7 @@ def source_email_group_plan(intakes: list[dict[str, Any]], recipients: list[dict
             raise IntakeError("Every source email group member needs a validated recipient.")
         group = by_source.get(source) if source else None
         if group and (group["recipient"] != recipient or group["personal_profile_id"] != profile):
-            raise IntakeError("Requests from the same source photo have different recipients or personal profiles. Align the selections or choose individual emails.")
+            raise IntakeError("Requests from the same source have different recipients or personal profiles. Align the selections or choose individual emails.")
         if group is None:
             group = {"source_sha256": source, "recipient": recipient, "personal_profile_id": profile,
                      "member_indices": []}

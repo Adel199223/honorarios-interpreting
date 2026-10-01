@@ -311,7 +311,7 @@ const SAFE_ACTION_GATES = {
   },
   "add-source-cases-to-batch": {
     states: [],
-    reason: "Review and resolve every case in this photo before adding them together.",
+    reason: "Review and resolve every case in this source before adding them together.",
   },
   "prepare-batch-intakes": {
     states: [],
@@ -483,7 +483,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
         && !sourceTravelBlockedReason()
         && state.sourceCaseCandidates.every((candidate) => sourceCaseReadiness(candidate).ready)
         && !state.sourceCaseBatchInFlight;
-      if (state.sourceCaseBatchInFlight) blockedReason = "Checking each photo case before updating the queue.";
+      if (state.sourceCaseBatchInFlight) blockedReason = "Checking each source case before updating the queue.";
     }
     if (id === "prepare-batch-intakes") {
       enabled = hasCurrentReadyBatchPreflight();
@@ -979,12 +979,12 @@ function canPrepareSourceEmailReplacement() {
 async function prepareSourceEmailReplacement() {
   if (state.sourceCaseBatchInFlight || state.pendingPreparationRevision !== null) return null;
   const reason = String($("#source-correction-reason")?.value || "").trim();
-  if (reason.length < 8) throw new Error("Give a short correction reason of at least 8 characters before replacing this photo's email.");
+  if (reason.length < 8) throw new Error("Give a short correction reason of at least 8 characters before replacing this source's email.");
   persistCurrentSourceCase({ mergeForm: true });
   const reviewed = await refreshSourceClaimReviews();
   if (!reviewed) return null;
-  if (!canPrepareSourceEmailReplacement()) throw new Error("Resolve every case's questions and claim choices before preparing a replacement for this photo. Existing history was unchanged.");
-  if (duplicateSourceCaseIndices(reviewed).length) throw new Error("Two source rows have the same case, date and period. Correct them before replacing this photo's email.");
+  if (!canPrepareSourceEmailReplacement()) throw new Error("Resolve every case's questions and claim choices before preparing a replacement for this source. Existing history was unchanged.");
+  if (duplicateSourceCaseIndices(reviewed).length) throw new Error("Two source rows have the same case, date and period. Correct them before replacing this source's email.");
   return prepareIntake({ correctionMode: true, sourceReplacement: true, correctionReason: reason });
 }
 
@@ -1236,7 +1236,7 @@ async function addSourceCasesToBatch() {
       selectSourceCase(duplicateIndices[0], { persist: false });
       throw new Error(`Source rows ${duplicateIndices.map((index) => index + 1).join(", ")} have the same case, service date and period. Correct the case details and review them again; the batch queue was unchanged.`);
     }
-    clearPreparedArtifacts("photo cases added to batch queue");
+    clearPreparedArtifacts("source cases added to batch queue");
     reviewed.forEach((candidate) => {
       queueReviewedIntake(candidate.candidate_intake, candidate.queued_key);
       candidate.queued_key = batchIntakeKey(candidate.candidate_intake);
@@ -1274,7 +1274,7 @@ function renderBatchEmailGrouping() {
   $("#batch-email-grouping-note").textContent = currentBatchPacketMode()
     ? "Packet mode combines the PDFs into one attachment. Turn it off to keep each request as a separate PDF."
     : currentBatchEmailGrouping() === "source"
-    ? "Requests from the same photo go in one email to their reviewed recipient. Each request keeps its own PDF; different photos stay separate."
+    ? "Requests from the same source PDF or photo go in one email to their reviewed recipient. Each request keeps its own PDF; different sources stay separate."
     : "Each request has its own email and PDF.";
 }
 
@@ -1625,7 +1625,7 @@ function renderPreparedEmailTarget() {
   select.innerHTML = targets.map((item, index) => {
     const count = preparedEmailMemberIndices(state.lastPrepared, index).length;
     const attachmentCount = item.attachment_count ?? item.gmail_create_draft_args?.attachment_files?.length ?? 0;
-    const label = item.packet_mode ? "Combined packet" : grouped ? `${count} request${count === 1 ? "" : "s"}${item.source_sha256 ? " from one photo" : ""}` : item.case_number || `Request ${index + 1}`;
+    const label = item.packet_mode ? "Combined packet" : grouped ? `${count} request${count === 1 ? "" : "s"}${item.source_sha256 ? " from one source" : ""}` : item.case_number || `Request ${index + 1}`;
     return `<option value="${index}">${escapeHtml(label)} · ${escapeHtml(item.recipient || item.gmail_create_draft_args?.to || "recipient pending")} · ${escapeHtml(attachmentCount)} attachment${attachmentCount === 1 ? "" : "s"}</option>`;
   }).join("");
   select.value = String(state.preparedEmailTargetIndex);
@@ -2049,7 +2049,7 @@ function renderBatchPreflight() {
       <div><span>Write allowed</span><strong>${data.write_allowed ? "yes" : "no"}</strong></div>
       <div><span>Send allowed</span><strong>${data.send_allowed ? "yes" : "no"}</strong></div>
       <div><span>Packet mode</span><strong>${data.packet_mode ? "yes" : "no"}</strong></div>
-      <div><span>Email grouping</span><strong>${data.packet_mode ? "one packet" : data.email_grouping === "source" ? "one email per photo" : "separate emails"}</strong></div>
+      <div><span>Email grouping</span><strong>${data.packet_mode ? "one packet" : data.email_grouping === "source" ? "one email per source" : "separate emails"}</strong></div>
     </div>
     ${packet ? `
       <div class="data-item">
