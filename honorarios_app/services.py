@@ -1269,8 +1269,10 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         "service_entity": _first_ai_field(ai_recovery, "service_entity"),
         "service_entity_type": _first_ai_field(ai_recovery, "service_entity_type"),
         "service_place": _first_ai_field(ai_recovery, "service_place", "locality"),
-        "service_place_phrase": _first_ai_field(ai_recovery, "service_place_phrase"),
     }
+    # Source prose can be a future summons rather than a completed-service
+    # clause. Keep that evidence under ai_recovery; render a location from the
+    # resolved venue unless an existing profile/manual clause was supplied.
     for key, value in fill_if_missing.items():
         existing_value = str(intake.get(key) or "").strip()
         if key == "service_entity_type" and value and existing_value == "court" and value in {"gnr", "psp", "police", "other"}:
