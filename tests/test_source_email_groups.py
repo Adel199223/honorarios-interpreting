@@ -478,6 +478,97 @@ class SourceEmailGroupsTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in json.loads(self.paths.duplicate_index.read_text(encoding='utf-8'))], ['sent', 'sent'])
 
 
+class BatchPeriodOverlapTests(unittest.TestCase):
+    """Unknown period overlaps a named period in one batch, just as in history."""
+    setUp = SourceEmailGroupsTests.setUp
+    rows = SourceEmailGroupsTests.rows
+    request = SourceEmailGroupsTests.request
+    assert_no_artifacts = SourceEmailGroupsTests.assert_no_artifacts
+
+    def period_rows(self, periods):
+        rows = self.rows(2)
+        for row, period in zip(rows, periods):
+            row.update(case_number='970/26.0TSTXX', service_period_label=period,
+                       source_kind='notification_pdf', source_sha256='c' * 64, claim_transport=False)
+            row.pop('travel_group_id', None)
+        # Normalized case spelling must not evade the common identity guard.
+        rows[1]['case_number'] = '0970/26.0tstxx'
+        return rows
+
+    def test_blank_named_or_equivalent_periods_pause_all_prepare_modes_before_writes(self):
+        for periods in (('', 'morning'), ('morning', ''), (' Morning ', 'morning')):
+            for grouping, packet in (('individual', False), ('source', False), ('individual', True)):
+                with self.subTest(periods=periods, grouping=grouping, packet=packet):
+                    rows = self.period_rows(periods)
+                    checked = preflight_intakes(rows, self.paths, email_grouping=grouping, packet_mode=packet)
+                    self.assertEqual(checked['status'], 'blocked')
+                    self.assertIn('overlaps', checked['message'])
+                    with self.assertRaisesRegex(IntakeError, 'overlaps'):
+                        prepare_intakes(rows, self.paths, email_grouping=grouping, packet_mode=packet)
+                    self.assert_no_artifacts()
+
+    def test_distinct_named_periods_remain_two_valid_recorded_requests(self):
+        rows = self.period_rows(('morning', 'afternoon'))
+        rows[0].update(service_start_time='09:00', service_end_time='10:00')
+        rows[1].update(service_start_time='14:00', service_end_time='15:00')
+        checked = preflight_intakes(rows, self.paths, email_grouping='source')
+        self.assertEqual(checked['status'], 'ready')
+        prepared = prepare_intakes(rows, self.paths, email_grouping='source')
+        group = prepared['email_groups'][0]
+        result = record_draft({**self.request(prepared, group), 'draft_id': 'fictional-two-periods',
+                               'message_id': 'fictional-two-periods-message'}, self.paths)
+        self.assertEqual(len(prepared['items']), 2)
+        self.assertEqual(result['recorded_duplicate_count'], 2)
+        saved = json.loads(self.paths.duplicate_index.read_text(encoding='utf-8'))
+        self.assertEqual([row['service_period_label'] for row in saved], ['morning', 'afternoon'])
+
+    def test_group_and_packet_payloads_reject_overlap_before_mime_or_record(self):
+        from honorarios_app.gmail_draft_api import gmail_draft_resource_from_payload
+        for packet_mode in (False, True):
+            with self.subTest(packet_mode=packet_mode):
+                prepared = prepare_intakes(self.period_rows(('morning', 'afternoon')), self.paths,
+                                           packet_mode=packet_mode, email_grouping='source')
+                target = prepared['packet'] if packet_mode else prepared['email_groups'][0]
+                path = Path(target['draft_payload'])
+                payload = json.loads(path.read_text(encoding='utf-8'))
+                payload['underlying_requests'][1]['service_period_label'] = ''
+                path.write_text(json.dumps(payload), encoding='utf-8')
+                self.assertTrue(any('overlaps' in error for error in validate_draft_payload(payload)))
+                with patch('honorarios_app.gmail_draft_api.build_mime_message') as mime:
+                    with self.assertRaisesRegex(IntakeError, 'overlaps'):
+                        gmail_draft_resource_from_payload(payload)
+                mime.assert_not_called()
+                before = self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()
+                with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+                    code = record_cli(['--payload', str(path), '--draft-id', 'fictional-overlap',
+                                       '--message-id', 'fictional-overlap-message', '--log', str(self.paths.draft_log),
+                                       '--duplicate-index', str(self.paths.duplicate_index)])
+                self.assertEqual(code, 2)
+                self.assertIn('overlaps', errors.getvalue())
+                self.assertEqual((self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()), before)
+
+    def test_direct_prepare_cli_uses_same_conservative_period_guard(self):
+        from scripts.prepare_honorarios import main as prepare_cli
+        input_paths = []
+        for index, row in enumerate(self.period_rows(('', 'morning'))):
+            path = self.root / f'fictional-period-{index}.json'
+            path.write_text(json.dumps(row), encoding='utf-8')
+            input_paths.append(str(path))
+        args = [*input_paths]
+        for flag, value in (('profile', self.paths.profile), ('template', self.paths.template),
+                            ('duplicate-index', self.paths.duplicate_index), ('draft-log', self.paths.draft_log),
+                            ('email-config', self.paths.email_config), ('court-emails', self.paths.court_emails),
+                            ('output-dir', self.paths.output_dir), ('html-dir', self.paths.html_dir),
+                            ('draft-output-dir', self.paths.draft_output_dir), ('render-dir', self.paths.render_dir),
+                            ('manifest', self.paths.manifest_dir / 'fictional-cli.json')):
+            args.extend(['--' + flag, str(value)])
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+            code = prepare_cli(args)
+        self.assertEqual(code, 2)
+        self.assertIn('overlaps', errors.getvalue())
+        self.assert_no_artifacts()
+
+
 class GmailAttemptRecoveryTests(unittest.TestCase):
     """Offline transport faults exercise real create/recovery endpoints."""
     setUp = SourceEmailGroupsTests.setUp

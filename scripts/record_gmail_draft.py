@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.request_identity import normalize_case_number, normalize_period_label, request_identity_key
+    from scripts.request_identity import normalize_case_number, normalize_period_label, request_identity_key, request_identity_keys_overlap, validate_distinct_request_members
     from scripts.claim_options import recorded_travel_requests, validate_travel_payload_groups
     from scripts.build_email_draft import source_email_group_errors
     from scripts.state_store import atomic_write_json, state_file_lock
 except ModuleNotFoundError:
-    from request_identity import normalize_case_number, normalize_period_label, request_identity_key
+    from request_identity import normalize_case_number, normalize_period_label, request_identity_key, request_identity_keys_overlap, validate_distinct_request_members
     from claim_options import recorded_travel_requests, validate_travel_payload_groups
     from build_email_draft import source_email_group_errors
     from state_store import atomic_write_json, state_file_lock
@@ -214,7 +214,7 @@ def validate_source_group_history(payload: dict[str, Any], records: list[dict[st
         # A missing period on either side blocks every period of the same case/date,
         # matching the canonical app/CLI duplicate guard rather than exact-set lookup.
         child_keys = [request_identity_key(child) for child in children]
-        if any(old[:2] == new[:2] and (not old[2] or not new[2] or old[2] == new[2]) for old in child_keys for new in request_keys):
+        if any(request_identity_keys_overlap(old, new) for old in child_keys for new in request_keys):
             blocking.append(row)
     if any(str(row.get('status') or 'sent') == 'sent' for row in blocking):
         raise ValueError('A grouped request is already sent. Stop before recording this email.')
@@ -285,6 +285,7 @@ def _record_main(argv: list[str] | None = None) -> int:
         if isinstance(underlying, list) and underlying:
             record['underlying_requests'] = underlying
         if args.status in {'active', 'sent'}:
+            validate_distinct_request_members(underlying if isinstance(underlying, list) and underlying else [record])
             if record.get('email_grouping') == 'source':
                 if not payload:
                     raise ValueError('Source email group recording requires its reviewed payload.')

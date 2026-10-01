@@ -74,7 +74,7 @@ from scripts.prepare_honorarios import (
     validate_intake_before_generation,
 )
 from scripts.record_gmail_draft import main as record_gmail_draft_main, validate_superseded_request_coverage, validate_source_group_history
-from scripts.request_identity import normalize_case_number, request_identity_key
+from scripts.request_identity import normalize_case_number, request_identity_key, request_identity_keys_overlap
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
 from scripts.entity_rules import build_service_place_clause, classify_entity_type, source_mentions_pj_context
 from scripts.source_parsing import explicit_service_places, service_date_evidence
@@ -6615,8 +6615,9 @@ def preflight_intakes(
                 allow_existing_draft=effective_allow_existing_draft,
                 correction_reason=normalized_correction_reason,
             )
-            if key in seen_keys:
-                raise IntakeError(f"Duplicate request appears more than once in this batch: item {index} duplicates {seen_keys[key]}")
+            overlapping_key = next((previous for previous in seen_keys if request_identity_keys_overlap(key, previous)), None)
+            if overlapping_key is not None:
+                raise IntakeError(f"Duplicate or overlapping request in this batch: item {index} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
             seen_keys[key] = f"item {index}"
             recipient, recipient_source = resolve_recipient(intake, email_config, court_directory)
             items.append(preflight_item_summary(
@@ -6785,8 +6786,9 @@ def prepare_intakes(
             allow_existing_draft=effective_allow_existing_draft,
             correction_reason=normalized_correction_reason,
         )
-        if key in seen_keys:
-            raise IntakeError(f"Duplicate request appears more than once in this batch: {intake_path} duplicates {seen_keys[key]}")
+        overlapping_key = next((previous for previous in seen_keys if request_identity_keys_overlap(key, previous)), None)
+        if overlapping_key is not None:
+            raise IntakeError(f"Duplicate or overlapping request in this batch: {intake_path} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
         seen_keys[key] = intake_path
 
     if packet_mode:
