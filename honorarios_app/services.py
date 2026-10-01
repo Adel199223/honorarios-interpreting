@@ -6645,7 +6645,7 @@ def preflight_intakes(
             )
             overlapping_key = next((previous for previous in seen_keys if request_identity_keys_overlap(key, previous)), None)
             if overlapping_key is not None:
-                raise IntakeError(f"Duplicate or overlapping request in this batch: item {index} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
+                raise IntakeError(f"Duplicate request or overlapping service in this batch: item {index} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
             seen_keys[key] = f"item {index}"
             recipient, recipient_source = resolve_recipient(intake, email_config, court_directory)
             items.append(preflight_item_summary(
@@ -6816,7 +6816,7 @@ def prepare_intakes(
         )
         overlapping_key = next((previous for previous in seen_keys if request_identity_keys_overlap(key, previous)), None)
         if overlapping_key is not None:
-            raise IntakeError(f"Duplicate or overlapping request in this batch: {intake_path} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
+            raise IntakeError(f"Duplicate request or overlapping service in this batch: {intake_path} overlaps {seen_keys[overlapping_key]}. Remove the duplicate or specify distinct service periods for both requests.")
         seen_keys[key] = intake_path
 
     if packet_mode:
