@@ -18,13 +18,13 @@ from scripts import run_portable_tests as runner
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED = {
     'quick': ['test_portable_groups.py', 'test_intake_rules.py', 'test_pdf_rules.py', 'test_email_rules.py',
-              'test_source_evidence.py', 'test_service_profile_selection.py', 'test_review_guidance.py'],
+              'test_source_evidence.py', 'test_service_profile_selection.py', 'test_review_guidance.py', 'test_claim_options.py', 'test_claim_options_ui.py'],
     'intake': ['test_intake_rules.py', 'test_source_evidence.py', 'test_service_profile_selection.py', 'test_public_runtime.py',
-               'test_source_decisions.py', 'test_public_ai_recovery.py', 'test_multi_case_sources.py'],
+               'test_source_decisions.py', 'test_public_ai_recovery.py', 'test_multi_case_sources.py', 'test_claim_options.py'],
     'quality': ['test_source_decisions.py', 'test_photo_defaults.py', 'test_multi_case_sources.py'],
-    'pdf': ['test_pdf_rules.py'],
-    'email': ['test_email_rules.py', 'test_public_email.py'],
-    'ui': ['test_browser_iab_smoke.py', 'test_review_guidance.py', 'test_public_ui.py'],
+    'pdf': ['test_pdf_rules.py', 'test_claim_options.py'],
+    'email': ['test_email_rules.py', 'test_public_email.py', 'test_claim_options.py'],
+    'ui': ['test_browser_iab_smoke.py', 'test_review_guidance.py', 'test_public_ui.py', 'test_claim_options_ui.py'],
     'package': ['test_dev_environment.py', 'test_installed_wheel.py', 'test_prepared_candidate.py',
                 'test_public_repo_gate.py', 'test_public_publication.py'],
     'integration': ['test_public_adapter.py'],

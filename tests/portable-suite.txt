@@ -20,3 +20,5 @@ test_source_decisions.py
 test_public_ai_recovery.py
 test_photo_defaults.py
 test_multi_case_sources.py
+test_claim_options.py
+test_claim_options_ui.py
