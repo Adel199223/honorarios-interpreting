@@ -311,7 +311,9 @@ class SyntheticLauncherEnvironmentTests(unittest.TestCase):
         report = json.loads(self.child_report.read_text(encoding='utf-8'))
         retained = {'HONORARIOS_UV_EXECUTABLE', 'LAUNCHER_UNRELATED_VALUE'}
         self.assertEqual(report['environment'], {name: value if name in retained else None for name, value in self.values.items()})
-        self.assertIn(str(self.runtime), report['args'])
+        self.assertEqual(report['args'].count('--runtime-root'), 1)
+        runtime_arg = report['args'][report['args'].index('--runtime-root') + 1]
+        self.assertEqual(Path(runtime_arg).resolve(), self.runtime.resolve())
         return report
 
     def test_new_synthetic_child_strips_provider_environment_and_restores_parent(self):

@@ -170,11 +170,12 @@ class CameraFolderTests(unittest.TestCase):
 
     def test_nonregular_file_and_symlink_are_rejected_before_read(self):
         self.photo()
+        camera_root = self.camera.resolve(strict=True)
         original_stat = Path.stat
         for mode in (stat.S_IFDIR, stat.S_IFLNK, stat.S_IFIFO):
             def changed_stat(path, *args, **kwargs):
                 info = original_stat(path, *args, **kwargs)
-                if path.parent == self.camera:
+                if path.parent == camera_root:
                     values = list(info)
                     values[0] = mode
                     return os.stat_result(values)
@@ -185,7 +186,7 @@ class CameraFolderTests(unittest.TestCase):
                     read_camera_file(self.config, "20261002_122514.jpg", "0" * 64)
 
     def test_resolved_escape_is_rejected_before_read(self):
-        target = self.photo()
+        target = self.photo().resolve(strict=True)
         original_resolve = Path.resolve
         def escaped(path, *args, **kwargs):
             return self.root / "outside.jpg" if path == target else original_resolve(path, *args, **kwargs)
@@ -483,7 +484,7 @@ class CameraFolderTests(unittest.TestCase):
         self.assertLessEqual(sum(map(len, camera_folder._thumbnail_cache.values())), 9)
 
     def test_thumbnail_rejects_path_escape_bad_fingerprint_and_links_before_decode(self):
-        target = self.photo(content=image_bytes())
+        target = self.photo(content=image_bytes()).resolve(strict=True)
         selected = self.item()
         with patch.object(camera_folder, "_thumbnail_jpeg", side_effect=AssertionError("Invalid selections must not decode")):
             for name, fingerprint in (("../outside.jpg", selected["fingerprint"]), (target.name, "bad"), (target.name, "0" * 64)):

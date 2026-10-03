@@ -1,5 +1,12 @@
 # Next Thread Handoff
 
+## Hosted Windows temporary-path fixture correction — 3 October 2026
+
+The first [PR #64](https://github.com/Adel199223/honorarios-interpreting/pull/64) Windows Full run executed 973 tests and reported eight assertion failures. The runner supplies a short 8.3 TEMP path while the launcher and Camera boundary resolve the same directory to its long spelling. Three launcher assertions compared those spellings literally; five Camera fixture injections missed their canonicalized targets. An actual short-path synthetic TEMP parent reproduced all eight failures locally.
+
+The narrow test-only correction compares the launcher runtime argument by resolved path and binds Camera stat/resolve mocks to canonical targets. It retains the short configured source path, every rejection/read/decode assertion, exactly one runtime argument, and all environment-isolation checks. Both complete affected modules passed 65 tests under a real short-path alias after the repair. Production code, private files, actual drafts and dependency versions are unchanged. Final Full and exact-head hosted results belong to the publication receipt; the first failed log and before/after reproduction remain preserved.
+
+
 ## Completed whole-app audit and publication handoff — 2026-10-03
 
 The [whole-app audit and live-request plan](assistant/exec_plans/completed/2026-10-02_whole_app_live_audit.md) is complete locally on the existing Photos/readiness candidate and applied to the saved app. Final candidate and saved Full each passed **973 public tests and four isolated workflows**. Normal Camera/browser/PDF/Gmail acceptance created **seven fee PDFs in six unsent drafts**: five Camera requests plus two explicitly entered manual requests in one email with separate attachments and one travel owner. All six exact remote-content verifications and local child-history checks passed. No email was sent or old draft replaced. A real sent Camera source triggered the warning and No stopped before another PDF or draft.
