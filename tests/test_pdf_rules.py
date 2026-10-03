@@ -15,6 +15,7 @@ from scripts.generate_pdf import (
     main as generate_main, render_html,
 )
 from scripts.source_classification import classify_source_work
+from scripts.entity_rules import build_service_place_clause, has_pj_host_building
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,6 +27,23 @@ class PdfRulesTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='honorarios-pdf-rules-')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+
+    def test_pj_building_only_rendered_clause_cannot_supply_a_missing_city(self):
+        for host in ('Hospital', 'Posto', 'Esquadra', 'Hospital Central', 'Gabinete Médico-Legal'):
+            with self.subTest(host=host):
+                candidate = {**self.intake, 'service_entity': 'Polícia Judiciária',
+                             'service_entity_type': 'police', 'service_place': host}
+                candidate['service_place_phrase'] = build_service_place_clause(
+                    {'service_place': host}, 'Polícia Judiciária')
+                self.assertFalse(has_pj_host_building(candidate))
+                with self.assertRaisesRegex(IntakeError, 'physical host building and city'):
+                    build_rendered_request(candidate, self.profile)
+        for host in ('Hospital de Faro', 'Hospital Central de Faro', 'Posto da GNR de Beja',
+                     'Gabinete Médico-Legal de Example City'):
+            with self.subTest(host=host):
+                candidate = {'service_entity': 'Polícia Judiciária', 'service_place': host,
+                             'service_place_phrase': build_service_place_clause({'service_place': host}, 'Polícia Judiciária')}
+                self.assertTrue(has_pj_host_building(candidate))
 
     def test_actual_pdf_has_case_service_date_place_payment_and_signature(self):
         rendered = build_rendered_request(self.intake, self.profile)

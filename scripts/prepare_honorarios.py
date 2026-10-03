@@ -20,6 +20,7 @@ try:
         resolve_additional_attachments,
         resolve_recipient,
         resolve_email_body,
+        resolve_email_subject,
         validate_draft_payload,
     )
     from scripts.generate_pdf import (
@@ -44,6 +45,7 @@ try:
     )
     from scripts.intake_questions import format_numbered_questions, missing_questions
     from scripts.request_identity import request_identity_key, request_identity_keys_overlap
+    from scripts.request_exclusions import RequestExclusionError, require_requests_not_excluded
     from scripts.source_classification import detect_translation_source, format_translation_rejection
     from scripts.claim_options import ClaimError, claim_metadata, profile_binding, recorded_travel_requests, validate_shared_travel_groups
     from scripts.record_gmail_draft import load_duplicate_index
@@ -55,6 +57,7 @@ except ModuleNotFoundError:
         resolve_additional_attachments,
         resolve_recipient,
         resolve_email_body,
+        resolve_email_subject,
         validate_draft_payload,
     )
     from generate_pdf import (
@@ -79,6 +82,7 @@ except ModuleNotFoundError:
     )
     from intake_questions import format_numbered_questions, missing_questions
     from request_identity import request_identity_key, request_identity_keys_overlap
+    from request_exclusions import RequestExclusionError, require_requests_not_excluded
     from source_classification import detect_translation_source, format_translation_rejection
     from claim_options import ClaimError, claim_metadata, profile_binding, recorded_travel_requests, validate_shared_travel_groups
     from record_gmail_draft import load_duplicate_index
@@ -183,6 +187,11 @@ def validate_intake_before_generation(
     if translation_matches:
         raise IntakeError(format_translation_rejection(translation_matches))
 
+    try:
+        require_requests_not_excluded(intake, duplicate_index)
+    except RequestExclusionError as exc:
+        raise IntakeError(str(exc)) from exc
+
     questions = missing_questions(intake)
     if questions:
         raise IntakeError(f"Missing information in {intake_path}:\n{format_numbered_questions(questions)}")
@@ -207,6 +216,7 @@ def validate_intake_before_generation(
 
     rendered = build_rendered_request(intake, profile)
     resolve_email_body(intake, email_config, signature_name=rendered.signature_name)
+    resolve_email_subject(intake, email_config)
     try:
         validate_shared_travel_groups([intake], personal_profile_key=profile_binding(profile),
                                       prior_requests=recorded_travel_requests(draft_log, load_duplicate_index(duplicate_index)))
@@ -243,6 +253,10 @@ def prepare_one(
     correction_reason: str = "",
 ) -> dict[str, Any]:
     intake = load_json(intake_path)
+    try:
+        require_requests_not_excluded(intake, duplicate_index)
+    except RequestExclusionError as exc:
+        raise IntakeError(str(exc)) from exc
 
     questions = missing_questions(intake)
     if questions:

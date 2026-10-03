@@ -160,6 +160,354 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['intake']['service_place'], 'Example Police Station')
         self.assertEqual(result['intake']['transport']['km_one_way'], 12)
 
+    def test_initial_mp_photo_uses_recovered_host_type_and_saved_travel_without_answers(self):
+        self.enable(venue=True)
+        write_json(self.paths.service_profiles, {'court_mp_generic': {
+            'description': 'Fictional generic court or prosecutor fallback.',
+            'defaults': {'service_entity_type': 'court', 'entities_differ': False,
+                         'claim_transport': True, 'transport': {'round_trip_phrase': 'ida_volta'}},
+        }})
+        host = 'Procuradoria do Juízo Local Criminal - 1ª Sec Inquéritos de Capture City'
+        source = ('Ministério Público - Procuradoria da República da Comarca de Capture City\n'
+                  f'{host}\nProcesso {CASE_NUMBER}\nAUTO DE COMPROMISSO\n'
+                  'Aos 26-09-2026, nas instalações destes Serviços do Ministério Público, '
+                  'compareceu o perito. Intérprete: Fictional Applicant.')
+        result = self.upload(visible_text=source, independent_visible_text=False, ai_fields={
+            'service_place': host, 'service_entity': 'Ministério Público de Capture City',
+            'service_entity_type': 'ministerio_publico', 'locality': CAPTURE_CITY,
+            'service_place_phrase': 'nas instalações destes Serviços do Ministério Público',
+        })
+        candidate = result['candidate_intake']
+        self.assertEqual(result['review']['status'], 'ready', result['review'])
+        self.assertEqual(result['review']['questions'], [])
+        self.assertEqual(candidate['service_place'], host)
+        self.assertEqual(candidate['service_entity_type'], 'ministerio_publico')
+        self.assertTrue(candidate['entities_differ'])
+        self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(candidate['recipient_email'], CAPTURE_RECIPIENT)
+        self.assertEqual(candidate['transport']['km_one_way'], 12)
+        self.assertIn(CAPTURE_CITY, candidate['transport']['destination'])
+        # Ordinary review must preserve the initial result without a user
+        # supplying facts that were already recovered or saved in the profile.
+        reviewed = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(reviewed['status'], 'ready', reviewed)
+        self.assertEqual(reviewed['intake']['service_entity_type'], 'ministerio_publico')
+        prepared = prepare_intakes([reviewed['intake']], self.paths)
+        pdf = Path(prepared['items'][0]['pdf'])
+        text = ' '.join(' '.join(page.extract_text() or '' for page in PdfReader(pdf).pages).split())
+        self.assertIn('na Procuradoria do Juízo Local Criminal', text)
+        self.assertIn('1ª Sec Inquéritos de Capture City', text)
+        self.assertIn('12', text)
+        self.assertEqual(candidate['ai_recovery']['fields']['service_entity_type'], 'ministerio_publico')
+
+    def test_grounded_mp_photo_does_not_replace_an_explicit_venue_or_fill_unknown_distance(self):
+        from honorarios_app.services import merge_ai_recovery_into_intake
+        host = 'Procuradoria do Juízo Local Criminal - 1ª Sec Inquéritos de Unknown City'
+        recovery = {'status': 'ok', 'raw_visible_text': host,
+                    'fields': {'service_place': host, 'service_entity_type': 'ministerio_publico'}}
+        manual = {'service_place': 'Tribunal de Manual City', 'service_entity': 'Tribunal de Manual City',
+                  'service_entity_type': 'court', 'entities_differ': False}
+        merged = merge_ai_recovery_into_intake(copy.deepcopy(manual), recovery)
+        for key, value in manual.items():
+            self.assertEqual(merged[key], value)
+        initial = merge_ai_recovery_into_intake({'service_entity_type': 'court'}, recovery)
+        reviewed = review_intake_with_profile_evidence(initial, self.paths)
+        self.assertNotEqual(reviewed['status'], 'ready')
+        self.assertFalse((reviewed['intake'].get('transport') or {}).get('km_one_way'))
+
+    def mp_premises_source(self, *, headers=None):
+        host = 'Procuradoria do Juízo Local Criminal - 1ª Sec Inquéritos de Capture City'
+        return (('Ministério Público - Procuradoria da República da Comarca de Capture City\n'
+                 + (host if headers is None else headers)) + f'\nProcesso {CASE_NUMBER}\nAUTO DE COMPROMISSO\n'
+                'Aos 26-09-2026, nas instalações destes Serviços do Ministério Público, onde se encontrava\n'
+                'presente a técnica, compareceu o perito. Intérprete: Fictional Applicant.'), host
+
+    def test_mp_premises_clause_resolves_local_heading_independently_of_ai_paraphrase(self):
+        self.enable(venue=True)
+        write_json(self.paths.service_profiles, {'court_mp_generic': {'defaults': {
+            'service_entity_type': 'court', 'entities_differ': False, 'claim_transport': True,
+            'transport': {'round_trip_phrase': 'ida_volta'},
+        }}})
+        source, host = self.mp_premises_source()
+        for independent in (True, False):
+            for ai_place in ('Serviços do Ministério Público de Capture City', ''):
+                with self.subTest(independent=independent, ai_place=ai_place):
+                    result = self.upload(visible_text=source, independent_visible_text=independent,
+                        ai_fields={'service_place': ai_place, 'service_entity': 'Ministério Público de Capture City',
+                                   'service_entity_type': 'ministerio_publico', 'locality': CAPTURE_CITY,
+                                   'service_place_phrase': 'nas instalações destes Serviços do Ministério Público'})
+                    candidate = result['candidate_intake']
+                    self.assertEqual(candidate['service_place'], host)
+                    self.assertEqual(candidate['service_entity_type'], 'ministerio_publico')
+                    self.assertTrue(candidate['entities_differ'])
+                    self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+                    self.assertEqual(candidate['transport']['km_one_way'], 12)
+                    self.assertEqual(result['review']['status'], 'ready', result['review'])
+                    self.assertEqual(review_intake_with_profile_evidence(candidate, self.paths)['status'], 'ready')
+                    place_evidence = next(row for row in result['source_evidence']['field_evidence'] if row['field'] == 'service_place')
+                    self.assertIn('same source', place_evidence['reason'])
+
+    def test_unresolved_mp_premises_never_default_to_court_or_use_ai_paraphrase(self):
+        self.enable(venue=True)
+        for headers in ('', 'Procuradoria da República da Comarca de Capture City',
+                        'Procuradoria do Juízo Local Criminal de Capture City\nProcuradoria do Juízo Local Criminal de Other City',
+                        '> Procuradoria do Juízo Local Criminal de Capture City'):
+            with self.subTest(headers=headers):
+                source, _ = self.mp_premises_source(headers=headers)
+                result = self.upload(visible_text=source, independent_visible_text=False, ai_fields={
+                    'service_place': 'Serviços do Ministério Público de Capture City',
+                    'service_entity': 'Ministério Público de Capture City', 'service_entity_type': 'ministerio_publico',
+                    'locality': CAPTURE_CITY})
+                candidate = result['candidate_intake']
+                self.assertFalse(candidate.get('service_place'))
+                self.assertEqual(candidate['service_entity_type'], 'ministerio_publico')
+                self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+                self.assertIn('service_place', self.question_fields(result))
+                with self.assertRaises(IntakeError):
+                    prepare_intakes([candidate], self.paths)
+                answered = copy.deepcopy(candidate)
+                apply_answer_to_intake(answered, 'service_place', 'Ministério Público de Capture City')
+                manual_review = review_intake_with_profile_evidence(answered, self.paths)
+                self.assertTrue(manual_review['intake']['entities_differ'])
+                self.assertEqual(manual_review['intake']['payment_entity'], CAPTURE_COURT)
+
+    def test_mp_premises_header_cannot_replace_selected_or_explicit_police_venue(self):
+        self.enable(venue=True)
+        source, host = self.mp_premises_source()
+        manual = 'Posto da GNR de Manual City'
+        for independent in (True, False):
+            for venue in ('', manual):
+                with self.subTest(independent=independent, venue=venue):
+                    write_json(self.paths.service_profiles, {'manual': {'defaults': {
+                        'service_entity': manual, 'service_entity_type': 'gnr', 'service_place': venue,
+                        'entities_differ': True, 'claim_transport': True}}})
+                    result = self.upload(visible_text=source, independent_visible_text=independent,
+                        service_profile='manual', ai_fields={'service_place': 'Serviços do Ministério Público de Capture City',
+                            'service_entity': 'Ministério Público de Capture City', 'service_entity_type': 'ministerio_publico'})
+                    candidate = result['candidate_intake']
+                    self.assertEqual(candidate['service_entity'], manual)
+                    self.assertEqual(candidate['service_entity_type'], 'gnr')
+                    self.assertEqual(candidate['service_place'], venue or host)
+        result = self.upload(visible_text=source + '\nLocal da diligência: ' + manual,
+            ai_fields={'service_place': 'Serviços do Ministério Público de Capture City',
+                       'service_entity': 'Ministério Público de Capture City', 'service_entity_type': 'ministerio_publico'})
+        self.assertEqual(result['candidate_intake']['service_place'], manual)
+        self.assertEqual(result['candidate_intake']['service_entity_type'], 'gnr')
+
+    def test_mp_letterhead_alone_does_not_resolve_physical_premises(self):
+        from scripts.source_parsing import ministerio_publico_venue_evidence
+        source, host = self.mp_premises_source()
+        self.assertFalse(ministerio_publico_venue_evidence(host).physical_reference)
+        self.assertFalse(ministerio_publico_venue_evidence(host).place)
+        wrapped = source.replace('instalações destes Serviços do Ministério Público',
+                                 'instalações destes Serviços\ndo Ministério Público')
+        self.assertEqual(ministerio_publico_venue_evidence(wrapped).place, host)
+
+    def test_unresolved_mp_header_never_becomes_the_city_court_venue(self):
+        self.enable(venue=True)
+        write_json(self.paths.service_profiles, {'court_mp_generic': {'defaults': {
+            'service_entity_type': 'court', 'entities_differ': False, 'claim_transport': True,
+            'transport': {'round_trip_phrase': 'ida_volta'},
+        }}})
+        heading = ('Ministério Público - Procuradoria da República da Comarca de Capture City\n'
+                   'Procuradoria do Juízo Local Criminal - 1ª Sec Inquéritos de Capture City')
+        source = f'{heading}\nProcesso {CASE_NUMBER}\n[Texto do documento cortado]'
+        for fields in ({'service_entity': heading.replace('\n', ' — '), 'service_entity_type': 'ministerio_publico'},
+                       {'service_entity_type': 'ministerio_publico'}, {}):
+            with self.subTest(fields=fields):
+                result = self.upload(visible_text=source, independent_visible_text=False, ai_fields={
+                    'service_entity': '', 'service_entity_type': '', 'service_place': '', 'locality': '', **fields})
+                candidate = result['candidate_intake']
+                self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+                self.assertEqual(candidate['service_entity_type'], 'ministerio_publico')
+                self.assertTrue(candidate['entities_differ'])
+                self.assertFalse(candidate.get('service_place'))
+                self.assertEqual(candidate['photo_defaults_applied']['venue_status'], 'missing_noncourt_venue')
+                self.assertIn('service_place', self.question_fields(result))
+                reviewed = review_intake_with_profile_evidence(candidate, self.paths)
+                self.assertNotEqual(reviewed['status'], 'ready')
+                self.assertFalse(reviewed['intake'].get('service_place'))
+                with self.assertRaises(IntakeError):
+                    prepare_intakes([candidate], self.paths)
+
+    def test_mp_header_guard_preserves_named_host_and_selected_profile(self):
+        self.enable(venue=True)
+        heading = 'Ministério Público - Procuradoria da República da Comarca de Capture City'
+        fields = {'service_entity': heading, 'service_entity_type': 'ministerio_publico'}
+        manual = 'Posto da GNR de Manual City'
+        result = self.upload(visible_text=f'{heading}\nProcesso {CASE_NUMBER}\nLocal da diligência: {manual}',
+                             ai_fields=fields)
+        self.assertEqual(result['candidate_intake']['service_place'], manual)
+        self.assertEqual(result['candidate_intake']['service_entity_type'], 'gnr')
+        write_json(self.paths.service_profiles, {'manual': {'defaults': {
+            'service_entity': manual, 'service_entity_type': 'gnr', 'service_place': manual,
+            'entities_differ': True, 'claim_transport': True}}})
+        result = self.upload(visible_text=f'{heading}\nProcesso {CASE_NUMBER}',
+                             ai_fields=fields, service_profile='manual')
+        self.assertEqual(result['candidate_intake']['service_place'], manual)
+        self.assertEqual(result['candidate_intake']['service_entity_type'], 'gnr')
+
+    def test_mp_mentioned_in_court_prose_does_not_become_its_source_agency(self):
+        self.enable(venue=True)
+        result = self.upload(visible_text=f'Tribunal de Capture City\nProcesso {CASE_NUMBER}\n'
+                            'Notifique-se o Ministério Público.\nMinistério Público de Capture City',
+                            ai_fields={'service_entity': '', 'service_entity_type': '',
+                                       'service_place': '', 'locality': ''})
+        self.assertEqual(result['candidate_intake']['service_place'], CAPTURE_COURT)
+        self.assertEqual(result['candidate_intake']['service_entity_type'], 'court')
+
+    def gps_source_upload(self, *, kind='gnr', service_profile='auto', extra_source=''):
+        self.enable(venue=True)
+        agency = 'Guarda Nacional Republicana' if kind == 'gnr' else 'Ministério Público'
+        unit = 'Comando Territorial' if kind == 'gnr' else 'DIAP Regional'
+        entity = f'{agency} de {CAPTURE_CITY}'
+        host = f'{"GNR" if kind == "gnr" else agency} de {CAPTURE_CITY} — {unit}'
+        preferences = json.loads(self.defaults_path.read_text(encoding='utf-8'))
+        preferences['verified_gps_venues'] = [{
+            'id': 'fictional-specific-venue', 'city': CAPTURE_CITY, 'service_entity_type': kind,
+            'service_entity': entity, 'service_place': host, 'latitude': 0, 'longitude': 0, 'radius_m': 200,
+            'required_source_phrases': [agency, unit, 'Rua de Exemplo', CAPTURE_CITY],
+            'source_urls': ['https://places.example.test/fictional-venue'],
+        }]
+        write_json(self.defaults_path, preferences)
+        profiles = json.loads(self.paths.personal_profiles.read_text(encoding='utf-8'))
+        profiles['profiles'][0]['travel_distances_by_city'][host] = 27
+        write_json(self.paths.personal_profiles, profiles)
+        write_json(self.paths.service_profiles, {
+            'court_mp_generic': {'defaults': {'service_entity_type': 'court', 'entities_differ': False,
+                'claim_transport': True, 'transport': {'round_trip_phrase': 'ida_volta'}}},
+            'manual': {'defaults': {'service_entity': 'Posto da GNR de Manual City',
+                'service_entity_type': 'gnr', 'service_place': 'Posto da GNR de Manual City',
+                'entities_differ': True, 'claim_transport': True}},
+        })
+        metadata = {'exif_date': CAPTURE_DATE, 'gps_coordinates': {
+            'latitude': 0, 'longitude': 0, 'source': 'exif_gps'}}
+        source = f'{agency}\n{unit} de {CAPTURE_CITY}\nRua de Exemplo\nAUTO DE COMPROMISSO\nProcesso {CASE_NUMBER}' + extra_source
+        with patch('honorarios_app.services.image_metadata_from_bytes', return_value=metadata):
+            result = self.upload(visible_text=source, independent_visible_text=False, service_profile=service_profile,
+                ai_fields={'service_entity': entity, 'service_entity_type': kind, 'service_place': '',
+                           'service_place_phrase': '', 'locality': ''})
+        return result, host
+
+    def test_verified_gps_source_default_completes_upload_and_uses_exact_saved_venue_distance(self):
+        for kind in ('gnr', 'ministerio_publico'):
+            with self.subTest(kind=kind):
+                result, host = self.gps_source_upload(kind=kind)
+                candidate = result['candidate_intake']
+                self.assertEqual(candidate['service_place'], host)
+                self.assertEqual(candidate['service_entity_type'], kind)
+                self.assertTrue(candidate['entities_differ'])
+                self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+                self.assertEqual(candidate['transport']['km_one_way'], 27)
+                self.assertEqual(result['review']['status'], 'ready', result['review'])
+                self.assertEqual(candidate['photo_defaults_applied']['venue_status'], 'verified_gps_source_venue')
+                self.assertNotIn('service_place', candidate['photo_defaults_applied'])
+                proof = candidate['source_location_evidence']
+                self.assertEqual(proof['source_sha256'], candidate['source_sha256'])
+                evidence = next(row for row in result['source_evidence']['field_evidence'] if row['field'] == 'service_place')
+                self.assertEqual(evidence['source'], 'verified_gps_source_venue')
+                self.assertIn('not a printed venue', evidence['reason'])
+                self.assertFalse(any('Confirm the building and city' in warning for warning in candidate['ai_recovery']['warnings']))
+                reviewed = review_intake_with_profile_evidence(candidate, self.paths)
+                self.assertEqual(reviewed['status'], 'ready', reviewed)
+                self.assertEqual(reviewed['intake']['service_place'], host)
+
+        prepared = prepare_intakes([reviewed['intake']], self.paths)
+        text = ' '.join(' '.join(page.extract_text() or '' for page in PdfReader(prepared['items'][0]['pdf']).pages).split())
+        self.assertIn('DIAP Regional', text)
+        self.assertIn('27', text)
+
+    def test_gps_venue_default_keeps_manual_edits_clears_and_duplicate_protection(self):
+        result, host = self.gps_source_upload()
+        original = result['candidate_intake']
+        edited = copy.deepcopy(original)
+        apply_answer_to_intake(edited, 'service_place', 'Posto da GNR de Manual City')
+        reviewed = review_intake_with_profile_evidence(edited, self.paths)
+        self.assertEqual(reviewed['intake']['service_place'], 'Posto da GNR de Manual City')
+        self.assertEqual(reviewed['status'], 'needs_info')
+        self.assertEqual(reviewed['intake']['service_entity'], 'Posto da GNR de Manual City')
+        self.assertEqual(reviewed['intake']['transport']['destination'], 'Posto da GNR de Manual City')
+        self.assertIn('transport.km_one_way', [row['field'] for row in reviewed['questions']])
+        edited = reviewed['intake']
+        apply_answer_to_intake(edited, 'transport.km_one_way', '33')
+        edited_review = review_intake_with_profile_evidence(edited, self.paths)
+        self.assertEqual(edited_review['status'], 'ready', edited_review)
+        prepared = prepare_intakes([edited_review['intake']], self.paths)
+        text = ' '.join(' '.join(page.extract_text() or '' for page in PdfReader(prepared['items'][0]['pdf']).pages).split())
+        self.assertIn('Posto da GNR de Manual City', text)
+        self.assertNotIn('Comando Territorial', text)
+        for destination, km in ((host, 0), ('Manual route override', 44)):
+            with self.subTest(manual_destination=destination, manual_km=km):
+                override = copy.deepcopy(original)
+                override['transport'].update(destination=destination, km_one_way=km)
+                apply_answer_to_intake(override, 'service_place', 'Posto da GNR de Manual City')
+                preserved = review_intake_with_profile_evidence(override, self.paths)['intake']['transport']
+                self.assertEqual(preserved['km_one_way'], km)
+                self.assertEqual(preserved['destination'], 'Posto da GNR de Manual City' if destination == host else destination)
+        edited_text = copy.deepcopy(original)
+        edited_text['source_text'] = f'Processo {CASE_NUMBER}\nDifferent source text supplied for review.'
+        reviewed = review_intake_with_profile_evidence(edited_text, self.paths)
+        self.assertFalse(any(row.get('source') == 'verified_gps_source_venue'
+                             for row in reviewed['review_evidence']['field_evidence']))
+        for field, value in (('service_entity', 'Guarda Nacional Republicana de Other City'),
+                             ('service_entity_type', 'other'), ('photo_capture_city', 'Other City')):
+            with self.subTest(edited_field=field):
+                changed = copy.deepcopy(original)
+                changed[field] = value
+                reviewed = review_intake_with_profile_evidence(changed, self.paths)
+                self.assertFalse(any(row.get('source') == 'verified_gps_source_venue'
+                                     for row in reviewed['review_evidence']['field_evidence']))
+        cleared = copy.deepcopy(original)
+        cleared.update(service_place='', review_cleared_fields=['service_place'])
+        reviewed = review_intake_with_profile_evidence(cleared, self.paths)
+        self.assertIn('service_place', [row['field'] for row in reviewed['questions']])
+        self.assertNotEqual(reviewed['status'], 'ready')
+        self.assertFalse(reviewed['intake']['transport'].get('destination'))
+        self.assertFalse(reviewed['intake']['transport'].get('km_one_way'))
+        write_json(self.paths.duplicate_index, [{'case_number': CASE_NUMBER, 'service_date': CAPTURE_DATE, 'status': 'sent'}])
+        reviewed = review_intake_with_profile_evidence(original, self.paths)
+        self.assertEqual(reviewed['status'], 'duplicate')
+        with self.assertRaises(IntakeError):
+            prepare_intakes([original], self.paths)
+
+    def test_gps_venue_default_does_not_replace_an_explicit_profile_or_named_station(self):
+        result, _ = self.gps_source_upload(service_profile='manual')
+        self.assertEqual(result['candidate_intake']['service_place'], 'Posto da GNR de Manual City')
+        self.assertNotIn('source_location_evidence', result['candidate_intake'])
+        result, _ = self.gps_source_upload(extra_source='\nPosto Territorial de Other City')
+        self.assertEqual(result['candidate_intake']['service_place'], 'Posto Territorial de Other City')
+        self.assertNotIn('source_location_evidence', result['candidate_intake'])
+
+    def test_explicit_service_profile_keeps_entity_and_type_when_photo_fills_blank_venue(self):
+        from honorarios_app.services import merge_ai_recovery_into_intake
+        host = 'Procuradoria do Juízo Local Criminal de Capture City'
+        manual_entity = 'Tribunal de Manual City'
+        recovery = {'status': 'ok', 'raw_visible_text': host, 'fields': {
+            'service_place': host, 'service_entity': host, 'service_entity_type': 'ministerio_publico'}}
+        candidate = merge_ai_recovery_into_intake({
+            'service_entity': manual_entity, 'service_entity_type': 'court', 'service_place': '',
+            'entities_differ': False, 'auto_profile': {'mode': 'explicit_profile'},
+        }, recovery)
+        self.assertEqual(candidate['service_entity'], manual_entity)
+        self.assertEqual(candidate['service_entity_type'], 'court')
+        self.assertFalse(candidate['entities_differ'])
+        self.assertEqual(candidate['service_place'], host)
+
+        # The upload must supply the explicit selection before recovery, not
+        # merely attach its label afterwards when the overwrite has happened.
+        write_json(self.paths.service_profiles, {'manual_court': {'defaults': {
+            'service_entity': manual_entity, 'service_entity_type': 'court', 'service_place': '',
+            'entities_differ': False, 'claim_transport': True,
+        }}})
+        result = self.upload(service_profile='manual_court', visible_text=host,
+                             independent_visible_text=False, ai_fields=recovery['fields'])
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['auto_profile']['mode'], 'explicit_profile')
+        self.assertEqual(candidate['service_entity'], manual_entity)
+        self.assertEqual(candidate['service_entity_type'], 'court')
+        self.assertFalse(candidate['entities_differ'])
+        self.assertEqual(candidate['service_place'], host)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='honorarios-photo-default-public-')
         self.addCleanup(temporary.cleanup)
@@ -190,7 +538,7 @@ class PhotoDefaultTests(unittest.TestCase):
 
     def upload(self, *, metadata_date=CAPTURE_DATE, photo_city=CAPTURE_CITY,
                visible_text=SOURCE_TEXT, ai_fields=None, exif=False, source_kind='photo',
-               service_profile='auto', exif_values=None):
+               service_profile='auto', exif_values=None, independent_visible_text=True):
         if source_kind == 'notification_pdf':
             content = BytesIO()
             document = canvas.Canvas(content)
@@ -231,7 +579,7 @@ class PhotoDefaultTests(unittest.TestCase):
             result = recover_source_upload(
                 filename=filename, content_type=content_type, content=content.getvalue(),
                 source_kind=source_kind, profile_name=service_profile,
-                visible_text=visible_text if source_kind == 'photo' else '',
+                visible_text=visible_text if source_kind == 'photo' and independent_visible_text else '',
                 ai_recovery_mode='off', paths=self.paths,
             )
             provider.assert_called_once()

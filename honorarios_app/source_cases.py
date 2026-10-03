@@ -21,6 +21,34 @@ def valid_source_case(value: Any) -> str:
     return normalized if CASE_FULL.fullmatch(normalized) else ''
 
 
+def source_scope_requires_review(text: str, ai_recovery: dict[str, Any]) -> bool:
+    """Never turn uncertain document/background membership into ready identities.
+
+    Legacy recoveries have no scope key. New recoveries keep background OCR out
+    of the relevant text; contradictory streams require review, not regex-based
+    deletion of a possibly legitimate foreground case.
+    """
+    if ai_recovery.get('source_scope', 'clear') != 'clear':
+        return True
+    background = ai_recovery.get('incidental_background_text', '')
+    if not isinstance(background, str):
+        return True
+    if not background.strip():
+        return False
+    foreground = str(text or '')
+    if background.strip() in foreground:
+        return True
+    background_cases = {valid_source_case(match.group()) for match in CASE_VISIBLE.finditer(background)} - {''}
+    foreground_cases = {valid_source_case(match.group()) for match in CASE_VISIBLE.finditer(foreground)} - {''}
+    declared = ai_recovery.get('case_numbers')
+    if isinstance(declared, list):
+        foreground_cases.update(valid_source_case(value) for value in declared if isinstance(value, str))
+    fields = ai_recovery.get('fields') or {}
+    if isinstance(fields, dict):
+        foreground_cases.update(valid_source_case(fields.get(key)) for key in ('case_number', 'raw_case_number'))
+    return bool(background_cases & foreground_cases)
+
+
 def source_case_rows(text: str, ai_recovery: dict[str, Any]) -> list[dict[str, str]]:
     """Keep readable rows and unresolved alternatives, including legacy OCR."""
     rows: list[dict[str, str]] = []
@@ -116,4 +144,11 @@ def source_case_rows(text: str, ai_recovery: dict[str, Any]) -> list[dict[str, s
             add(raw)
     if not rows and legacy:
         add(legacy)
-    return [row for row in rows if row['case_number'] not in ambiguous_cases or not row['case_number']]
+    rows = [row for row in rows if row['case_number'] not in ambiguous_cases or not row['case_number']]
+    if source_scope_requires_review(raw_text, ai_recovery):
+        # Preserve every possible foreground row for source review. Empty IDs
+        # enter the existing numbered confirmation/prepare guard; neither a
+        # background-only ID nor an arbitrary first foreground ID becomes ready.
+        return [{'case_number': '', 'raw_case_number': row['raw_case_number']} for row in rows] or [
+            {'case_number': '', 'raw_case_number': 'Uncertain document scope; review the intended source.'}]
+    return rows

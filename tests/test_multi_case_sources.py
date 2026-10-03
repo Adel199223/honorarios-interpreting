@@ -469,6 +469,77 @@ class MultiCaseSourceTests(unittest.TestCase):
         self.assert_no_preparation_artifacts()
 
 
+    def scoped_upload(self, *, text, case_numbers, background='', scope='clear', visible_text=''):
+        recovery = {**ai._normalize_ai_payload({
+            **self.recovery(text=text, case_numbers=case_numbers),
+            'source_scope': scope, 'incidental_background_text': background,
+        }), 'status': 'ok', 'attempted': False}
+        before = self.managed_snapshot()
+        with patch('honorarios_app.services.recover_source_with_openai', return_value=recovery):
+            result = recover_source_upload(
+                filename='fictional-foreground-source.jpg', content_type='image/jpeg',
+                content=self.content.getvalue(), source_kind='photo', profile_name='auto',
+                visible_text=visible_text, ai_recovery_mode='off', paths=self.paths)
+        self.assertEqual(self.managed_snapshot(), before)
+        self.assert_no_preparation_artifacts()
+        return result
+
+    def test_foreground_cover_excludes_separate_background_registry_without_losing_evidence(self):
+        background = ('Unrelated registry behind the cover\n'
+                      '930/25.0TSTXX Executive request 12-12-2025\n'
+                      '931/26.0TSTXX Translation word count 31-03-2026')
+        result = self.scoped_upload(text='Processo ' + CASES[0], case_numbers=[CASES[0]],
+                                    background=background)
+        self.assertEqual(result['case_count'], 1)
+        self.assertEqual(result['candidate_intake']['case_number'], CASES[0])
+        self.assertEqual(result['review']['status'], 'ready', result['review'])
+        self.assertNotIn('930/25.0TSTXX', result['extracted_text'])
+        self.assertNotIn('931/26.0TSTXX', result['candidate_intake']['source_text'])
+        self.assertEqual(result['ai_recovery']['incidental_background_text'], background)
+        self.assertEqual(result['candidate_intake']['ai_recovery']['incidental_background_text'], background)
+        self.assertEqual(result['candidate_intake']['ai_recovery']['source_scope'], 'clear')
+        self.assertTrue(any(background in warning for warning in result['source_evidence']['warnings']))
+        self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
+
+    def test_legitimate_foreground_multi_case_table_survives_incidental_background(self):
+        result = self.scoped_upload(text=TABLE_TEXT, case_numbers=CASES,
+                                    background='Separate underlying paper: 930/25.0TSTXX')
+        self.ready_candidates(result)
+
+    def test_uncertain_document_membership_holds_all_rows_before_generation(self):
+        result = self.scoped_upload(text=TABLE_TEXT, case_numbers=CASES, scope='uncertain')
+        self.assertEqual(result['case_count'], len(CASES))
+        children = [row['candidate_intake'] for row in result['case_candidates']]
+        self.assertEqual([row['raw_case_number'] for row in children], list(CASES))
+        for record in result['case_candidates']:
+            self.assertEqual(record['candidate_intake']['case_number'], '')
+            self.assertTrue(record['candidate_intake']['case_number_requires_confirmation'])
+            self.assertNotEqual(record['review']['status'], 'ready')
+            rereview = review_intake_with_profile_evidence(record['candidate_intake'], self.paths)
+            self.assertEqual(rereview['intake']['case_number'], '')
+            self.assertTrue(rereview['intake']['case_number_requires_confirmation'])
+            self.assertNotEqual(rereview['status'], 'ready')
+        self.assertEqual(preflight_intakes(children, self.paths)['status'], 'blocked')
+        with self.assertRaises(IntakeError):
+            prepare_intakes(children, paths=self.paths)
+        self.assert_no_preparation_artifacts()
+
+    def test_background_foreground_contradiction_holds_instead_of_deleting_possible_cases(self):
+        result = self.scoped_upload(text=TABLE_TEXT, case_numbers=CASES,
+                                    background='Separate sheet also contains ' + CASES[1])
+        self.assertEqual(result['ai_recovery']['source_scope'], 'uncertain')
+        self.assertEqual(result['case_count'], len(CASES))
+        self.assertTrue(all(not row['candidate_intake']['case_number'] for row in result['case_candidates']))
+        self.assertTrue(any('cannot be separated' in warning for warning in result['source_evidence']['warnings']))
+
+    def test_background_reference_in_additional_text_cannot_reenter_as_ready_child(self):
+        background = 'Separate registry: 930/25.0TSTXX'
+        result = self.scoped_upload(text='Processo ' + CASES[0], case_numbers=[CASES[0]],
+                                    background=background, visible_text=background)
+        self.assertTrue(all(not row['candidate_intake']['case_number'] for row in result['case_candidates']))
+        self.assertTrue(all(row['review']['status'] != 'ready' for row in result['case_candidates']))
+
+
 class MultiCaseNormalizationTests(unittest.TestCase):
     def test_grouped_suffix_does_not_erase_an_independently_printed_case(self):
         from honorarios_app.source_cases import source_case_rows
@@ -508,6 +579,33 @@ class MultiCaseNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized['case_numbers'], list(CASES))
         self.assertFalse(normalized['fields'].get('case_number'))
         self.assertFalse(normalized['fields'].get('raw_case_number'))
+
+    def test_model_declared_background_id_and_malformed_scope_require_review(self):
+        from honorarios_app.source_cases import source_case_rows
+        cases = [CASES[0], '930/25.0TSTXX']
+        rows = source_case_rows('Processo ' + CASES[0], {
+            'source_scope': 'clear', 'case_numbers': cases,
+            'incidental_background_text': 'Separate registry: 930/25.0TSTXX',
+        })
+        self.assertEqual(len(rows), 2)
+        self.assertFalse(any(row['case_number'] for row in rows))
+        for value in (None, [], 'unknown'):
+            with self.subTest(scope=value):
+                normalized = ai._normalize_ai_payload({'source_scope': value,
+                    'raw_visible_text': CASES[0], 'case_numbers': [CASES[0]],
+                    'fields': {'case_number': CASES[0]}})
+                self.assertEqual(normalized['source_scope'], 'uncertain')
+                self.assertNotIn('case_number', normalized['fields'])
+                self.assertIn('case_number', normalized['missing_fields'])
+                self.assertFalse(source_case_rows(CASES[0], normalized)[0]['case_number'])
+
+    def test_uncertain_empty_source_cannot_fall_back_to_ready_scalar_case(self):
+        from honorarios_app.source_cases import source_case_rows
+        rows = source_case_rows('', {'source_scope': 'uncertain', 'fields': {'case_number': CASES[0]}})
+        self.assertEqual(rows, [{'case_number': '', 'raw_case_number': CASES[0]}])
+        rows = source_case_rows('', {'source_scope': 'uncertain', 'fields': {}})
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]['case_number'])
 
 
 if __name__ == '__main__':

@@ -19,6 +19,18 @@ class SourceCaseEvidenceRegressionTests(unittest.TestCase):
                                 text=True, encoding="utf-8", capture_output=True, check=True, cwd=ROOT)
         return json.loads(result.stdout)
 
+    def test_verified_gps_source_venue_is_an_editable_default_only_for_current_evidence(self):
+        result = self.run_guidance("""
+const value='Posto da GNR de Example City';
+const data={review_evidence:{field_evidence:[{field:'service_place',value,source:'verified_gps_source_venue'}]}};
+console.log(JSON.stringify({current:g.reviewFactOrigin('service_place',value,data),
+ edited:g.reviewFactOrigin('service_place','Another venue',data),
+ stale:g.reviewFactOrigin('service_place',value,{review_evidence:{field_evidence:[]}})}));
+""")
+        self.assertEqual(result['current'], {'kind': 'default', 'label': 'GPS + source venue default · editable'})
+        self.assertEqual(result['edited']['kind'], 'unknown')
+        self.assertEqual(result['stale']['kind'], 'unknown')
+
     def test_capture_city_fact_labels_gps_inference_manual_answer_and_conflicts_honestly(self):
         result = self.run_guidance("""
 const intake={source_kind:'photo',source_sha256:'current',photo_defaults_applied:{photo_city:'Capture City',photo_city_source:'verified_gps_area'}};

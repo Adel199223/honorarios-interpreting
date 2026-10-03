@@ -190,8 +190,24 @@ class SourceEmailGroupsTests(unittest.TestCase):
     def test_singleton_preserves_existing_custom_body(self):
         rows = self.rows(1)
         rows[0]['email_body'] = 'Fictional custom single request.'
+        rows[0]['email_subject'] = 'Requerimento de Honorários'
         prepared = self.prepare(rows)
         self.assertEqual(prepared['email_groups'][0]['body'], rows[0]['email_body'])
+        self.assertEqual(prepared['email_groups'][0]['subject'], rows[0]['email_subject'])
+
+    def test_custom_subject_blocks_group_or_packet_before_writes(self):
+        rows = self.rows(3)[1:]
+        rows[1]['email_subject'] = 'Retificação fictícia'
+        before = copy.deepcopy(rows)
+        for options in ({'email_grouping': 'source'}, {'packet_mode': True}):
+            with self.subTest(options=options):
+                result = preflight_intakes(rows, self.paths, **options)
+                self.assertEqual(result['status'], 'blocked')
+                self.assertIn('custom per-request', result['message'])
+                with self.assertRaisesRegex(IntakeError, 'individual emails'):
+                    prepare_intakes(rows, self.paths, **options)
+                self.assert_no_artifacts()
+                self.assertEqual(rows, before)
 
     def test_each_changed_child_pdf_invalidates_group_review_and_recording(self):
         prepared = self.prepare(self.rows(3)[1:])
@@ -236,7 +252,7 @@ class SourceEmailGroupsTests(unittest.TestCase):
         self.assertEqual([row['draft_payload'] for row in index], group['child_payload_paths'])
         self.assertEqual([row['claim_transport'] for row in index], [True, False])
 
-    def test_retirement_without_files_preserves_and_retires_all_child_identities(self):
+    def test_removal_without_files_preserves_warning_for_all_child_identities(self):
         prepared = self.prepare(self.rows(3)[1:])
         group = prepared['email_groups'][0]
         self.assertEqual(self.record(group), 0)
@@ -248,7 +264,10 @@ class SourceEmailGroupsTests(unittest.TestCase):
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
             self.assertEqual(record_cli(arguments), 0)
         index = json.loads(self.paths.duplicate_index.read_text(encoding='utf-8'))
-        self.assertEqual([row['status'] for row in index], ['trashed', 'trashed'])
+        self.assertEqual([row['status'] for row in index], ['drafted', 'drafted'])
+        self.assertEqual([row['draft_lifecycle_status'] for row in index], ['trashed', 'trashed'])
+        self.assertTrue(all(row['duplicate_warning_retained'] for row in index))
+        self.assertEqual(json.loads(self.paths.draft_log.read_text(encoding='utf-8'))[0]['status'], 'trashed')
         self.assertEqual([row['pdf'] for row in index], group['attachment_files'])
 
     def test_malformed_group_child_fails_before_either_history_write(self):
@@ -663,11 +682,11 @@ class ManualHistoryGuardsTests(unittest.TestCase):
                 self.clean_history()
                 prepared, target = self.prepared(mode)
                 request = {**self.request(prepared, target), 'draft_id': 'fictional-retry', 'message_id': 'fictional-retry-message'}
-                with patch('scripts.record_gmail_draft.write_duplicate_index', side_effect=PermissionError('Fictional index lock')):
+                with patch('scripts.record_gmail_draft.write_log', side_effect=PermissionError('Fictional log lock')):
                     with self.assertRaises(IntakeError):
                         record_draft(request, self.paths)
-                self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
-                self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), [])
+                self.assertEqual(json.loads(self.paths.draft_log.read_text()), [])
+                self.assertEqual(len(json.loads(self.paths.duplicate_index.read_text())), 2 if mode == 'packet' else 1)
                 record_draft(request, self.paths)
                 record_draft(request, self.paths)
                 record_draft({'payload': target['draft_payload'], 'draft_id': request['draft_id'], 'message_id': request['message_id'],
@@ -879,10 +898,10 @@ class GmailAttemptRecoveryTests(unittest.TestCase):
     def test_partial_history_write_recovers_both_files_without_second_draft(self):
         request = self.prepared_request()
         with self.fake_transport():
-            with patch('scripts.record_gmail_draft.write_duplicate_index', side_effect=PermissionError('Fictional locked index')):
+            with patch('scripts.record_gmail_draft.write_log', side_effect=PermissionError('Fictional locked log')):
                 first = self.client().post('/api/gmail/drafts/create', json=request).json()
-            self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
-            self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), [])
+            self.assertEqual(json.loads(self.paths.draft_log.read_text()), [])
+            self.assertEqual(len(json.loads(self.paths.duplicate_index.read_text())), 1)
             reference = self.client().get('/api/reference').json()
             self.assertEqual(reference['pending_gmail_attempts'][0]['attempt_id'], first['attempt_id'])
             self.assertEqual(reference['pending_gmail_attempts'][0]['status'], 'created_unrecorded')

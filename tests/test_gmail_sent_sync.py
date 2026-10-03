@@ -386,6 +386,8 @@ class SentSyncTests(unittest.TestCase):
         result = self.run_sync()
         self.assert_unchanged(before, result)
         self.assertEqual(result["needs_review_count"], 1)
+        self.assertEqual(result['missing_draft_count'], 1)
+        self.assertTrue(any('Draft no longer found in Gmail:' in warning and 'Duplicate warnings remain' in warning for warning in result['warnings']))
 
     def test_nonmatching_or_incomplete_messages_never_mark_sent(self):
         record = self.add_record(children=2, proof=True)

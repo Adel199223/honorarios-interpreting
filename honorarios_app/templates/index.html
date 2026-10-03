@@ -256,6 +256,14 @@
                   <label for="source_text">Source Text / Notes</label>
                   <textarea id="source_text" rows="4" placeholder="Paste visible text from the photo or document here."></textarea>
                 </div>
+                <details class="field field-wide">
+                  <summary>Email subject and message (optional)</summary>
+                  <p class="field-hint">Leave blank to use the standard email. Custom wording applies to this request; include your closing and signature in a custom message.</p>
+                  <label for="email_subject">Email subject</label>
+                  <input id="email_subject" maxlength="2048" autocomplete="off" placeholder="Use the standard subject">
+                  <label for="email_body">Email message</label>
+                  <textarea id="email_body" rows="7" placeholder="Use the standard message"></textarea>
+                </details>
                 <div class="field">
                   <label for="ai_recovery_mode">AI OCR</label>
                   <select id="ai_recovery_mode">
@@ -840,7 +848,7 @@
               <div>
                 <p class="eyebrow">Recent Work</p>
                 <h2>Duplicate And Draft History</h2>
-                <p class="panel-copy">Drafted and sent requests block future duplicates.</p>
+                <p class="panel-copy">Sent and previously drafted requests keep their duplicate warnings, even when a draft is removed.</p>
               </div>
             </div>
           </div>
@@ -856,7 +864,7 @@
             <p class="field-hint">Counts refer to emails; a grouped email updates all its included requests.</p>
             <div class="form-grid compact-grid hidden" id="gmail-sent-sync-counts">
               <div>Checked: <strong id="gmail-sent-sync-checked">Unknown</strong></div><div>Updated to sent: <strong id="gmail-sent-sync-sent">Unknown</strong></div><div>Unchanged: <strong id="gmail-sent-sync-unchanged">Unknown</strong></div>
-              <div class="hidden">Still drafted: <strong id="gmail-sent-sync-drafted">Unknown</strong></div><div class="hidden">Needs review: <strong id="gmail-sent-sync-review">Unknown</strong></div><div class="hidden">Errors: <strong id="gmail-sent-sync-errors">Unknown</strong></div>
+              <div class="hidden">Still drafted: <strong id="gmail-sent-sync-drafted">Unknown</strong></div><div class="hidden">Missing drafts: <strong id="gmail-sent-sync-missing">Unknown</strong></div><div class="hidden">Needs review: <strong id="gmail-sent-sync-review">Unknown</strong></div><div class="hidden">Errors: <strong id="gmail-sent-sync-errors">Unknown</strong></div>
             </div>
             <ul id="gmail-sent-sync-warnings"></ul>
           </div>
@@ -873,9 +881,10 @@
               <button type="button" class="history-filter-chip status-chip ready" data-history-status-filter="active">active</button>
               <button type="button" class="history-filter-chip status-chip ready" data-history-status-filter="drafted">drafted</button>
               <button type="button" class="history-filter-chip status-chip ready" data-history-status-filter="sent">sent</button>
+              <button type="button" class="history-filter-chip status-chip info" data-history-status-filter="archived">archived</button>
               <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="superseded">superseded</button>
               <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="trashed">trashed</button>
-              <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="not_found">not_found</button>
+              <button type="button" class="history-filter-chip status-chip blocked" data-history-status-filter="not_found">Missing in Gmail</button>
             </div>
           </div>
           <div class="panel history-lifecycle-panel">
@@ -883,7 +892,7 @@
               <div>
                 <p class="eyebrow">Draft Lifecycle</p>
                 <h3>Draft lifecycle actions</h3>
-                <p class="panel-copy">Verify a draft exists through read-only Gmail access, or mark a draft as manually sent after you send it yourself in Gmail.</p>
+                <p class="panel-copy">Remove an email from Drafted while keeping warnings for all its requests. This does not delete it from Gmail. You can also verify a draft through read-only Gmail access, or mark it sent after sending it yourself.</p>
               </div>
               <span class="status-chip info">Local bookkeeping</span>
             </div>
@@ -1326,6 +1335,15 @@
       </section>
     </div>
 
+    <dialog id="archive-draft-dialog" aria-labelledby="archive-draft-title" aria-describedby="archive-draft-explanation archive-draft-details">
+      <h2 id="archive-draft-title">Remove this email from Drafted?</h2>
+      <p id="archive-draft-explanation">All requests in this email keep their duplicate warnings. Nothing will be deleted or changed in Gmail, and nothing is marked sent.</p>
+      <p id="archive-draft-details"></p>
+      <div class="button-row">
+        <button type="button" class="primary-button" id="archive-draft-cancel" autofocus>Cancel</button>
+        <button type="button" id="archive-draft-confirm">Remove from Drafted — keep warning</button>
+      </div>
+    </dialog>
     <dialog id="sent-duplicate-dialog" aria-labelledby="sent-duplicate-title" aria-describedby="sent-duplicate-explanation sent-duplicate-details sent-duplicate-question">
       <h2 id="sent-duplicate-title">This fee request was already sent</h2>
       <p id="sent-duplicate-explanation">A sent request already covers this case and service date. Choose No to stop. Reviewing its details will keep new PDF and Gmail draft creation blocked.</p>

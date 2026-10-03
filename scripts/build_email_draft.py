@@ -249,6 +249,7 @@ def resolve_additional_attachments(intake: dict[str, Any]) -> list[Path]:
 
 
 def build_gmail_create_draft_args(recipient: str, subject: str, body: str, attachment_paths: list[str]) -> dict[str, Any]:
+    subject = validate_email_subject(subject)
     return {
         "to": recipient,
         "subject": subject,
@@ -311,6 +312,10 @@ def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
     for field in ("to", "subject", "body"):
         if not str(args.get(field) or "").strip():
             errors.append(f"gmail_create_draft_args.{field} is required.")
+    try:
+        validate_email_subject(args.get('subject'))
+    except IntakeError as exc:
+        errors.append(str(exc))
     args_attachments = args.get("attachment_files")
     errors.extend(attachment_array_errors(args_attachments, "gmail_create_draft_args.attachment_files"))
     if isinstance(attachment_files, list) and isinstance(args_attachments, list):
@@ -395,8 +400,8 @@ def source_email_group_errors(payload: dict[str, Any]) -> list[str]:
 
 
 def source_email_body(intakes: list[dict[str, Any]], *, signature_name: str) -> str:
-    if len(intakes) > 1 and any(str(intake.get('email_body') or '').strip() for intake in intakes):
-        raise IntakeError('Source email grouping cannot replace a custom per-request email_body. Choose individual emails to retain that text.')
+    if len(intakes) > 1:
+        require_individual_email_text(intakes, mode='Source email grouping')
     fee = any(intake.get('claim_interpreting', True) for intake in intakes)
     travel = any(intake.get('claim_transport', False) for intake in intakes)
     scope = ('honorários e despesas de transporte' if travel else 'honorários') if fee else 'despesas de transporte'
@@ -406,6 +411,33 @@ def source_email_body(intakes: list[dict[str, Any]], *, signature_name: str) -> 
             f'Melhores cumprimentos,\n\n{signature_name}')
 
 
+def require_individual_email_text(intakes: list[dict[str, Any]], *, mode: str) -> None:
+    if any(str(intake.get(field) or '').strip() for intake in intakes for field in ('email_subject', 'email_body')):
+        raise IntakeError(f'{mode} cannot replace a custom per-request email_subject or email_body. Choose individual emails to retain that text.')
+
+
+def validate_email_subject(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise IntakeError('Email subject must be nonempty text.')
+    if len(value) > 2048 or any(ord(char) < 32 or 127 <= ord(char) <= 159 or char in '\u2028\u2029' for char in value):
+        raise IntakeError('Email subject must be a single line of at most 2048 characters, without control characters.')
+    return value.strip()
+
+
+def resolve_email_subject(intake: dict[str, Any], email_config: dict[str, Any]) -> str:
+    custom = intake.get('email_subject')
+    if custom is not None and not isinstance(custom, str):
+        raise IntakeError('Email subject must be text.')
+    # Validate before trimming: even a whitespace-only header must not hide CR/LF.
+    if custom and (custom.strip() or any(char != ' ' for char in custom)):
+        subject = validate_email_subject(custom)
+        if intake.get('claim_interpreting', True) is False and (re.search(r'\bhonorarios\b', normalize_text(subject)) or custom_transport_body_conflict(subject)):
+            raise IntakeError('Travel-only email_subject must request only transport, not interpreting fees.')
+        return subject
+    default = 'Requerimento de despesas de transporte' if intake.get('claim_interpreting', True) is False else email_config.get('subject') or 'Requerimento de honorários'
+    return validate_email_subject(default)
+
+
 def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, signature_name: str = "") -> str:
     try:
         interpreting, transport = validate_claims(intake)
@@ -413,7 +445,7 @@ def resolve_email_body(intake: dict[str, Any], email_config: dict[str, Any], *, 
         raise IntakeError(str(exc)) from exc
     # A request-specific body remains verbatim. Configured bodies opt into the
     # selected PDF signature only by containing this exact template token.
-    if intake.get("email_body"):
+    if str(intake.get("email_body") or '').strip():
         body = str(intake["email_body"])
         if not interpreting and custom_transport_body_conflict(body):
             raise IntakeError('Travel-only email_body requests interpreting fees or asserts performed interpreting. Edit the custom body to request only transport, or change the claim choice.')
@@ -462,9 +494,7 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
             attachment_paths.append(attachment)
     attachment_path_strings = [str(path) for path in attachment_paths]
     attachment_hashes = {str(path): file_sha256(path) for path in attachment_paths}
-    subject = str(email_config.get("subject") or "Requerimento de honorários")
-    if intake.get('claim_interpreting', True) is False:
-        subject = 'Requerimento de despesas de transporte'
+    subject = resolve_email_subject(intake, email_config)
     body = resolve_email_body(intake, email_config, signature_name=signature_name)
     has_custom_body = bool(str(intake.get("email_body") or "").strip())
     gmail_create_draft_ready = True
@@ -522,6 +552,10 @@ def default_output_path(pdf_path: Path) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from scripts.request_exclusions import RequestExclusionError, require_requests_not_excluded
+    except ModuleNotFoundError:
+        from request_exclusions import RequestExclusionError, require_requests_not_excluded
     parser = argparse.ArgumentParser(description="Build a Gmail draft payload for a generated honorários PDF.")
     parser.add_argument("intake", type=Path, help="Path to intake JSON.")
     parser.add_argument("--pdf", required=True, type=Path, help="Generated PDF to attach.")
@@ -529,10 +563,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE, help="Generator profile used to resolve an opt-in email signature template.")
     parser.add_argument("--court-emails", type=Path, default=DEFAULT_COURT_EMAILS, help="Path to known court email directory.")
     parser.add_argument("--output", type=Path, help="Output draft payload JSON path.")
+    parser.add_argument("--duplicate-index", type=Path, default=ROOT / "data" / "duplicate-index.json",
+                        help="History path whose sibling request-exclusion ledger protects this runtime.")
     args = parser.parse_args(argv)
 
     try:
         intake = load_json(args.intake)
+        require_requests_not_excluded(intake, args.duplicate_index)
         email_config = load_json(args.email_config)
         directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
         signature_name = ""
@@ -545,7 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         output_path = args.output or default_output_path(args.pdf)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    except (IntakeError, OSError, json.JSONDecodeError) as exc:
+    except (IntakeError, RequestExclusionError, OSError, json.JSONDecodeError) as exc:
         print(f"Cannot build Gmail draft payload: {exc}", file=sys.stderr)
         return 2
 

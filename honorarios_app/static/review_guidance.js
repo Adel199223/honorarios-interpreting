@@ -140,6 +140,8 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   if (source === "service_profile") return { kind: "default", label: "Profile default · check it" };
   if (source === "known_destination") return { kind: "default", label: "Saved place/distance · check it" };
   if (source === "verified_gps_area") return { kind: "default", label: "GPS matched a verified local area" };
+  if (source === "verified_gps_source_venue") return { kind: "default", label: "GPS + source venue default · editable" };
+  if (source === "gnr_capture_city_default") return { kind: "default", label: "Your GNR + capture-city default · editable" };
   if (source === "embedded_location_created") return { kind: "metadata", label: "Embedded capture city" };
   if (source === "google_photos_creation_time") {
     return { kind: "metadata", label: "Google Photos date · timezone default is editable" };

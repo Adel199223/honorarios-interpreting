@@ -107,6 +107,24 @@ class VerifiedGpsCityTests(unittest.TestCase):
 
 
 class ConfirmedVenueTravelTests(unittest.TestCase):
+    def test_prosecutor_inquiry_section_before_city_uses_only_unambiguous_saved_distance(self):
+        from honorarios_app.personal_profiles import lookup_profile_distance
+        host = 'Procuradoria do Juízo Local Criminal - 1ª Sec Inquéritos de Capture City'
+        profile = {'travel_distances_by_city': {'Capture City': 31, 'Other City': 29, 'GNR de Capture City': 43}}
+        for venue, expected in (
+            (host, (31, 'Capture City')),
+            ('Ministério Público de Capture City', (31, 'Capture City')),
+            ('Procuradoria de Capture City', (31, 'Capture City')),
+            ('Procuradoria de Unknown City - Unidade de Capture City', (None, '')),
+            ('Procuradoria de Other City - 1ª Sec Inquéritos de Capture City', (None, '')),
+            ('Procuradoria do Juízo Local Criminal - Unidade de Capture City', (None, '')),
+            (host + ' - Unidade de Other City', (None, '')),
+        ):
+            with self.subTest(venue=venue):
+                self.assertEqual(lookup_profile_distance(profile, venue), expected)
+        profile['travel_distances_by_city'][host] = 35
+        self.assertEqual(lookup_profile_distance(profile, host), (35, host))
+
     def test_known_venue_city_before_unit_keeps_specific_station_priority_and_rejects_ambiguous_cities(self):
         from honorarios_app.personal_profiles import lookup_profile_distance
         profile = {'travel_distances_by_city': {'Capture City': 31, 'Other City': 29, 'GNR de Capture City': 43}}
@@ -136,6 +154,18 @@ class ConfirmedVenueTravelTests(unittest.TestCase):
                 effective, _ = apply_profile_defaults_to_intake(intake, profile)
                 self.assertEqual(effective['transport'], expected)
                 self.assertEqual(intake, before)
+
+    def test_recovered_mp_venue_preserves_manual_distance_zero_and_destination(self):
+        from honorarios_app.personal_profiles import apply_profile_defaults_to_intake
+        host = 'Procuradoria do Juízo Local Criminal - 2ª Sec Inquéritos de Capture City'
+        profile = {'travel_distances_by_city': {'Capture City': 31, 'Other City': 29}}
+        for transport in ({'destination': host, 'km_one_way': 0},
+                          {'destination': host, 'km_one_way': 37},
+                          {'destination': 'Manual City', 'km_one_way': 15}):
+            with self.subTest(transport=transport):
+                intake = {'service_place': host, 'claim_transport': True, 'transport': transport}
+                effective, _ = apply_profile_defaults_to_intake(intake, profile)
+                self.assertEqual(effective['transport'], transport)
 
 
 class PhotoMetadataTests(unittest.TestCase):

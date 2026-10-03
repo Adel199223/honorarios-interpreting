@@ -33,6 +33,19 @@ class WorkspaceDraftDomainTests(unittest.TestCase):
     def client(self):
         return TestClient(create_app(**runtime_path_overrides(self.root)), base_url="http://127.0.0.1")
 
+    def test_email_text_restores_as_unapproved_inputs(self):
+        request = self.request()
+        custom = {'email_subject': 'Requerimento de Honorários', 'email_body': '  Retificação fictícia.\nAssinatura\n'}
+        request['snapshot']['current_intake'].update(**custom, gmail_handoff_reviewed=True)
+        request['snapshot']['manual_fields'] = custom
+        result = self.client().post('/api/workspace/resume', json=request)
+        self.assertEqual(result.status_code, 200)
+        restored = result.json()['snapshot']
+        for key, value in custom.items():
+            self.assertEqual(restored['current_intake'][key], value)
+            self.assertEqual(restored['manual_fields'][key], value)
+        self.assertNotIn('gmail_handoff_reviewed', restored['current_intake'])
+
     def test_manual_visit_grouping_restores_inputs_without_preflight_or_draft_permissions(self):
         request = self.request()
         request['snapshot'].update(email_grouping='manual_visit', preflight_review={'token': 'old'}, gmail_handoff_reviewed=True)
@@ -153,6 +166,21 @@ console.log(JSON.stringify({before,current:a.state.currentIntake,queue:a.state.b
         self.assertEqual(result['answers'], '1. Unfinished answer')
         self.assertIsNone(result['prepared']); self.assertIsNone(result['preflight'])
         self.assertFalse(result['ack']); self.assertTrue(result['disabled'])
+        self.assertEqual([row['url'] for row in result['calls']], ['/api/workspace/resume'])
+
+    def test_email_edits_resume_in_visible_fields_without_approval(self):
+        result = self.run_js(r"""
+a.initializeWorkspaceDraft(workspace);a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);
+element('#email_subject').value='Requerimento de Honorários';element('#email_body').value='  Retificação fictícia.\nAssinatura\n';
+element('#intake-form').listeners.input({target:element('#email_body')});a.saveWorkspaceDraft();
+a.state.workspaceDraft={workspaceId:'',initialized:false};a.state.currentIntake=null;element('#email_subject').value='';element('#email_body').value='';
+a.initializeWorkspaceDraft(workspace);await a.resumeWorkspaceDraft();
+console.log(JSON.stringify({subject:element('#email_subject').value,body:element('#email_body').value,prepared:a.state.lastPrepared,ack:element('#gmail_handoff_reviewed').checked,calls}));
+""")
+        self.assertEqual(result['subject'], 'Requerimento de Honorários')
+        self.assertEqual(result['body'], '  Retificação fictícia.\nAssinatura\n')
+        self.assertIsNone(result['prepared'])
+        self.assertFalse(result['ack'])
         self.assertEqual([row['url'] for row in result['calls']], ['/api/workspace/resume'])
 
     def test_manual_visit_choice_survives_browser_snapshot_resume_with_fresh_preflight_required(self):

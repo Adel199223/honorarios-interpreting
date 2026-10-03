@@ -2802,13 +2802,13 @@ pre {
   }
 }
 .claim-choice-card { display: grid; gap: 0.65rem; }
-#camera-picker, #sent-duplicate-dialog { width: min(44rem, calc(100vw - 2rem)); max-height: 85vh; overflow: auto; color: var(--text, #e8f4fa); background: #0b2030; border: 1px solid #387187; border-radius: 1rem; padding: 1.4rem; }
-#camera-picker::backdrop, #sent-duplicate-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+#camera-picker, #sent-duplicate-dialog, #archive-draft-dialog { width: min(44rem, calc(100vw - 2rem)); max-height: 85vh; overflow: auto; color: var(--text, #e8f4fa); background: #0b2030; border: 1px solid #387187; border-radius: 1rem; padding: 1.4rem; }
+#camera-picker::backdrop, #sent-duplicate-dialog::backdrop, #archive-draft-dialog::backdrop { background: rgb(0 0 0 / 65%); }
 #camera-picker { width: min(72rem, calc(100vw - 2rem)); }
-#sent-duplicate-dialog h2 { margin-top: 0; }
-#sent-duplicate-details { white-space: pre-line; overflow-wrap: anywhere; padding: 1rem; background: #071722; border-radius: 0.7rem; }
-#sent-duplicate-dialog button { min-height: 44px; }
-#sent-duplicate-dialog button:focus-visible { outline: 2px solid #71d5f0; outline-offset: 2px; }
+#sent-duplicate-dialog h2, #archive-draft-dialog h2 { margin-top: 0; }
+#sent-duplicate-details, #archive-draft-details { white-space: pre-line; overflow-wrap: anywhere; padding: 1rem; background: #071722; border-radius: 0.7rem; }
+#sent-duplicate-dialog button, #archive-draft-dialog button { min-height: 44px; }
+#sent-duplicate-dialog button:focus-visible, #archive-draft-dialog button:focus-visible { outline: 2px solid #71d5f0; outline-offset: 2px; }
 .camera-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .camera-picker-heading h2 { margin: 0; }
 #camera-picker button { min-height: 44px; padding: 0.65rem 0.85rem; color: inherit; background: #071722; border: 1px solid #285368; border-radius: 0.7rem; cursor: pointer; }

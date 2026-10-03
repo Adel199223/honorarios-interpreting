@@ -246,7 +246,7 @@ def _undated_translation_key(row: Any) -> tuple[str, str, str] | None:
 
 def merge_history(local: list, incoming: list, *, duplicate: bool) -> list:
     result = {}
-    allowed_statuses = {"sent", "superseded", "trashed", "not_found"} | ({None, "", "drafted"} if duplicate else {"active"})
+    allowed_statuses = {"sent", "superseded", "trashed", "not_found", "archived"} | ({None, "", "drafted"} if duplicate else {"active"})
     for row in [*local, *incoming]:
         translation_key = _undated_translation_key(row) if duplicate else None
         if (not isinstance(row, dict) or (not all(request_identity_key(row)[:2]) and translation_key is None)
@@ -298,7 +298,8 @@ def validate_history_coverage(datasets: dict[str, Any]) -> None:
     duplicates = datasets.get("duplicate_index", [])
     attempts = datasets.get("gmail_attempts", [])
     for log in datasets.get("gmail_draft_log", []):
-        if log.get("status") not in {"active", "sent"}:
+        retained = log.get('duplicate_warning_retained') is True
+        if log.get("status") not in {"active", "sent"} and not retained:
             continue
         draft_id = log.get("draft_id")
         requests = log.get("underlying_requests") or [log]

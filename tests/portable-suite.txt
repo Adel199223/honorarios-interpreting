@@ -29,9 +29,14 @@ test_workspace_draft.py
 test_local_backup.py
 test_google_photos.py
 test_photo_metadata.py
+test_source_location.py
+test_request_exclusions.py
+test_request_exclusion_guards.py
+test_gnr_city_default.py
 test_early_duplicates.py
 test_camera_folder.py
 test_camera_picker_ui.py
 test_gmail_sent_sync.py
 test_gmail_sent_sync_api.py
 test_gmail_sent_sync_ui.py
+test_retained_draft_warnings.py
