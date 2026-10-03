@@ -11,6 +11,17 @@ from test_public_candidate_smoke import PublicCandidateSmokeTests
 
 
 class PublicUiTests(PublicCandidateSmokeTests):
+    def test_narrow_expanded_actions_reserve_space_for_change_source(self):
+        style = Path(__file__).resolve().parents[1].joinpath("honorarios_app/static/style.css").read_text(encoding="utf-8")
+        # The base desktop popover is absolute. The final narrow layout must
+        # override it in normal flow, so opening Advanced cannot cover the
+        # next source card; live pointer geometry is checked separately.
+        narrow = style[style.rindex("@media (max-width: 760px)"):]
+        rule = re.search(r"\.interpretation-action-rail \.action-overflow-content\s*\{([^}]+)\}", narrow)
+        self.assertIsNotNone(rule)
+        for declaration in ["position: static;", "min-width: 0;", "max-width: 100%;", "z-index: auto;"]:
+            self.assertIn(declaration, rule.group(1))
+
     def test_nested_review_module_uses_the_same_cache_version_as_the_entry_module(self):
         page = self.make_client().get("/").text
         match = re.search(r'<script type="importmap">(.*?)</script>', page, re.S)
@@ -59,7 +70,7 @@ class PublicUiTests(PublicCandidateSmokeTests):
             "Recover photo",
             "Or drop/paste a source here",
             "Other source options",
-            "Best result: upload the original or downloaded photo when you can.",
+            "Google Photos Picker supplies creation time but removes GPS location; enter the capture city if it is missing.",
             "Supporting proof / declarations",
             "Add supporting attachments",
             "Review Interpretation Request",

@@ -33,6 +33,16 @@ class WorkspaceDraftDomainTests(unittest.TestCase):
     def client(self):
         return TestClient(create_app(**runtime_path_overrides(self.root)), base_url="http://127.0.0.1")
 
+    def test_manual_visit_grouping_restores_inputs_without_preflight_or_draft_permissions(self):
+        request = self.request()
+        request['snapshot'].update(email_grouping='manual_visit', preflight_review={'token': 'old'}, gmail_handoff_reviewed=True)
+        result = self.client().post('/api/workspace/resume', json=request)
+        self.assertEqual(result.status_code, 200)
+        saved = result.json()['snapshot']
+        self.assertEqual(saved['email_grouping'], 'manual_visit')
+        self.assertNotIn('preflight_review', saved)
+        self.assertNotIn('gmail_handoff_reviewed', saved)
+
     def test_namespace_is_stable_opaque_and_changes_with_each_runtime_root(self):
         original = workspace_runtime_id(self.paths)
         self.assertRegex(original, r"^[a-f0-9]{64}$")
@@ -143,6 +153,23 @@ console.log(JSON.stringify({before,current:a.state.currentIntake,queue:a.state.b
         self.assertEqual(result['answers'], '1. Unfinished answer')
         self.assertIsNone(result['prepared']); self.assertIsNone(result['preflight'])
         self.assertFalse(result['ack']); self.assertTrue(result['disabled'])
+        self.assertEqual([row['url'] for row in result['calls']], ['/api/workspace/resume'])
+
+    def test_manual_visit_choice_survives_browser_snapshot_resume_with_fresh_preflight_required(self):
+        result = self.run_js("""
+const snapshot=g.workspaceDraftSnapshot({currentIntake:alpha,batchIntakes:[alpha,beta]}, {email_grouping:'manual_visit'});
+storage.set(g.workspaceDraftStorageKey(workspace),savedRecord(snapshot));a.initializeWorkspaceDraft(workspace);
+await a.resumeWorkspaceDraft();
+console.log(JSON.stringify({saved:snapshot.email_grouping,selected:element('#batch-email-grouping').value,
+ grouping:a.currentBatchEmailGrouping(),preflight:a.state.batchPreflight,prepared:a.state.lastPrepared,
+ disabled:element('#prepare-batch-intakes').disabled,calls}));
+""")
+        self.assertEqual(result['saved'], 'manual_visit')
+        self.assertEqual(result['selected'], 'manual_visit')
+        self.assertEqual(result['grouping'], 'manual_visit')
+        self.assertIsNone(result['preflight'])
+        self.assertIsNone(result['prepared'])
+        self.assertTrue(result['disabled'])
         self.assertEqual([row['url'] for row in result['calls']], ['/api/workspace/resume'])
 
     def test_manual_fields_save_without_building_and_restore_before_fresh_review(self):

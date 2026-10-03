@@ -529,6 +529,10 @@ pre {
   padding: 16px;
 }
 
+.simple-task-shell.has-review.source-review.source-options-open .secondary-upload-options {
+  display: block;
+}
+
 .simple-task-shell.has-review.source-review .review-source-change-hint {
   display: flex;
   align-items: center;
@@ -764,10 +768,16 @@ textarea {
 }
 
 .secondary-upload-options .upload-form {
+  min-width: 0;
   padding: 14px;
   border: 1px solid rgba(117, 218, 255, 0.14);
   border-radius: var(--radius-sm);
   background: rgba(3, 20, 34, 0.48);
+}
+
+.secondary-upload-options .upload-form > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .source-evidence-details small {
@@ -862,6 +872,7 @@ textarea {
 
 .google-photos-form-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -2686,8 +2697,14 @@ pre {
   .topbar {
     align-items: center;
     flex-direction: row;
+    flex-wrap: wrap;
     justify-content: space-between;
+    gap: 12px;
     padding: 16px;
+  }
+
+  .topbar > div:first-child {
+    flex-basis: 100%;
   }
 
   .topbar h2 {
@@ -2720,7 +2737,9 @@ pre {
   .form-grid,
   .workspace-action-buttons,
   .beginner-review-summary,
-  .field-inline {
+  .field-inline,
+  .primary-upload-grid .upload-form,
+  .google-photos-actions {
     grid-template-columns: 1fr;
   }
 
@@ -2740,6 +2759,14 @@ pre {
 
   .review-source-change-hint button {
     width: 100%;
+  }
+
+  /* Expanded actions must leave space for the following source controls. */
+  .interpretation-action-rail .action-overflow-content {
+    position: static;
+    min-width: 0;
+    max-width: 100%;
+    z-index: auto;
   }
 
   .beginner-question-list {
@@ -2775,5 +2802,39 @@ pre {
   }
 }
 .claim-choice-card { display: grid; gap: 0.65rem; }
+#camera-picker, #sent-duplicate-dialog { width: min(44rem, calc(100vw - 2rem)); max-height: 85vh; overflow: auto; color: var(--text, #e8f4fa); background: #0b2030; border: 1px solid #387187; border-radius: 1rem; padding: 1.4rem; }
+#camera-picker::backdrop, #sent-duplicate-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+#camera-picker { width: min(72rem, calc(100vw - 2rem)); }
+#sent-duplicate-dialog h2 { margin-top: 0; }
+#sent-duplicate-details { white-space: pre-line; overflow-wrap: anywhere; padding: 1rem; background: #071722; border-radius: 0.7rem; }
+#sent-duplicate-dialog button { min-height: 44px; }
+#sent-duplicate-dialog button:focus-visible { outline: 2px solid #71d5f0; outline-offset: 2px; }
+.camera-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.camera-picker-heading h2 { margin: 0; }
+#camera-picker button { min-height: 44px; padding: 0.65rem 0.85rem; color: inherit; background: #071722; border: 1px solid #285368; border-radius: 0.7rem; cursor: pointer; }
+#camera-picker button:hover:not(:disabled) { background: #16455a; border-color: #71d5f0; }
+#camera-picker button:focus-visible { outline: 2px solid #71d5f0; outline-offset: 2px; }
+#camera-picker button:disabled { opacity: 0.45; cursor: default; }
+.camera-picker-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr)); gap: 1rem; margin: 1rem 0; }
+#camera-picker .camera-photo-tile { display: grid; gap: 0; padding: 0; overflow: hidden; text-align: left; align-content: start; }
+.camera-photo-preview { position: relative; display: grid; place-items: center; width: 100%; height: clamp(14rem, 20vw, 16rem); background: #06131e; overflow: hidden; }
+.camera-photo-preview img { position: absolute; inset: 0; display: block; opacity: 0; width: 100%; height: 100%; object-fit: contain; }
+.camera-photo-preview.has-preview img { opacity: 1; }
+.camera-photo-placeholder { padding: 1rem; text-align: center; color: #a8c4d5; font-size: 0.9rem; }
+.camera-photo-placeholder::before { content: "▧"; display: block; font-size: 2.7rem; line-height: 1.4; color: #60b3cc; }
+.camera-photo-preview.has-preview .camera-photo-placeholder { display: none; }
+.camera-photo-caption { display: grid; gap: 0.35rem; padding: 0.85rem 0.9rem; overflow-wrap: anywhere; }
+.camera-photo-caption strong { font-size: 0.95rem; line-height: 1.35; }
+.camera-photo-caption small { color: #a8c4d5; font-size: 0.8rem; }
+@media (max-width: 520px) {
+  #camera-picker { width: calc(100vw - 1rem); padding: 1rem; }
+  .camera-picker-files { grid-template-columns: 1fr; }
+  .camera-photo-preview { height: 15rem; }
+  #camera-search-form { align-items: stretch; }
+  #camera-search { min-width: 0; width: 100%; }
+}
+#camera-source-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+#camera-source-controls.hidden { display: none; }
+#camera-selected-source { width: 100%; margin: 0; overflow-wrap: anywhere; }
 .claim-choice-card select { width: 100%; max-width: 34rem; }
 .source-travel-choice { margin: 0.8rem 0; padding: 0.8rem; border: 1px solid var(--panel-border); border-radius: 0.6rem; }

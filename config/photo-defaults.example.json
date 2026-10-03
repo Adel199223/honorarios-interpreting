@@ -2,5 +2,7 @@
   "capture_date_is_service_date": true,
   "photo_city_court": true,
   "missing_venue_is_city_court": true,
+  "capture_timezone": "",
+  "verified_gps_areas": [],
   "city_courts": {}
 }

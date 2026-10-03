@@ -5,7 +5,9 @@ import json
 import mimetypes
 import os
 import re
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +27,7 @@ DEFAULT_TIMEOUT_SECONDS = 90
 MAX_OUTPUT_TOKENS = 8192
 MAX_PDF_OCR_PAGES = 3
 AI_RECOVERY_SCHEMA_NAME = "honorarios_source_recovery"
-AI_RECOVERY_PROMPT_VERSION = "honorarios-source-notification-date-v5"
+AI_RECOVERY_PROMPT_VERSION = "honorarios-source-agency-place-v6"
 AI_RECOVERY_FIELD_NAMES = [
     "raw_case_number",
     "case_number",
@@ -297,6 +299,11 @@ def _prompt_for_source(source_kind: str, deterministic_text: str, source_metadat
         "Return court_email only for a clearly identified court recipient; leave it empty for absent, conflicting "
         "or multiple possible recipients. Do not guess a recipient from context.\n\n"
         "A police command or station header identifies the issuing/service entity, not the paying authority. "
+        "Extract each role independently: fill service_entity and service_entity_type whenever that agency is identifiable, "
+        "even when the physical host is cropped, missing or uncertain. A partial agency name corroborated by its visible "
+        "official contact domain can identify the agency; preserve the visible fragments in raw_visible_text. "
+        "Leave service_place empty and warn when the actual host cannot be established. A letterhead address alone "
+        "does not prove that interpreting happened there. Do not expand a partial address or invent an office name. "
         "Leave payment_entity empty unless a court or actual payer is explicitly identified.\n\n"
         "Translation requires explicit translation work or a document word-count request. "
         "Ordinary phrases containing palavras, such as por outras palavras, are not translation indicators.\n\n"
@@ -360,6 +367,75 @@ def _failure_reason(exc: Exception) -> str:
     if name in {"JSONDecodeError", "ValueError"}:
         return "AI reading did not return a complete valid extraction. Its fields were ignored."
     return "AI reading failed. Its fields were ignored; review the visible source or try again explicitly."
+
+
+def _metadata_field(value: Any, name: str) -> Any:
+    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+def _usage_count(value: Any) -> int | None:
+    return value if type(value) is int and 0 <= value <= 2**53 - 1 else None
+
+
+def _metadata_token(value: Any, *, prefix: str = "") -> str | None:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", value):
+        return None
+    if value.lower().startswith(("sk-", "bearer")) or (prefix and not value.startswith(prefix)):
+        return None
+    return value
+
+
+def safe_api_usage_metadata(value: Any) -> dict[str, Any]:
+    """Keep only bounded provider accounting metadata, never source text or secrets.
+
+    Cache reads/writes are subsets of input; reasoning is a subset of output.
+    Missing or inconsistent counters remain unknown rather than becoming zero.
+    """
+    usage = _metadata_field(value, "usage")
+    input_details = _metadata_field(usage, "input_tokens_details")
+    output_details = _metadata_field(usage, "output_tokens_details")
+    input_tokens = _usage_count(_metadata_field(usage, "input_tokens"))
+    output_tokens = _usage_count(_metadata_field(usage, "output_tokens"))
+    total_tokens = _usage_count(_metadata_field(usage, "total_tokens"))
+    cached_tokens = _usage_count(_metadata_field(input_details, "cached_tokens"))
+    cache_write_tokens = _usage_count(_metadata_field(input_details, "cache_write_tokens"))
+    reasoning_tokens = _usage_count(_metadata_field(output_details, "reasoning_tokens"))
+    if input_tokens is not None:
+        if cached_tokens is not None and cached_tokens > input_tokens:
+            cached_tokens = None
+        if cache_write_tokens is not None and cache_write_tokens > input_tokens:
+            cache_write_tokens = None
+        if cached_tokens is not None and cache_write_tokens is not None and cached_tokens + cache_write_tokens > input_tokens:
+            cached_tokens = cache_write_tokens = None
+    if output_tokens is not None and reasoning_tokens is not None and reasoning_tokens > output_tokens:
+        reasoning_tokens = None
+    if input_tokens is not None and output_tokens is not None and total_tokens is not None and total_tokens != input_tokens + output_tokens:
+        total_tokens = None
+    started_at = _metadata_field(value, "started_at")
+    try:
+        started = datetime.fromisoformat(started_at) if isinstance(started_at, str) and len(started_at) <= 40 else None
+        started_at = started.astimezone(timezone.utc).isoformat() if started and started.tzinfo else None
+    except (ValueError, OverflowError):
+        started_at = None
+    status = _metadata_field(value, "response_status")
+    tier = _metadata_field(value, "service_tier")
+    return {
+        "requested_model": _metadata_token(_metadata_field(value, "requested_model")),
+        "model": _metadata_token(_metadata_field(value, "model")),
+        "response_id": _metadata_token(_metadata_field(value, "response_id"), prefix="resp_"),
+        "request_id": _metadata_token(_metadata_field(value, "request_id"), prefix="req_"),
+        "response_status": status if isinstance(status, str) and status in {"completed", "incomplete", "failed", "cancelled", "queued", "in_progress"} else None,
+        "service_tier": tier if isinstance(tier, str) and tier in {"auto", "default", "flex", "scale", "priority"} else None,
+        "started_at": started_at,
+        "elapsed_ms": _usage_count(_metadata_field(value, "elapsed_ms")),
+        "usage": {
+            "input_tokens": input_tokens,
+            "input_tokens_details": {"cached_tokens": cached_tokens, "cache_write_tokens": cache_write_tokens},
+            "output_tokens": output_tokens,
+            "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
+            "total_tokens": total_tokens,
+        },
+    }
 
 
 def _content_item_for_source(content: bytes, source_kind: str, filename: str, content_type: str) -> dict[str, Any]:
@@ -492,27 +568,50 @@ def recover_source_with_openai(
             "warnings": [],
         }
 
+    provider_attempted = False
+    usage_metadata: dict[str, Any] = {}
+    response = None
+    provider_request_id = None
     try:
         client = OpenAI(api_key=api_key, max_retries=0, timeout=config.timeout_seconds)
         prompt = _prompt_for_source(source_kind, deterministic_text, source_metadata)
         source_items = _content_items_for_source(content, source_kind, filename, content_type, rendered_page_images)
-        response = client.responses.create(
-            model=config.model,
-            instructions=prompt,
-            reasoning={"effort": config.reasoning_effort},
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": _source_context(deterministic_text, source_metadata)},
-                        *source_items,
-                    ],
-                }
-            ],
-            text=AI_RECOVERY_RESPONSE_FORMAT,
-            store=False,
-        )
+        started_at = datetime.now(timezone.utc).isoformat()
+        started_clock = time.perf_counter()
+        provider_attempted = True
+        try:
+            response = client.responses.create(
+                model=config.model,
+                instructions=prompt,
+                reasoning={"effort": config.reasoning_effort},
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": _source_context(deterministic_text, source_metadata)},
+                            *source_items,
+                        ],
+                    }
+                ],
+                text=AI_RECOVERY_RESPONSE_FORMAT,
+                store=False,
+            )
+        except Exception as provider_error:
+            provider_request_id = getattr(provider_error, "request_id", None)
+            raise
+        finally:
+            usage_metadata = safe_api_usage_metadata({
+                "requested_model": config.model,
+                "model": _metadata_field(response, "model"),
+                "response_id": _metadata_field(response, "id"),
+                "request_id": _metadata_field(response, "_request_id") or provider_request_id,
+                "response_status": _metadata_field(response, "status"),
+                "service_tier": _metadata_field(response, "service_tier"),
+                "started_at": started_at,
+                "elapsed_ms": max(0, round((time.perf_counter() - started_clock) * 1000)),
+                "usage": _metadata_field(response, "usage"),
+            })
         if getattr(response, "status", "completed") != "completed":
             raise ValueError("Incomplete provider extraction.")
         text = _extract_output_text(response)
@@ -520,7 +619,7 @@ def recover_source_with_openai(
     except Exception as exc:  # noqa: BLE001
         return {
             "status": "failed",
-            "attempted": True,
+            "attempted": provider_attempted,
             "configured": True,
             "reason": _failure_reason(exc),
             "provider": "openai",
@@ -531,6 +630,7 @@ def recover_source_with_openai(
             "missing_fields": [],
             "translation_indicators": [],
             "warnings": [],
+            **({"api_usage": usage_metadata} if provider_attempted else {}),
         }
 
     if not normalized["raw_visible_text"]:
@@ -547,6 +647,7 @@ def recover_source_with_openai(
             "missing_fields": normalized["missing_fields"],
             "translation_indicators": normalized["translation_indicators"],
             "warnings": [*normalized["warnings"], "No raw visible text returned."],
+            "api_usage": usage_metadata,
         }
 
     return {
@@ -558,5 +659,6 @@ def recover_source_with_openai(
         "model": config.model,
         "schema_name": AI_RECOVERY_SCHEMA_NAME,
         "prompt_version": AI_RECOVERY_PROMPT_VERSION,
+        "api_usage": usage_metadata,
         **normalized,
     }

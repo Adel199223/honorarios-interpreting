@@ -60,6 +60,87 @@ class LocalBackupTests(unittest.TestCase):
             transport.assert_not_called()
         return response
 
+    def translation_receipt(self, source="fictional-translation-a", **changes):
+        return {"status": "sent", "case_number": "701/22.0TSTXX", "service_date": "",
+                "request_type": "translation_fee_request", "source_classification": "translation_set_aside",
+                "source_message_id": source, "source_filename": "fictional-written-fees.pdf",
+                "recipient_email": "fictional.court@example.test", "sent_date": "2026-01-13", **changes}
+
+    def test_exported_undated_translation_history_previews_restores_and_repeats_without_coalescing(self):
+        receipts = [self.translation_receipt(), self.translation_receipt("fictional-translation-b"),
+                    self.translation_receipt("fictional-translation-a", case_number="702/23.0TSTXX")]
+        interpreting = {"status": "sent", "case_number": "701/22.0TSTXX", "service_date": "2026-01-29",
+                        "source_message_id": "fictional-interpreting", "request_type": "interpreting"}
+        original = [*receipts, interpreting]
+        atomic_write_json(self.paths.duplicate_index, original)
+        snapshot = self.snapshot()
+        self.assertEqual(services.preview_local_backup_import({"backup": snapshot}, self.paths)["status"], "ready")
+        destination = self.destination()
+        for _ in range(2):
+            self.restore(snapshot, destination)
+            self.assertEqual(json.loads(destination.duplicate_index.read_text()), original)
+        self.assertEqual(services.draft_lifecycle_for_intake({"case_number": "701/22.0TSTXX", "service_date": "2026-01-28"}, destination)["status"], "clear")
+        self.assertNotEqual(services.draft_lifecycle_for_intake(interpreting, destination)["status"], "clear")
+        self.restore(snapshot)
+        self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), original)
+
+    def test_older_backup_preserves_newer_local_undated_translation_receipts(self):
+        old = self.snapshot()
+        receipts = [self.translation_receipt(), self.translation_receipt("fictional-translation-b")]
+        atomic_write_json(self.paths.duplicate_index, receipts)
+        self.restore(old)
+        self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), receipts)
+
+    def test_confirmed_paper_history_round_trip_preserves_evidence_and_duplicate_protection(self):
+        intake = self.rows(1)[0]
+        record = {key: intake[key] for key in ('case_number', 'service_date')}
+        record.update(status='sent', submission_channel='paper', submission_evidence='user_confirmed',
+                      source_filename='fictional-signed-fees.jpg', source_sha256='a' * 64,
+                      submission_source_note='User confirmed this signed paper request was submitted.')
+        atomic_write_json(self.paths.duplicate_index, [record])
+        snapshot = self.snapshot()
+        destination = self.destination('paper-history-restored')
+        self.assertEqual(services.preview_local_backup_import({'backup': snapshot}, destination)['status'], 'ready')
+        for _ in range(2):
+            self.restore(snapshot, destination)
+            self.assertEqual(json.loads(destination.duplicate_index.read_text()), [record])
+        self.restore(snapshot)
+        self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), [record])
+        lifecycle = services.draft_lifecycle_for_intake(intake, destination)
+        self.assertEqual(lifecycle['status'], 'blocked')
+        self.assertFalse(lifecycle['replacement_allowed'])
+        self.assertIn('already submitted on paper', lifecycle['message'])
+        self.assertEqual(lifecycle['duplicate']['submission_channel'], 'paper')
+        result = services.review_intake(intake, destination)
+        self.assertEqual(result['status'], 'duplicate')
+        self.assertIn('already submitted on paper', result['message'])
+        for field in ('draft_id', 'message_id', 'thread_id', 'sent_date'):
+            self.assertNotIn(field, result['duplicate'])
+
+    def test_undated_translation_source_conflicts_stop_before_restore_writes(self):
+        receipt = self.translation_receipt(source_pdf_sha256="a" * 64)
+        atomic_write_json(self.paths.duplicate_index, [receipt])
+        original = self.snapshot()
+        for field, value in (("recipient_email", "other@example.test"), ("source_filename", "different.pdf"),
+                             ("source_pdf_sha256", "b" * 64), ("sent_date", "2026-01-14")):
+            with self.subTest(field=field):
+                snapshot = copy.deepcopy(original)
+                snapshot["datasets"]["duplicate_index"][0][field] = value
+                with self.assertRaisesRegex(IntakeError, "conflicting draft identities"):
+                    self.restore(snapshot)
+                self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), [receipt])
+
+    def test_blank_interpreting_draft_or_unbound_translation_identity_is_still_rejected(self):
+        receipt = self.translation_receipt()
+        for changes in ({"request_type": "interpreting"}, {"source_classification": "in_person_interpreting"},
+                        {"status": "drafted"}, {"draft_id": "fictional-draft"}, {"source_message_id": ""},
+                        {"claim_interpreting": True}, {"claim_transport": True},
+                        {"underlying_requests": [{"case_number": "701/22.0TSTXX", "service_date": ""}]}):
+            with self.subTest(changes=changes), self.assertRaises(IntakeError):
+                backup.merge_history([], [{**receipt, **changes}], duplicate=True)
+        with self.assertRaises(IntakeError):
+            backup.merge_history([], [receipt], duplicate=False)
+
     def test_pending_group_backup_moves_original_files_and_recovers_exact_two_requests(self):
         original = self.pending(partial=True)
         snapshot = self.snapshot()

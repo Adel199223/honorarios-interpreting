@@ -100,5 +100,5 @@ def validate_workspace_resume(payload: dict[str, Any], paths: Any, profiles: dic
                 "schema_version": 1, "current_intake": current, "current_evidence": editable(snapshot.get("current_evidence", {})),
                 "source_cases": restored_cases, "selected_case": selected, "travel_choice": editable(snapshot.get("travel_choice")),
                 "batch_intakes": restored_batch, "answers": str(snapshot.get("answers") or ""),
-                "email_grouping": "individual" if snapshot.get("email_grouping") == "individual" else "source",
+                "email_grouping": snapshot.get("email_grouping") if snapshot.get("email_grouping") in ("individual", "manual_visit") else "source",
                 "packet_mode": snapshot.get("packet_mode") is True, "manual_fields": manual}}

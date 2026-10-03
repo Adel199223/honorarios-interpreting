@@ -14,6 +14,7 @@ PRIVATE_PATHS = [
     "config/profile.json",
     "config/email.json",
     "config/*.local.json",
+    "config/*.oauth.lock",
     "data/gmail-draft-log.json",
     "data/duplicate-index.json",
     "data/profile-change-log.json",

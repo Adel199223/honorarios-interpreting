@@ -27,6 +27,9 @@ PUBLIC_TEST_FILES = frozenset({
     'test_source_decisions.py', 'test_public_ai_recovery.py',
     'test_photo_defaults.py', 'test_multi_case_sources.py', 'test_claim_options.py', 'test_claim_options_ui.py', 'test_email_routing.py', 'test_email_routing_ui.py',
     'test_source_email_groups.py', 'test_workspace_draft.py', 'test_local_backup.py',
+    'test_google_photos.py', 'test_photo_metadata.py',
+    'test_early_duplicates.py', 'test_camera_folder.py', 'test_camera_picker_ui.py',
+    'test_gmail_sent_sync.py', 'test_gmail_sent_sync_api.py', 'test_gmail_sent_sync_ui.py',
 })
 PUBLIC_EVALUATION_FILES = frozenset({'examples/source-quality-cases.json'})
 

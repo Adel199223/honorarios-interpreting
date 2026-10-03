@@ -569,6 +569,225 @@ class BatchPeriodOverlapTests(unittest.TestCase):
         self.assert_no_artifacts()
 
 
+class ManualHistoryGuardsTests(unittest.TestCase):
+    """Late history and reservations must protect individual and packet emails."""
+    setUp = SourceEmailGroupsTests.setUp
+    rows = SourceEmailGroupsTests.rows
+    request = SourceEmailGroupsTests.request
+    record_args = SourceEmailGroupsTests.record_args
+    record = SourceEmailGroupsTests.record
+
+    def prepared(self, mode, **options):
+        rows = self.rows(2 if mode == 'packet' else 1)
+        result = prepare_intakes(rows, self.paths, packet_mode=mode == 'packet', **options)
+        return result, result['packet'] if mode == 'packet' else result['items'][0]
+
+    def clean_history(self):
+        self.paths.draft_log.write_text('[]', encoding='utf-8')
+        self.paths.duplicate_index.write_text('[]', encoding='utf-8')
+        self.paths.draft_log.with_name('gmail-create-attempts.local.json').unlink(missing_ok=True)
+
+    def history_bytes(self):
+        return self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()
+
+    def test_late_sent_or_drafted_blocks_handoff_app_record_and_cli_without_writes(self):
+        for mode in ('individual', 'packet'):
+            for status in ('sent', 'drafted'):
+                with self.subTest(mode=mode, status=status):
+                    self.clean_history()
+                    prepared, target = self.prepared(mode)
+                    source = json.loads(Path(target['draft_payload']).read_text(encoding='utf-8'))
+                    member = (source.get('underlying_requests') or [source])[-1]
+                    blocker = {**member, 'status': status, 'draft_id': 'fictional-other' if status == 'drafted' else '',
+                               'source_message_id': 'fictional-sent-proof', 'sent_date': '2026-10-02'}
+                    self.paths.duplicate_index.write_text(json.dumps([blocker]), encoding='utf-8')
+                    before = self.history_bytes()
+                    with self.assertRaises(IntakeError):
+                        manual_handoff_packet(self.request(prepared, target), self.paths)
+                    with self.assertRaises(IntakeError):
+                        record_draft({**self.request(prepared, target), 'draft_id': 'fictional-new', 'message_id': 'fictional-new-message'}, self.paths)
+                    self.assertEqual(self.record(target), 2)
+                    self.assertEqual(self.history_bytes(), before)
+
+    def test_uncertain_reservation_blocks_app_and_cli_record_without_writes(self):
+        from honorarios_app.gmail_attempts import new_attempt, save_attempts
+        for mode in ('individual', 'packet'):
+            with self.subTest(mode=mode):
+                self.clean_history()
+                prepared, target = self.prepared(mode)
+                source = json.loads(Path(target['draft_payload']).read_text(encoding='utf-8'))
+                save_attempts(self.paths.draft_log, [{**new_attempt(source.get('underlying_requests') or [source], payload=target['draft_payload']), 'state': 'uncertain'}])
+                before = self.history_bytes()
+                with self.assertRaisesRegex(IntakeError, 'pending Gmail attempt'):
+                    manual_handoff_packet(self.request(prepared, target), self.paths)
+                with self.assertRaisesRegex(IntakeError, 'pending Gmail attempt'):
+                    record_draft({**self.request(prepared, target), 'draft_id': 'fictional-new', 'message_id': 'fictional-new-message'}, self.paths)
+                self.assertEqual(self.record(target), 2)
+                self.assertEqual(self.history_bytes(), before)
+
+    def test_manual_recorder_waits_for_create_reservation_then_refuses_other_ids(self):
+        import threading
+        from honorarios_app.gmail_attempts import attempt_lock, new_attempt, save_attempts
+        prepared, target = self.prepared('individual')
+        source = json.loads(Path(target['draft_payload']).read_text(encoding='utf-8'))
+        started, finished = threading.Event(), threading.Event()
+        outcomes = []
+        request = {**self.request(prepared, target), 'draft_id': 'fictional-late', 'message_id': 'fictional-late-message'}
+        def worker():
+            started.set()
+            try:
+                record_draft(request, self.paths)
+                outcomes.append('incorrectly recorded')
+            except IntakeError as exc:
+                outcomes.append(str(exc))
+            finally:
+                finished.set()
+        before = self.history_bytes()
+        thread = threading.Thread(target=worker)
+        try:
+            with attempt_lock(self.paths.draft_log):
+                thread.start()
+                self.assertTrue(started.wait(2))
+                self.assertFalse(finished.wait(0.05))
+                save_attempts(self.paths.draft_log, [{**new_attempt([source], payload=target['draft_payload']), 'state': 'uncertain'}])
+        finally:
+            if thread.ident is not None:
+                thread.join(5)
+        self.assertFalse(thread.is_alive(), 'Manual recording did not finish after the reservation lock released')
+        self.assertIn('pending Gmail attempt', outcomes[0])
+        self.assertEqual(self.history_bytes(), before)
+
+    def test_exact_manual_retry_repairs_partial_history_and_manual_sent_is_terminal(self):
+        for mode in ('individual', 'packet'):
+            with self.subTest(mode=mode):
+                self.clean_history()
+                prepared, target = self.prepared(mode)
+                request = {**self.request(prepared, target), 'draft_id': 'fictional-retry', 'message_id': 'fictional-retry-message'}
+                with patch('scripts.record_gmail_draft.write_duplicate_index', side_effect=PermissionError('Fictional index lock')):
+                    with self.assertRaises(IntakeError):
+                        record_draft(request, self.paths)
+                self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
+                self.assertEqual(json.loads(self.paths.duplicate_index.read_text()), [])
+                record_draft(request, self.paths)
+                record_draft(request, self.paths)
+                record_draft({'payload': target['draft_payload'], 'draft_id': request['draft_id'], 'message_id': request['message_id'],
+                              'status': 'sent', 'sent_date': '2026-10-02'}, self.paths)
+                before = self.history_bytes()
+                with self.assertRaisesRegex(IntakeError, 'already sent or retired'):
+                    record_draft(request, self.paths)
+                arguments = self.record_args(target)
+                arguments[arguments.index('--draft-id') + 1] = request['draft_id']
+                arguments[arguments.index('--message-id') + 1] = request['message_id']
+                with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                    self.assertEqual(record_cli(arguments), 2)
+                self.assertEqual(self.history_bytes(), before)
+                index = json.loads(self.paths.duplicate_index.read_text())
+                self.assertEqual(len(index), 2 if mode == 'packet' else 1)
+                self.assertTrue(all(row['status'] == 'sent' for row in index))
+
+    def test_sent_index_surviving_partial_sync_cannot_be_downgraded_by_active_log_retry(self):
+        prepared, target = self.prepared('individual')
+        self.assertEqual(self.record(target), 0)
+        index = json.loads(self.paths.duplicate_index.read_text())
+        index[0].update(status='sent', sent_message_id='fictional-sent-proof', sent_date='2026-10-02')
+        self.paths.duplicate_index.write_text(json.dumps(index), encoding='utf-8')
+        before = self.history_bytes()
+        self.assertEqual(self.record(target), 2)
+        self.assertEqual(self.history_bytes(), before)
+
+    def test_retired_same_id_retry_cannot_reactivate_individual_or_packet(self):
+        for mode in ('individual', 'packet'):
+            with self.subTest(mode=mode):
+                self.clean_history()
+                _, target = self.prepared(mode)
+                self.assertEqual(self.record(target), 0)
+                self.assertEqual(self.record(target, 'trashed'), 0)
+                before = self.history_bytes()
+                self.assertEqual(self.record(target), 2)
+                self.assertEqual(self.history_bytes(), before)
+
+    def test_pending_exact_returned_ids_can_finish_only_original_reviewed_payload(self):
+        from honorarios_app.gmail_attempts import new_attempt, save_attempts
+        for mode in ('individual', 'packet'):
+            with self.subTest(mode=mode):
+                self.clean_history()
+                prepared, target = self.prepared(mode)
+                payload_path = Path(target['draft_payload'])
+                source = json.loads(payload_path.read_text(encoding='utf-8'))
+                result = {'draft_id': 'fictional-group-draft', 'message_id': 'fictional-group-message'}
+                manifest = json.loads(Path(prepared['manifest']).read_text(encoding='utf-8'))
+                binding = next(row for row in manifest['prepared_review_material']['targets'] if row['draft_payload'] == str(payload_path))
+                attempt = {**new_attempt(source.get('underlying_requests') or [source], payload=str(payload_path), target=binding),
+                           'state': 'created_unrecorded', 'gmail_result': result}
+                save_attempts(self.paths.draft_log, [attempt])
+                before = self.history_bytes()
+                arguments = self.record_args(target)
+                arguments[arguments.index('--message-id') + 1] = 'fictional-unrelated-message'
+                with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                    self.assertEqual(record_cli(arguments), 2)
+                self.assertEqual(self.history_bytes(), before)
+                self.assertEqual(self.record(target), 0)
+                self.assertEqual(self.record(target), 0)
+                self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
+                self.assertEqual(len(json.loads(self.paths.duplicate_index.read_text())), 2 if mode == 'packet' else 1)
+
+    def test_pending_completion_rejects_changed_original_payload_with_same_ids(self):
+        from honorarios_app.gmail_attempts import new_attempt, save_attempts
+        prepared, target = self.prepared('individual')
+        path = Path(target['draft_payload'])
+        source = json.loads(path.read_text(encoding='utf-8'))
+        manifest = json.loads(Path(prepared['manifest']).read_text(encoding='utf-8'))
+        binding = manifest['prepared_review_material']['targets'][0]
+        attempt = {**new_attempt([source], payload=str(path), target=binding), 'state': 'created_unrecorded',
+                   'gmail_result': {'draft_id': 'fictional-group-draft', 'message_id': 'fictional-group-message'}}
+        save_attempts(self.paths.draft_log, [attempt])
+        # Still valid JSON and draft-only, but not the original immutable request.
+        path.write_text(path.read_text(encoding='utf-8') + ' ', encoding='utf-8')
+        before = self.history_bytes()
+        self.assertEqual(self.record(target), 2)
+        self.assertEqual(self.history_bytes(), before)
+
+    def test_same_id_changed_message_recipient_identity_or_payload_never_rebinds_history(self):
+        for mode in ('individual', 'packet'):
+            for change in ('message', 'recipient', 'case', 'payload'):
+                with self.subTest(mode=mode, change=change):
+                    self.clean_history()
+                    _, target = self.prepared(mode)
+                    self.assertEqual(self.record(target), 0)
+                    before = self.history_bytes()
+                    arguments = self.record_args(target)
+                    if change == 'message':
+                        arguments[arguments.index('--message-id') + 1] = 'fictional-different-message'
+                    elif change == 'recipient':
+                        arguments += ['--recipient', 'fictional-different@example.invalid']
+                    elif change == 'case':
+                        arguments += ['--case-number', '999/26.0TSTXX']
+                    else:
+                        path = Path(target['draft_payload'])
+                        data = json.loads(path.read_text())
+                        data['send_allowed'] = True
+                        path.write_text(json.dumps(data), encoding='utf-8')
+                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                        self.assertEqual(record_cli(arguments), 2)
+                    self.assertEqual(self.history_bytes(), before)
+
+    def test_prepared_correction_keeps_all_packet_children_and_retires_only_original(self):
+        for mode in ('individual', 'packet'):
+            with self.subTest(mode=mode):
+                self.clean_history()
+                _, original = self.prepared(mode)
+                self.assertEqual(self.record(original), 0)
+                reason = 'Correct fictional travel wording for every request.'
+                prepared, corrected = self.prepared(mode, correction_reason=reason)
+                request = {**self.request(prepared, corrected), 'draft_id': 'fictional-corrected', 'message_id': 'fictional-corrected-message',
+                           'supersedes': ['fictional-group-draft'], 'correction_reason': reason}
+                self.assertEqual(manual_handoff_packet(request, self.paths)['status'], 'ready')
+                record_draft(request, self.paths)
+                self.assertEqual([row['status'] for row in json.loads(self.paths.draft_log.read_text())], ['superseded', 'active'])
+                index = json.loads(self.paths.duplicate_index.read_text())
+                self.assertEqual(sum(row['status'] == 'drafted' for row in index), 2 if mode == 'packet' else 1)
+
+
 class GmailAttemptRecoveryTests(unittest.TestCase):
     """Offline transport faults exercise real create/recovery endpoints."""
     setUp = SourceEmailGroupsTests.setUp
@@ -816,6 +1035,265 @@ class GmailAttemptRecoveryTests(unittest.TestCase):
         recovery['raw_visible_text'] = unseen
         merged = merge_ai_recovery_into_intake(copy.deepcopy(self.intake), recovery)
         self.assertEqual(merged['recipient_email'], SYNTHETIC_COURT_EMAIL)
+
+
+class ManualVisitEmailTests(unittest.TestCase):
+    setUp = SourceEmailGroupsTests.setUp
+    request = SourceEmailGroupsTests.request
+    assert_no_artifacts = SourceEmailGroupsTests.assert_no_artifacts
+
+    def test_manual_court_payer_gets_standard_title_through_review_and_pdf(self):
+        from pypdf import PdfReader
+        payer = 'Tribunal de Fictional City'
+        profiles = json.loads(self.paths.service_profiles.read_text(encoding='utf-8'))
+        defaults = profiles['example_interpreting']['defaults']
+        defaults.pop('addressee', None)
+        defaults.pop('payment_entity', None)
+        defaults.update(service_entity=payer, service_entity_type='court', entities_differ=False,
+                        service_place=payer, service_place_phrase=f'no {payer}')
+        self.paths.service_profiles.write_text(json.dumps(profiles), encoding='utf-8')
+        contacts = json.loads(self.paths.court_emails.read_text(encoding='utf-8'))
+        contacts[0]['payment_entity_aliases'].append(payer)
+        self.paths.court_emails.write_text(json.dumps(contacts), encoding='utf-8')
+        client = TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1')
+        created = client.post('/api/intake/from-profile', json={'profile': 'example_interpreting',
+            'case_number': '890/26.0TSTXX', 'service_date': '2026-02-13', 'payment_entity': payer})
+        self.assertEqual(created.status_code, 200, created.text)
+        intake = created.json()['intake']
+        self.assertEqual(intake['addressee'], f'Exmo. Senhor Juiz de Direito\n{payer}')
+        # A held request made by the old form has no title; ordinary re-review repairs it.
+        intake.pop('addressee')
+        reviewed = client.post('/api/review', json={'intake': intake}).json()
+        self.assertEqual(reviewed['status'], 'ready', reviewed)
+        self.assertIn('Exmo. Senhor Juiz de Direito', reviewed['draft_text'])
+        payload = {'intakes': [reviewed['effective_intake']], 'email_grouping': 'individual'}
+        checked = client.post('/api/prepare/preflight', json=payload).json()
+        self.assertEqual(checked['status'], 'ready', checked)
+        prepared = client.post('/api/prepare', json={**payload, 'preflight_review': checked['preflight_review']})
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        text = '\n'.join(page.extract_text() for page in PdfReader(prepared.json()['items'][0]['pdf']).pages)
+        self.assertIn('Exmo. Senhor Juiz de Direito', text)
+        self.assertIn(payer, text)
+
+    def test_missing_manual_title_distinguishes_mp_and_preserves_custom_or_noncourt(self):
+        for payer, custom, expected in [
+            ('Ministério Público de Fictional City', '', 'Exmo. Senhor Procurador da República\nMinistério Público de Fictional City'),
+            ('Tribunal de Fictional City', 'Exma. Senhora Juíza\nCustom chamber', 'Exma. Senhora Juíza\nCustom chamber'),
+            ('Fictional Private Office', '', ''),
+        ]:
+            with self.subTest(payer=payer, custom=custom):
+                row = copy.deepcopy(self.intake)
+                row.update(payment_entity=payer, addressee=custom)
+                effective, _, _ = effective_intake_for_profile(row, self.paths)
+                self.assertEqual(effective.get('addressee', ''), expected)
+
+    def test_normal_manual_profile_answers_reach_group_preflight_without_source_cleanup(self):
+        client = TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1')
+        rows = []
+        for index in range(2):
+            created = client.post('/api/intake/from-profile', json={'profile': 'example_interpreting'})
+            self.assertEqual(created.status_code, 200, created.text)
+            intake = created.json()['intake']
+            self.assertNotIn('source_filename', intake)
+            reviewed = client.post('/api/review', json={'intake': intake}).json()
+            answers = {'case_number': f'{880 + index}/26.0TSTXX', 'service_date': '2026-02-13'}
+            self.assertEqual({q['field'] for q in reviewed['questions']}, set(answers))
+            answer_text = '\n'.join(f"{position}. {answers[q['field']]}"
+                                    for position, q in enumerate(reviewed['questions'], 1))
+            answered = client.post('/api/review/apply-answers', json={'intake': reviewed['intake'], 'answers': answer_text})
+            self.assertEqual(answered.status_code, 200, answered.text)
+            self.assertEqual(answered.json()['status'], 'ready', answered.text)
+            row = answered.json()['effective_intake']
+            row.update(claim_interpreting=True, claim_transport=index == 0)
+            self.assertNotIn('source_filename', row)
+            rows.append(row)
+        checked = client.post('/api/prepare/preflight', json={'intakes': rows, 'email_grouping': 'manual_visit'})
+        self.assertEqual(checked.status_code, 200, checked.text)
+        self.assertEqual(checked.json()['status'], 'ready', checked.text)
+        self.assertEqual(len(checked.json()['email_groups']), 1)
+        self.assert_no_artifacts()
+
+    def test_profile_autofill_does_not_invent_filename_but_explicit_source_still_blocks(self):
+        from honorarios_app.services import review_intake_with_profile_evidence
+        row = self.rows()[0]
+        row['auto_profile'] = {'profile_key': 'example_interpreting', 'auto_applied': True}
+        reviewed = review_intake_with_profile_evidence(row, self.paths)
+        self.assertNotIn('source_filename', reviewed['intake'])
+        self.assertNotIn('source_filename', reviewed['effective_intake'])
+        client = TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1')
+        created = client.post('/api/intake/from-profile', json={'profile': 'example_interpreting',
+            'case_number': '881/26.0TSTXX', 'service_date': '2026-02-13', 'source_filename': 'actual-notice.pdf'})
+        self.assertEqual(created.status_code, 200, created.text)
+        explicit = created.json()['intake']
+        self.assertEqual(explicit['source_filename'], 'actual-notice.pdf')
+        explicit['claim_transport'] = False
+        first = copy.deepcopy(explicit)
+        first.update(case_number='880/26.0TSTXX', claim_transport=True)
+        checked = preflight_intakes([first, explicit], self.paths, email_grouping='manual_visit')
+        self.assertEqual(checked['status'], 'blocked')
+        self.assertIn('manually entered requests only', checked['message'])
+        row.update(source_kind='photo', source_file='actual-notice.jpg', source_sha256='a' * 64,
+                   source_filename='actual-notice.jpg')
+        uploaded = review_intake_with_profile_evidence(row, self.paths)['intake']
+        for key in ('source_kind', 'source_file', 'source_sha256', 'source_filename'):
+            self.assertEqual(uploaded[key], row[key])
+        self.assert_no_artifacts()
+
+    def rows(self, count=2):
+        rows = []
+        for index in range(count):
+            row = copy.deepcopy(self.intake)
+            row.update(case_number=f'{820 + index}/26.0TSTXX', source_kind='manual_review',
+                       claim_interpreting=True, claim_transport=index == 0)
+            for key in ('source_sha256', 'source_file', 'source_filename', 'photo_metadata_date', 'travel_group_id'):
+                row.pop(key, None)
+            rows.append(row)
+        return rows
+
+    def prepare(self, rows=None, **options):
+        return prepare_intakes(rows or self.rows(), self.paths, email_grouping='manual_visit', **options)
+
+    def test_http_manual_visit_keeps_two_pdfs_one_travel_claim_and_original_inputs(self):
+        from pypdf import PdfReader
+        client = TestClient(create_app(**runtime_path_overrides(self.root)), base_url='http://127.0.0.1')
+        rows = self.rows()
+        original = copy.deepcopy(rows)
+        checked = client.post('/api/prepare/preflight', json={'intakes': rows, 'email_grouping': 'manual_visit'})
+        self.assertEqual(checked.status_code, 200, checked.text)
+        self.assertEqual(checked.json()['status'], 'ready', checked.text)
+        self.assert_no_artifacts()
+        response = client.post('/api/prepare', json={'intakes': rows, 'email_grouping': 'manual_visit',
+            'preflight_review': checked.json()['preflight_review']})
+        self.assertEqual(response.status_code, 200, response.text)
+        prepared = response.json()
+        self.assertEqual(rows, original)
+        self.assertNotIn('packet', prepared)
+        self.assertEqual(len(prepared['items']), 2)
+        self.assertEqual(len(prepared['email_groups']), 1)
+        group = prepared['email_groups'][0]
+        self.assertEqual(group['attachment_files'], [item['pdf'] for item in prepared['items']])
+        self.assertEqual(group['source_sha256'], '')
+        self.assertEqual(group['email_grouping'], 'manual_visit')
+        self.assertIn('2 requerimentos', group['body'])
+        self.assertEqual([child['claim_transport'] for child in group['underlying_requests']], [True, False])
+        payload = json.loads(Path(group['draft_payload']).read_text(encoding='utf-8'))
+        self.assertEqual(validate_draft_payload(payload), [])
+        self.assertEqual(manual_handoff_packet(self.request(prepared, group), self.paths)['attachment_count'], 2)
+        texts = ['\n'.join(page.extract_text() for page in PdfReader(item['pdf']).pages) for item in prepared['items']]
+        self.assertIn('despesas de transporte', texts[0])
+        self.assertNotIn('despesas de transporte', texts[1])
+        for item in prepared['items']:
+            intake = json.loads(Path(item['intake']).read_text(encoding='utf-8'))
+            self.assertEqual(intake['source_kind'], 'manual_review')
+            self.assertEqual(intake['travel_group_id'], group['manual_visit_id'])
+            self.assertFalse(intake.get('source_sha256'))
+            self.assertFalse(intake.get('source_file'))
+
+    def test_mixed_sources_conflicting_visit_or_wrong_travel_owner_count_block_without_artifacts(self):
+        changes = [
+            {'source_kind': 'photo'}, {'source_sha256': 'a' * 64}, {'source_file': 'fictional.jpg'},
+            {'ai_recovery': {'attempted': True}}, {'service_date': '2026-01-16'},
+            {'service_place': 'A different physical venue'}, {'payment_entity': 'A different payer'},
+            {'recipient_email': 'different@example.test', 'recipient_override_reason': 'Fictional alternate'},
+            {'claim_transport': True},
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                rows = self.rows()
+                rows[1].update(change)
+                checked = preflight_intakes(rows, self.paths, email_grouping='manual_visit')
+                self.assertEqual(checked['status'], 'blocked')
+                with self.assertRaises(IntakeError):
+                    self.prepare(rows)
+                self.assert_no_artifacts()
+        rows = self.rows()
+        rows[0]['claim_transport'] = False
+        self.assertEqual(preflight_intakes(rows, self.paths, email_grouping='manual_visit')['status'], 'blocked')
+        self.assertEqual(preflight_intakes(self.rows(), self.paths, email_grouping='manual_visit', packet_mode=True)['status'], 'blocked')
+        self.assert_no_artifacts()
+
+    def test_manual_visit_preflight_is_stale_after_claim_or_grouping_change(self):
+        rows = self.rows()
+        checked = preflight_intakes(rows, self.paths, email_grouping='manual_visit')
+        changed = copy.deepcopy(rows)
+        changed[0]['claim_transport'], changed[1]['claim_transport'] = False, True
+        with self.assertRaisesRegex(IntakeError, 'stale'):
+            require_current_preflight_review({'preflight_review': checked['preflight_review']}, changed,
+                self.paths, packet_mode=False, email_grouping='manual_visit')
+        with self.assertRaisesRegex(IntakeError, 'stale'):
+            require_current_preflight_review({'preflight_review': checked['preflight_review']}, rows,
+                self.paths, packet_mode=False, email_grouping='source')
+        self.assert_no_artifacts()
+
+    def test_sent_nonfirst_member_blocks_before_prepare_and_before_mock_gmail(self):
+        rows = self.rows()
+        self.paths.duplicate_index.write_text(json.dumps([{**rows[1], 'status': 'sent'}]), encoding='utf-8')
+        self.assertEqual(preflight_intakes(rows, self.paths, email_grouping='manual_visit')['status'], 'blocked')
+        with self.assertRaises(IntakeError):
+            self.prepare(rows)
+        self.assert_no_artifacts()
+        self.paths.duplicate_index.write_text('[]', encoding='utf-8')
+        prepared = self.prepare(rows)
+        group = prepared['email_groups'][0]
+        self.paths.duplicate_index.write_text(json.dumps([{**rows[1], 'status': 'sent'}]), encoding='utf-8')
+        before = (self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes())
+        with patch('honorarios_app.services.create_gmail_draft_from_payload') as transport:
+            with self.assertRaises(IntakeError):
+                create_and_record_gmail_api_draft(self.request(prepared, group), self.paths)
+            with self.assertRaises(IntakeError):
+                record_draft({**self.request(prepared, group), 'draft_id': 'fictional-late', 'message_id': 'fictional-msg'}, self.paths)
+            transport.assert_not_called()
+        self.assertEqual(before, (self.paths.draft_log.read_bytes(), self.paths.duplicate_index.read_bytes()))
+
+    def test_changed_second_child_pdf_blocks_before_mock_gmail(self):
+        prepared = self.prepare()
+        group = prepared['email_groups'][0]
+        path = Path(group['underlying_requests'][1]['pdf'])
+        path.write_bytes(path.read_bytes() + b'\nchanged')
+        with patch('honorarios_app.services.create_gmail_draft_from_payload') as transport:
+            with self.assertRaises(IntakeError):
+                create_and_record_gmail_api_draft(self.request(prepared, group), self.paths)
+            transport.assert_not_called()
+        self.assertEqual(json.loads(self.paths.draft_log.read_text(encoding='utf-8')), [])
+
+    def test_mock_gmail_records_both_original_pdf_identities_and_blocks_retry(self):
+        prepared = self.prepare()
+        group = prepared['email_groups'][0]
+        result = {'draft_id': 'fictional-manual-visit', 'message_id': 'fictional-manual-message',
+                  'thread_id': '', 'fake_mode': True, 'to': group['recipient'], 'subject': group['subject'],
+                  'attachment_files': group['attachment_files'], 'gmail_api_action': 'users.drafts.create',
+                  'attachment_basenames': [Path(path).name for path in group['attachment_files']],
+                  'attachment_sha256': group['attachment_sha256']}
+        with patch('honorarios_app.services.create_gmail_draft_from_payload', return_value=result) as transport:
+            created = create_and_record_gmail_api_draft(self.request(prepared, group), self.paths)
+            self.assertEqual(created['recorded_duplicate_count'], 2)
+            with self.assertRaises(IntakeError):
+                create_and_record_gmail_api_draft(self.request(prepared, group), self.paths)
+            self.assertEqual(transport.call_count, 1)
+        index = json.loads(self.paths.duplicate_index.read_text(encoding='utf-8'))
+        self.assertEqual([r['pdf'] for r in index], group['attachment_files'])
+        self.assertEqual([r['claim_transport'] for r in index], [True, False])
+        self.assertTrue(all(r['manual_visit_id'] == group['manual_visit_id'] for r in index))
+
+    def test_group_correction_keeps_every_sibling_and_requires_complete_supersedes(self):
+        rows = self.rows(3)
+        original = self.prepare(rows)
+        group = original['email_groups'][0]
+        record_draft({**self.request(original, group), 'draft_id': 'fictional-old', 'message_id': 'fictional-old-msg'}, self.paths)
+        reason = 'Correcting this fictional manual visit.'
+        partial = preflight_intakes(rows[:2], self.paths, email_grouping='manual_visit', correction_reason=reason)
+        self.assertEqual(partial['status'], 'blocked')
+        self.assertIn('every request', partial['message'])
+        revised = self.prepare(rows, correction_reason=reason)
+        target = revised['email_groups'][0]
+        request = {**self.request(revised, target), 'draft_id': 'fictional-replacement',
+                   'message_id': 'fictional-new-msg', 'correction_reason': reason}
+        with self.assertRaisesRegex(IntakeError, 'every blocking draft ID'):
+            record_draft(request, self.paths)
+        request['supersedes'] = ['fictional-old']
+        self.assertEqual(record_draft(request, self.paths)['recorded_duplicate_count'], 3)
+        log = json.loads(self.paths.draft_log.read_text(encoding='utf-8'))
+        self.assertEqual([r['status'] for r in log], ['superseded', 'active'])
 
 
 if __name__ == '__main__':

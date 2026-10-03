@@ -48,6 +48,22 @@ class PublicRepoGateTests(unittest.TestCase):
         self.assertIn("google_access_token", kinds)
         self.assertIn("real_court_email", kinds)
 
+    def test_oauth_token_locks_are_private_while_dependency_lock_remains_public(self):
+        locks = ['config/gmail-token.local.oauth.lock', 'config/custom-session.oauth.lock']
+        report = analyze_candidates([CandidateFile(name, b'') for name in locks] + [CandidateFile('uv.lock', b'version = 1')])
+        self.assertEqual(report['status'], 'blocked')
+        self.assertEqual({row['path'] for row in report['path_blockers']}, set(locks))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_public_metadata(root)
+            (root / 'config').mkdir()
+            for name in locks:
+                (root / name).write_text('', encoding='utf-8')
+            (root / 'uv.lock').write_text('version = 1', encoding='utf-8')
+            readiness = analyze_public_readiness(root, require_git=False)
+        self.assertFalse(readiness['public_ready'])
+        self.assertEqual(set(readiness['blocked_paths']), set(locks))
+
     def test_allows_synthetic_public_fixtures(self):
         report = analyze_candidates([
             CandidateFile("config/gmail.example.json", b'{"client_secret": "example-client-secret"}'),

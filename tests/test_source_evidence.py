@@ -19,6 +19,25 @@ from honorarios_app.source_evidence import (
 
 
 class SourceEvidenceTests(unittest.TestCase):
+    def test_corroborated_letterhead_retains_ai_origin_and_never_claims_a_physical_venue(self):
+        text = 'NACIONAL REPUBLICANA\nCOMANDO TERRITORIAL DE Fictional City'
+        agency = {'service_entity': 'Guarda Nacional Republicana', 'service_entity_type': 'gnr',
+                  'evidence_text': text, 'reason': 'Two heading clues match.'}
+        candidate = {**{key: agency[key] for key in ('service_entity', 'service_entity_type')},
+                     'source_text': text, 'photo_defaults_applied': {'source_agency_evidence': agency}}
+        for ai, expected in (({'status': 'ok', 'raw_visible_text': text, 'fields': {}}, 'openai_ocr'),
+                             ({}, 'document_text')):
+            with self.subTest(expected=expected):
+                evidence = self.fields(candidate=candidate, ai_recovery=ai)
+                rows = [row for row in evidence if row['field'] in {'service_entity', 'service_entity_type'}]
+                self.assertEqual(len(rows), 2)
+                for row in rows:
+                    self.assertEqual(row['source'], expected)
+                    self.assertIn('does not establish physical venue', row['reason'])
+                self.assertFalse(any(row['field'] == 'service_place' for row in evidence))
+        edited = {**candidate, 'service_entity': 'Manual agency', 'service_entity_type': 'other'}
+        self.assertFalse(any('corroborated source letterhead' in row['reason'] for row in self.fields(candidate=edited)))
+
     def test_later_photo_case_has_scoped_ocr_evidence_without_promoting_self_agreement(self):
         text = 'Processos 710/26.0TSTXX e 711/26.0TSTXX'
         entries = self.fields(candidate={'case_number': '711/26.0TSTXX', 'source_case_numbers': ['710/26.0TSTXX', '711/26.0TSTXX'], 'source_text': text},

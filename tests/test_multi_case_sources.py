@@ -407,6 +407,27 @@ class MultiCaseSourceTests(unittest.TestCase):
                 self.assertEqual(reviewed['intake']['case_number'], CASES[0])
         self.assert_no_preparation_artifacts()
 
+    def test_two_block_suffixes_have_one_corroborated_child_and_duplicate_identity_each(self):
+        cases = tuple(f'{number}/26.0GDXYZ' for number in range(710, 715))
+        text = '\n'.join([*cases[:3], '713/26.0GD XYZ', '714/26.0 GD XYZ'])
+        write_json(self.paths.duplicate_index, [
+            {'case_number': value, 'service_date': CAPTURE_DATE, 'status': 'sent'} for value in cases])
+        result = self.upload(case_numbers=cases, text=text)
+        self.assertEqual(result['case_count'], 5)
+        self.assertEqual([row['candidate_intake']['case_number'] for row in result['case_candidates']], list(cases))
+        self.assertTrue(all(row['review']['status'] == 'duplicate' for row in result['case_candidates']))
+        self.assertEqual(result['case_candidates'][-1]['candidate_intake']['raw_case_number'], '714/26.0 GD XYZ')
+        self.assert_no_preparation_artifacts()
+
+    def test_uncorroborated_grouped_suffix_stays_one_unresolved_child(self):
+        for declared in ([], ['710/26.0GD'], ['710/26.0GDXYZ', '710/26.0GDABC']):
+            with self.subTest(declared=declared):
+                result = self.upload(case_numbers=declared, text='Processo 710/26.0GD XYZ')
+                self.assertEqual(result['case_count'], 1)
+                self.assertFalse(result['candidate_intake'].get('case_number'))
+                self.assertEqual(result['candidate_intake']['raw_case_number'], '710/26.0GD XYZ')
+                self.assertEqual(result['review']['status'], 'needs_info')
+
     def test_existing_duplicate_blocks_entire_batch_before_any_artifacts(self):
         candidates = self.ready_candidates(self.upload())
         write_json(self.paths.duplicate_index, [{
@@ -449,6 +470,16 @@ class MultiCaseSourceTests(unittest.TestCase):
 
 
 class MultiCaseNormalizationTests(unittest.TestCase):
+    def test_grouped_suffix_does_not_erase_an_independently_printed_case(self):
+        from honorarios_app.source_cases import source_case_rows
+        for separate in ('710/26.0GD', '710/26.0GDXYZ'):
+            for lines in ((separate, '710/26.0GD XYZ'), ('710/26.0GD XYZ', separate)):
+                with self.subTest(lines=lines):
+                    rows = source_case_rows('\n'.join(lines), {'case_numbers': ['710/26.0GD', '710/26.0GDXYZ']})
+                    self.assertEqual(len(rows), 2)
+                    self.assertIn({'case_number': separate, 'raw_case_number': separate}, rows)
+                    self.assertIn({'case_number': '', 'raw_case_number': '710/26.0GD XYZ'}, rows)
+
     def test_administrative_label_does_not_hide_later_nuipc_on_same_line(self):
         from honorarios_app.source_cases import source_case_rows
         rows = source_case_rows(f'NPP: 990/26.0TSTXX NUIPC: {CASES[0]}', {})

@@ -99,6 +99,14 @@ export function profileFallbackNotice(data = {}, intake = {}) {
 
 export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   if (!String(value || "").trim()) return { kind: "missing", label: "Needs an answer" };
+  if (field === "photo_capture_city" && intake.photo_defaults_applied?.photo_city === value) {
+    const source = intake.photo_defaults_applied.photo_city_source;
+    if (source === "user_confirmed_capture_city" && intake.photo_capture_city === value
+        && intake.source_sha256 && intake.photo_capture_city_source_sha256 === intake.source_sha256) {
+      return { kind: "manual", label: "You supplied this photo’s capture city" };
+    }
+    if (source === "verified_gps_area") return { kind: "default", label: "GPS matched a verified local area" };
+  }
   if (field === "service_date" && ["user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed"].includes(intake.service_date_source)) {
     return { kind: "manual", label: "You confirmed this date" };
   }
@@ -131,6 +139,11 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   if (source === "saved_court_label") return { kind: "default", label: "Your saved court label · editable" };
   if (source === "service_profile") return { kind: "default", label: "Profile default · check it" };
   if (source === "known_destination") return { kind: "default", label: "Saved place/distance · check it" };
+  if (source === "verified_gps_area") return { kind: "default", label: "GPS matched a verified local area" };
+  if (source === "embedded_location_created") return { kind: "metadata", label: "Embedded capture city" };
+  if (source === "google_photos_creation_time") {
+    return { kind: "metadata", label: "Google Photos date · timezone default is editable" };
+  }
   if (["image_metadata", "visible_google_photos_metadata"].includes(source)) {
     return { kind: "metadata", label: "Capture date · needs confirmation" };
   }
@@ -142,6 +155,7 @@ export function beginnerReviewFacts(data = {}, intake = {}) {
   const captureOrigin = reviewFactOrigin("photo_metadata_date", intake.photo_metadata_date, data, intake);
   const captureLabel = captureOrigin.kind === "ai"
     ? captureOrigin.label.startsWith("AI suggestion") ? "AI-suggested photo date · needs confirmation" : "AI-read photo date · needs confirmation"
+    : captureOrigin.label.startsWith("Google Photos") ? "Google Photos date · confirm date and timezone"
     : "Photo date · needs confirmation";
   const values = [
     ["case_number", "Case number", data.case_number || intake.case_number],
@@ -150,8 +164,13 @@ export function beginnerReviewFacts(data = {}, intake = {}) {
     ["service_place", "Service place", intake.service_place],
     ["recipient_email", "Recipient email", data.recipient || intake.recipient_email],
   ];
+  const captureCity = intake.photo_defaults_applied?.photo_city || "";
+  if (intake.source_kind === "photo" && captureCity) {
+    values.splice(2, 0, ["photo_capture_city", "Capture city", captureCity]);
+  }
   return values.map(([field, label, value]) => ({
     field, label, value: value || "",
+    editable: field !== "photo_capture_city",
     origin: field === "service_date" && !serviceDate && intake.photo_metadata_date
       ? { kind: captureOrigin.kind === "ai" ? "ai" : "metadata", label: captureLabel }
       : reviewFactOrigin(field, value, data, intake),
@@ -167,7 +186,7 @@ export function retainCaptureDateOrigin(data = {}, previous = {}) {
   if (!Array.isArray(fields) || !Array.isArray(priorFields)) return data;
   const original = priorFields.find(item => item.field === "photo_metadata_date"
     && item.value === intake.photo_metadata_date && item.confidence === "high"
-    && ["image_metadata", "visible_google_photos_metadata"].includes(item.source));
+    && ["image_metadata", "visible_google_photos_metadata", "google_photos_creation_time"].includes(item.source));
   if (!original || !fields.some(item => item.field === "photo_metadata_date" && item.value === original.value)) return data;
   // Only keep the origin of the same immutable source/date. Current review,
   // conflicts and generation permissions always come from the new response.
@@ -501,3 +520,4 @@ export function duplicateSourceCaseIndices(candidates = []) {
 }
 export { workspaceInputCopy, workspaceReviewEvidence, workspaceDraftSnapshot, workspaceDraftHasWork,
   workspaceDraftStorageKey, readWorkspaceDraft, writeWorkspaceDraft } from "./workspace_draft.js";
+export { createCameraPicker, createCameraThumbnailGrid } from "./camera_picker.js";

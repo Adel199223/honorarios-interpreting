@@ -1,19 +1,22 @@
 """Saved photo policy, kept separate from OCR facts and provider configuration."""
 from __future__ import annotations
 
+import copy
 import json
 import re
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from scripts.entity_rules import classify_entity_type, normalize_text
+from scripts.entity_rules import classify_entity_type, normalize_text, source_mentions_pj_context
 from scripts.generate_pdf import IntakeError
 from scripts.source_parsing import explicit_service_places
 
 ROUTING_FIELDS = ('payment_entity', 'addressee', 'recipient_email', 'court_email',
                   'court_email_key', 'recipient_override_reason', 'court_email_override_reason')
 COURT_EMAIL = re.compile(r'[A-Z0-9._%+\-]+@tribunais\.org\.pt', re.IGNORECASE)
+_NONCOURT_VENUE_WARNING = ('The source names a non-court agency but does not establish the physical service venue. '
+                          'Confirm the building and city; the court venue default was not applied.')
 
 
 def load_photo_defaults(ai_config: Path) -> dict[str, Any]:
@@ -39,6 +42,64 @@ def _valid_date(value: Any) -> str:
 
 def _city_key(value: Any) -> str:
     return ' '.join(normalize_text(str(value or '')).split())
+
+
+def _corroborated_letterhead_agency(text: str) -> dict[str, str]:
+    """Recover a cropped agency label, never an address or physical host."""
+    header = '\n'.join(text.splitlines()[:24])[:1800]
+    normalized = normalize_text(header)
+    body = re.search(r'\b(?:auto|uto)\s+de\b|\b(?:despacho|certidao|notificacao|declaro|declarou|compareceu)\b', normalized)
+    if body:
+        header, normalized = header[:body.start()], normalized[:body.start()]
+    # A quoted contact, court instruction or forwarded message is not the
+    # source's own letterhead. Do not search the document body for an email.
+    if re.search(r'\b(tribunal|juizo|ministerio publico|procuradoria|notifique|notificar|remeta|remeter|'
+                 r'forwarded|encaminhad[ao]|mensagem original|original message)\b|'
+                 r'(?:^|\n)\s*(?:(?:de|from|para|to|assunto|subject|fwd|fw)\s*:|>)', normalized):
+        return {}
+    domains = {match.lower().rstrip('.') for match in re.findall(
+        r'[a-z0-9._%+\-]+@([a-z0-9.\-]+)', normalized)}
+    kinds = {
+        'gnr': ('Guarda Nacional Republicana', r'\bnacional republicana\b', 'gnr.pt'),
+        'psp': ('Polícia de Segurança Pública', r'\bseguranca publica\b', 'psp.pt'),
+        'police': ('Polícia Judiciária', r'\bjudiciaria\b', 'pj.pt'),
+    }
+    name_clues = {kind for kind, (_name, pattern, _domain) in kinds.items() if re.search(pattern, normalized)}
+    domain_clues = {kind for kind, (_name, _pattern, domain) in kinds.items()
+                    if any(value == domain or value.endswith('.' + domain) for value in domains)}
+    if len(name_clues | domain_clues) != 1 or name_clues != domain_clues:
+        return {}
+    kind = next(iter(name_clues))
+    return {'service_entity': kinds[kind][0], 'service_entity_type': kind,
+            'evidence_text': header.strip(),
+            'reason': 'A cropped agency name and its official contact domain corroborate the source letterhead. This does not establish the physical service venue.'}
+
+
+def _source_noncourt_agency(fields: dict[str, Any], text: str) -> tuple[str, str, dict[str, str]]:
+    """An agency is a venue clue, never proof of its physical host building."""
+    entity = str(fields.get('service_entity') or '').strip()
+    entity_type = str(fields.get('service_entity_type') or '').strip() or classify_entity_type(entity)
+    if entity and entity_type in {'gnr', 'psp', 'police', 'other'}:
+        return entity, entity_type, {}
+    if not entity and entity_type in {'gnr', 'psp', 'police'}:
+        # The structured type can survive OCR even when the agency label is
+        # cropped. Keep that clue without inventing a station or police branch.
+        return {'gnr': 'Guarda Nacional Republicana',
+                'psp': 'Polícia de Segurança Pública', 'police': 'Polícia'}[entity_type], entity_type, {}
+    if entity or entity_type in {'court', 'ministerio_publico'}:
+        return '', '', {}
+    # Only a source heading supplies this fallback. Mentions inside court prose
+    # (for example, instructions to notify the GNR) do not establish a venue.
+    heading = re.search(r'^\s*(guarda nacional republicana|gnr\b|pol[ií]cia de seguran[cç]a p[uú]blica|psp\b|pol[ií]cia judici[aá]ria)[^\n]*',
+                        text, re.IGNORECASE | re.MULTILINE)
+    if heading and not re.search(r'\b(tribunal|juizo|ministerio publico|procuradoria)\b', normalize_text(text[:heading.start()])):
+        agency = heading.group().strip()
+        kind = classify_entity_type(agency)
+        return agency, kind, {'service_entity': agency, 'service_entity_type': kind,
+            'evidence_text': agency,
+            'reason': 'The source heading names this agency. It does not establish the physical service venue.'}
+    evidence = _corroborated_letterhead_agency(text)
+    return evidence.get('service_entity', ''), evidence.get('service_entity_type', ''), evidence
 
 
 def _city_court(city: str, preferences: dict[str, Any], directory: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
@@ -88,7 +149,8 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
     warnings = intake.setdefault('ai_recovery', {}).setdefault('warnings', [])
 
     if date_enabled:
-        dates = {_valid_date(value) for value in (metadata.get('exif_date'), metadata.get('visible_metadata_date'),
+        dates = {_valid_date(value) for value in (metadata.get('exif_date'), metadata.get('picker_capture_date'),
+                                                  metadata.get('picker_date_in_saved_timezone'), metadata.get('visible_metadata_date'),
                                                   fields.get('photo_metadata_date'), intake.get('photo_metadata_date'))}
         dates.discard('')
         if len(dates) == 1:
@@ -107,11 +169,20 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
 
     if not city_enabled and not venue_enabled:
         return
+    gps_match = metadata.get('gps_city_match') or {}
+    gps_city = gps_match.get('city', '') if gps_match.get('status') == 'matched' else ''
     cities = {_city_key(value): str(value).strip() for value in
-              (metadata.get('photo_metadata_city'), metadata.get('visible_metadata_city'), fields.get('photo_metadata_city'))
+              (metadata.get('photo_metadata_city'), metadata.get('visible_metadata_city'), fields.get('photo_metadata_city'), gps_city,
+               *(metadata.get('photo_metadata_city_candidates') or []))
               if str(value or '').strip()}
     city = next(iter(cities.values())) if len(cities) == 1 else ''
+    if gps_match.get('status') in {'ambiguous', 'invalid_configuration', 'invalid_gps'}:
+        city = ''
     applied['photo_city'] = city
+    if city and gps_city:
+        applied['photo_city_source'] = 'verified_gps_area'
+    elif gps_match.get('status') not in {None, 'disabled', 'missing_gps', 'outside_verified_areas'}:
+        applied['gps_city_status'] = 'conflicting_city_evidence' if len(cities) > 1 else gps_match.get('status')
     # A profile deliberately selected by the user is a per-request exception.
     # Automatic/source guesses cannot supersede the user's standing city policy.
     if explicit_profile:
@@ -143,8 +214,15 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
         intake.update(service_place='', service_entity='', service_entity_type='', service_place_phrase='')
         warnings.append('Several named source stations appear. Confirm the actual service venue before continuing.')
     if venue_enabled and not source_places and not building and not stations:
-        applied['venue_status'] = status
-        if selected:
+        agency, agency_type, agency_evidence = _source_noncourt_agency(fields, str(intake.get('source_text') or ''))
+        applied['venue_status'] = 'missing_noncourt_venue' if agency else status
+        if agency:
+            if agency_evidence:
+                applied['source_agency_evidence'] = agency_evidence
+            intake.update(service_place='', service_place_phrase='', service_entity=agency,
+                          service_entity_type=agency_type, entities_differ=True)
+            warnings.append(_NONCOURT_VENUE_WARNING)
+        elif selected:
             place = selected['payment_entity']
             intake.update(service_place=place, service_entity=place, service_entity_type='court',
                           service_place_phrase=f'em diligência realizada no {place}', entities_differ=False)
@@ -173,6 +251,86 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
         intake['entities_differ'] = classify_entity_type(str(intake.get('service_entity') or intake.get('service_place') or '')) not in {'court', 'ministerio_publico'}
     else:
         warnings.append('Your photo-city court default has no unique city/court contact. Enter the paying court and recipient; the general email default will not be used.')
+
+
+def apply_capture_city_answer(intake: dict[str, Any], city: str, *,
+                              preferences: dict[str, Any], directory: list[dict[str, Any]]) -> None:
+    """Apply one user-supplied capture city to this original source only.
+
+    Reuse the saved policy, but never reapply its date rule or overwrite an
+    existing user/source venue, routing exception, distance, or deliberate clear.
+    No coordinates are interpreted and no external service is contacted.
+    """
+    source_hash = str(intake.get('source_sha256') or '')
+    if intake.get('source_kind') != 'photo' or not re.fullmatch(r'[a-fA-F0-9]{64}', source_hash):
+        raise IntakeError('The capture-city answer needs the currently reviewed original photo.')
+    if preferences.get('photo_city_court') is not True:
+        raise IntakeError('The saved photo-city court default is not enabled. Review the payment details directly.')
+    city = ' '.join(str(city or '').split())
+    if not city or len(city) > 120 or not any(character.isalpha() for character in city):
+        raise IntakeError('Enter the actual city where this photo was taken.')
+    cleared = set(intake.get('review_cleared_fields') or [])
+    # When answering again after a source change, remove only our unchanged
+    # derived values. Later manual edits and deliberate clears remain authoritative.
+    for field, prior in (intake.get('photo_capture_city_applied_fields') or {}).items():
+        if field in {'transport.destination', 'transport.km_one_way'}:
+            transport = intake.get('transport') or {}
+            key = field.split('.', 1)[1]
+            if transport.get(key) == prior and field not in cleared:
+                transport.pop(key, None)
+        elif field not in cleared and intake.get(field) == prior:
+            intake.pop(field, None)
+    previous = copy.deepcopy(intake.get('photo_defaults_applied') or {})
+    proposed = copy.deepcopy(intake)
+    recovery = copy.deepcopy(intake.get('ai_recovery') or {})
+    if isinstance(recovery.get('fields'), dict):
+        recovery['fields'].pop('photo_metadata_city', None)
+    apply_photo_defaults(proposed, preferences={**preferences, 'capture_date_is_service_date': False},
+                         metadata={'photo_metadata_city': city}, ai_recovery=recovery, directory=directory)
+    applied = proposed.get('photo_defaults_applied') or {}
+    changes: dict[str, Any] = {}
+
+    def supply(field: str) -> None:
+        value = proposed.get(field)
+        if value not in (None, ''):
+            intake[field] = copy.deepcopy(value)
+            changes[field] = copy.deepcopy(value)
+
+    routing_override = any(str(intake.get(field) or '').strip() for field in ROUTING_FIELDS)
+    if not routing_override and not cleared.intersection(ROUTING_FIELDS):
+        for field in ROUTING_FIELDS:
+            supply(field)
+    else:
+        for field in ('payment_entity', 'addressee', 'recipient_email'):
+            applied.pop(field, None)
+        applied['routing_status'] = 'manual_override'
+    venue_fields = ('service_place', 'service_entity', 'service_entity_type', 'service_place_phrase', 'entities_differ')
+    has_venue = any(str(intake.get(field) or '').strip() for field in ('service_place', 'service_entity', 'service_place_phrase'))
+    if applied.get('service_place') and not has_venue and not cleared.intersection(venue_fields):
+        for field in venue_fields:
+            supply(field)
+        transport = intake.setdefault('transport', {})
+        if not str(transport.get('destination') or '').strip() and 'transport.destination' not in cleared:
+            transport['destination'] = city
+            changes['transport.destination'] = city
+            if transport.get('km_one_way') in (None, ''):
+                # Do not let an auto-selected service profile restore its old
+                # destination's distance; the personal lookup uses this city.
+                intake['source_transport_distance_pending'] = True
+    else:
+        applied.pop('service_place', None)
+        # An existing station/source venue stays authoritative; no court venue
+        # default should subsequently synchronize or clear it during re-review.
+        if has_venue:
+            applied.pop('venue_status', None)
+    previous.update(applied)
+    for field in ('payment_entity', 'recipient_email', 'service_place'):
+        if field not in applied:
+            previous.pop(field, None)
+    previous['photo_city'] = city
+    previous['photo_city_source'] = 'user_confirmed_capture_city'
+    intake.update(photo_capture_city=city, photo_capture_city_source_sha256=source_hash,
+                  photo_capture_city_applied_fields=changes, photo_defaults_applied=previous)
 
 
 def apply_saved_court_label(intake: dict[str, Any], preferences: dict[str, Any], *, explicit_profile: bool = False) -> None:
@@ -235,6 +393,17 @@ def preserve_photo_routing(original: dict[str, Any], merged: dict[str, Any]) -> 
 def reconcile_photo_venue_edit(intake: dict[str, Any]) -> None:
     """Drop dependent default venue fields when the user edits one of them."""
     applied = intake.get('photo_defaults_applied') or {}
+    if (isinstance(applied, dict) and applied.get('venue_status') == 'missing_noncourt_venue'
+            and str(intake.get('service_place') or '').strip()):
+        place = str(intake['service_place']).strip()
+        entity = 'Polícia Judiciária' if source_mentions_pj_context(intake) else place
+        kind = classify_entity_type(entity)
+        intake.update(service_entity=entity, service_entity_type=kind,
+                      entities_differ=kind not in {'court', 'ministerio_publico'})
+        applied.pop('venue_status', None)
+        recovery = intake.get('ai_recovery') or {}
+        if isinstance(recovery, dict) and isinstance(recovery.get('warnings'), list):
+            recovery['warnings'] = [warning for warning in recovery['warnings'] if warning != _NONCOURT_VENUE_WARNING]
     default = applied.get('service_place') if isinstance(applied, dict) else ''
     if not default:
         return
