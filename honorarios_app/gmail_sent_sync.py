@@ -552,7 +552,7 @@ def _find_match(snapshot: dict, reader: Any, upper_time: datetime) -> dict | Non
 
 def _result(status: str, **values: Any) -> dict:
     return {"status": status, "checked_count": 0, "sent_count": 0, "unchanged_count": 0,
-            "still_drafted_count": 0, "needs_review_count": 0, "error_count": 0,
+            "still_drafted_count": 0, "missing_draft_count": 0, "needs_review_count": 0, "error_count": 0,
             "warnings": [],
             "cooldown_seconds": AUTO_COOLDOWN_SECONDS, "gmail_write_allowed": False,
             "send_allowed": False, "managed_data_changed": False, **values}
@@ -635,6 +635,7 @@ def sync_gmail_sent_status(paths: Any, *, force: bool = False, apply_confirmed: 
             reader = GmailSentReader(access_token)
         upper_time = datetime.now(timezone.utc)
         confirmed, checked, uncertain, still_drafted, errors = [], 0, unavailable, 0, 0
+        missing_drafts = []
         for snapshot in snapshots:
             if isinstance(reader, GmailSentReader) and (reader.requests >= MAX_HTTP_REQUESTS or time.monotonic() >= reader.deadline):
                 _next_record[key] = snapshot["rotation_position"]
@@ -648,6 +649,10 @@ def sync_gmail_sent_status(paths: Any, *, force: bool = False, apply_confirmed: 
                     confirmed.append((snapshot, evidence))
                 elif reader.draft_exists(snapshot["record"]["draft_id"]):
                     still_drafted += 1
+                else:
+                    # Only a confirmed 404 reaches here. Network failures and
+                    # unexpected labels remain uncertain, never called deleted.
+                    missing_drafts.append(snapshot['record'])
             except (Unconfirmed, OSError, ValueError, TypeError, httpx.HTTPError):
                 uncertain += 1
                 errors += 1
@@ -683,8 +688,12 @@ def sync_gmail_sent_status(paths: Any, *, force: bool = False, apply_confirmed: 
                 uncertain += 1
         needs_review = len(active) - sent - still_drafted
         warnings = ["Some checks could not confirm an exact sent email; those requests keep their duplicate protection and need review."] if needs_review else []
+        for record in missing_drafts[:10]:
+            members = record.get('underlying_requests') or [record]
+            identities = ', '.join(f"{row.get('case_number', '')} ({row.get('service_date', '')})" for row in members[:5])
+            warnings.append(f'Draft no longer found in Gmail: {identities}. No matching sent email was confirmed. Duplicate warnings remain; use Remove from Drafted if you no longer want to send it.')
         return _finished(key, _result("partial" if needs_review else "complete", checked_count=checked, sent_count=sent, unchanged_count=len(active) - sent,
-                       still_drafted_count=still_drafted, needs_review_count=len(active) - sent - still_drafted, error_count=errors,
+                       still_drafted_count=still_drafted, missing_draft_count=len(missing_drafts), needs_review_count=len(active) - sent - still_drafted, error_count=errors,
                        warnings=warnings, managed_data_changed=managed_changed))
     except (Unconfirmed, OSError, ValueError, TypeError, httpx.HTTPError):
         return _idle_result(key, "error", warnings=["Sent-status checking could not finish. Existing duplicate protection was kept."])

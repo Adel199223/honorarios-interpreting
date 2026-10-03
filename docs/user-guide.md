@@ -64,6 +64,8 @@ For a matched sent request, the summary shows only its recorded historical detai
 
 When history records your confirmed paper submission, the warning says **Already submitted on paper** and blocks a repeat request in the same way. It shows only recorded submission facts; an email sent date or Gmail reference is not added for a paper submission.
 
+Your saved case/date decisions are also checked. **Already handled — confirmed by you** means you explicitly confirmed the work was handled; **Excluded by your saved decision** means you asked to leave it out. Neither message claims that an email was sent or payment received. These requests need no further payer, place or recipient answers, and cannot create another PDF or draft through correction mode. Each request in a grouped email is checked again before preparation, handoff, Gmail creation and local recording.
+
 New AI source reads save a small local API usage receipt with the model and token counts returned by the provider. It supports later cost checks without retaining your API key or adding another reading call. Earlier reads may have no receipt, and a receipt is not a billing invoice.
 
 ## Choose what to claim
@@ -108,6 +110,8 @@ Editing a case after queueing pauses batch preparation until you review the corr
 
 ## 5. Review the email and create a draft
 
+For a request that needs different wording, open **Show advanced intake fields** → **Email subject and message (optional)** before preparing its PDF. A blank field uses the standard subject or message. A custom message stays exactly as written, so include the closing and signature. Review again after editing; the previous PDF handoff and email approval become stale. Unfinished-work resume retains these inputs but requires fresh review. Replacing the source clears the previous request's custom email. Use **Separate emails** for custom per-request wording; grouping several requests or using packet mode cannot silently discard it.
+
 After PDF preparation, use **Email draft for** to choose the photo's email or an individual request. Check every listed case, its own PDF, the court email and the email text. A packet remains one email target with its combined PDF. Changing the selected email clears its old copied handoff, returned Gmail IDs and review acknowledgement; the PDFs remain available.
 
 **Requests included in this email** lists every member and its claim choice. Use **PDF to inspect** to read each document before checking the handoff acknowledgement.
@@ -124,6 +128,8 @@ Use that exact prompt with your available Gmail draft tool or assistant to creat
 
 After the draft tool returns its response, paste it into **Paste Gmail _create_draft response**. Confirm the **Gmail handoff checklist** only after reviewing every PDF and using the exact handoff, then click **Record parsed response + prepared payload**. For a grouped email, this records every case with its own PDF so the app can warn against duplicate requests; it does not send the email.
 
+After successful recording, the next step becomes **Review the recorded draft in Gmail**. Repeat draft creation and another manual handoff are disabled for that prepared email; its PDF remains available. **View Recent Work** opens its local history. You can select another prepared email to continue the batch.
+
 The app checks current history again when building the handoff or recording. If an included request was sent, drafted or reserved after preparation, it pauses rather than overwriting that protection. Review the reported history before continuing; a correction still uses the explicit replacement path.
 
 Finally, open the draft in Gmail, check the recipient and attachments again, and send it yourself when satisfied.
@@ -131,6 +137,14 @@ Finally, open the draft in Gmail, check the recipient and attachments again, and
 After sending, open **Recent Work**. With Gmail sent-status access enabled, the app checks automatically; **Sync now** checks immediately. The first setup may ask you to grant Google read permission. A verified sent email updates every fee request included in it. The app does not send anything and these checks do not use OpenAI.
 
 The check compares the recipient, subject, complete original attachments and send time. A deleted draft alone is not proof of sending. Changed attachments, missing old evidence or uncertain matches keep duplicate protection active and display a review notice. You can still use **Gmail Draft Log → Mark manually sent**, enter the sent date and confirm after checking Gmail yourself. The automatic check runs while the local app is open; sending from your phone is detected next time you open Recent Work or click Sync now.
+
+### Removing a draft you do not want to send
+
+In **Recent Work**, choose **Remove from Drafted — keep warning** and confirm. The email moves to **Archived** locally, while every case/date/service period in it retains its duplicate warning. This does not delete the email from Gmail or mark it sent. You can delete the Gmail draft yourself before or afterward; the warning remains. For a draft containing several fee PDFs, this action applies to every request in that email.
+
+Gmail sync reports a draft that is no longer found separately from connection errors and looks for a matching sent email first. Until sending is verified, the app keeps its protection. **Mark missing — keep warning** also retains the warning after a read-only verification. New local trash or missing-status changes preserve recorded request protection automatically. Earlier retired history is not silently changed.
+
+If you later need an intentional replacement, review the warning and use **correction mode** with a reason. A verified replacement takes over protection only after all the old email's requests are covered; simply removing the draft never authorizes another claim.
 
 ## Start another request
 
@@ -163,5 +177,7 @@ Backups include Gmail attempts that still need reconciliation. Where the origina
 Restoring an older backup preserves newer local draft history and pending attempts. Conflicting identities or statuses pause the restore instead of removing duplicate protection. After a move or restart, use **Recent Work** to finish local recording of known Gmail IDs or reconcile an uncertain attempt; restoring does not create another Gmail draft or reinstate an old creation approval.
 
 Imported historical translation receipts without a proven service date remain separate audit records through backup restore; the app does not invent an interpreting date for them. Confirmed paper-submission details are also retained.
+
+When present, the private source-exclusion ledger is included in the backup. Restoring an older backup preserves newer local exclusions and their original source evidence. An unreadable or malformed ledger stops the workflow with an error so saved decisions cannot silently disappear.
 
 Read warnings in export, preview and restore results. Missing, changed, unsupported or oversized files can leave an attempt protected but unable to finish local recording. Keep the original files or obtain a complete backup from the original computer. The recovery-file limits are 25 MiB per file, 100 MiB in total and 256 entries; a successful backup is not a complete document archive.

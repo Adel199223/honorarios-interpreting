@@ -244,3 +244,37 @@ def explicit_service_places(text: str) -> tuple[str, ...]:
     for place in places:
         unique.setdefault(normalize_text(place).strip(), place)
     return tuple(unique.values())
+
+
+@dataclass(frozen=True)
+class MinisterioPublicoVenueEvidence:
+    physical_reference: bool = False
+    place: str = ""
+
+
+def ministerio_publico_venue_evidence(text: str) -> MinisterioPublicoVenueEvidence:
+    """Resolve 'these MP premises' only against this source's local heading.
+
+    A comarca issuer alone is not a physical venue. Keep an unresolved premises
+    reference so callers cannot replace it with an unrelated court default.
+    """
+    normalized = normalize_text(text or '')
+    premises = re.search(r'\bnas\s+instalacoes\s+d(?:estes|esses|os)\s+servicos\s+do\s+ministerio\s+publico\b', normalized)
+    if not premises:
+        return MinisterioPublicoVenueEvidence()
+    header = (text or '')[:premises.start()]
+    # Read only the issuer header, before any case/body/forwarding material.
+    boundary = re.search(r'\b(?:auto\s+de|processo|referencia|despacho|certidao|notificacao)\b', normalize_text(header))
+    if boundary:
+        header = header[:boundary.start()]
+    header = '\n'.join(header.splitlines()[:24])[:1800]
+    if re.search(r'\b(?:tribunal|forwarded|encaminhad[ao]|mensagem original|original message)\b|'
+                 r'(?:^|\n)\s*(?:(?:de|from|para|to|assunto|subject|fwd|fw)\s*:|>)', normalize_text(header)):
+        return MinisterioPublicoVenueEvidence(physical_reference=True)
+    headings = re.findall(r'^\s*(Procuradoria do Ju[ií]zo [^\n]+)', header, re.IGNORECASE | re.MULTILINE)
+    # A local court/unit heading needs its own named locality. Do not invent a
+    # city from GPS or the general Procuradoria da República da Comarca label.
+    places = {normalize_text(value.strip().rstrip('.')): value.strip().rstrip('.') for value in headings
+              if re.search(r'\bde\s+[\wÀ-ÿ][\wÀ-ÿ -]*$', value.strip().rstrip('.'), re.IGNORECASE)}
+    return MinisterioPublicoVenueEvidence(physical_reference=True,
+        place=next(iter(places.values())) if len(places) == 1 else '')

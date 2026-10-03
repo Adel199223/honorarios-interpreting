@@ -343,11 +343,19 @@ def lookup_profile_distance(profile: dict[str, Any], destination: str) -> tuple[
             matches.append((label_fold, label_text, km))
     # Exact destinations precede longer institution descriptions. Substring
     # aliases cannot choose the first of overlapping or conflicting cities.
-    if not matches and re.match(r'^(?:tribunal|juizo|posto|esquadra|gnr|psp|hospital|gabinete|instituto|ministerio publico)\b', query_fold):
+    if not matches and re.match(r'^(?:tribunal|juizo|posto|esquadra|gnr|psp|hospital|gabinete|instituto|ministerio publico|procuradoria)\b', query_fold):
         # A confirmed venue may append a unit after the building/city. Only
         # the venue head can supply its destination; a city in the appended
         # description cannot. Keep all known-city mentions for ambiguity checks.
-        venue_head = re.split(r'\s+[—–-]\s+|\s+\(', query_fold, maxsplit=1)[0].strip()
+        venue_label = query_fold
+        if query_fold.startswith('procuradoria '):
+            # The inquiry section can precede the actual city in an MP venue,
+            # rather than being an appended district/agency description. Only
+            # this named unit separator belongs to the venue head. All known
+            # cities below still participate in the ambiguity check.
+            venue_label = re.sub(r'\s+[—–-]\s+(?=(?:\d+[ªº]?\s+)?sec(?:cao)?\.?\s+(?:de\s+)?inqueritos\b)',
+                                 ' ', venue_label)
+        venue_head = re.split(r'\s+[—–-]\s+|\s+\(', venue_label, maxsplit=1)[0].strip()
         for label, km in distances.items():
             label_text = _text(label)
             label_fold = ' '.join(normalize_text(label_text).split())

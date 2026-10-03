@@ -32,6 +32,9 @@ const context={...g,console,FormData,JSON,Map,Set,Date,window:{},referenceLoads:
     else if(url==='/api/gmail/drafts/create')result={status:'created',draft_id:'draft:'+body.payload,message_id:'message:'+body.payload,confirmation:{draft_id:'draft:'+body.payload,to:'selected@example.test'}};
     else if(url==='/api/gmail/drafts/verify')result={status:'verified',draft_id:body.draft_id};
     else if(url==='/api/drafts/record'||url==='/api/drafts/status')result={status:'recorded',draft_id:body.draft_id};
+    else if(url==='/api/drafts/archive')result={status:'recorded',lifecycle_status:'archived',duplicate_protection_retained:true,draft_id:body.draft_id};
+    else if(url==='/api/gmail/drafts/reconcile-not-found')result={status:'recorded',lifecycle_status:'not_found',duplicate_protection_retained:true,draft_id:body.draft_id};
+    else if(url==='/api/reference')result={workspace_id:'fictional-workspace',duplicates:[],draft_log:[]};
     else throw new Error('Unexpected synthetic route '+url);
     return {ok:true,json:async()=>routeOverrides[url]?(typeof routeOverrides[url]==='function'?routeOverrides[url](body):routeOverrides[url]):responseOverride||result};
   }};
@@ -46,16 +49,18 @@ const listenerSource=(id,event='click')=>{
 ['#check-active-drafts','#create-gmail-api-draft','#record-draft','#record-parsed-prepared-draft','#prepare-source-email-replacement'].forEach(id=>{app+='\n'+listenerSource(id);});
 app+='\n'+listenerSource('#saved-court-email','change');
 app+='\n'+listenerSource('#sent-duplicate-stop')+'\n'+listenerSource('#sent-duplicate-review')+'\n'+listenerSource('#sent-duplicate-dialog','cancel');
+app+='\n'+listenerSource('#archive-draft-cancel')+'\n'+listenerSource('#archive-draft-confirm')+'\n'+listenerSource('#archive-draft-dialog','cancel')+'\n'+listenerSource('#archive-draft-dialog','close');
 app+='\n'+listenerSource('#build-profile');
 app+='\n'+listenerSource('#pp_add_distance')+'\n'+listenerSource('#personal-profile-form','submit');
 app+='\n'+listenerSource('#preflight-batch-intakes');
 app+='\n'+listenerSource('#batch-email-grouping','change')+'\n'+listenerSource('#prepared-email-member','change');
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
-app+='\nloadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
+app+='\nthis.initialLoadReference=loadReference;loadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
 app+='\nthis.api.recoverGmailAttempt=recoverGmailAttempt;this.api.renderGmailStatus=renderGmailStatus;this.api.renderHistoryDraftActionResult=renderHistoryDraftActionResult;';
 app+='\nObject.assign(this.api,{applyReview,reviewIntake,resolveSentDuplicateDecision,renderSourceCaseList,syncActionGates,syncManualEntryGate,setServerConnected,setServerDisconnected});';
 app+='\nObject.assign(this.api,{importGooglePhotosPickerSelection,recoverLocalSourceFile,openPersonalProfileDrawer,closePersonalProfileDrawer,saveCurrentPersonalProfile,renderDraftLifecycle,renderHistoryRecords});';
+app+='\nObject.assign(this.api,{historyRecordStatus,historyStatusCounts,archiveHistoryDraft,markHistoryDraftNotFound});';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
@@ -78,6 +83,177 @@ class EmailRoutingUiTests(unittest.TestCase):
         result=subprocess.run(['node','--input-type=module','-'],input=script,text=True,encoding='utf-8',capture_output=True,timeout=20,cwd=ROOT)
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
+
+    def test_removed_draft_history_uses_lifecycle_without_losing_canonical_status(self):
+        result=self.run_js("""
+const lifecycles=['archived','trashed','not_found','superseded'];
+a.state.reference={duplicates:lifecycles.map((status,index)=>({...alpha,status:'drafted',draft_lifecycle_status:status,draft_id:'old-'+index,message_id:'msg-'+index})),draft_log:[]};
+const raw=JSON.stringify(a.state.reference),counts=a.historyStatusCounts();a.renderHistoryRecords();const all=element('#duplicate-list').innerHTML;
+a.state.historyStatusFilter='drafted';a.renderHistoryRecords();const drafted=element('#duplicate-list').innerHTML;
+a.state.historyStatusFilter='archived';a.renderHistoryRecords();const archived=element('#duplicate-list').innerHTML,unchanged=raw===JSON.stringify(a.state.reference);
+a.state.historyStatusFilter='all';a.state.reference={duplicates:[{...alpha,status:'not_found',draft_id:'legacy',message_id:'legacy-msg'}],draft_log:[{...alpha,status:'archived',draft_lifecycle_status:'archived',duplicate_warning_retained:true,draft_id:'log',message_id:'log-msg'}]};a.renderHistoryRecords();
+const protectedLog=element('#draft-log-list').innerHTML;a.state.reference.draft_log[0].duplicate_warning_retained=false;a.renderHistoryRecords();
+console.log(JSON.stringify({counts,all,drafted,archived,unchanged,legacy:element('#duplicate-list').innerHTML,log:protectedLog,replacedLog:element('#draft-log-list').innerHTML,calls}));
+""")
+        self.assertEqual(result['counts']['drafted'],0)
+        for lifecycle in ('archived','trashed','not_found','superseded'):
+            self.assertEqual(result['counts'][lifecycle],1)
+        self.assertEqual(result['all'].count('warning kept'),4)
+        self.assertNotIn('data-history-archive-draft',result['all'])
+        self.assertNotIn('data-history-mark-sent',result['all'])
+        self.assertIn('No duplicate records',result['drafted'])
+        self.assertIn('Previously drafted · archived · warning kept',result['archived'])
+        self.assertNotIn('warning kept',result['legacy'])
+        self.assertIn('warning kept',result['log'])
+        self.assertNotIn('warning kept',result['replacedLog'])
+        self.assertTrue(result['unchanged'])
+        self.assertEqual(result['calls'],[])
+
+    def test_archive_confirmation_lists_grouped_requests_and_posts_only_local_archive(self):
+        result=self.run_js("""
+a.state.workspaceDraft.workspaceId='fictional-workspace';a.setServerConnected();
+const row={...alpha,status:'active',draft_id:'group-draft',message_id:'group-message',underlying_requests:[alpha,beta]};
+a.state.reference={duplicates:[{...alpha,status:'drafted',draft_id:row.draft_id,message_id:row.message_id}],draft_log:[row]};
+a.state.currentIntake={...beta};a.state.batchIntakes=[{...alpha}];element('#profile').value='keep-chosen-profile';
+const keep=JSON.stringify({intake:a.state.currentIntake,queue:a.state.batchIntakes,profile:element('#profile').value});
+routeOverrides['/api/reference']={workspace_id:'fictional-workspace',duplicates:[{...alpha,status:'drafted',draft_lifecycle_status:'archived',draft_id:row.draft_id,message_id:row.message_id}],draft_log:[{...row,status:'archived',draft_lifecycle_status:'archived',duplicate_warning_retained:true}]};
+context.window.confirm=()=>{throw new Error('Native confirmation is forbidden')};a.renderHistoryRecords();const before=element('#draft-log-list').innerHTML;
+const pending=a.archiveHistoryDraft(0,'duplicates');const details=element('#archive-draft-details').textContent,open=element('#archive-draft-dialog').open,focus=context.document.activeElement.id,beforeConfirmCalls=calls.length;
+element('#archive-draft-confirm').listeners.click();const response=await pending;
+console.log(JSON.stringify({response,details,open,focus,beforeConfirmCalls,closed:!element('#archive-draft-dialog').open,before,calls,loads:context.referenceLoads,pending:a.state.historyDraftArchivePending,alert:element('#alert').textContent,result:element('#history-draft-action-result').innerHTML,after:element('#draft-log-list').innerHTML,preserved:keep===JSON.stringify({intake:a.state.currentIntake,queue:a.state.batchIntakes,profile:element('#profile').value})}));
+""")
+        self.assertIn('Remove from Drafted — keep warning',result['before'])
+        self.assertTrue(result['open'])
+        self.assertTrue(result['closed'])
+        self.assertEqual(result['focus'],'archive-draft-cancel')
+        self.assertEqual(result['beforeConfirmCalls'],0)
+        for text in ('710/26.0TSTXX','711/26.0TSTXX','2026-10-01'):
+            self.assertIn(text,result['details'])
+        page=(ROOT/'honorarios_app/templates/index.html').read_text(encoding='utf-8')
+        self.assertIn('aria-labelledby="archive-draft-title"',page)
+        self.assertIn('aria-describedby="archive-draft-explanation archive-draft-details"',page)
+        for text in ('All requests','Nothing will be deleted','nothing is marked sent'):
+            self.assertIn(text,page)
+        self.assertEqual(result['calls'],[{'url':'/api/drafts/archive','body':{'draft_id':'group-draft','message_id':'group-message','confirm_archive':True,'workspace_id':'fictional-workspace'}},{'url':'/api/reference','body':{}}])
+        self.assertEqual(result['loads'],0)
+        self.assertFalse(result['pending'])
+        self.assertTrue(result['preserved'])
+        self.assertIn('warning kept',result['after'])
+        self.assertNotIn('data-history-archive-draft',result['after'])
+        self.assertIn('Duplicate warnings are kept',result['alert'])
+        self.assertIn('Gmail was not contacted',result['result'])
+
+    def test_archive_control_enables_after_initial_workspace_load_and_tracks_connection(self):
+        result=self.run_js("""
+const button=element('#archive-button');button.disabled=true;context.document.querySelectorAll=selector=>selector==='[data-history-archive-draft]'?[button]:[];
+await context.initialLoadReference();const ready=!button.disabled;
+a.setServerDisconnected(new Error('Offline'));const offline=button.disabled;a.setServerConnected();const restored=!button.disabled;
+a.state.workspaceDraft.runtimeChanged=true;a.setServerConnected();const changed=button.disabled;
+console.log(JSON.stringify({ready,offline,restored,changed,workspace:a.state.workspaceDraft.workspaceId,calls}));
+""")
+        self.assertEqual(result['workspace'],'fictional-workspace')
+        self.assertTrue(result['ready'])
+        self.assertTrue(result['offline'])
+        self.assertTrue(result['restored'])
+        self.assertTrue(result['changed'])
+        self.assertEqual(result['calls'],[{'url':'/api/reference','body':{}}])
+
+    def test_archive_cancel_inactive_missing_ids_and_changed_workspace_make_no_write(self):
+        result=self.run_js("""
+a.state.workspaceDraft.workspaceId='fictional-workspace';a.setServerConnected();
+const row={...alpha,status:'active',draft_id:'old',message_id:'msg'};a.state.reference={draft_log:[row],duplicates:[]};
+const pending=a.archiveHistoryDraft(0);element('#archive-draft-cancel').listeners.click();const cancelled=await pending;
+const errors=[];context.window.confirm=()=>{throw new Error('Unexpected confirmation')};
+for(const variant of [{...row,status:'sent'},{...row,status:'archived',draft_lifecycle_status:'archived'},{...row,message_id:''}]){
+ a.state.reference.draft_log=[variant];try{await a.archiveHistoryDraft(0)}catch(error){errors.push(error.message)}
+}
+a.state.reference.draft_log=[row];a.state.workspaceDraft.runtimeChanged=true;try{await a.archiveHistoryDraft(0)}catch(error){errors.push(error.message)}
+console.log(JSON.stringify({cancelled,errors,calls,loads:context.referenceLoads}));
+""")
+        self.assertIsNone(result['cancelled'])
+        self.assertEqual(len(result['errors']),4)
+        self.assertNotIn('Unexpected confirmation',result['errors'])
+        self.assertEqual(result['calls'],[])
+        self.assertEqual(result['loads'],0)
+
+    def test_archive_pending_repeat_failed_and_stale_responses_do_not_claim_success(self):
+        result=self.run_js("""
+a.state.workspaceDraft.workspaceId='workspace-one';a.setServerConnected();a.state.reference={draft_log:[{...alpha,status:'active',draft_id:'old',message_id:'msg'}],duplicates:[]};
+const confirmArchive=()=>{const pending=a.archiveHistoryDraft(0);element('#archive-draft-confirm').listeners.click();return pending};
+let release;deferred=new Promise(resolve=>release=resolve);const first=confirmArchive();await Promise.resolve();const repeated=await a.archiveHistoryDraft(0);
+a.state.workspaceDraft.workspaceId='workspace-two';release();const stale=await first;deferred=null;
+const staleState={alert:element('#alert').textContent,loads:context.referenceLoads,pending:a.state.historyDraftArchivePending};
+responseFailure='Archive not allowed';let failed='';try{await confirmArchive()}catch(error){failed=error.message};responseFailure=null;
+responseOverride={status:'recorded',lifecycle_status:'archived',duplicate_protection_retained:false};let invalid='';try{await confirmArchive()}catch(error){invalid=error.message};
+console.log(JSON.stringify({repeated,stale,staleState,failed,invalid,pending:a.state.historyDraftArchivePending,loads:context.referenceLoads,calls}));
+""")
+        self.assertIsNone(result['repeated'])
+        self.assertIsNone(result['stale'])
+        self.assertEqual(result['staleState'],{'alert':'','loads':0,'pending':False})
+        self.assertIn('Archive not allowed',result['failed'])
+        self.assertIn('could not be confirmed',result['invalid'])
+        self.assertFalse(result['pending'])
+        self.assertEqual(result['loads'],0)
+        self.assertEqual(len(result['calls']),3)
+
+    def test_archive_dialog_escape_close_and_repeated_click_cancel_without_writing(self):
+        result=self.run_js("""
+a.state.workspaceDraft.workspaceId='fictional-workspace';a.setServerConnected();a.state.reference={draft_log:[{...alpha,status:'active',draft_id:'old',message_id:'msg'}],duplicates:[]};
+const first=a.archiveHistoryDraft(0);const repeated=await a.archiveHistoryDraft(0);let prevented=false;element('#archive-draft-dialog').listeners.cancel({preventDefault(){prevented=true}});const escaped=await first;
+const second=a.archiveHistoryDraft(0);element('#archive-draft-dialog').close();element('#archive-draft-dialog').listeners.close();const closed=await second;
+element('#archive-draft-confirm').listeners.click();
+const third=a.archiveHistoryDraft(0);element('#archive-draft-dialog').listeners.close();const lateCloseIgnored=element('#archive-draft-dialog').open&&a.state.historyDraftArchiveConfirmation!==null;element('#archive-draft-cancel').listeners.click();await third;
+console.log(JSON.stringify({repeated,escaped,closed,prevented,lateCloseIgnored,open:element('#archive-draft-dialog').open,cleared:a.state.historyDraftArchiveConfirmation===null,calls}));
+""")
+        self.assertIsNone(result['repeated'])
+        self.assertIsNone(result['escaped'])
+        self.assertIsNone(result['closed'])
+        self.assertTrue(result['prevented'])
+        self.assertTrue(result['lateCloseIgnored'])
+        self.assertFalse(result['open'])
+        self.assertTrue(result['cleared'])
+        self.assertEqual(result['calls'],[])
+
+    def test_archive_dialog_rechecks_workspace_and_history_after_confirmation(self):
+        result=self.run_js("""
+a.state.workspaceDraft.workspaceId='workspace-one';a.setServerConnected();const row={...alpha,status:'active',draft_id:'old',message_id:'msg'};a.state.reference={draft_log:[row],duplicates:[]};
+const first=a.archiveHistoryDraft(0);a.state.workspaceDraft.workspaceId='workspace-two';element('#archive-draft-confirm').listeners.click();const stale=await first;
+const second=a.archiveHistoryDraft(0);a.setServerDisconnected(new Error('Offline'));const disconnected=await second;a.setServerConnected();
+const third=a.archiveHistoryDraft(0);a.state.reference.draft_log=[{...row,status:'sent'}];element('#archive-draft-confirm').listeners.click();let changed='';try{await third}catch(error){changed=error.message};
+console.log(JSON.stringify({stale,disconnected,changed,open:element('#archive-draft-dialog').open,cleared:a.state.historyDraftArchiveConfirmation===null,calls}));
+""")
+        self.assertIsNone(result['stale'])
+        self.assertIsNone(result['disconnected'])
+        self.assertIn('history changed',result['changed'])
+        self.assertFalse(result['open'])
+        self.assertTrue(result['cleared'])
+        self.assertEqual(result['calls'],[])
+
+    def test_missing_draft_reconciliation_explains_retained_warning(self):
+        result=self.run_js("""
+const row={...alpha,status:'active',draft_id:'old',message_id:'msg'};a.state.reference={draft_log:[row],duplicates:[]};
+a.state.lastHistoryDraftVerification={status:'not_found',source:'draft_log',index:'0',draft_id:'old',message_id:'msg'};
+context.window.prompt=()=> 'Verified missing';const confirms=[];context.window.confirm=text=>{confirms.push(text);return true};a.renderHistoryRecords();const actions=element('#draft-log-list').innerHTML;
+await a.markHistoryDraftNotFound(0);console.log(JSON.stringify({actions,confirms,calls,alert:element('#alert').textContent,result:element('#history-draft-action-result').innerHTML}));
+""")
+        self.assertIn('Mark missing — keep warning',result['actions'])
+        self.assertIn('duplicate warning stays',result['confirms'][0])
+        self.assertEqual(result['calls'][0]['url'],'/api/gmail/drafts/reconcile-not-found')
+        self.assertIn('will still warn you',result['alert'])
+        self.assertIn('Duplicate warnings are kept',result['result'])
+        self.assertNotIn('no longer',result['alert'])
+
+    def test_removed_duplicate_review_remains_blocked_and_does_not_claim_live_draft(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);const review=sentReview(alpha,'drafted');review.duplicate={...review.duplicate,draft_id:'removed',draft_lifecycle_status:'archived'};review.message='Previously drafted and removed. Warning retained.';review.next_safe_action={state:'choose_correction_mode',blocked:true};
+a.applyReview(review);console.log(JSON.stringify({home:element('#interpretation-review-home-result').innerHTML,summary:element('#interpretation-review-summary-card').innerHTML,lifecycle:element('#draft-lifecycle-body').innerHTML,blocked:element('#prepare-intake').disabled&&element('#create-gmail-api-draft').disabled,dialogOpen:Boolean(element('#sent-duplicate-dialog').open),calls}));
+""")
+        self.assertIn('Previously drafted · archived · warning kept',result['lifecycle'])
+        self.assertNotIn('Active draft',result['lifecycle'])
+        self.assertNotIn('Existing draft:',result['home'])
+        self.assertTrue(result['blocked'])
+        self.assertFalse(result['dialogOpen'])
+        self.assertEqual(result['calls'],[])
 
     def test_source_recovery_guard_and_busy_controls_cover_post_upload_review(self):
         result=self.run_js("""
@@ -617,7 +793,49 @@ console.log(JSON.stringify({results,reviewBodies:calls.filter(row=>row.url==='/a
         self.assertEqual(result['reviewBodies'][0], {'attachments': [], 'body': ''})
         for row in result['results'][1:]:
             self.assertEqual(row['attachments'], ['/fictional/alpha-proof.pdf'])
-            self.assertEqual(row['body'], 'Previous explanation')
+            # Proofs retain their existing carry behavior, but per-request
+            # wording must not cross identities even within the same source.
+            self.assertNotIn('Previous explanation', row['body'])
+
+    def test_email_editor_invalidates_prepared_state_and_uses_verbatim_review_inputs(self):
+        result = self.run_js(r"""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);a.renderPrepared(prepare());
+element('#gmail_handoff_reviewed').checked=true;
+element('#email_subject').value='Requerimento de Honorários';element('#email_body').value='  Retificação fictícia.\nAssinatura\n';
+element('#intake-form').listeners.input({target:element('#email_body')});
+const stale={prepared:a.state.lastPrepared,ack:element('#gmail_handoff_reviewed').checked};
+await a.reviewIntake();const reviewed=calls.find(row=>row.url==='/api/review').body.intake;
+element('#email_subject').value='';element('#email_body').value='';
+element('#intake-form').listeners.change({target:element('#email_subject')});a.mergeFormIntoCurrentIntake();
+console.log(JSON.stringify({stale,reviewed,current:a.state.currentIntake}));
+""")
+        self.assertIsNone(result['stale']['prepared'])
+        self.assertFalse(result['stale']['ack'])
+        self.assertEqual(result['reviewed']['email_subject'], 'Requerimento de Honorários')
+        self.assertEqual(result['reviewed']['email_body'], '  Retificação fictícia.\nAssinatura\n')
+        for field in ('email_subject', 'email_body'):
+            self.assertEqual(result['current'][field], '')
+            self.assertIn(field, result['current']['review_cleared_fields'])
+
+    def test_email_overrides_survive_same_request_recovery_but_not_a_new_source_or_sibling(self):
+        result = self.run_js(r"""
+const results=[];const originalFetch=context.fetch;
+for(const change of ['same','source','case','date','period','manual']){
+ const previous={...alpha,email_subject:'Exact Subject',email_body:'  Exact message\n'};
+ if(change==='manual')previous.source_sha256='';
+ a.state.currentIntake=previous;a.fillFormFromIntake(previous);
+ const next={...alpha};if(change==='source')next.source_sha256='new-source';if(change==='case')next.case_number=beta.case_number;
+ if(change==='date')next.service_date='2026-10-02';if(change==='period')next.service_period_label='morning';
+ context.fetch=async(url,options)=>url==='/api/sources/upload'?{ok:true,json:async()=>({candidate_intake:next,source:{sha256:next.source_sha256}})}:originalFetch(url,options);
+ await a.uploadSource('photo',{file:{name:'fictional.png',size:20,lastModified:2,type:'image/png'}});
+ results.push({change,subject:a.state.currentIntake.email_subject||'',body:a.state.currentIntake.email_body||'',shownSubject:element('#email_subject').value,shownBody:element('#email_body').value});
+}
+console.log(JSON.stringify(results));
+""")
+        for row in result:
+            expected = ('Exact Subject', '  Exact message\n') if row['change'] == 'same' else ('', '')
+            self.assertEqual((row['subject'], row['body']), expected, row['change'])
+            self.assertEqual((row['shownSubject'], row['shownBody']), expected, row['change'])
 
     def test_pdf_multiple_cases_follow_existing_review_and_shared_trip_ui(self):
         result = self.run_js("""
@@ -831,20 +1049,87 @@ console.log(JSON.stringify({error,calls:calls.length}));
         self.assertIn('Select the prepared email',result['error'])
         self.assertEqual(result['calls'],0)
 
+    def test_manual_record_replaces_create_cta_and_preserves_pdf_artifacts(self):
+        result = self.run_js("""
+a.state.currentIntake=alpha;a.state.gmailStatus={connected:true};const prepared=prepare(),before=JSON.stringify(prepared);a.renderPrepared(prepared);
+element('#record_draft_id').value='fictional-manual-draft';element('#record_message_id').value='fictional-manual-message';element('#gmail_handoff_reviewed').checked=true;
+element('#gmail-response-raw').value='fictional parsed response';await a.recordPreparedDraftFromForm();
+const errors=[];for(const action of [()=>a.createGmailApiDraft(),()=>a.buildManualHandoffPacket()]){try{await action();}catch(error){errors.push(error.message);}}
+console.log(JSON.stringify({same:a.state.lastPrepared===prepared&&JSON.stringify(prepared)===before,title:a.state.currentNextSafeAction.title,
+home:element('#interpretation-review-home-result').innerHTML,next:element('#next-safe-action-body').innerHTML,
+disabled:['#create-gmail-api-draft','#build-manual-handoff','#record-parsed-prepared-draft'].map(id=>element(id).disabled),
+calls:calls.map(row=>row.url),errors,recorded:a.state.locallyRecordedPayload}));
+""")
+        self.assertTrue(result['same'])
+        self.assertEqual(result['title'], 'Review the recorded draft in Gmail')
+        self.assertIn('View Recent Work', result['home'])
+        self.assertNotIn('Review PDF and handoff', result['home'])
+        self.assertIn('Review the recorded draft in Gmail', result['next'])
+        self.assertEqual(result['disabled'], [True, True, True])
+        self.assertEqual(result['calls'], ['/api/drafts/record'])
+        self.assertEqual(len(result['errors']), 2)
+
+    def test_recorded_target_remains_recorded_after_switch_without_blocking_other_email(self):
+        result = self.run_js("""
+a.state.gmailStatus={connected:true};a.renderPrepared(prepare());element('#record_draft_id').value='fictional-manual-draft';element('#record_message_id').value='fictional-manual-message';element('#gmail_handoff_reviewed').checked=true;await a.recordPreparedDraftFromForm();
+a.selectPreparedEmailTarget(1);element('#gmail_handoff_reviewed').checked=true;a.syncActionGates();
+const other={recorded:a.state.locallyRecordedPayload,disabled:element('#create-gmail-api-draft').disabled,title:a.state.currentNextSafeAction.title||''};
+a.selectPreparedEmailTarget(0);element('#gmail_handoff_reviewed').checked=true;a.syncActionGates();
+const returned={recorded:a.state.locallyRecordedPayload,disabled:element('#create-gmail-api-draft').disabled,title:a.state.currentNextSafeAction.title};
+a.clearPreparedArtifacts('source changed');const cleared=a.state.recordedPreparedPayloads.size;a.renderPrepared(prepare());element('#gmail_handoff_reviewed').checked=true;a.syncActionGates();
+console.log(JSON.stringify({other,returned,cleared,freshDisabled:element('#create-gmail-api-draft').disabled,calls:calls.map(row=>row.url)}));
+""")
+        self.assertEqual(result['other'], {'recorded': '', 'disabled': False, 'title': ''})
+        self.assertEqual(result['returned'], {'recorded': '/fictional/alpha.json', 'disabled': True, 'title': 'Review the recorded draft in Gmail'})
+        self.assertEqual(result['cleared'], 0)
+        self.assertFalse(result['freshDisabled'])
+        self.assertEqual(result['calls'], ['/api/drafts/record'])
+
+    def test_failed_or_unconfirmed_manual_record_never_marks_prepared_email_recorded(self):
+        result = self.run_js("""
+const results=[];for(const failure of ['http','unconfirmed']){
+ a.state.gmailStatus={connected:true};a.renderPrepared(prepare());element('#record_draft_id').value='fictional-draft';element('#record_message_id').value='fictional-message';element('#gmail_handoff_reviewed').checked=true;
+ responseFailure=failure==='http'?'Fictional record failure':null;responseOverride=failure==='unconfirmed'?{status:'error',message:'No confirmed recording'}:null;
+ let error='';try{await a.recordPreparedDraftFromForm();}catch(caught){error=caught.message;}
+ a.syncActionGates();results.push({error,recorded:a.state.locallyRecordedPayload,count:a.state.recordedPreparedPayloads.size,disabled:element('#create-gmail-api-draft').disabled,title:a.state.currentNextSafeAction.title||''});
+}console.log(JSON.stringify(results));
+""")
+        for row in result:
+            self.assertTrue(row['error'])
+            self.assertEqual((row['recorded'], row['count'], row['disabled'], row['title']), ('', 0, False, ''))
+
+    def test_late_manual_record_does_not_complete_changed_selection_or_source(self):
+        result = self.run_js("""
+const results=[];for(const change of ['selection','source']){
+ a.renderPrepared(prepare());element('#record_draft_id').value='fictional-old-draft';element('#record_message_id').value='fictional-old-message';
+ let release;deferred=new Promise(resolve=>release=resolve);const pending=a.recordPreparedDraftFromForm();
+ if(change==='selection')a.selectPreparedEmailTarget(1);else{a.clearPreparedArtifacts('source changed');a.state.currentIntake=beta;}
+ release();await pending;deferred=null;
+ results.push({change,recorded:a.state.locallyRecordedPayload,count:a.state.recordedPreparedPayloads.size,payload:element('#record_payload').value,ids:element('#record_draft_id').value,title:a.state.currentNextSafeAction?.title||''});
+}console.log(JSON.stringify(results));
+""")
+        for row in result:
+            self.assertEqual((row['recorded'], row['count'], row['ids']), ('', 0, ''))
+            self.assertNotIn('Review the recorded draft', row['title'])
+        self.assertEqual(result[0]['payload'], '/fictional/beta.json')
+        self.assertEqual(result[1]['payload'], '')
+
     def test_handoff_record_api_and_lifecycle_are_bound_to_selected_payload_and_intake(self):
         result=self.run_js("""
 a.state.currentIntake=alpha;a.renderPrepared(prepare());a.selectPreparedEmailTarget(1);await a.buildManualHandoffPacket();await a.activeCheck();
 element('#record_draft_id').value='fictional-draft';element('#record_message_id').value='fictional-message';element('#gmail_handoff_reviewed').checked=true;await a.recordPreparedDraftFromForm();
-await a.createGmailApiDraft();
-console.log(JSON.stringify({calls,recorded:a.state.locallyRecordedPayload,ids:element('#record_draft_id').value,betaFields:a.currentPreparedReviewFields('/fictional/beta.json'),alphaFields:a.currentPreparedReviewFields('/fictional/alpha.json')}));
+let repeated='';try{await a.createGmailApiDraft();}catch(error){repeated=error.message;}
+console.log(JSON.stringify({calls,repeated,recorded:a.state.locallyRecordedPayload,ids:element('#record_draft_id').value,betaFields:a.currentPreparedReviewFields('/fictional/beta.json'),alphaFields:a.currentPreparedReviewFields('/fictional/alpha.json')}));
 """)
         by_route={call['url']:call['body'] for call in result['calls']}
-        for route in ['/api/gmail/manual-handoff','/api/drafts/record','/api/gmail/drafts/create']:
+        for route in ['/api/gmail/manual-handoff','/api/drafts/record']:
             self.assertEqual(by_route[route]['payload'],'/fictional/beta.json')
             self.assertEqual(by_route[route]['prepared_review_token'],'fictional-token')
         self.assertEqual(by_route['/api/drafts/active-check']['intake']['case_number'],'711/26.0TSTXX')
         self.assertEqual(result['recorded'],'/fictional/beta.json')
-        self.assertEqual(result['ids'],'draft:/fictional/beta.json')
+        self.assertEqual(result['ids'],'fictional-draft')
+        self.assertNotIn('/api/gmail/drafts/create', by_route)
+        self.assertIn('already has a recorded draft', result['repeated'])
         self.assertEqual(result['alphaFields'],{})
 
     def test_late_handoff_and_verification_results_cannot_repopulate_switched_target(self):
@@ -1143,7 +1428,7 @@ await a.createGmailApiDraft();const completed=element('#next-safe-action-body').
 a.selectPreparedEmailTarget(1);
 console.log(JSON.stringify({completed,disabled,next:element('#next-safe-action-body').innerHTML,calls}));
 """)
-        self.assertIn('Review the created draft in Gmail', result['completed'])
+        self.assertIn('Review the recorded draft in Gmail', result['completed'])
         self.assertNotIn('data-next-action-target="create-gmail-api-draft"', result['completed'])
         self.assertTrue(result['disabled'])
         self.assertIn('Create Gmail Draft', result['next'])
@@ -1186,19 +1471,22 @@ console.log(JSON.stringify({summary:element('#prepared-email-target-summary').te
     def test_group_copy_handoff_create_and_record_use_composite_signed_payload(self):
         result=self.run_js("""
 a.renderPrepared(groupedPrepare());a.selectPreparedEmailTarget(1);await a.copyPreparedDraftArgs();await a.buildManualHandoffPacket();await a.activeCheck();
-element('#record_draft_id').value='five-member-draft';element('#gmail_handoff_reviewed').checked=true;await a.recordPreparedDraftFromForm();await a.createGmailApiDraft();
-console.log(JSON.stringify({calls,copied,recorded:a.state.locallyRecordedPayload}));
+element('#record_draft_id').value='five-member-draft';element('#gmail_handoff_reviewed').checked=true;await a.recordPreparedDraftFromForm();
+let repeated='';try{await a.createGmailApiDraft();}catch(error){repeated=error.message;}
+console.log(JSON.stringify({calls,copied,repeated,recorded:a.state.locallyRecordedPayload}));
 """)
         args=json.loads(result['copied'][0])
         self.assertEqual(args['to'],'beta@example.test')
         self.assertEqual(len(args['attachment_files']),5)
         routes={call['url']:call['body'] for call in result['calls']}
-        for route in ['/api/gmail/manual-handoff','/api/drafts/record','/api/gmail/drafts/create']:
+        for route in ['/api/gmail/manual-handoff','/api/drafts/record']:
             self.assertEqual(routes[route]['payload'],'/fictional/group-1.json')
             self.assertEqual(routes[route]['prepared_review_token'],'fictional-group-token')
         self.assertEqual(len(routes['/api/drafts/active-check']['underlying_requests']),5)
         self.assertNotIn('intake',routes['/api/drafts/active-check'])
         self.assertEqual(result['recorded'],'/fictional/group-1.json')
+        self.assertNotIn('/api/gmail/drafts/create', routes)
+        self.assertIn('already has a recorded draft', result['repeated'])
 
     def test_group_active_check_blocks_whole_email_when_last_member_is_active(self):
         result=self.run_js("""

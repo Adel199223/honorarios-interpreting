@@ -25,7 +25,8 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOG = ROOT / "data" / "gmail-draft-log.json"
 DEFAULT_DUPLICATE_INDEX = ROOT / "data" / "duplicate-index.json"
-STATUSES = {"active", "trashed", "superseded", "not_found", "sent"}
+STATUSES = {"active", "trashed", "superseded", "not_found", "archived", "sent"}
+REMOVED_DRAFT_STATUSES = {"trashed", "not_found", "archived"}
 CLAIM_FIELDS = ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding')
 EMAIL_GROUP_FIELDS = ('email_grouping', 'email_group_id', 'source_sha256', 'personal_profile_id', *MANUAL_VISIT_FIELDS)
 
@@ -124,7 +125,11 @@ def upsert_duplicate_record(records: list[dict[str, Any]], record: dict[str, Any
     for existing in records:
         existing_draft_id = str(existing.get("draft_id") or "").strip()
         if draft_id and existing_draft_id == draft_id and duplicate_key(existing) == record_key:
-            existing.update({key: value for key, value in record.items() if value not in (None, "")})
+            updates = {key: value for key, value in record.items() if value not in (None, "")}
+            # Lifecycle bookkeeping is not another draft creation.
+            if existing.get('drafted_at'):
+                updates.pop('drafted_at', None)
+            existing.update(updates)
             return
     # Unlinked history is independent evidence, never a slot for a new draft.
     records.append(record)
@@ -185,6 +190,14 @@ def build_duplicate_record(record: dict[str, Any]) -> dict[str, Any]:
     }
     if record.get("sent_date"):
         duplicate["sent_date"] = record["sent_date"]
+    if 'duplicate_warning_retained' in record:
+        retained = record['duplicate_warning_retained'] is True
+        duplicate['duplicate_warning_retained'] = retained
+        duplicate['draft_lifecycle_status'] = record['status']
+        if retained:
+            # Drafted is the durable creation fact; lifecycle only determines
+            # where this email appears in Recent Work. It never claims Sent.
+            duplicate['status'] = 'drafted'
     duplicate.update({key: record[key] for key in CLAIM_FIELDS if key in record})
     duplicate.update({key: record[key] for key in EMAIL_GROUP_FIELDS if key in record})
     return duplicate
@@ -218,6 +231,37 @@ def duplicate_records_for_log_record(record: dict[str, Any], payload: dict[str, 
                 child[key] = item[key]
         records.append(build_duplicate_record(child))
     return records
+
+
+def recorded_replacement_covers(record: dict[str, Any], previous: dict[str, Any],
+                                records: list[dict[str, Any]], index: list[dict[str, Any]]) -> bool:
+    """Only complete, already protected replacement history releases an old hold."""
+    replacement_id = str(record.get('superseded_by') or previous.get('superseded_by') or '')
+    if not replacement_id or replacement_id == record['draft_id']:
+        return False
+    replacements = [row for row in records if row.get('draft_id') == replacement_id]
+    if len(replacements) != 1:
+        return False
+    replacement = replacements[0]
+    supersedes = replacement.get('supersedes') or []
+    if (replacement.get('status') not in {'active', 'sent'}
+            or not isinstance(supersedes, list) or record['draft_id'] not in supersedes):
+        return False
+    old_children = previous.get('underlying_requests') or [previous]
+    new_children = replacement.get('underlying_requests') or [replacement]
+    if (not isinstance(old_children, list) or not isinstance(new_children, list)
+            or not old_children or not new_children
+            or any(not isinstance(row, dict) for row in [*old_children, *new_children])):
+        return False
+    old_keys = {request_identity_key(row) for row in old_children}
+    new_keys = {request_identity_key(row) for row in new_children}
+    if any(not all(key[:2]) for key in old_keys) or not old_keys.issubset(new_keys):
+        return False
+    statuses = {'sent'} if replacement['status'] == 'sent' else {'drafted', 'sent'}
+    return all(any(row.get('draft_id') == replacement_id
+                   and row.get('message_id') == replacement.get('message_id')
+                   and row.get('status') in statuses
+                   and request_identity_key(row) == key for row in index) for key in old_keys)
 
 
 def validate_superseded_request_coverage(requests: list[dict[str, Any]], records: list[dict[str, Any]], supersedes: list[str]) -> None:
@@ -293,7 +337,7 @@ def validate_record_history(record: dict[str, Any], payload: dict[str, Any], rec
                 raise ValueError('The recorded draft payload changed. Restore the original before recording.')
         old_status = str(previous.get('status') or 'sent')
         if ((old_status == 'sent' and status != 'sent') or
-                (old_status in {'trashed', 'superseded', 'not_found'} and status in {'active', 'sent'})):
+                (old_status in {'trashed', 'superseded', 'not_found', 'archived'} and status in {'active', 'sent'})):
             raise ValueError('An already sent or retired draft cannot be restored by an active recording retry.')
     children_by_key = {request_identity_key(row): row for row in child_records}
     linked = [row for row in index if row.get('draft_id') == draft_id]
@@ -304,7 +348,9 @@ def validate_record_history(record: dict[str, Any], payload: dict[str, Any], rec
         if child is None:
             raise ValueError('An existing draft ID cannot omit recorded request members.')
         if ((str(old.get('status') or 'sent') == 'sent' and status != 'sent') or
-                (old.get('status') in {'trashed', 'superseded', 'not_found'} and status in {'active', 'sent'})):
+                ((old.get('status') in {'trashed', 'superseded', 'not_found', 'archived'}
+                  or old.get('draft_lifecycle_status') in {'trashed', 'superseded', 'not_found', 'archived'})
+                 and status in {'active', 'sent'})):
             raise ValueError('An already sent or retired request cannot be restored by an active recording retry.')
         for field in ('message_id', 'thread_id', 'recipient_email', 'pdf', 'pdf_sha256'):
             if old.get(field) and child.get(field) and old[field] != child[field]:
@@ -365,6 +411,10 @@ def validate_pending_record(log_path: Path, record: dict[str, Any], payload_path
 
 
 def _record_main(argv: list[str] | None = None) -> int:
+    try:
+        from scripts.request_exclusions import require_requests_not_excluded
+    except ModuleNotFoundError:
+        from request_exclusions import require_requests_not_excluded
     parser = argparse.ArgumentParser(description="Record or update a Gmail draft created for an honorários PDF.")
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG)
     parser.add_argument("--duplicate-index", type=Path, default=DEFAULT_DUPLICATE_INDEX)
@@ -418,6 +468,21 @@ def _record_main(argv: list[str] | None = None) -> int:
         }
         duplicate_records = load_duplicate_index(args.duplicate_index)
         previous = next((existing for existing in records if existing.get('draft_id') == args.draft_id), {})
+        linked = [row for row in duplicate_records if row.get('draft_id') == args.draft_id]
+        known_drafted = (previous.get('status') == 'active'
+                         or previous.get('duplicate_warning_retained') is True
+                         or any(row.get('status') == 'drafted' for row in linked))
+        if args.status == 'archived' and (not previous or not known_drafted):
+            raise ValueError('Only an existing recorded unsent draft can be removed from Drafted locally.')
+        if args.status in REMOVED_DRAFT_STATUSES | {'superseded'} and known_drafted:
+            record['duplicate_warning_retained'] = not recorded_replacement_covers(
+                record, previous, records, duplicate_records)
+        elif 'duplicate_warning_retained' in previous or any('duplicate_warning_retained' in row for row in linked):
+            # A genuine replacement can retire its predecessor. Explicit false
+            # prevents an upsert from retaining the earlier lifecycle marker.
+            record['duplicate_warning_retained'] = False
+        if 'duplicate_warning_retained' in record:
+            record['draft_lifecycle_status'] = args.status
         if previous and not payload:
             for field in ('service_period_label', 'service_start_time', 'service_end_time'):
                 if getattr(args, field) is None:
@@ -428,6 +493,8 @@ def _record_main(argv: list[str] | None = None) -> int:
             for field in ('created_at', 'draft_payload_sha256'):
                 if previous.get(field):
                     record[field] = previous[field]
+            if not args.supersedes and previous.get('supersedes'):
+                record['supersedes'] = copy.deepcopy(previous['supersedes'])
         elif args.status == 'active' and payload_path and payload_path.is_file():
             record['created_at'] = record['updated_at']
             record['draft_payload_sha256'] = file_sha256(payload_path)
@@ -438,6 +505,10 @@ def _record_main(argv: list[str] | None = None) -> int:
         underlying = payload.get('underlying_requests') or previous.get('underlying_requests')
         if isinstance(underlying, list) and underlying:
             record['underlying_requests'] = underlying
+        # Existing Sent transitions and cleanup may preserve real history.
+        # New drafts/records must respect current user decisions for every child.
+        if args.status == 'active' or (args.status == 'sent' and not previous):
+            require_requests_not_excluded(record, args.duplicate_index)
         if payload and (args.status == 'active' or (args.status == 'sent' and not previous)):
             errors = validate_draft_payload(payload)
             if errors:
@@ -467,10 +538,12 @@ def _record_main(argv: list[str] | None = None) -> int:
         validate_record_history(record, payload, records, duplicate_records, child_records)
         validate_pending_record(args.log, record, payload_path)
         upsert_record(records, record)
-        write_log(args.log, records)
         for duplicate_record in child_records:
             upsert_duplicate_record(duplicate_records, duplicate_record)
+        # Keep every child protected if the second atomic replace fails. A
+        # retry can complete the log without opening a creation gap.
         write_duplicate_index(args.duplicate_index, duplicate_records)
+        write_log(args.log, records)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Cannot record Gmail draft: {exc}", file=sys.stderr)
         return 2

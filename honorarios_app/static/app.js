@@ -64,6 +64,7 @@ const state = {
   workflowStale: false,
   pendingPreparationRevision: null,
   locallyRecordedPayload: "",
+  recordedPreparedPayloads: new Set(),
   aiStatus: null,
   googlePhotosStatus: null,
   gmailStatus: null,
@@ -78,6 +79,8 @@ const state = {
   legalPdfPersonalProfileImportPreview: null,
   backupStatus: null,
   historyStatusFilter: "all",
+  historyDraftArchivePending: false,
+  historyDraftArchiveConfirmation: null,
   currentNextSafeAction: null,
   currentPersonalProfile: null,
   gmailCreateInFlight: false,
@@ -264,7 +267,7 @@ function setStatus(status, message) {
   pill.className = "status-chip";
   if (["ready", "prepared", "recorded", "verified"].includes(normalized)) {
     pill.classList.add("ready");
-  } else if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "not_found", "reconciliation_mismatch"].includes(normalized)) {
+  } else if (["needs_info", "duplicate", "active_draft", "excluded", "set_aside", "blocked", "not_found", "reconciliation_mismatch"].includes(normalized)) {
     pill.classList.add("blocked");
   } else if (normalized === "error") {
     pill.classList.add("error");
@@ -289,12 +292,12 @@ function setCard(element, message, kind = "") {
 
 function statusChipClass(status) {
   if (["ready", "prepared", "recorded", "clear", "active", "drafted", "sent"].includes(status)) return "ready";
-  if (["needs_info", "duplicate", "active_draft", "set_aside", "blocked", "stale", "superseded", "trashed", "not_found", "reconciliation_mismatch"].includes(status)) return "blocked";
+  if (["needs_info", "duplicate", "active_draft", "excluded", "set_aside", "blocked", "stale", "superseded", "trashed", "not_found", "reconciliation_mismatch"].includes(status)) return "blocked";
   if (status === "error") return "error";
   return "info";
 }
 
-const HISTORY_STATUS_FILTERS = ["all", "active", "drafted", "sent", "superseded", "trashed", "not_found"];
+const HISTORY_STATUS_FILTERS = ["all", "active", "drafted", "sent", "archived", "superseded", "trashed", "not_found"];
 const QUESTION_ACTION_EXAMPLE = "Answer 3 questions before PDF creation";
 const NEXT_SAFE_ACTION_LABEL = "Next safe action";
 const SAFE_ACTION_GATES = {
@@ -478,6 +481,7 @@ function syncServerConnectionGates() {
   });
   syncManualEntryGate();
   syncGmailSentSyncGates();
+  syncHistoryDraftArchiveGates();
   syncSourceRecoveryGates();
 }
 
@@ -526,6 +530,10 @@ function syncDrawerProgressiveDisclosure(action = state.currentNextSafeAction) {
   document.body.dataset.drawerWorkflowState = workflowState;
 }
 
+function preparedPayloadAlreadyRecorded(payload = preparedRecordTarget()?.draft_payload || "") {
+  return Boolean(payload && (state.locallyRecordedPayload === payload || state.recordedPreparedPayloads?.has(payload)));
+}
+
 function syncActionGates(action = state.currentNextSafeAction) {
   syncSourceRecoveryGates();
   state.currentNextSafeAction = action || null;
@@ -567,15 +575,17 @@ function syncActionGates(action = state.currentNextSafeAction) {
       }
       enabled = enabled
         && Boolean($("#gmail-response-raw")?.value.trim())
-        && handoffReviewed;
+        && handoffReviewed && !preparedPayloadAlreadyRecorded();
+      if (preparedPayloadAlreadyRecorded()) blockedReason = "This email was already recorded. Review the existing draft in Gmail.";
     }
     if (id === "build-manual-handoff") {
       enabled = enabled && Boolean(preparedRecordTarget()?.draft_payload);
       if (selectedEmailLifecycleBlocked()) blockedReason = "A member request already has a draft or needs correction. Check this email's requests before another handoff.";
-      enabled = enabled && !selectedEmailLifecycleBlocked();
+      enabled = enabled && !selectedEmailLifecycleBlocked() && !preparedPayloadAlreadyRecorded();
+      if (preparedPayloadAlreadyRecorded()) blockedReason = "This email was already recorded. Review the existing draft in Gmail.";
     }
     if (id === "copy-manual-handoff-prompt") {
-      enabled = enabled && Boolean(state.lastManualHandoff?.copyable_prompt);
+      enabled = enabled && Boolean(state.lastManualHandoff?.copyable_prompt) && !preparedPayloadAlreadyRecorded();
     }
     if (id === "create-gmail-api-draft") {
       const handoffReviewed = Boolean($("#gmail_handoff_reviewed")?.checked);
@@ -587,6 +597,8 @@ function syncActionGates(action = state.currentNextSafeAction) {
         blockedReason = "Review the PDF preview and exact Gmail args before creating the Gmail draft.";
       } else if (state.gmailCreateInFlight) {
         blockedReason = "Gmail draft creation is already in progress.";
+      } else if (preparedPayloadAlreadyRecorded(targetPayload)) {
+        blockedReason = "This email already has a recorded Gmail draft. Review it in Gmail or Recent Work.";
       } else if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
         blockedReason = ["creation_uncertain", "created_unrecorded"].includes(state.lastGmailCreateConfirmation?.status)
           ? "Recover the existing Gmail attempt using the actions below. Another create remains blocked."
@@ -600,6 +612,7 @@ function syncActionGates(action = state.currentNextSafeAction) {
         && Boolean(targetPayload)
         && !state.gmailCreateInFlight
         && !selectedEmailLifecycleBlocked()
+        && !preparedPayloadAlreadyRecorded(targetPayload)
         && state.gmailCreateCompletedPayload !== targetPayload;
     }
     if (id === "record-draft") {
@@ -641,6 +654,7 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
   state.workflowStale = state.workflowStale || hadPreparedOrPending;
   state.pendingPreparationRevision = null;
   state.locallyRecordedPayload = "";
+  state.recordedPreparedPayloads = new Set();
   state.lastPrepared = null;
   state.preparedEmailTargetIndex = 0;
   state.preparedEmailMemberIndex = 0;
@@ -686,7 +700,24 @@ function clearPreparedArtifacts(reason = "stale prepared result") {
 }
 
 function historyRecordStatus(record, defaultStatus = "") {
-  return String(record?.status || defaultStatus || "").trim() || defaultStatus;
+  const status = String(record?.status || defaultStatus || "").trim() || defaultStatus;
+  const lifecycle = String(record?.draft_lifecycle_status || "").trim();
+  // Presentation only: the canonical drafted status remains a duplicate blocker.
+  return status === "drafted" && ["archived", "trashed", "not_found", "superseded"].includes(lifecycle) ? lifecycle : status;
+}
+
+function retainedDraftWarning(record) {
+  const status = String(record?.status || "").trim();
+  const lifecycle = String(record?.draft_lifecycle_status || "").trim();
+  return (status === "drafted" || status === lifecycle && record?.duplicate_warning_retained === true)
+    && ["archived", "trashed", "not_found", "superseded"].includes(lifecycle);
+}
+
+function historyStatusLabel(record, defaultStatus = "") {
+  const status = historyRecordStatus(record, defaultStatus);
+  if (retainedDraftWarning(record)) return `Previously drafted · ${status === "not_found" ? "missing in Gmail" : status} · warning kept`;
+  if (duplicateSubmissionWording(record).paper) return duplicateSubmissionWording(record).label;
+  return status === "not_found" ? "missing in Gmail" : status.replaceAll("_", " ");
 }
 
 function filterHistoryRecords(records, defaultStatus = "") {
@@ -727,7 +758,7 @@ function renderHistoryStatusFilters() {
   const counts = historyStatusCounts();
   box.innerHTML = HISTORY_STATUS_FILTERS.map((status) => {
     const active = state.historyStatusFilter === status;
-    const label = status === "all" ? "All" : status;
+    const label = status === "all" ? "All" : status === "not_found" ? "Missing in Gmail" : status;
     return `
       <button
         type="button"
@@ -778,6 +809,8 @@ function fillFormFromIntake(intake) {
     service_place: intake.service_place,
     km_one_way: intake.transport?.km_one_way,
     source_text: intake.source_text,
+    email_subject: intake.email_subject,
+    email_body: intake.email_body,
     personal_profile_id: intake.personal_profile_id,
     profile: intake.service_profile_key,
   };
@@ -793,6 +826,8 @@ function fillFormFromIntake(intake) {
     "service_place",
     "km_one_way",
     "source_text",
+    "email_subject",
+    "email_body",
   ]);
   Object.entries(values).forEach(([id, value]) => {
     const input = $(`#${id}`);
@@ -866,6 +901,8 @@ function mergeFormIntoCurrentIntake() {
     "recipient_email",
     "service_place",
     "source_text",
+    "email_subject",
+    "email_body",
     "personal_profile_id",
   ].forEach((key) => {
     trackClear(key, payload[key], intake[key]);
@@ -920,6 +957,13 @@ function showAlert(message, kind = "") {
 }
 
 function renderNextSafeAction(action) {
+  if (!state.workflowStale && preparedPayloadAlreadyRecorded()) {
+    action = { state: "review_gmail_draft_args", blocked: false,
+      title: "Review the recorded draft in Gmail",
+      detail: "This email already has a locally recorded draft. Review its recipient and attachments in Gmail.",
+      why: "The recorded request is protected against another draft. Its prepared PDF remains available to inspect.",
+      allowed_next: "Review the existing draft in Gmail or Recent Work, or select another prepared email." };
+  }
   syncActionGates(action);
   renderGuidedStep(action?.state || (state.workflowStale ? "fix_blocker" : "idle"));
   const targets = [
@@ -1412,7 +1456,7 @@ function ensureSupportingAttachmentEmailBody(intake) {
   return intake;
 }
 
-function mergeSupportingAttachmentsIntoIntake(intake, attachments = [], emailBody = "") {
+function mergeSupportingAttachmentsIntoIntake(intake, attachments = [], emailBody = "", emailSubject = "") {
   const target = { ...(intake || {}) };
   const existing = normalizeAttachmentList(target.additional_attachment_files);
   const incoming = normalizeAttachmentList(attachments);
@@ -1423,7 +1467,19 @@ function mergeSupportingAttachmentsIntoIntake(intake, attachments = [], emailBod
   if (emailBody && !String(target.email_body || "").trim()) {
     target.email_body = emailBody;
   }
+  if (emailSubject && !String(target.email_subject || "").trim()) {
+    target.email_subject = emailSubject;
+  }
   return ensureSupportingAttachmentEmailBody(target);
+}
+
+function sourceEmailTextForIntake(intake, previous) {
+  // Email wording belongs to one request, not every case found in its photo.
+  if (!previous?.source_sha256 || previous.source_sha256 !== intake?.source_sha256) return {};
+  const identity = (row) => ["case_number", "service_date", "service_period_label"].map((key) => String(row?.[key] || "").trim().toUpperCase());
+  const before = identity(previous), after = identity(intake);
+  if (!before[0] || !before[1] || before.some((value, index) => value !== after[index])) return {};
+  return { email_body: previous.email_body || "", email_subject: previous.email_subject || "" };
 }
 
 function renderSupportingAttachmentList() {
@@ -1778,6 +1834,7 @@ function resetPreparedEmailTargetState() {
   renderDraftLifecycle(null);
   const target = preparedRecordTarget();
   if (target) {
+    if (state.recordedPreparedPayloads?.has(target.draft_payload)) state.locallyRecordedPayload = target.draft_payload;
     $("#record_payload").value = target.draft_payload || "";
     $("#record_notes").value = preparedRecordNote(target);
     state.draftLifecycle = target.draft_lifecycle || null;
@@ -1881,6 +1938,7 @@ async function buildManualHandoffPacket() {
   if (!target?.draft_payload) {
     throw new Error("Prepare a PDF and Gmail draft payload before building the manual handoff packet.");
   }
+  if (preparedPayloadAlreadyRecorded(target.draft_payload)) throw new Error("This email was already recorded. Review the existing draft in Gmail or Recent Work.");
   if (selectedEmailLifecycleBlocked()) throw new Error("A member request needs correction before another handoff can be built.");
   const data = await requestWorkflowJson("/api/gmail/manual-handoff", {
     method: "POST",
@@ -2199,7 +2257,7 @@ function renderDraftLifecycle(data) {
     rows.push(`<div class="data-item"><strong>Active draft</strong><code>${escapeHtml(record.draft_id || "")}</code><span>${escapeHtml(record.recipient || "")}</span></div>`);
   });
   duplicates.forEach((record) => {
-    rows.push(`<div class="data-item"><strong>${escapeHtml(duplicateSubmissionWording(record).paper ? duplicateSubmissionWording(record).label : record.status || "duplicate")}</strong><code>${escapeHtml(record.draft_id || record.pdf || "")}</code><span>${escapeHtml(record.recipient_email || record.recipient || "")}</span></div>`);
+    rows.push(`<div class="data-item"><strong>${escapeHtml(historyStatusLabel(record, "duplicate"))}</strong><code>${escapeHtml(record.draft_id || record.pdf || "")}</code><span>${escapeHtml(record.recipient_email || record.recipient || "")}</span></div>`);
   });
   body.innerHTML = rows.join("");
   if (active.length && !$("#record_supersedes").value) {
@@ -2374,6 +2432,8 @@ function renderBeginnerOutcomeBanner(data, intake, questions) {
     headline = "I found enough reviewed details to move to PDF preview.";
   } else if (status === "set_aside") {
     headline = "This source may not be an in-person interpreting request, so I set it aside before creating anything.";
+  } else if (status === "excluded") {
+    headline = data.message || "Already handled — confirmed by you. No new PDF or Gmail draft was created.";
   } else if (["duplicate", "active_draft"].includes(status)) {
     headline = state.sentDuplicateStoppedReview === data
       ? `Stopped: this fee request was already ${duplicateSubmissionWording(data.duplicate).verb}. No new PDF or Gmail draft was created.`
@@ -2437,6 +2497,18 @@ function renderBeginnerReviewSummary(data) {
   const workflow = currentWorkflowGuidance(data);
   const sentRecord = workflow.phase === "review" ? sentDuplicateForReview(data) : null;
   if (sentRecord) return sentHistorySummary(data, sentRecord);
+  if (workflow.phase === "review" && data.status === "excluded" && data.exclusion) {
+    const facts = [["Case number", data.exclusion.case_number], ["Service date", data.exclusion.service_date],
+      ["Service period", data.exclusion.service_period_label]].filter(([_label, value]) => value);
+    return `<div class="source-review-wizard" data-excluded-request-summary="true">
+      <div class="beginner-outcome-banner blocked"><span>Saved decision</span>
+        <strong>${escapeHtml(data.next_safe_action?.title || "Already handled — confirmed by you")}</strong>
+        <p>${escapeHtml(data.message)}</p><p>No further answers are needed. PDF and Gmail draft creation are blocked.</p>
+      </div>
+      <section class="beginner-key-facts" aria-label="Excluded request details"><ul>
+        ${facts.map(([label, value]) => `<li class="review-fact-row"><div><strong>${escapeHtml(label)}</strong><span class="review-fact-value">${escapeHtml(value)}</span></div></li>`).join("")}
+      </ul></section></div>`;
+  }
   const questions = workflow.phase === "review" && Array.isArray(data.questions) ? data.questions : [];
   const intake = reviewIntakeForDisplay(data);
   const readyForPdf = workflow.phase === "review" && data.status === "ready" && questions.length === 0;
@@ -2466,7 +2538,12 @@ function renderBeginnerReviewSummary(data) {
         <button type="button" class="mini-button" data-open-review-drawer-focus-prepare="true">Review draft and PDF step</button>
       </div>
     `
-    : ["prepared", "handoff_ready", "recorded"].includes(workflow.phase)
+    : workflow.phase === "recorded"
+    ? `<div class="beginner-ready-cta">
+        <div><span>Recorded</span><strong>Review the recorded draft in Gmail</strong><p>The existing draft is recorded locally. Its PDF remains available for review; another draft is not needed.</p></div>
+        <a class="mini-button" href="#history">View Recent Work</a>
+      </div>`
+    : ["prepared", "handoff_ready"].includes(workflow.phase)
     ? `<div class="beginner-ready-cta">
         <div><span>Prepared</span><strong>Review the PDF and draft handoff</strong><p>${escapeHtml(workflow.needed)}</p></div>
         <button type="button" class="mini-button" data-open-review-drawer-focus-handoff="true">Review PDF and handoff</button>
@@ -2530,18 +2607,18 @@ function updateHomeReviewCard(data) {
   const card = $("#interpretation-review-home-result");
   const status = data.status || "idle";
   const sentRecord = workflow.phase === "review" ? sentDuplicateForReview(data) : null;
-  $("#request-claim-card")?.classList.toggle("hidden", Boolean(sentRecord));
+  $("#request-claim-card")?.classList.toggle("hidden", Boolean(sentRecord) || status === "excluded");
   if (status !== "idle") {
     showHomeReviewPanel();
   }
   const title = sentRecord ? `${sentRecord.case_number} · ${sentRecord.service_date}`
     : data.case_number ? `${data.case_number} · ${data.service_date || "date pending"}` : status.replaceAll("_", " ");
   const recipient = !sentRecord && data.recipient ? `<div>Recipient: <code>${escapeHtml(data.recipient)}</code></div>` : "";
-  const duplicate = !sentRecord && data.duplicate?.draft_id ? `<div>Existing draft: <code>${escapeHtml(data.duplicate.draft_id)}</code></div>` : "";
+  const duplicate = !sentRecord && data.duplicate?.draft_id ? `<div>${retainedDraftWarning(data.duplicate) ? "Previously recorded draft · warning kept" : "Existing draft"}: <code>${escapeHtml(data.duplicate.draft_id)}</code></div>` : "";
   const questions = !sentRecord && data.questions?.length ? `<div>${data.questions.length} numbered question${data.questions.length === 1 ? "" : "s"} need an answer.</div>` : "";
 
   card.className = `result-card ${["ready", "prepared", "recorded"].includes(status) ? "ready" : ""}`.trim();
-  if (["duplicate", "active_draft", "set_aside", "blocked", "needs_info", "stale"].includes(status)) {
+  if (["duplicate", "active_draft", "excluded", "set_aside", "blocked", "needs_info", "stale"].includes(status)) {
     card.className = `result-card blocked`;
   }
   if (status === "error") {
@@ -3158,13 +3235,13 @@ async function uploadSource(sourceKind, options = {}) {
     }
     form.append("ai_recovery", $("#ai_recovery_mode").value || "auto");
     const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
-    const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
+    const existingEmailRequest = state.currentIntake ? { ...state.currentIntake } : null;
     const existingSourceHash = String(state.currentIntake?.source_sha256 || "").trim();
 
     const data = await requestWorkflowUpload("/api/sources/upload", form, { revision: capturedRevision });
     if (!data) return null;
     const sameSource = !existingSourceHash || existingSourceHash === String(data.source?.sha256 || data.candidate_intake?.source_sha256 || "").trim();
-    adoptUploadedSource(data, sameSource ? existingAttachments : [], sameSource ? existingEmailBody : "");
+    adoptUploadedSource(data, sameSource ? existingAttachments : [], sameSource ? existingEmailRequest : null);
     state.lastProfileProposal = data.profile_proposal || null;
     renderSourceEvidence(data);
     renderAiRecovery(data.ai_recovery);
@@ -3186,10 +3263,14 @@ async function uploadSource(sourceKind, options = {}) {
   }
 }
 
-function adoptUploadedSource(data, attachments = [], emailBody = "") {
+function adoptUploadedSource(data, attachments = [], previousEmailRequest = null) {
   state.sourceFileNeedsReview = false;
+  const mergeSourceIntake = (intake) => {
+    const email = sourceEmailTextForIntake(intake, previousEmailRequest);
+    return intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(intake, attachments, email.email_body, email.email_subject), "both");
+  };
   state.sourceCaseCandidates = sourceCaseCandidatesFromUpload(data).map((candidate) => {
-    const intake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(candidate.candidate_intake, attachments, emailBody), "both");
+    const intake = mergeSourceIntake(candidate.candidate_intake);
     return { ...candidate, candidate_intake: intake,
       review: { ...candidate.review, intake, effective_intake: intake, candidate_intake: intake } };
   });
@@ -3200,7 +3281,7 @@ function adoptUploadedSource(data, attachments = [], emailBody = "") {
     const grouped = sourceCasesWithTravelChoice(state.sourceCaseCandidates, "shared", 0, state.sourceTravelChoice.groupId);
     state.sourceCaseCandidates = grouped.candidates;
   }
-  state.currentIntake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(data.candidate_intake, attachments, emailBody), "both");
+  state.currentIntake = mergeSourceIntake(data.candidate_intake);
   if (data.review) {
     data.review = { ...data.review, intake: state.currentIntake, effective_intake: state.currentIntake,
       source: data.review.source || data.source,
@@ -3297,6 +3378,7 @@ async function loadReference() {
   renderGmailStatus(state.gmailStatus);
   renderBackupStatus(state.backupStatus);
   initializeWorkspaceDraft(state.reference?.workspace_id);
+  syncHistoryDraftArchiveGates();
   if (state.activePanel === "history") syncGmailSentStatus();
 }
 
@@ -3646,10 +3728,10 @@ function renderGmailSentSync() {
                   : "Sent status is checked automatically when you open Recent Work.");
   const counts = $("#gmail-sent-sync-counts");
   counts.classList.toggle("hidden", !result);
-  for (const [name, key] of Object.entries({ checked: "checked_count", sent: "sent_count", unchanged: "unchanged_count", drafted: "still_drafted_count", review: "needs_review_count", errors: "error_count" })) {
+  for (const [name, key] of Object.entries({ checked: "checked_count", sent: "sent_count", unchanged: "unchanged_count", drafted: "still_drafted_count", missing: "missing_draft_count", review: "needs_review_count", errors: "error_count" })) {
     const field = $(`#gmail-sent-sync-${name}`);
     field.textContent = sentSyncCount(result?.[key]);
-    if (["drafted", "review", "errors"].includes(name)) field.parentElement?.classList.toggle("hidden", result?.[key] === undefined);
+    if (["drafted", "missing", "review", "errors"].includes(name)) field.parentElement?.classList.toggle("hidden", result?.[key] === undefined);
   }
   const checked = typeof result?.checked_at === "string" && result.checked_at.length <= 64 && Number.isFinite(Date.parse(result.checked_at))
     ? new Date(result.checked_at).toLocaleString() : "Not checked yet";
@@ -3886,6 +3968,9 @@ async function createGmailApiDraft() {
   if (!target?.draft_payload) {
     throw new Error("Prepare a PDF and Gmail draft payload before creating a Gmail draft.");
   }
+  if (preparedPayloadAlreadyRecorded(target.draft_payload) || state.gmailCreateCompletedPayload === target.draft_payload) {
+    throw new Error("This email already has a recorded draft or an unresolved Gmail attempt. Review the existing draft or recover its attempt in Recent Work.");
+  }
   if (selectedEmailLifecycleBlocked()) throw new Error("A member request needs correction before another email can be created.");
   const supersedes = $("#record_supersedes").value
     .split(",")
@@ -3936,6 +4021,7 @@ async function createGmailApiDraft() {
     $("#record_status").value = "active";
     state.gmailCreateCompletedPayload = target.draft_payload;
     state.locallyRecordedPayload = target.draft_payload;
+    state.recordedPreparedPayloads.add(target.draft_payload);
     state.lastGmailCreateConfirmation = data.confirmation && typeof data.confirmation === "object" ? data.confirmation : data;
     renderGmailApiResult(data, "created");
     setStatus("recorded", "Gmail draft created and recorded locally. Review and send it manually in Gmail.");
@@ -4009,6 +4095,9 @@ async function recoverGmailAttempt(action, options = {}) {
       $("#record_thread_id").value = data.thread_id || "";
       $("#record_payload").value = data.draft_payload || previous.draft_payload || "";
       state.locallyRecordedPayload = data.draft_payload || previous.draft_payload || "";
+      if (state.locallyRecordedPayload) state.recordedPreparedPayloads.add(state.locallyRecordedPayload);
+      refreshHomeWorkflow();
+      renderNextSafeAction(state.currentNextSafeAction);
     }
     renderGmailApiResult(data);
     setStatus(data.status === "created" ? "recorded" : data.status === "not_created" ? "ready" : "blocked", data.message);
@@ -4880,13 +4969,51 @@ function renderHistoryDraftActions(record, index, source, defaultStatus = "") {
   const messageId = String(record?.message_id || "").trim();
   const canMarkSent = isActiveDraftHistoryRecord(record, defaultStatus) && messageId;
   const canMarkNotFound = isActiveDraftHistoryRecord(record, defaultStatus) && messageId && lastNotFoundVerificationMatches(record, index, source);
+  const canArchive = isActiveDraftHistoryRecord(record, defaultStatus) && messageId;
+  const archiveDisabled = state.historyDraftArchivePending || !gmailSentSyncContextCurrent(state.workspaceDraft.workspaceId);
   return `
     <div class="button-row compact-button-row history-row-actions">
       <button type="button" class="mini-button" data-history-verify-draft="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Verify draft exists</button>
       ${canMarkSent ? `<button type="button" class="mini-button" data-history-mark-sent="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Mark manually sent</button>` : ""}
-      ${canMarkNotFound ? `<button type="button" class="mini-button" data-history-mark-not-found="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Mark not_found locally</button>` : ""}
+      ${canArchive ? `<button type="button" class="mini-button" data-history-archive-draft="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}"${archiveDisabled ? " disabled" : ""}>Remove from Drafted — keep warning</button>` : ""}
+      ${canMarkNotFound ? `<button type="button" class="mini-button" data-history-mark-not-found="${escapeHtml(index)}" data-history-source="${escapeHtml(source)}">Mark missing — keep warning</button>` : ""}
     </div>
   `;
+}
+
+function syncHistoryDraftArchiveGates() {
+  const confirmation = state.historyDraftArchiveConfirmation;
+  if (confirmation && !gmailSentSyncContextCurrent(confirmation.workspaceId)) resolveHistoryDraftArchiveConfirmation(false);
+  const disabled = state.historyDraftArchivePending || !gmailSentSyncContextCurrent(state.workspaceDraft.workspaceId);
+  document.querySelectorAll("[data-history-archive-draft]").forEach(button => {
+    button.disabled = disabled;
+    button.setAttribute("aria-disabled", disabled ? "true" : "false");
+  });
+}
+
+function resolveHistoryDraftArchiveConfirmation(confirmed = false) {
+  const confirmation = state.historyDraftArchiveConfirmation;
+  if (!confirmation) return;
+  state.historyDraftArchiveConfirmation = null;
+  const dialog = $("#archive-draft-dialog");
+  if (dialog?.open) dialog.close();
+  confirmation.resolve(Boolean(confirmed) && gmailSentSyncContextCurrent(confirmation.workspaceId));
+}
+
+function confirmHistoryDraftArchive(identities, workspaceId) {
+  const dialog = $("#archive-draft-dialog");
+  if (!dialog || state.historyDraftArchiveConfirmation) return Promise.resolve(false);
+  $("#archive-draft-details").textContent = [...new Set(identities)].join("\n");
+  return new Promise((resolve, reject) => {
+    state.historyDraftArchiveConfirmation = { workspaceId, resolve };
+    try {
+      dialog.showModal();
+      $("#archive-draft-cancel").focus();
+    } catch (error) {
+      state.historyDraftArchiveConfirmation = null;
+      reject(error);
+    }
+  });
 }
 
 function renderHistoryDraftActionResult(data, kind = "") {
@@ -5027,7 +5154,7 @@ async function markHistoryDraftNotFound(index, source = "draft_log") {
   if (!reason) {
     throw new Error("Add a short reconciliation reason before marking this draft not_found locally.");
   }
-  const confirmed = window.confirm(`Mark Gmail draft ${draftId} as not_found locally? This is local bookkeeping only; it does not contact Gmail.`);
+  const confirmed = window.confirm(`Mark Gmail draft ${draftId} as missing locally? The duplicate warning stays in place for every request in this email. This is local bookkeeping only; it does not contact Gmail.`);
   if (!confirmed) return null;
   const data = await requestJson("/api/gmail/drafts/reconcile-not-found", {
     method: "POST",
@@ -5037,12 +5164,64 @@ async function markHistoryDraftNotFound(index, source = "draft_log") {
       reconciliation_reason: reason,
     }),
   });
+  if (data.duplicate_protection_retained !== true) {
+    throw new Error("The missing-draft status was recorded, but retained protection could not be confirmed. Refresh Recent Work before continuing.");
+  }
   state.lastHistoryDraftVerification = null;
-  renderHistoryDraftActionResult({ ...data, message: `Marked ${draftId} as not_found locally.` }, "recorded");
-  setStatus("recorded", `Marked Gmail draft ${draftId} as not_found locally.`);
-  showAlert("Marked draft as not_found locally. Duplicate protection no longer treats it as active.", "recorded");
+  renderHistoryDraftActionResult({ ...data, message: `Marked ${draftId} as missing locally. Duplicate warnings are kept.` }, "recorded");
+  setStatus("recorded", `Marked Gmail draft ${draftId} as missing locally. Duplicate warnings are kept.`);
+  showAlert("Removed the missing draft from active work. Future attempts for the same case and service date will still warn you.", "recorded");
   await loadReference();
   return data;
+}
+
+async function archiveHistoryDraft(index, source = "draft_log") {
+  const record = historyRecordByIndex(source, index);
+  const workspaceId = state.workspaceDraft.workspaceId;
+  if (!gmailSentSyncContextCurrent(workspaceId)) throw new Error("Wait for the current workspace to connect before removing a draft.");
+  if (state.historyDraftArchivePending || state.historyDraftArchiveConfirmation) return null;
+  const draftId = String(record.draft_id || "").trim();
+  const messageId = String(record.message_id || "").trim();
+  if (!draftId || !messageId || !isActiveDraftHistoryRecord(record, source === "duplicates" ? "sent" : "")) {
+    throw new Error("Only an active recorded draft with both Gmail IDs can be removed from Drafted.");
+  }
+  const draftLog = (state.reference?.draft_log || []).find(item => item.draft_id === draftId && item.message_id === messageId);
+  const children = draftLog?.underlying_requests?.length ? draftLog.underlying_requests
+    : (state.reference?.duplicates || []).filter(item => item.draft_id === draftId && item.message_id === messageId);
+  const identities = (children.length ? children : [record]).map(item =>
+    `${item.case_number || "Recorded request"} · ${item.service_date || "recorded date"}${item.service_period_label ? ` · ${item.service_period_label}` : ""}`);
+  const confirmed = await confirmHistoryDraftArchive(identities, workspaceId);
+  if (!confirmed) return null;
+  if (!gmailSentSyncContextCurrent(workspaceId)) return null;
+  const current = historySourceRecords(source).find(item => item.draft_id === draftId && item.message_id === messageId);
+  if (!current || !isActiveDraftHistoryRecord(current, source === "duplicates" ? "sent" : "")) {
+    throw new Error("This draft's history changed while the confirmation was open. Refresh Recent Work before continuing.");
+  }
+  state.historyDraftArchivePending = true;
+  renderHistoryRecords();
+  try {
+    const data = await requestJson("/api/drafts/archive", {
+      method: "POST",
+      body: JSON.stringify({ draft_id: draftId, message_id: messageId, confirm_archive: true, workspace_id: workspaceId }),
+    });
+    if (!gmailSentSyncContextCurrent(workspaceId)) return null;
+    if (data.status !== "recorded" || data.lifecycle_status !== "archived" || data.duplicate_protection_retained !== true) {
+      throw new Error("The archive result could not be confirmed. Refresh Recent Work before continuing.");
+    }
+    state.lastHistoryDraftVerification = null;
+    const message = "Removed from Drafted. Duplicate warnings are kept for every request in this email.";
+    renderHistoryDraftActionResult({ ...data, message }, "recorded");
+    setStatus("recorded", message);
+    showAlert(message, "recorded");
+    await refreshSentSyncHistory(workspaceId);
+    return data;
+  } catch (error) {
+    if (!gmailSentSyncContextCurrent(workspaceId)) return null;
+    throw error;
+  } finally {
+    state.historyDraftArchivePending = false;
+    renderHistoryRecords();
+  }
 }
 
 function renderPendingGmailAttempts() {
@@ -5077,7 +5256,7 @@ function renderHistoryRecords() {
   $("#duplicate-list").innerHTML = duplicateRecords.length ? duplicateRecords.map(({ item, index }) => (
     `<div class="data-item">
       <strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong>
-      <span class="status-chip ${statusChipClass(item.status || "sent")}">${escapeHtml(duplicateSubmissionWording(item).paper ? duplicateSubmissionWording(item).label : item.status || "sent")}</span>
+      <span class="status-chip ${statusChipClass(historyRecordStatus(item, "sent"))}">${escapeHtml(historyStatusLabel(item, "sent"))}</span>
       <code>${escapeHtml(item.draft_id || item.pdf || "")}</code>
       ${renderHistoryDraftActions(item, index, "duplicates", "sent")}
     </div>`
@@ -5086,7 +5265,7 @@ function renderHistoryRecords() {
   $("#draft-log-list").innerHTML = draftLogRecords.length ? draftLogRecords.map(({ item, index }) => (
     `<div class="data-item">
       <strong>${escapeHtml(item.case_number)} · ${escapeHtml(item.service_date)}</strong>
-      <span class="status-chip ${statusChipClass(item.status || "")}">${escapeHtml(item.status || "")}</span>
+      <span class="status-chip ${statusChipClass(historyRecordStatus(item))}">${escapeHtml(historyStatusLabel(item))}</span>
       <code>${escapeHtml(item.draft_id || "")}</code>
       ${renderHistoryDraftActions(item, index, "draft_log", "")}
     </div>`
@@ -5702,6 +5881,8 @@ function collectProfilePayload() {
     service_place: $("#service_place").value.trim(),
     km_one_way: $("#km_one_way").value.trim(),
     source_text: $("#source_text").value.trim(),
+    email_subject: $("#email_subject").value,
+    email_body: $("#email_body").value,
   };
 }
 
@@ -5735,13 +5916,12 @@ async function buildIntakeFromProfile(options = {}) {
     if (!payload.profile) throw new Error("Choose an available service profile before entering manual request details.");
   }
   const existingAttachments = normalizeAttachmentList(state.currentIntake?.additional_attachment_files);
-  const existingEmailBody = String(state.currentIntake?.email_body || "").trim();
   const data = await requestWorkflowJson("/api/intake/from-profile", {
     method: "POST",
     body: JSON.stringify(payload),
   }, { revision: capturedRevision });
   if (!data) return null;
-  state.currentIntake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments, existingEmailBody), "both");
+  state.currentIntake = intakeWithClaimMode(mergeSupportingAttachmentsIntoIntake(data.intake, existingAttachments), "both");
   fillFormFromIntake(state.currentIntake);
   return reviewIntake(options);
 }
@@ -6084,26 +6264,27 @@ function applyReview(data, options = {}) {
   setStatus(data.status, data.message);
   renderNextSafeAction(data.next_safe_action || null);
   renderGuidedStep(data.next_safe_action?.state || data.status || "idle");
-  const alertNeeded = ["duplicate", "active_draft", "set_aside", "error"].includes(data.status);
+  const alertNeeded = ["duplicate", "active_draft", "excluded", "set_aside", "error"].includes(data.status);
   showAlert(alertNeeded ? data.message : "", data.status === "error" ? "error" : "blocked");
   updateHomeReviewCard(data);
   $("#draft-text").textContent = data.draft_text || data.question_text || "The Portuguese draft will appear here before the PDF is created.";
   const profileText = data.personal_profile?.personal_profile_name ? ` · Profile: ${data.personal_profile.personal_profile_name}` : "";
   $("#recipient-summary").textContent = data.recipient ? `To: ${data.recipient}${profileText}` : `Recipient appears here after review.${profileText}`;
-  if (data.active_gmail_drafts || data.duplicate) {
+  if (data.active_gmail_drafts || data.duplicate || data.exclusion) {
     state.draftLifecycle = {
-      status: ["duplicate", "active_draft"].includes(data.status) ? "blocked" : data.status,
+      status: ["duplicate", "active_draft", "excluded"].includes(data.status) ? "blocked" : data.status,
       message: data.message,
       active_gmail_drafts: data.active_gmail_drafts || [],
       duplicate: data.duplicate || null,
       duplicate_records: data.duplicate ? [data.duplicate] : [],
+      exclusion: data.exclusion || null,
       replacement_allowed: data.status === "duplicate" && data.duplicate?.status === "drafted" || data.status === "active_draft",
       send_allowed: false,
     };
     renderDraftLifecycle(state.draftLifecycle);
   }
 
-  if (options.openDrawer !== false && ["ready", "needs_info", "duplicate", "active_draft", "set_aside"].includes(data.status)) {
+  if (options.openDrawer !== false && ["ready", "needs_info", "duplicate", "active_draft", "excluded", "set_aside"].includes(data.status)) {
     openReviewDrawer();
   }
   renderSourceCaseList();
@@ -6180,6 +6361,7 @@ async function prepareIntake(options = {}) {
 
 function renderPrepared(data) {
   state.lastPrepared = data;
+  state.recordedPreparedPayloads = new Set();
   state.preparedEmailTargetIndex = 0;
   state.preparedEmailMemberIndex = 0;
   resetPreparedEmailTargetState();
@@ -6317,12 +6499,16 @@ function draftRecordPayloadFromForm() {
 }
 
 async function finishDraftRecord(data, context) {
+  if (data?.status !== "recorded" || !String(data.draft_id || "").trim()) {
+    throw new Error("Local draft recording was not confirmed. Check Recent Work before continuing.");
+  }
   if (context && !isWorkflowResponseCurrent(context.revision, state.workflowRevision, context.prepared, state.lastPrepared)) {
     await loadReference();
     showAlert("The earlier draft was recorded locally. Review the changed current request before using another handoff.", "recorded");
     return data;
   }
   state.locallyRecordedPayload = context?.payload || preparedRecordTarget()?.draft_payload || "";
+  if (state.locallyRecordedPayload) state.recordedPreparedPayloads.add(state.locallyRecordedPayload);
   setStatus(data.status, `Recorded Gmail draft ${data.draft_id}.`);
   const superseded = data.superseded_drafts?.length ? ` Superseded: ${data.superseded_drafts.join(", ")}.` : "";
   const blockerCount = Number(data.recorded_duplicate_count || 0);
@@ -6334,7 +6520,7 @@ async function finishDraftRecord(data, context) {
     : " The duplicate index now protects this case/date.";
   showAlert(`Draft recorded locally.${blockerText}${superseded}`, "recorded");
   refreshHomeWorkflow();
-  renderGuidedStep("review_gmail_draft_args");
+  renderNextSafeAction(state.currentNextSafeAction);
   await loadReference();
   return data;
 }
@@ -6489,6 +6675,13 @@ function bindNavigation() {
 function bindActions() {
   $("#gmail-sent-sync-now").addEventListener("click", () => syncGmailSentStatus({ force: true }));
   $("#gmail-sent-sync-enable").addEventListener("click", enableGmailSentSync);
+  $("#archive-draft-cancel").addEventListener("click", () => resolveHistoryDraftArchiveConfirmation(false));
+  $("#archive-draft-confirm").addEventListener("click", () => resolveHistoryDraftArchiveConfirmation(true));
+  $("#archive-draft-dialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    resolveHistoryDraftArchiveConfirmation(false);
+  });
+  $("#archive-draft-dialog").addEventListener("close", () => { if (!$("#archive-draft-dialog").open) resolveHistoryDraftArchiveConfirmation(false); });
   $("#sent-duplicate-stop").addEventListener("click", () => resolveSentDuplicateDecision(false));
   $("#sent-duplicate-review").addEventListener("click", () => resolveSentDuplicateDecision(true));
   $("#sent-duplicate-dialog").addEventListener("cancel", (event) => {
@@ -7039,7 +7232,8 @@ function bindActions() {
     const verifyButton = event.target.closest("[data-history-verify-draft]");
     const markSentButton = event.target.closest("[data-history-mark-sent]");
     const markNotFoundButton = event.target.closest("[data-history-mark-not-found]");
-    const button = verifyButton || markSentButton || markNotFoundButton;
+    const archiveButton = event.target.closest("[data-history-archive-draft]");
+    const button = verifyButton || markSentButton || markNotFoundButton || archiveButton;
     if (!button) return;
     event.preventDefault();
     try {
@@ -7049,6 +7243,8 @@ function bindActions() {
         await verifyHistoryDraft(button.dataset.historyVerifyDraft, source);
       } else if (markSentButton) {
         await markHistoryDraftSent(button.dataset.historyMarkSent, source);
+      } else if (archiveButton) {
+        await archiveHistoryDraft(button.dataset.historyArchiveDraft, source);
       } else {
         await markHistoryDraftNotFound(button.dataset.historyMarkNotFound, source);
       }

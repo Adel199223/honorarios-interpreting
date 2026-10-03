@@ -106,6 +106,7 @@ def build_intake(
     km_one_way: str | float | int | None = None,
     additional_attachment_files: list[str] | None = None,
     email_body: str | None = None,
+    email_subject: str | None = None,
     source_filename: str | None = None,
     source_text: str | None = None,
     notes: str | None = None,
@@ -145,6 +146,7 @@ def build_intake(
         "recipient_email": recipient_email,
         "court_email_key": court_email_key,
         "email_body": email_body,
+        "email_subject": email_subject,
         "source_filename": source_filename,
         "source_text": source_text,
         "notes": notes,
@@ -213,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-text", help="Optional extracted source text.")
     parser.add_argument("--notes", help="Optional notes.")
     parser.add_argument("--email-body", help="Optional custom email body for this request.")
+    parser.add_argument("--email-subject", help="Optional single-line email subject for this request.")
     parser.add_argument("--additional-attachment-file", action="append", default=[], help="Optional supporting attachment path. Can be repeated.")
     parser.add_argument("--profiles", type=Path, default=DEFAULT_SERVICE_PROFILES, help="Path to service profile JSON.")
     parser.add_argument("--output", type=Path, help="Output intake path.")
@@ -246,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             km_one_way=args.km_one_way,
             additional_attachment_files=args.additional_attachment_file,
             email_body=args.email_body,
+            email_subject=args.email_subject,
             source_filename=args.source_filename,
             source_text=args.source_text,
             notes=args.notes,

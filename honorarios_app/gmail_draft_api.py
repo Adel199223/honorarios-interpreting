@@ -14,7 +14,7 @@ from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 
-from scripts.build_email_draft import validate_draft_payload
+from scripts.build_email_draft import validate_draft_payload, validate_email_subject
 from scripts.generate_pdf import IntakeError
 from scripts.state_store import atomic_write_json, state_file_lock
 
@@ -550,7 +550,7 @@ def _attachment_bytes(path: Path) -> tuple[bytes, str, str]:
 
 def build_mime_message(gmail_create_draft_args: dict[str, Any]) -> EmailMessage:
     to = str(gmail_create_draft_args.get("to") or "").strip()
-    subject = str(gmail_create_draft_args.get("subject") or "").strip()
+    subject = validate_email_subject(gmail_create_draft_args.get("subject"))
     body = str(gmail_create_draft_args.get("body") or "")
     attachment_values = gmail_create_draft_args.get("attachment_files")
     if not to:

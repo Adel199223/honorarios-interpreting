@@ -469,7 +469,7 @@ class ClaimOptionsTests(unittest.TestCase):
         payload['travel_group_binding'][0] = '2026-01-16'
         self.assertTrue(any('date differs' in error for error in validate_draft_payload(payload)))
 
-    def test_retiring_packet_without_reloading_payload_retires_all_group_claims(self):
+    def test_removing_packet_without_reloading_payload_retains_child_and_trip_protection(self):
         rows = self.rows()[:2]
         result = prepare_intakes(rows, self.paths, packet_mode=True)
         arguments = ['--draft-id', 'fictional-packet', '--message-id', 'fictional-message',
@@ -482,8 +482,15 @@ class ClaimOptionsTests(unittest.TestCase):
             self.assertEqual(record_cli(arguments + ['--case-number', record['case_number'], '--service-date', record['service_date'],
                                                    '--recipient', record['recipient'], '--pdf', record['pdf'], '--status', 'trashed']), 0)
         index = json.loads(self.paths.duplicate_index.read_text(encoding='utf-8'))
-        self.assertEqual([child['status'] for child in index], ['trashed', 'trashed'])
+        self.assertEqual([child['status'] for child in index], ['drafted', 'drafted'])
+        self.assertEqual([child['draft_lifecycle_status'] for child in index], ['trashed', 'trashed'])
+        self.assertTrue(all(child['duplicate_warning_retained'] for child in index))
+        self.assertEqual([child['claim_transport'] for child in index], [True, False])
+        self.assertEqual(json.loads(self.paths.draft_log.read_text(encoding='utf-8'))[0]['status'], 'trashed')
+        self.assertEqual(preflight_intakes(rows, self.paths)['status'], 'blocked')
         sibling = self.row(103, travel_group_id='fictional-explicit-visit')
+        self.assertEqual(preflight_intakes([sibling], self.paths)['status'], 'blocked')
+        sibling['claim_transport'] = False
         self.assertEqual(preflight_intakes([sibling], self.paths)['status'], 'ready')
 
     def test_recorded_owner_retry_keeps_normal_case_duplicate_guard(self):

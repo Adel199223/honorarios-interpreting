@@ -12,16 +12,20 @@ try:
         IntakeError,
         find_duplicate_record,
         format_duplicate_message,
+        get_service_date_value,
         load_json,
     )
+    from scripts.request_exclusions import RequestExclusionError, find_request_exclusion, format_request_exclusion
 except ModuleNotFoundError:
     from generate_pdf import (
         DEFAULT_DUPLICATE_INDEX,
         IntakeError,
         find_duplicate_record,
         format_duplicate_message,
+        get_service_date_value,
         load_json,
     )
+    from request_exclusions import RequestExclusionError, find_request_exclusion, format_request_exclusion
 
 
 def intake_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -46,10 +50,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         intake = intake_from_args(args)
         duplicate = find_duplicate_record(intake, args.duplicate_index, strict=True)
-    except (IntakeError, json.JSONDecodeError, OSError) as exc:
+        exclusion = find_request_exclusion({**intake, "service_date": get_service_date_value(intake)}, args.duplicate_index)
+    except (IntakeError, RequestExclusionError, json.JSONDecodeError, OSError) as exc:
         print(f"Cannot check duplicate: {exc}", file=sys.stderr)
         return 2
 
+    if exclusion:
+        print(format_request_exclusion(exclusion))
+        return 4
     if duplicate:
         print(format_duplicate_message(duplicate))
         return 3

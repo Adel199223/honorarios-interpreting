@@ -251,7 +251,9 @@ class LocalBackupTests(unittest.TestCase):
         before = copy.deepcopy(load_attempts(self.paths.draft_log))
         self.restore(old)
         self.assertEqual(load_attempts(self.paths.draft_log), before)
-        self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 1)
+        # The index write failed before the log write. The pending attempt still
+        # reserves all requests until normal recovery records both files.
+        self.assertEqual(len(json.loads(self.paths.draft_log.read_text())), 0)
         self.recover(attempt, self.paths)
         self.restore(old)
         self.assertEqual(len(json.loads(self.paths.duplicate_index.read_text())), 2)

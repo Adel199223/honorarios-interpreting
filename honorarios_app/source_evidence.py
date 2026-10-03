@@ -8,11 +8,12 @@ this module.
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from typing import Any
 import unicodedata
 
 from scripts.request_identity import normalize_case_number
-from scripts.source_parsing import explicit_service_places
+from scripts.source_parsing import explicit_service_places, ministerio_publico_venue_evidence
 from .source_cases import source_case_rows
 
 
@@ -289,6 +290,24 @@ def build_field_evidence(
                     excerpt=_line_excerpt(text, station), reason='The source names this specific police station. Check the venue for this appointment; the city-court fallback was not used.')
                 break
 
+    source_location = candidate.get('source_location_evidence') or {}
+    location_source_text = str(candidate.get('source_text') or raw_visible_text or '')
+    location_defaults = candidate.get('photo_defaults_applied') or {}
+    current_capture_city = candidate.get('photo_capture_city') or (
+        location_defaults.get('photo_city') if isinstance(location_defaults, dict) else '')
+    if (isinstance(source_location, dict) and source_location.get('source') in {'verified_gps_source_venue', 'gnr_capture_city_default'}
+            and source_location.get('source_sha256') == candidate.get('source_sha256')
+            and source_location.get('source_text_sha256') == hashlib.sha256(location_source_text.encode('utf-8')).hexdigest()
+            and _values_match(candidate.get('service_entity'), source_location.get('service_entity'))
+            and _values_match(candidate.get('service_entity_type'), source_location.get('service_entity_type'))
+            and (not current_capture_city or _values_match(current_capture_city, source_location.get('city')))
+            and _values_match(candidate.get('service_place'), source_location.get('service_place'))):
+        add('service_place', candidate.get('service_place'), source=source_location['source'], confidence='medium',
+            reason=str(source_location.get('reason') or '')
+                   + (f" Photo GPS is {source_location.get('distance_m')} m from the verified venue point."
+                      if source_location['source'] == 'verified_gps_source_venue' else ''),
+            excerpt='; '.join(str(value) for value in source_location.get('matched_source_phrases') or []))
+
     court_label = candidate.get('court_label_preference') or {}
     if isinstance(court_label, dict):
         for field, original in (court_label.get('original_fields') or {}).items():
@@ -333,6 +352,16 @@ def build_field_evidence(
 
     if str(candidate.get("service_date_source") or "").strip().lower() in CONFIRMED_SERVICE_DATE_SOURCES:
         add("service_date", candidate.get("service_date"), source="user_confirmed", confidence="high", reason="You explicitly supplied or confirmed the service date. Source, conflict and duplicate checks still apply.")
+
+    mp_place = str(candidate.get('source_mp_place') or '')
+    if mp_place and _values_match(candidate.get('service_place'), mp_place):
+        independent_mp = ministerio_publico_venue_evidence(independent_text).place
+        source = 'document_text' if _values_match(independent_mp, mp_place) else 'openai_ocr'
+        for field in ('service_place', 'service_entity'):
+            if _values_match(candidate.get(field), mp_place):
+                add(field, mp_place, source=source, confidence='high' if source == 'document_text' else 'medium',
+                    reason='The explicit reference to these Ministério Público premises resolves to the same source’s local Procuradoria heading.',
+                    excerpt=_line_excerpt(str(candidate.get('source_text') or ''), mp_place))
 
     deterministic_sources = {
         "case_number": "deterministic_text",
@@ -509,6 +538,12 @@ def build_source_attention(
             "blocked",
             "Missing required information",
             f"{question_count} numbered question{'s' if question_count != 1 else ''} must be answered before generation.",
+        ))
+    elif review_status == "excluded":
+        flags.append(_attention_flag(
+            "request_excluded", "blocked",
+            "Already handled — confirmed by you" if review.get("exclusion", {}).get("kind") == "user_confirmed_done" else "Excluded by your saved decision",
+            str(review.get("message") or "Your saved decision excludes this request from preparation."),
         ))
     elif review_status == "duplicate":
         flags.append(_attention_flag(

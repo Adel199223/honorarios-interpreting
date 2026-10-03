@@ -61,6 +61,7 @@ from .services import (
     require_current_preflight_review,
     apply_legalpdf_personal_profile_import,
     record_draft,
+    archive_draft,
     reconcile_gmail_draft_not_found,
     recover_source_upload,
     review_intake,
@@ -479,6 +480,16 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
                 "write_allowed": False,
                 "managed_data_changed": False,
                 "local_records_changed": False,
+            })
+
+    @app.post("/api/drafts/archive")
+    async def api_drafts_archive(payload: dict[str, Any]) -> Any:
+        try:
+            return archive_draft(payload, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={
+                'status': 'blocked', 'message': str(exc), 'send_allowed': False,
+                'gmail_write_allowed': False, 'gmail_contacted': False,
             })
 
     @app.post("/api/gmail/drafts/reconcile-not-found")

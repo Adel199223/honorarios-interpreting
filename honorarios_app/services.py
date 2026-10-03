@@ -31,6 +31,8 @@ from scripts.build_email_draft import (
     build_email_payload,
     file_sha256,
     resolve_email_body,
+    resolve_email_subject,
+    require_individual_email_text,
     resolve_recipient,
     source_email_body,
     validate_draft_payload,
@@ -78,9 +80,14 @@ from scripts.prepare_honorarios import (
 )
 from scripts.record_gmail_draft import main as record_gmail_draft_main, validate_superseded_request_coverage, validate_source_group_history, apply_verified_sent_unlocked
 from scripts.request_identity import normalize_case_number, request_identity_key, request_identity_keys_overlap
+from scripts.request_exclusions import (
+    RequestExclusionError, exclusion_ledger_path, find_request_exclusion, load_request_exclusions,
+    format_request_exclusion, require_requests_not_excluded,
+    validate_request_exclusion_payload,
+)
 from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, travel_binding, validate_shared_travel_groups, validate_travel_payload_groups
 from scripts.entity_rules import build_service_place_clause, classify_entity_type, source_mentions_pj_context
-from scripts.source_parsing import explicit_service_places, service_date_evidence
+from scripts.source_parsing import explicit_service_places, ministerio_publico_venue_evidence, service_date_evidence
 from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection, source_scope_fingerprint
 
 from .ai_recovery import (MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai,
@@ -88,8 +95,9 @@ from .ai_recovery import (MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_w
 from .source_cases import source_case_rows, valid_source_case
 from .photo_metadata import PhotoMetadataError, extract_photo_metadata, picker_capture_metadata
 from .workspace_draft import workspace_runtime_id
-from .photo_defaults import apply_capture_city_answer, apply_photo_defaults, apply_saved_court_label, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
+from .photo_defaults import apply_capture_city_answer, apply_photo_defaults, apply_saved_court_label, clear_missing_venue_warning, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gps_city import match_verified_gps_city
+from .source_location import propose_verified_source_venue
 from .gmail_draft_api import (
     GmailDraftCreateError,
     create_gmail_draft_from_payload,
@@ -150,7 +158,7 @@ GOOGLE_PHOTOS_PICKER_MEDIA_URL = "https://photospicker.googleapis.com/v1/mediaIt
 MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 PDF_SUFFIXES = {".pdf"}
-LIFECYCLE_STATUSES = {"active", "sent", "superseded", "trashed", "not_found"}
+LIFECYCLE_STATUSES = {"active", "sent", "superseded", "trashed", "not_found", "archived"}
 ALLOWED_SERVICE_DATE_SOURCES = {
     "document_text",
     "photo_metadata",
@@ -791,6 +799,7 @@ def extract_candidate_fields(text: str, paths: AppPaths, *, source_kind: str = "
 
     place_fields, _warning = _source_place_fields(source_text, paths)
     explicit_places = explicit_service_places(source_text)
+    mp_place = ministerio_publico_venue_evidence(source_text).place if not explicit_places else ''
     # A bare city in a police district header must not replace a physical host
     # or its travel destination supplied by a profile or source.
     matched_place = str(place_fields.get('service_place') or '').strip()
@@ -820,9 +829,21 @@ def extract_candidate_fields(text: str, paths: AppPaths, *, source_kind: str = "
                                 source_station_place=host,
                                 service_place_phrase=build_service_place_clause(
                                     {'service_place': host, 'source_text': source_text}, entity))
-    if source_kind == 'photo' and (explicit_places or place_fields.get('source_station_place')):
+    if mp_place and not place_fields.get('source_station_place'):
+        place_fields.update(service_place=mp_place, service_entity=mp_place,
+                            service_entity_type='ministerio_publico', source_mp_place=mp_place,
+                            service_place_phrase=build_service_place_clause({'service_place': mp_place}, mp_place))
+        place_fields.pop('transport_destination', None)
+        place_fields.pop('km_one_way', None)
+    if explicit_places or place_fields.get('source_station_place') or mp_place:
         host = str(place_fields.get('service_place') or '').strip()
         if host:
+            # A printed venue replaces the automatic profile's dependent
+            # wording and route for PDFs too. Otherwise the review can display
+            # the correct venue while its PDF still names the old building.
+            entity = str(place_fields.get('service_entity') or host)
+            place_fields['service_place_phrase'] = build_service_place_clause(
+                {'service_place': host, 'source_text': source_text}, entity)
             place_fields.setdefault('transport_destination', host)
             place_fields['source_transport_host'] = host
     fields.update(place_fields)
@@ -882,18 +903,23 @@ def _ai_recovery_text(ai_recovery: dict[str, Any]) -> str:
     fields = ai_recovery.get("fields")
     if isinstance(fields, dict):
         parts.extend(str(value) for value in fields.values() if value not in (None, ""))
-    indicators = ai_recovery.get("translation_indicators")
-    if isinstance(indicators, list):
-        parts.extend(str(item) for item in indicators if str(item).strip())
-    warnings = ai_recovery.get("warnings")
-    if isinstance(warnings, list):
-        parts.extend(str(item) for item in warnings if str(item).strip())
+    # Diagnostics and translation warnings are not affirmative source facts.
+    # For example, 'no service date in the document' must not create a physical
+    # service place named 'documento'. They remain visible in source review.
     return combine_text_parts(*parts)
 
 
-def _profile_signal_decision(evidence_text: str) -> dict[str, Any]:
+def _profile_signal_decision(evidence_text: str, *, source_text: str = '') -> dict[str, Any]:
     text = fold_match_text(evidence_text)
     actual_places = explicit_service_places(evidence_text)
+    explicit_places_present = bool(actual_places)
+    if not actual_places and source_text:
+        # A named station heading is more specific than its command/district
+        # cities. Read only visible source lines, not AI field suggestions.
+        stations = re.findall(r'^\s*((?:Esquadra|Posto(?: Territorial)?)(?: da (?:PSP|GNR))? de [^\n]+)',
+                              source_text, re.IGNORECASE | re.MULTILINE)
+        actual_places = list({fold_match_text(place.strip().rstrip('.')): place.strip().rstrip('.')
+                              for place in stations}.values())
     if len(actual_places) > 1:
         return {"profile_key": "", "confidence": "low", "reason": "Several physical service places need confirmation; no service-profile defaults were applied.", "signals": [], "allow_fallback": False}
     place_text = fold_match_text(actual_places[0]) if actual_places else text
@@ -939,7 +965,7 @@ def _profile_signal_decision(evidence_text: str) -> dict[str, Any]:
         return {"profile_key": "gnr_serpa_judicial", "confidence": "high", "reason": "GNR evidence mentions Serpa.", "signals": signals}
     if has_gnr and has_cuba:
         return {"profile_key": "gnr_cuba", "confidence": "high", "reason": "GNR evidence mentions Cuba.", "signals": signals}
-    if has_pj or actual_places:
+    if has_pj or explicit_places_present:
         return {"profile_key": "", "confidence": "low", "reason": "The physical service location does not match a known service/payment pattern. Confirm the payment entity and recipient; no profile defaults were applied.", "signals": signals, "allow_fallback": False}
     return {"profile_key": "", "confidence": "low", "reason": "No confident service-profile match was found.", "signals": signals}
 
@@ -955,7 +981,8 @@ def choose_service_profile(
         raise IntakeError("No service profiles are available. Add a service profile in References before uploading or reviewing a source.")
     requested = str(requested_profile or "").strip()
     evidence_text = combine_text_parts(extracted_text, _ai_recovery_text(ai_recovery))
-    suggestion = _profile_signal_decision(evidence_text)
+    suggestion = _profile_signal_decision(evidence_text, source_text=combine_text_parts(
+        extracted_text, str(ai_recovery.get('raw_visible_text') or '')))
     suggested_key = str(suggestion.get("profile_key") or "").strip()
     suggested_is_available = suggested_key in profiles
     requested_is_auto = requested.casefold() in AUTO_PROFILE_VALUES
@@ -1004,6 +1031,56 @@ def choose_service_profile(
         "signals": suggestion.get("signals", []),
         "auto_applied": False,
     }
+
+
+def _capture_city_gnr_profile(profile_decision: dict[str, Any], *, source_text: str,
+                              digest: str, metadata: dict[str, Any], ai_recovery: dict[str, Any],
+                              preferences: dict[str, Any], profiles: dict[str, Any],
+                              directory: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Corroborate an existing city-specific GNR profile, never invent routing."""
+    if profile_decision.get('mode') != 'auto_fallback':
+        return profile_decision, {}
+    fields = ai_recovery.get('fields') or {}
+    probe = {'source_kind': 'photo', 'source_sha256': digest, 'source_text': source_text,
+             'service_place': fields.get('service_place', ''),
+             'service_place_phrase': fields.get('service_place_phrase', '')}
+    apply_photo_defaults(probe, preferences={**preferences, 'capture_date_is_service_date': False,
+        'missing_venue_is_city_court': False}, metadata=metadata,
+        ai_recovery=copy.deepcopy(ai_recovery), directory=directory)
+    proof = probe.get('source_location_evidence') or {}
+    city = str(proof.get('city') or '')
+    if preferences.get('photo_city_court') is True:
+        routing = (probe.get('photo_defaults_applied') or {}).get('routing_status')
+        mapping = preferences.get('city_courts') or {}
+        configured_city = isinstance(mapping, dict) and any(
+            fold_match_text(str(label)) == fold_match_text(city) for label in mapping)
+        known_city_court = any(classify_entity_type(str(row.get('name') or '')) == 'court' and (
+            fold_match_text(str(row.get('city') or row.get('locality') or '')) == fold_match_text(city)
+            or fold_match_text(str(row.get('name') or '')).endswith(' de ' + fold_match_text(city)))
+            for row in directory)
+        if routing != 'missing_court' or configured_city or known_city_court:
+            # Missing, malformed or conflicting details of a configured court
+            # need review; only a genuinely absent city contact uses the saved
+            # Beringel exception.
+            return profile_decision, {}
+    # A command/district city alone cannot choose another city's payer. Require
+    # the own source's postal locality to agree with actual capture metadata.
+    if (proof.get('source') != 'gnr_capture_city_default' or not city
+            or not re.search(r'\b\d{4}-\d{3}\s+' + re.escape(fold_match_text(city)) + r'(?!\w)',
+                             fold_match_text('\n'.join(proof.get('matched_source_phrases') or [])))):
+        return profile_decision, {}
+    suggestion = _profile_signal_decision('Guarda Nacional Republicana\nLocal da diligência: ' + probe['service_place'])
+    key = str(suggestion.get('profile_key') or '')
+    defaults = (profiles.get(key) or {}).get('defaults') or {}
+    if (key != 'gnr_beringel_beja_mp' or suggestion.get('confidence') != 'high'
+            or defaults.get('service_entity_type') != 'gnr'
+            or fold_match_text(str((defaults.get('transport') or {}).get('destination') or '')) != fold_match_text(city)):
+        return profile_decision, {}
+    return {**profile_decision, 'mode': 'auto_applied', 'profile_key': key,
+            'suggested_profile_key': key, 'confidence': 'high', 'auto_applied': True,
+            'reason': 'Your GNR capture-city default and the source postal locality agree with this saved service/payment profile.',
+            'signals': [city, 'GNR capture-city default', 'matching source postal locality'],
+            'capture_city_default': True}, probe
 
 
 def slug_token(value: Any) -> str:
@@ -1193,7 +1270,8 @@ def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any
     """Retain deliberate review removals while leaving initial defaults available."""
     allowed = {'case_number', 'service_date', 'photo_metadata_date', 'payment_entity',
                'service_place', 'recipient_email', 'service_period_label',
-               'service_start_time', 'service_end_time', 'source_text', 'transport.km_one_way', 'closing_city'}
+               'service_start_time', 'service_end_time', 'source_text', 'transport.km_one_way', 'closing_city',
+               'email_subject', 'email_body'}
     supplied = original.get('review_cleared_fields')
     if not isinstance(supplied, list):
         return
@@ -1399,6 +1477,9 @@ def _safe_ai_recovery_for_intake(ai_recovery: dict[str, Any]) -> dict[str, Any]:
         "schema_name",
         "prompt_version",
         "raw_visible_text",
+        "case_numbers",
+        "source_scope",
+        "incidental_background_text",
         "fields",
         "missing_fields",
         "translation_indicators",
@@ -1467,14 +1548,23 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
     # A newly filled, grounded physical host needs a coherent service entity.
     # Existing places, including manual/profile city labels, stay authoritative.
     existing_place = str(intake.get('service_place') or '').strip()
+    explicit_profile = (intake.get('auto_profile') or {}).get('mode') == 'explicit_profile'
     ai_place = _first_ai_field(ai_recovery, 'service_place')
-    named_host = re.match(r'^(?:esquadra|posto(?: territorial)?|hospital|gabinete|instituto|edif[ií]cio|tribunal)\b',
+    source_text = str(intake.get('source_text') or '')
+    mp_place = ministerio_publico_venue_evidence(source_text).place if not explicit_service_places(source_text) else ''
+    if mp_place and not existing_place:
+        # Resolve the explicit 'these MP premises' clause from the same source
+        # header even when the AI structured field paraphrases that building.
+        ai_place = mp_place
+    named_host = re.match(r'^(?:esquadra|posto(?: territorial)?|hospital|gabinete|instituto|edif[ií]cio|tribunal|procuradoria|minist[eé]rio p[uú]blico)\b',
                           ai_place, re.IGNORECASE)
     grounded_host = ai_place and re.search(r'(?<!\w)' + re.escape(fold_match_text(ai_place)) + r'(?!\w)',
                                           fold_match_text(str(intake.get('source_text') or '')))
     if (not existing_place and named_host and grounded_host
             and 'service_place' not in (intake.get('review_cleared_fields') or [])):
         intake['service_place'] = ai_place
+        if mp_place == ai_place:
+            intake['source_mp_place'] = mp_place
         transport = copy.deepcopy(intake.get('transport') or {})
         previous_destination = fold_match_text(str(transport.get('destination') or ''))
         actual_locality = fold_match_text(_first_ai_field(ai_recovery, 'locality'))
@@ -1486,7 +1576,9 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
             intake['source_transport_distance_pending'] = True
             intake['transport'] = transport
         existing_type = str(intake.get('service_entity_type') or '').strip().casefold()
-        if not intake.get('service_entity') or existing_type in {'', 'court', 'ministerio_publico'}:
+        preserve_explicit_entity = explicit_profile and bool(intake.get('service_entity') or existing_type)
+        if not preserve_explicit_entity and (
+                not intake.get('service_entity') or existing_type in {'', 'court', 'ministerio_publico'}):
             entity = 'Polícia Judiciária' if source_mentions_pj_context(intake) else ai_place
             entity_type = 'police' if entity == 'Polícia Judiciária' else classify_entity_type(entity)
             intake.update(service_entity=entity, service_entity_type=entity_type,
@@ -1501,7 +1593,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         if key == 'service_place' and key in (intake.get('review_cleared_fields') or []):
             continue
         existing_value = str(intake.get(key) or "").strip()
-        if key == "service_entity_type" and not existing_place and value and existing_value == "court" and value in {"gnr", "psp", "police", "other"}:
+        if (key == "service_entity_type" and not explicit_profile and not existing_place
+                and value and existing_value == "court" and value in {"gnr", "psp", "police", "other"}):
             intake[key] = value
         elif value and not existing_value:
             intake[key] = value
@@ -1788,6 +1881,7 @@ def build_partial_intake_from_profile(
     metadata: dict[str, Any],
     paths: AppPaths,
     contact_text: str | None = None,
+    explicit_profile: bool = False,
 ) -> dict[str, Any]:
     profiles = _load_available_service_profiles(paths)
     selected_profile = str(profile_name or "").strip()
@@ -1817,6 +1911,17 @@ def build_partial_intake_from_profile(
         intake["source_text"] = extracted_text.strip()
 
     fields = extract_candidate_fields(extracted_text, paths, source_kind=source_kind)
+    if explicit_profile and fields.get('source_mp_place'):
+        # A selected profile's real venue and entity remain authoritative even
+        # when independent text resolves the MP reference before AI merging.
+        if str(intake.get('service_place') or '').strip():
+            for key in ('service_place', 'service_entity', 'service_entity_type', 'service_place_phrase',
+                        'source_mp_place', 'source_transport_host', 'transport_destination', 'km_one_way'):
+                fields.pop(key, None)
+        else:
+            for key in ('service_entity', 'service_entity_type', 'entities_differ'):
+                if intake.get(key) not in (None, ''):
+                    fields.pop(key, None)
     # Consider both independent text and recovered visible text before choosing
     # a source contact. Saved profile contacts are retained when sources conflict.
     if contact_text is not None and len({email.lower() for email in EMAIL_RE.findall(contact_text)}) > 1:
@@ -2029,6 +2134,15 @@ def recover_source_upload(
         ai_recovery=ai_recovery,
         profiles=profiles,
     )
+    capture_city_profile_venue: dict[str, Any] = {}
+    if source_kind == 'photo':
+        gps_city_match = match_verified_gps_city(metadata, photo_preferences)
+        if gps_city_match['status'] != 'disabled':
+            metadata['gps_city_match'] = gps_city_match
+        profile_decision, capture_city_profile_venue = _capture_city_gnr_profile(
+            profile_decision, source_text=combine_text_parts(extracted_text, str(ai_recovery.get('raw_visible_text') or '')),
+            digest=digest, metadata=metadata, ai_recovery=ai_recovery, preferences=photo_preferences,
+            profiles=profiles, directory=read_json_list(paths.court_emails))
     candidate = build_partial_intake_from_profile(
         profile_name=str(profile_decision.get("profile_key") or ""),
         source_kind=source_kind,
@@ -2039,7 +2153,28 @@ def recover_source_upload(
         metadata=metadata,
         paths=paths,
         contact_text=combine_text_parts(extracted_text, str(ai_recovery.get('raw_visible_text') or '')),
+        explicit_profile=profile_decision.get('mode') == 'explicit_profile',
     )
+    # Recovery may complete an explicit profile, but must know that its existing
+    # service entity/type were selected deliberately before filling a blank host.
+    candidate["auto_profile"] = profile_decision
+    if (source_kind == 'photo' and photo_preferences.get('missing_gnr_venue_is_capture_city') is True
+            and profile_decision.get('mode') == 'auto_fallback'
+            and (ai_recovery.get('fields') or {}).get('service_entity_type') == 'gnr'
+            and not source_mentions_pj_context({'source_text': str(ai_recovery.get('raw_visible_text') or '')})):
+        # An unrelated fallback profile is not physical source evidence. Clear
+        # only its unchanged venue/travel fields on this initial upload; source
+        # extraction and all later per-request edits remain authoritative.
+        fallback = (profiles.get(str(profile_decision.get('profile_key') or '')) or {}).get('defaults') or {}
+        for field in ('service_place', 'service_place_phrase'):
+            if field in fallback and candidate.get(field) == fallback[field] and field not in deterministic_fields:
+                candidate.pop(field, None)
+        for field in ('destination', 'km_one_way'):
+            default_value = (fallback.get('transport') or {}).get(field)
+            recovered_field = 'transport_destination' if field == 'destination' else 'km_one_way'
+            if (default_value is not None and (candidate.get('transport') or {}).get(field) == default_value
+                    and recovered_field not in deterministic_fields):
+                candidate['transport'].pop(field, None)
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
     if source_kind == 'photo':
         # Keep private verified areas and their citations local. This derived
@@ -2055,11 +2190,64 @@ def recover_source_upload(
             }.get(gps_city_match['status'])
             if gps_warning:
                 metadata.setdefault('warnings', []).append(gps_warning)
+    venue_proposal = (propose_verified_source_venue(candidate, metadata=metadata, preferences=photo_preferences)
+                      if source_kind == 'photo' else {})
+    transport_before_photo_defaults = copy.deepcopy(candidate.get('transport') or {})
     apply_photo_defaults(
         candidate, preferences=load_photo_defaults(paths.ai_config), metadata=metadata,
         ai_recovery=ai_recovery, directory=read_json_list(paths.court_emails),
-        explicit_profile=profile_decision.get('mode') == 'explicit_profile',
+        explicit_profile=profile_decision.get('mode') == 'explicit_profile' or bool(capture_city_profile_venue),
     )
+    if capture_city_profile_venue:
+        # The existing profile supplies its established payer/contact/distance;
+        # the physical city-level GNR label remains an editable user default.
+        for field in ('service_place', 'service_entity', 'service_entity_type', 'service_place_phrase',
+                      'entities_differ', 'source_location_evidence'):
+            candidate[field] = copy.deepcopy(capture_city_profile_venue[field])
+        candidate['photo_defaults_applied'].update(routing_status='known_capture_city_profile',
+                                                   venue_status='gnr_capture_city_default')
+        proof = candidate['source_location_evidence']
+        proof['source_text_sha256'] = hashlib.sha256(str(candidate.get('source_text') or '').encode('utf-8')).hexdigest()
+        transport = candidate.get('transport') or {}
+        proof['applied_fields']['transport.destination'] = transport.get('destination', '')
+        if transport.get('km_one_way') not in (None, ''):
+            proof['applied_fields']['transport.km_one_way'] = transport['km_one_way']
+    # Printed stations recovered by photo defaults still take priority. Only an
+    # absent venue or the just-inserted generic city court may use this proposal.
+    venue_defaults = candidate.get('photo_defaults_applied') or {}
+    generic_court_venue = bool(venue_defaults.get('service_place')
+                              and venue_defaults.get('service_place') == candidate.get('service_place')
+                              and venue_defaults.get('venue_status') == 'applied')
+    generic_venue_proof = candidate.get('source_location_evidence') or {}
+    generic_gnr_venue = bool(venue_defaults.get('venue_status') == 'gnr_capture_city_default'
+                             and generic_venue_proof.get('source') == 'gnr_capture_city_default'
+                             and generic_venue_proof.get('service_place') == candidate.get('service_place'))
+    if venue_proposal and (not candidate.get('service_place') or generic_court_venue or generic_gnr_venue):
+        candidate.update(venue_proposal)
+        host = candidate['service_place']
+        candidate['entities_differ'] = candidate['service_entity_type'] not in {'court', 'ministerio_publico'} or bool(
+            candidate['service_entity_type'] == 'ministerio_publico'
+            and classify_entity_type(str(candidate.get('payment_entity') or '')) == 'court')
+        candidate['service_place_phrase'] = build_service_place_clause(
+            {'service_place': host, 'source_text': candidate.get('source_text', '')}, candidate['service_entity'])
+        clear_missing_venue_warning(candidate)
+        venue_defaults = candidate.setdefault('photo_defaults_applied', {})
+        venue_defaults.pop('service_place', None)
+        venue_defaults['venue_status'] = 'verified_gps_source_venue'
+        if generic_court_venue or generic_gnr_venue:
+            # Discard only travel assigned with the just-replaced court default.
+            # Preserve already supplied travel, including an explicit zero.
+            candidate['transport'] = transport_before_photo_defaults
+        transport = candidate.setdefault('transport', {})
+        if not str(transport.get('destination') or '').strip():
+            transport['destination'] = host
+        if transport.get('km_one_way') in (None, ''):
+            candidate['source_transport_distance_pending'] = True
+        derived_fields = {field: copy.deepcopy(candidate[field]) for field in (
+            'service_entity', 'service_entity_type', 'entities_differ', 'service_place_phrase')}
+        if transport.get('destination') == host and not transport_before_photo_defaults.get('destination'):
+            derived_fields['transport.destination'] = host
+        candidate['source_location_evidence']['applied_fields'] = derived_fields
     if metadata.get('picker_date_conflict'):
         # Two capture sources disagree even when the printed service date agrees
         # with one of them. Keep both in evidence and require an explicit date.
@@ -2076,7 +2264,6 @@ def recover_source_upload(
         candidate["photo_metadata_date_requires_confirmation"] = True
     if str(personal_profile_id or "").strip():
         candidate["personal_profile_id"] = str(personal_profile_id or "").strip()
-    candidate["auto_profile"] = profile_decision
     profile_proposal = build_profile_proposal(candidate, profile_decision, profiles)
     review = review_intake(candidate, paths)
     combined_text = str(candidate.get("source_text") or extracted_text or "").strip()
@@ -2389,6 +2576,7 @@ def backup_dataset_paths(paths: AppPaths) -> dict[str, tuple[Path, type]]:
         "known_destinations": (paths.known_destinations, list),
         "duplicate_index": (paths.duplicate_index, list),
         "gmail_draft_log": (paths.draft_log, list),
+        "request_exclusions": (exclusion_ledger_path(paths.duplicate_index), dict),
         "profile_change_log": (paths.profile_change_log, list),
     }
 
@@ -2403,6 +2591,46 @@ def read_backup_dataset(path: Path, expected_type: type) -> Any:
     return data
 
 
+def _read_backup_datasets(paths: AppPaths) -> dict[str, Any]:
+    ledger = exclusion_ledger_path(paths.duplicate_index)
+    try:
+        # Preserve the same byte bound and duplicate-key validation as review.
+        load_request_exclusions(ledger)
+    except RequestExclusionError as exc:
+        raise IntakeError(str(exc)) from exc
+    datasets = {
+        key: read_backup_dataset(path, expected_type)
+        for key, (path, expected_type) in backup_dataset_paths(paths).items()
+        if key != "request_exclusions" or path.exists()
+    }
+    if "request_exclusions" in datasets:
+        try:
+            validate_request_exclusion_payload(datasets["request_exclusions"])
+        except RequestExclusionError as exc:
+            raise IntakeError(str(exc)) from exc
+    return datasets
+
+
+def _merge_request_exclusion_backups(local: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
+    """An older backup cannot remove a later user decision or its source evidence."""
+    validate_request_exclusion_payload(incoming)
+    if local is None:
+        return copy.deepcopy(incoming)
+    validate_request_exclusion_payload(local)
+    merged = {**copy.deepcopy(incoming), **copy.deepcopy(local)}
+    for key in ("forms", "excluded_cases", "standing_exclusions"):
+        rows, seen = [], set()
+        for row in [*local.get(key, []), *incoming.get(key, [])]:
+            identity = json.dumps(row, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            if identity not in seen:
+                rows.append(copy.deepcopy(row))
+                seen.add(identity)
+        if key in local or key in incoming:
+            merged[key] = rows
+    validate_request_exclusion_payload(merged)
+    return merged
+
+
 def backup_counts(datasets: dict[str, Any]) -> dict[str, int]:
     return {
         key: len(value) if isinstance(value, (dict, list)) else 0
@@ -2411,10 +2639,7 @@ def backup_counts(datasets: dict[str, Any]) -> dict[str, int]:
 
 
 def managed_backup_counts(paths: AppPaths) -> dict[str, int]:
-    datasets = {
-        key: read_backup_dataset(path, expected_type)
-        for key, (path, expected_type) in backup_dataset_paths(paths).items()
-    }
+    datasets = _read_backup_datasets(paths)
     datasets["gmail_attempts"] = load_attempts(paths.draft_log)
     return backup_counts(datasets)
 
@@ -2652,10 +2877,7 @@ def diagnostics_status_payload() -> dict[str, Any]:
 
 
 def _backup_payload_unlocked(paths: AppPaths) -> dict[str, Any]:
-    datasets = {
-        key: read_backup_dataset(path, expected_type)
-        for key, (path, expected_type) in backup_dataset_paths(paths).items()
-    }
+    datasets = _read_backup_datasets(paths)
     # The first-run legacy profile is usable without a saved store; back it up
     # as a valid explicit store rather than installing an unreadable {} later.
     if not paths.personal_profiles.exists():
@@ -2763,6 +2985,11 @@ def validate_backup_payload(payload: dict[str, Any], paths: AppPaths) -> dict[st
             records = list(profiles.values()) if isinstance(profiles, dict) else profiles
             if not isinstance(records, list) or not records or not all(isinstance(row, dict) for row in records):
                 raise IntakeError("Backup personal profiles have an invalid structure. Keep at least one editable profile before restoring.")
+        if key == "request_exclusions":
+            try:
+                validate_request_exclusion_payload(value)
+            except RequestExclusionError as exc:
+                raise IntakeError(str(exc)) from exc
         validated[key] = value
 
     attempts = validated.get("gmail_attempts", [])
@@ -4567,6 +4794,14 @@ def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
         for key in ("gmail_draft_log", "duplicate_index"):
             if key in datasets:
                 datasets[key] = merge_history(read_backup_dataset(dataset_paths[key][0], list), datasets[key], duplicate=key == "duplicate_index")
+        if "request_exclusions" in datasets:
+            ledger_path = exclusion_ledger_path(paths.duplicate_index)
+            try:
+                load_request_exclusions(ledger_path)
+                local = read_backup_dataset(ledger_path, dict) if ledger_path.exists() else None
+                datasets["request_exclusions"] = _merge_request_exclusion_backups(local, datasets["request_exclusions"])
+            except RequestExclusionError as exc:
+                raise IntakeError(str(exc)) from exc
         pre_restore_backup = _backup_payload_unlocked(paths)
         pre_restore_backup["reason"] = f"Automatic backup before local restore. Restore reason: {restore_reason}"
         pre_restore_file = write_backup_file(pre_restore_backup, paths, prefix="pre-restore-backup")
@@ -4599,7 +4834,10 @@ def restore_local_backup(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
         # Commit the validated rebased paths before history. Recorded imports
         # remain pending until all datasets below have been written.
         save_reservations()
-        for key in ("gmail_draft_log", "duplicate_index"):
+        # Archived manual drafts may have no creation-attempt reservation and
+        # their retired log alone does not block duplication. Install every
+        # child warning before its lifecycle log, as normal recording does.
+        for key in ("duplicate_index", "gmail_draft_log"):
             if key in datasets:
                 atomic_write_json(dataset_paths[key][0], datasets[key])
         for key, data in datasets.items():
@@ -5520,6 +5758,7 @@ def duplicate_payload(record: dict[str, Any] | None) -> dict[str, Any] | None:
         "pdf",
         "source_filename",
         "sent_date",
+        "draft_lifecycle_status",
     ]
     payload = {key: record.get(key, "") for key in keys if record.get(key, "")}
     payload.setdefault("status", duplicate_record_status(record))
@@ -5579,7 +5818,23 @@ def matching_duplicate_records(intake: dict[str, Any], paths: AppPaths) -> list[
     ]
 
 
+def _require_request_exclusion_clear(payload: dict[str, Any], paths: AppPaths) -> None:
+    try:
+        require_requests_not_excluded(payload, paths.duplicate_index)
+    except RequestExclusionError as exc:
+        raise IntakeError(str(exc)) from exc
+
+
 def draft_lifecycle_for_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    exclusion = None
+    try:
+        service_date = get_service_date_value(intake)
+    except IntakeError:
+        service_date = ""
+    try:
+        exclusion = find_request_exclusion({**intake, "service_date": service_date}, paths.duplicate_index)
+    except RequestExclusionError as exc:
+        raise IntakeError(str(exc)) from exc
     duplicate_records = matching_duplicate_records(intake, paths)
     draft_log = load_draft_log(paths.draft_log)
     active_drafts = [draft_payload(record) for record in active_drafts_for(intake, draft_log)]
@@ -5590,19 +5845,25 @@ def draft_lifecycle_for_intake(intake: dict[str, Any], paths: AppPaths) -> dict[
     status = "blocked" if duplicate_records or active_drafts else "clear"
     message = "No active Gmail draft or duplicate blocker found."
     if replacement_allowed:
-        message = "Active/drafted request found. Correction mode can prepare a replacement draft after a reason is provided."
+        message = ("A previously drafted request was removed from Drafted; its duplicate warning is retained. Only use correction mode for an intentional replacement with a reason."
+                   if any(record.get('draft_lifecycle_status') in {'archived', 'trashed', 'not_found', 'superseded'} for record in duplicate_records)
+                   else "Active/drafted request found. Correction mode can prepare a replacement draft after a reason is provided.")
     elif has_sent_duplicate:
         message = ("This case/date was already submitted on paper. Correction mode is not available."
                    if any(paper_submission_confirmed(record) for record in duplicate_records)
                    else "A sent request already exists for this case/date. Correction mode is not available.")
     elif duplicate_records or active_drafts:
         message = "A blocking draft lifecycle record exists for this request."
+    if exclusion:
+        status, replacement_allowed = "blocked", False
+        message = format_request_exclusion(exclusion)
     return {
         "status": status,
         "message": message,
         "active_gmail_drafts": active_drafts,
         "duplicate": duplicate_records_payload[0] if duplicate_records_payload else None,
         "duplicate_records": duplicate_records_payload,
+        "exclusion": exclusion,
         "replacement_allowed": replacement_allowed,
         "blocking_statuses": sorted(BLOCKING_DUPLICATE_STATUSES),
         "send_allowed": False,
@@ -5629,8 +5890,10 @@ def draft_lifecycle_for_email_group(underlying_requests: Any, paths: AppPaths) -
         duplicates.extend(check['duplicate_records'])
     blocked = any(check['status'] != 'clear' for check in checks)
     replacement = blocked and all(check['status'] == 'clear' or check['replacement_allowed'] for check in checks)
-    return {"status": "blocked" if blocked else "clear", "message": "One or more group requests have an existing draft or duplicate blocker." if blocked else "All email group requests are clear.",
+    exclusions = [check["exclusion"] for check in checks if check.get("exclusion")]
+    return {"status": "blocked" if blocked else "clear", "message": format_request_exclusion(exclusions[0]) if exclusions else "One or more group requests have an existing draft or duplicate blocker." if blocked else "All email group requests are clear.",
             "member_checks": checks, "active_gmail_drafts": list(active.values()),
+            "exclusions": exclusions,
             "duplicate": duplicates[0] if duplicates else None, "duplicate_records": duplicates,
             "replacement_allowed": replacement, "can_prepare": not blocked, "can_create_new_draft": not blocked,
             "needs_correction": blocked and replacement, "blocking_statuses": sorted(BLOCKING_DUPLICATE_STATUSES), "send_allowed": False}
@@ -5654,7 +5917,14 @@ def next_safe_action(
     }
 
 
-def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | None = None, duplicate: dict[str, Any] | None = None) -> dict[str, Any]:
+def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | None = None, duplicate: dict[str, Any] | None = None, exclusion: dict[str, Any] | None = None) -> dict[str, Any]:
+    if status == "excluded":
+        return next_safe_action(
+            state="stop_excluded_request",
+            title="Already handled — confirmed by you" if (exclusion or {}).get("kind") == "user_confirmed_done" else "Excluded by your saved decision",
+            detail="Your saved decision excludes this request. No new PDF or Gmail draft should be created.",
+            blocked=True,
+        )
     if status == "set_aside":
         return next_safe_action(
             state="set_aside_translation",
@@ -5675,10 +5945,12 @@ def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | No
     if status == "duplicate":
         duplicate_status = duplicate_record_status(duplicate or {})
         if duplicate_status == "drafted":
+            retained = (duplicate or {}).get('draft_lifecycle_status') in {'archived', 'trashed', 'not_found', 'superseded'}
             return next_safe_action(
                 state="choose_correction_mode",
-                title="Review the existing draft first",
-                detail="A drafted request already protects this case/date. Only prepare a replacement if this is an intentional correction and you add a correction reason.",
+                title="Previously drafted — warning retained" if retained else "Review the existing draft first",
+                detail=("This request was removed from Drafted, but this case/date is still protected. Stop to avoid repeating it; only use correction mode for an intentional replacement with a reason."
+                        if retained else "A drafted request already protects this case/date. Only prepare a replacement if this is an intentional correction and you add a correction reason."),
                 button_id="prepare-replacement-draft",
                 blocked=True,
             )
@@ -5785,6 +6057,12 @@ def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tup
     _normalize_source_case_confirmation(intake)
     profile = selected_personal_profile(paths, intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
+    source_location = effective.get('source_location_evidence') or {}
+    if (isinstance(source_location, dict) and source_location.get('source_sha256') == effective.get('source_sha256')
+            and 'transport.km_one_way' in provenance.get('applied', [])
+            and (source_location.get('applied_fields') or {}).get('transport.destination')
+                == (effective.get('transport') or {}).get('destination')):
+        source_location.setdefault('applied_fields', {})['transport.km_one_way'] = effective['transport']['km_one_way']
     preserve_review_field_clears(intake, effective)
     payer = str(effective.get('payment_entity') or '').strip()
     if (not str(effective.get('addressee') or '').strip()
@@ -6000,6 +6278,30 @@ def gmail_api_draft_verify(payload: dict[str, Any], paths: AppPaths) -> dict[str
     return verify_gmail_draft_exists(payload, paths.gmail_config)
 
 
+def archive_draft(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    """Remove a recorded email from Drafted without retiring its requests."""
+    if payload.get('workspace_id') != workspace_runtime_id(paths):
+        raise IntakeError('The app workspace changed. Reload before removing a draft.')
+    if payload.get('confirm_archive') is not True:
+        raise IntakeError('Confirm removing this draft while keeping its duplicate warning.')
+    draft_id = str(payload.get('draft_id') or '').strip()
+    message_id = str(payload.get('message_id') or '').strip()
+    with attempt_lock(paths.draft_log):
+        matches = [row for row in load_draft_log(paths.draft_log) if row.get('draft_id') == draft_id]
+        if not draft_id or not message_id or len(matches) != 1 or matches[0].get('message_id') != message_id:
+            raise IntakeError('This draft history changed. Refresh Recent Work before removing it.')
+        record = matches[0]
+        if record.get('status') not in {'active', 'archived'}:
+            raise IntakeError('This request is no longer an active draft. Refresh Recent Work.')
+        # Membership and paths come from the recorded email, never client-supplied fields.
+        request = _payload_from_existing_draft(record, status='archived',
+                    notes='Removed from Drafted at user request. Duplicate warning retained; Gmail was not changed.')
+        result = record_draft(request, paths, _attempt_lock_held=True)
+    return {**result, 'lifecycle_status': 'archived', 'duplicate_protection_retained': True,
+            'message': 'Removed from Drafted. Duplicate warnings are retained for every request in this email.',
+            'send_allowed': False, 'gmail_write_allowed': False, 'gmail_contacted': False}
+
+
 def reconcile_gmail_draft_not_found(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     if not bool(payload.get("confirm_not_found")):
         raise IntakeError("Confirm the missing Gmail draft before marking the local lifecycle record as not_found.")
@@ -6020,9 +6322,12 @@ def reconcile_gmail_draft_not_found(payload: dict[str, Any], paths: AppPaths) ->
     record_payload.pop("confirm_not_found", None)
     record_payload.pop("reconciliation_reason", None)
     record = record_draft(record_payload, paths)
+    retained = any(row.get('draft_id') == record_payload.get('draft_id') and row.get('duplicate_warning_retained') is True
+                   for row in load_draft_log(paths.draft_log))
     return {
         **record,
         "lifecycle_status": "not_found",
+        "duplicate_protection_retained": retained,
         "verification": verification,
         "gmail_api_action": "users.drafts.get",
         "draft_only": True,
@@ -6109,6 +6414,7 @@ def _assert_gmail_create_duplicate_clear(
     draft_payload: dict[str, Any],
     paths: AppPaths,
 ) -> dict[str, Any]:
+    _require_request_exclusion_clear(draft_payload, paths)
     identities = _prepared_payload_request_identities(draft_payload)
     try:
         validate_superseded_request_coverage(identities, load_draft_log(paths.draft_log), _coerce_supersedes(request_payload.get('supersedes')))
@@ -6287,6 +6593,7 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
         # response therefore cannot silently make a second create safe to retry.
         save_attempts(paths.draft_log, attempts)
         try:
+            _require_request_exclusion_clear(draft_payload, paths)
             result = create_gmail_draft_from_payload(draft_payload, paths.gmail_config)
         except GmailDraftCreateError as exc:
             update_attempt(attempt, state="uncertain" if exc.may_have_created else "not_created", error=str(exc))
@@ -6574,6 +6881,7 @@ def build_profile_intake(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
         km_one_way=payload.get("km_one_way"),
         additional_attachment_files=payload.get("additional_attachment_files"),
         email_body=payload.get("email_body"),
+        email_subject=payload.get("email_subject"),
         source_filename=payload.get("source_filename"),
         source_text=payload.get("source_text"),
         notes=payload.get("notes"),
@@ -6656,6 +6964,21 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "send_allowed": False,
         }
 
+    try:
+        exclusion = find_request_exclusion(
+            {**effective_intake, "service_date": get_service_date_value(effective_intake)}, paths.duplicate_index)
+    except RequestExclusionError as exc:
+        return {
+            "status": "error", "message": str(exc), "questions": [],
+            "next_safe_action": review_next_safe_action("error"), "send_allowed": False,
+        }
+    if exclusion:
+        return {
+            "status": "excluded", "message": format_request_exclusion(exclusion),
+            "exclusion": exclusion, "questions": [],
+            "next_safe_action": review_next_safe_action("excluded", exclusion=exclusion), "send_allowed": False,
+        }
+
     duplicate = find_duplicate_record(effective_intake, paths.duplicate_index)
     if duplicate:
         return {
@@ -6688,6 +7011,7 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         court_directory = read_json_list(paths.court_emails)
         rendered = build_rendered_request(effective_intake, profile)
         resolve_email_body(effective_intake, email_config, signature_name=rendered.signature_name)
+        resolve_email_subject(effective_intake, email_config)
         validate_shared_travel_groups([effective_intake], prior_requests=recorded_claims(paths))
         recipient, recipient_source = resolve_recipient(effective_intake, email_config, court_directory)
     except (IntakeError, ClaimError, OSError, json.JSONDecodeError) as exc:
@@ -6911,6 +7235,7 @@ def default_packet_email_body(items: list[dict[str, Any]], email_config: dict[st
 
 
 def validate_packet_recipients(intakes: list[dict[str, Any]], email_config: dict[str, Any], court_directory: list[dict[str, Any]]) -> str:
+    require_individual_email_text(intakes, mode='Packet mode')
     custom_body = str(intakes[0].get('packet_email_body') or '')
     if custom_body.strip():
         resolve_email_body({'claim_interpreting': any(intake.get('claim_interpreting', True) for intake in intakes),
@@ -7114,6 +7439,8 @@ def preflight_intakes(
     seen_keys: dict[tuple[str, str, str], str] = {}
     group_error = ''
     try:
+        for intake in effective_intakes:
+            _require_request_exclusion_clear(intake, paths)
         if email_grouping == 'manual_visit':
             if packet_mode:
                 raise IntakeError('A manual visit email keeps separate PDFs. Turn off packet mode.')
@@ -7282,6 +7609,8 @@ def prepare_intakes(
     seen_keys: dict[tuple[str, str, str], Path] = {}
     lifecycle_checks: list[dict[str, Any]] = []
     try:
+        for intake in effective_intakes:
+            _require_request_exclusion_clear(intake, paths)
         if email_grouping == 'manual_visit':
             if packet_mode:
                 raise IntakeError('A manual visit email keeps separate PDFs. Turn off packet mode.')
@@ -7622,6 +7951,10 @@ def _record_draft_unlocked(
             except ValueError as exc:
                 raise IntakeError(str(exc)) from exc
 
+    if status in {"active", "drafted"} or (status == "sent" and not existing_sent_transition):
+        raw = payload.get("payload") or payload.get("draft_payload")
+        loaded = load_json(_resolve_optional_path(raw)) if raw else {}
+        _require_request_exclusion_clear(loaded or payload, paths)
     supersedes = _coerce_supersedes(payload.get("supersedes"))
     supersede_records: list[tuple[str, dict[str, Any]]] = []
     if supersedes:

@@ -112,6 +112,11 @@ def has_pj_host_building(intake: dict[str, Any]) -> bool:
         locality = re.split(r"\b(?:de|em|no|na)\s+", locality)[-1].strip()
         if locality.startswith(("sao ", "santa ", "santo ")) or locality in {"gnr", "psp", "policia judiciaria", "servico", "interpretacao"}:
             continue
+        # Rendering 'Hospital' as 'no Hospital' adds a preposition, not a city.
+        # A building-only label in a generated/manual clause must still ask for
+        # the physical host locality instead of certifying a complete PJ venue.
+        if re.match(r'^(?:hospital|posto|esquadra|gabinete|instituto|edificio|instalacoes?|unidade|diretoria|servicos?)\b', locality):
+            continue
         if re.search(r"\b(?:ilegivel|desconhecid[oa]|indefinid[oa])\b|nao (?:legivel|indicado|informado)", locality):
             continue
         if re.fullmatch(r"(policia judiciaria|pj|diretoria(?: do sul)?)", normalized):
@@ -198,7 +203,7 @@ def _location_clause(location: str) -> str:
     normalized = normalize_text(location).strip()
     if normalized.startswith(("em ", "no ", "na ", "nos ", "nas ")):
         return location
-    if normalized.startswith("esquadra"):
+    if normalized.startswith(("esquadra", "procuradoria")):
         return f"na {location}"
     if normalized.startswith(("posto", "tribunal", "ministerio publico", "hospital", "gabinete", "instituto", "edificio")):
         return f"no {location}"

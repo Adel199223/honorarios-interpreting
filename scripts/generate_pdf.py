@@ -241,12 +241,15 @@ def paper_submission_confirmed(record: dict[str, Any]) -> bool:
 def format_duplicate_message(record: dict[str, Any]) -> str:
     status = duplicate_record_status(record)
     paper = paper_submission_confirmed(record)
+    retained = status == 'drafted' and record.get('draft_lifecycle_status') in {'archived', 'trashed', 'not_found', 'superseded'}
     details = [
         "Possible duplicate found before PDF generation.",
         "Status: already submitted on paper" if paper else f"Status: already {status}",
         f"Case number: {record.get('case_number', '')}",
         f"Service date: {record.get('service_date', '')}",
     ]
+    if retained:
+        details.append('This request was previously drafted and removed from Drafted. Its duplicate warning is retained; do not create it again by mistake.')
     if paper:
         details.append("Submission evidence: user confirmed")
     if record.get("sent_date"):
@@ -498,8 +501,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-duplicate", action="store_true", help="Generate even when case number and service date already exist.")
     args = parser.parse_args(argv)
 
+    # Import after this module defines IntakeError, also for direct CLI use.
+    try:
+        from scripts.request_exclusions import RequestExclusionError, require_requests_not_excluded
+    except ModuleNotFoundError:
+        from request_exclusions import RequestExclusionError, require_requests_not_excluded
     try:
         intake = load_json(args.intake)
+        require_requests_not_excluded(intake, args.duplicate_index)
         if not args.allow_duplicate:
             duplicate = find_duplicate_record(intake, args.duplicate_index, strict=True)
             if duplicate:
@@ -511,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         html_preview = args.html_preview or DEFAULT_HTML_DIR / f"{output_path.stem}.html"
         render_html(args.template, rendered, html_preview)
         generate_pdf(rendered, output_path)
-    except IntakeError as exc:
+    except (IntakeError, RequestExclusionError) as exc:
         print(f"Cannot generate PDF: {exc}", file=sys.stderr)
         return 2
 

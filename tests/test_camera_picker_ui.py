@@ -74,7 +74,7 @@ const extractFunction=name=>{
  const next=/\n(?:async )?function \w+\(/.exec(fullApp.slice(match.index+match[0].length));
  return fullApp.slice(match.index,next?match.index+match[0].length+next.index:undefined);
 };
-for(const name of ['clearSourceCaseReview','hideHomeReviewPanel','canPrepareSourceEmailReplacement','prepareIntake','reviewIntake','addCurrentIntakeToBatch','adoptUploadedSource','applyReview','sentDuplicateForReview','duplicateSubmissionWording','showSentDuplicateDecision','normalizeAttachmentList','ensureSupportingAttachmentEmailBody','mergeSupportingAttachmentsIntoIntake','resumeWorkspaceDraft'])source+='\n'+extractFunction(name);
+for(const name of ['clearSourceCaseReview','hideHomeReviewPanel','canPrepareSourceEmailReplacement','prepareIntake','reviewIntake','addCurrentIntakeToBatch','adoptUploadedSource','sourceEmailTextForIntake','applyReview','sentDuplicateForReview','duplicateSubmissionWording','showSentDuplicateDecision','normalizeAttachmentList','ensureSupportingAttachmentEmailBody','mergeSupportingAttachmentsIntoIntake','resumeWorkspaceDraft'])source+='\n'+extractFunction(name);
 const handlerStart=fullApp.indexOf('  $("#source-upload-form").addEventListener("submit",');
 if(handlerStart<0)throw new Error('Missing production source submit handler');
 source+='\n'+fullApp.slice(handlerStart,fullApp.indexOf('\n  });',handlerStart)+6);
