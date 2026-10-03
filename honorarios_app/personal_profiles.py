@@ -344,15 +344,21 @@ def lookup_profile_distance(profile: dict[str, Any], destination: str) -> tuple[
     # Exact destinations precede longer institution descriptions. Substring
     # aliases cannot choose the first of overlapping or conflicting cities.
     if not matches and re.match(r'^(?:tribunal|juizo|posto|esquadra|gnr|psp|hospital|gabinete|instituto|ministerio publico)\b', query_fold):
+        # A confirmed venue may append a unit after the building/city. Only
+        # the venue head can supply its destination; a city in the appended
+        # description cannot. Keep all known-city mentions for ambiguity checks.
+        venue_head = re.split(r'\s+[—–-]\s+|\s+\(', query_fold, maxsplit=1)[0].strip()
         for label, km in distances.items():
             label_text = _text(label)
             label_fold = ' '.join(normalize_text(label_text).split())
-            if label_fold and re.search(r'(?<!\w)' + re.escape(label_fold) + r'\s*[.,;]*$', query_fold):
+            if label_fold and re.search(r'(?<!\w)' + re.escape(label_fold) + r'(?!\w)', query_fold):
                 matches.append((label_fold, label_text, km))
         matches = [match for match in matches if not any(
             match[0] != other[0] and re.search(r'(?<!\w)' + re.escape(match[0]) + r'(?!\w)', other[0])
             for other in matches
         )]
+        if len(matches) != 1 or not re.search(r'(?<!\w)' + re.escape(matches[0][0]) + r'\s*[.,;]*$', venue_head):
+            return None, ''
     if len(matches) == 1:
         try:
             return int(matches[0][2]), matches[0][1]
@@ -379,16 +385,18 @@ def apply_profile_defaults_to_intake(intake: dict[str, Any], profile: dict[str, 
             transport["origin"] = origin
             provenance["applied"].append("transport.origin")
     has_transport = bool(effective.get("claim_transport", True)) or bool(transport)
-    if has_transport and not _text(transport.get("km_one_way")):
+    missing_distance = transport.get('km_one_way') is None or str(transport.get('km_one_way')).strip() == ''
+    if has_transport and (missing_distance or not _text(transport.get("destination"))):
         destination = _text(transport.get("destination") or effective.get("transport_destination") or effective.get("service_place"))
         km, label = lookup_profile_distance(profile, destination)
         if km is not None:
-            transport["km_one_way"] = km
             if not _text(transport.get("destination")):
                 transport["destination"] = label or destination
                 provenance["applied"].append("transport.destination")
-            provenance["applied"].append("transport.km_one_way")
-            provenance["distance_source"] = f"personal_profile:{label or destination}"
+            if missing_distance:
+                transport["km_one_way"] = km
+                provenance["applied"].append("transport.km_one_way")
+                provenance["distance_source"] = f"personal_profile:{label or destination}"
     if transport:
         effective["transport"] = transport
     return effective, provenance

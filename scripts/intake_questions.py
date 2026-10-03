@@ -154,6 +154,10 @@ def rule_applies(rule: dict[str, str], intake: dict[str, Any]) -> bool:
     if condition == "service_date_conflict":
         return bool(service_date_conflict(intake)) and not service_date_conflict_is_confirmed(intake)
     if condition == "pj_host_building_missing":
+        photo_defaults = intake.get('photo_defaults_applied') or {}
+        if (isinstance(photo_defaults, dict) and photo_defaults.get('venue_status') == 'missing_noncourt_venue'
+                and not has_value(intake, 'service_place')):
+            return True
         return source_mentions_pj_context(intake) and not has_pj_host_building(intake)
     return True
 
@@ -171,7 +175,30 @@ def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
         questions.append({'field': 'claim_options', 'number': len(questions) + 1,
             'question': 'What should this request claim? It cannot claim neither interpreting nor travel.',
             'answer_hint': 'Choose both, interpreting-only, or travel-only.'})
+    photo_defaults = intake.get('photo_defaults_applied') or {}
+    city_answer = str(intake.get('photo_capture_city') or '').strip()
+    city_binding = str(intake.get('photo_capture_city_source_sha256') or '')
+    source_hash = str(intake.get('source_sha256') or '')
+    stale_city = bool(city_answer and city_binding != source_hash)
+    needs_city = (intake.get('source_kind') == 'photo' and bool(source_hash)
+                  and isinstance(photo_defaults, dict)
+                  and (stale_city or (photo_defaults.get('routing_status') in {'missing_city', 'ambiguous_city'}
+                       and not city_answer
+                       and not (has_value(intake, 'payment_entity') and has_value(intake, 'recipient_email')))))
+    # One source-bound location answer can resolve the configured court, contact,
+    # absent venue and saved distance. Identity/scope questions still come first;
+    # sent duplicates are checked before this unrelated location question.
+    city_dependents = {'payment_entity', 'recipient_email', 'service_entity',
+                       'transport.destination', 'transport.km_one_way'}
     for rule in QUESTION_RULES:
+        if needs_city and rule['field'] == 'payment_entity':
+            questions.append({'field': 'photo_capture_city', 'number': len(questions) + 1,
+                'question': 'In which city was this photo taken?',
+                'answer_hint': 'Give the actual capture city, for example Beja. Your saved court/contact and missing-venue defaults will be checked; the available location evidence did not resolve one city.'})
+        if needs_city and rule['field'] in city_dependents:
+            # Deliberate field clears still require their own explicit answer.
+            if rule['field'] not in (intake.get('review_cleared_fields') or []):
+                continue
         if not rule_applies(rule, intake):
             continue
         if rule.get("when") == "service_date_conflict":
@@ -186,7 +213,11 @@ def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
             })
             continue
         if rule.get("when") == "pj_host_building_missing":
-            questions.append({**rule, "number": len(questions) + 1})
+            question = {**rule, "number": len(questions) + 1}
+            if not source_mentions_pj_context(intake):
+                question.update(question='Which building and city did you attend for this service?',
+                                answer_hint='Example: Tribunal de Beja or Esquadra da PSP de Moura.')
+            questions.append(question)
             continue
         if not has_value(intake, rule["field"]):
             question = {**rule, "number": len(questions) + 1}

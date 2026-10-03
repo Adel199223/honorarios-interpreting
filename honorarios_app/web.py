@@ -10,8 +10,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -45,6 +45,8 @@ from .services import (
     gmail_api_draft_verify,
     gmail_api_oauth_callback,
     gmail_api_oauth_start,
+    gmail_sent_sync,
+    gmail_sent_sync_status,
     gmail_api_status,
     manual_handoff_packet,
     legalpdf_adapter_contract,
@@ -84,6 +86,7 @@ from .services import (
 )
 from .runtime import SYNTHETIC_RUNTIME_ATTESTATION, create_synthetic_runtime, runtime_path_overrides
 from .workspace_draft import validate_workspace_resume
+from .camera_folder import camera_folder_status, list_camera_files, read_camera_file, read_camera_thumbnail, CameraFolderError
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -170,7 +173,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
         target = _browser_origin(f"{request.scope.get('scheme', 'http')}://{hosts[0]}") if len(hosts) == 1 else None
         if target is None or target[1] not in {'localhost', '127.0.0.1', '::1'}:
             return JSONResponse(status_code=400, content={'detail': 'This app accepts only a local loopback Host.'})
-        if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+        if request.method not in {'GET', 'HEAD', 'OPTIONS'} or request.url.path == '/api/camera/thumbnail':
             origins = request.headers.getlist('origin')
             if origins:
                 if len(origins) != 1 or _browser_origin(origins[0]) != target:
@@ -340,11 +343,55 @@ def create_app(**path_overrides: Any) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/google-photos/oauth/callback")
-    async def api_google_photos_oauth_callback(code: str = "", state: str = "") -> dict[str, Any]:
+    async def api_google_photos_oauth_callback(request: Request, code: str = "", state: str = ""):
+        # Ordinary navigation should finish at a readable page without retaining
+        # the authorization code/state in its address. API callers keep JSON.
+        accepted: dict[str, float] = {}
+        for part in request.headers.get("accept", "").split(","):
+            media, *parameters = part.strip().lower().split(";")
+            quality = 1.0
+            for parameter in parameters:
+                if parameter.strip().startswith("q="):
+                    try:
+                        quality = float(parameter.strip()[2:])
+                    except ValueError:
+                        quality = 0
+            accepted[media] = quality
+        browser = accepted.get("text/html", 0) > 0 and accepted.get("text/html", 0) >= accepted.get("application/json", 0)
+        headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
         try:
-            return google_photos_oauth_callback(code=code, state=state, paths=paths)
+            result = google_photos_oauth_callback(code=code, state=state, paths=paths)
         except (IntakeError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if browser:
+                return RedirectResponse("/google-photos/connection-error", status_code=303, headers=headers)
+            raise HTTPException(status_code=400, detail=str(exc), headers=headers) from exc
+        if browser:
+            return RedirectResponse("/google-photos/connected", status_code=303, headers=headers)
+        return JSONResponse(result, headers=headers)
+
+    @app.get("/google-photos/connected", response_class=HTMLResponse)
+    @app.get("/google-photos/connection-error", response_class=HTMLResponse)
+    async def google_photos_connection_result(request: Request) -> HTMLResponse:
+        connected = request.url.path == "/google-photos/connected"
+        heading = "Google Photos connected" if connected else "Google Photos connection needs another try"
+        message = (
+            "Your Google Photos authorization is saved. Return to Honorários and choose a photo with Google Photos."
+            if connected else
+            "The connection could not be completed. Return to Honorários and select Connect Google Photos again. You can also upload an original photo from your computer."
+        )
+        # The page contains no provider payload, query value, external asset or script.
+        body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{heading} · Honorários</title>
+<style>body{{font:18px/1.6 system-ui,sans-serif;color:#19302d;background:#f4f6f3;margin:0;padding:8vh 24px}}
+main{{max-width:620px;margin:auto;background:white;padding:36px;border-radius:18px;border:1px solid #d8e2db}}
+h1{{font-size:28px;line-height:1.2}}a{{display:inline-block;margin-top:16px;padding:12px 20px;border-radius:8px;background:#18584c;color:white;text-decoration:none}}
+p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
+<a href="/">Return to Honorários</a><p>You may close this tab after returning to the app.</p></main></body></html>"""
+        return HTMLResponse(body, headers={
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        })
 
     @app.post("/api/google-photos/picker/session")
     async def api_google_photos_picker_session(payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -379,18 +426,31 @@ def create_app(**path_overrides: Any) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/gmail/oauth/start")
-    async def api_gmail_oauth_start() -> dict[str, Any]:
+    def api_gmail_oauth_start(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
         try:
-            return gmail_api_oauth_start(paths)
+            return gmail_api_oauth_start(paths, purpose=str(payload.get("purpose") or "drafts"))
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/gmail/oauth/callback")
-    async def api_gmail_oauth_callback(code: str = "", state: str = "") -> dict[str, Any]:
+    def api_gmail_oauth_callback(code: str = "", state: str = "", error: str = "") -> dict[str, Any]:
         try:
-            return gmail_api_oauth_callback(code=code, state=state, paths=paths)
+            return gmail_api_oauth_callback(code=code, state=state, paths=paths, error=error)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/gmail/sent-sync/status")
+    def api_gmail_sent_sync_status() -> dict[str, Any]:
+        return gmail_sent_sync_status(paths)
+
+    @app.post("/api/gmail/sent-sync")
+    def api_gmail_sent_sync(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return gmail_sent_sync(payload, paths)
+        except (IntakeError, OSError, ValueError):
+            return JSONResponse(status_code=400, content={"status": "error",
+                "message": "Gmail could not be checked safely. Reload and try again; existing duplicate protection remains active.",
+                "send_allowed": False, "gmail_write_allowed": False})
 
     @app.post("/api/gmail/drafts/create")
     async def api_gmail_drafts_create(payload: dict[str, Any]) -> Any:
@@ -656,6 +716,48 @@ def create_app(**path_overrides: Any) -> FastAPI:
                 "message": str(exc),
                 "send_allowed": False,
             })
+
+    @app.get("/api/camera/status")
+    def api_camera_status() -> JSONResponse:
+        try:
+            result = camera_folder_status(paths.ai_config.with_name("source-import.local.json"))
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+        except CameraFolderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Camera could not be accessed. Keep your phone connected, refresh Camera or choose another file.") from exc
+
+    @app.get("/api/camera/files")
+    def api_camera_files(query: str = "", offset: int = 0, limit: int = 50) -> JSONResponse:
+        try:
+            result = list_camera_files(paths.ai_config.with_name("source-import.local.json"), query=query, offset=offset, limit=limit)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+        except CameraFolderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Camera could not be accessed. Keep your phone connected, refresh Camera or choose another file.") from exc
+
+    @app.post("/api/camera/file")
+    def api_camera_file(payload: dict[str, Any]) -> Response:
+        try:
+            content, media_type, _ = read_camera_file(paths.ai_config.with_name("source-import.local.json"), payload.get("name"), payload.get("fingerprint"))
+            return Response(content, media_type=media_type, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        except CameraFolderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Camera could not be accessed. Keep your phone connected, refresh Camera or choose another file.") from exc
+
+    @app.get("/api/camera/thumbnail")
+    def api_camera_thumbnail(name: str, fingerprint: str) -> Response:
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                   "Cross-Origin-Resource-Policy": "same-origin"}
+        try:
+            content = read_camera_thumbnail(paths.ai_config.with_name("source-import.local.json"), name, fingerprint)
+            return Response(content, media_type="image/jpeg", headers=headers)
+        except CameraFolderError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)}, headers=headers)
+        except (OSError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={"detail": "This photo preview is unavailable. You can still select the original photo."}, headers=headers)
 
     @app.post("/api/sources/upload")
     async def api_source_upload(

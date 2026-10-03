@@ -226,11 +226,30 @@ def merge_attempts(local: list[dict[str, Any]], incoming: list[dict[str, Any]]) 
     return list(result.values())
 
 
+def _undated_translation_key(row: Any) -> tuple[str, str, str] | None:
+    """Retain source-bound translation receipts without an interpreting identity."""
+    if (not isinstance(row, dict) or row.get("request_type") != "translation_fee_request"
+            or row.get("source_classification") != "translation_set_aside"
+            or (row.get("status") or "sent") != "sent"
+            or row.get("draft_id") or row.get("underlying_requests")
+            or row.get("claim_interpreting") or row.get("claim_transport")):
+        return None
+    case, day, period = request_identity_key(row)
+    source = row.get("source_message_id")
+    if not case or day or period or not isinstance(source, str) or not source.strip():
+        return None
+    # Several written requests for one case can have no interpreting date. The
+    # original sent message identifies each receipt; a case/blank-date key would
+    # silently collapse them during restore.
+    return ("undated_translation", source.strip(), case)
+
+
 def merge_history(local: list, incoming: list, *, duplicate: bool) -> list:
     result = {}
     allowed_statuses = {"sent", "superseded", "trashed", "not_found"} | ({None, "", "drafted"} if duplicate else {"active"})
     for row in [*local, *incoming]:
-        if (not isinstance(row, dict) or not all(request_identity_key(row)[:2])
+        translation_key = _undated_translation_key(row) if duplicate else None
+        if (not isinstance(row, dict) or (not all(request_identity_key(row)[:2]) and translation_key is None)
                 or row.get("status") not in allowed_statuses
                 or (row.get("underlying_requests") is not None and (not isinstance(row["underlying_requests"], list)
                     or any(not isinstance(item, dict) or not all(request_identity_key(item)[:2]) for item in row["underlying_requests"])))):
@@ -248,10 +267,13 @@ def merge_history(local: list, incoming: list, *, duplicate: bool) -> list:
             except ValueError as exc:
                 raise IntakeError("Backup history has an invalid update timestamp.") from exc
         draft = str(row.get("draft_id") or "")
-        key = (draft, request_identity_key(row)) if duplicate or not draft else draft
+        key = translation_key or ((draft, request_identity_key(row)) if duplicate or not draft else draft)
         old = result.get(key)
         if old:
-            if (_identities(old) != _identities(row) or any(old.get(k) and row.get(k) and old[k] != row[k] for k in ("message_id", "pdf_sha256", "recipient", "recipient_email", "email_group_id"))):
+            immutable_fields = ("message_id", "pdf_sha256", "recipient", "recipient_email", "email_group_id")
+            if translation_key:
+                immutable_fields += ("source_filename", "source_pdf_sha256", "sent_attachment_sha256", "sent_pdf_sha256", "fee_request_date", "sent_date")
+            if (_identities(old) != _identities(row) or any(old.get(k) and row.get(k) and old[k] != row[k] for k in immutable_fields)):
                 raise IntakeError("Backup contains conflicting draft identities or attachment history. Reconcile it before restoring.")
             old_status = old.get("status") or "sent"
             new_status = row.get("status") or "sent"

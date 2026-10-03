@@ -19,6 +19,25 @@ class SourceCaseEvidenceRegressionTests(unittest.TestCase):
                                 text=True, encoding="utf-8", capture_output=True, check=True, cwd=ROOT)
         return json.loads(result.stdout)
 
+    def test_capture_city_fact_labels_gps_inference_manual_answer_and_conflicts_honestly(self):
+        result = self.run_guidance("""
+const intake={source_kind:'photo',source_sha256:'current',photo_defaults_applied:{photo_city:'Capture City',photo_city_source:'verified_gps_area'}};
+const manual={...intake,photo_capture_city:'Manual City',photo_capture_city_source_sha256:'current',
+ photo_defaults_applied:{photo_city:'Manual City',photo_city_source:'user_confirmed_capture_city'}};
+const conflicted={...intake,photo_defaults_applied:{photo_city:'',gps_city_status:'conflicting_city_evidence'}};
+console.log(JSON.stringify({gps:g.beginnerReviewFacts({},intake).find(f=>f.field==='photo_capture_city'),
+ manual:g.beginnerReviewFacts({},manual).find(f=>f.field==='photo_capture_city'),
+ conflict:g.beginnerReviewFacts({},conflicted).filter(f=>f.field==='photo_capture_city'),
+ stale:g.reviewFactOrigin('photo_capture_city','Manual City',{}, {...manual,source_sha256:'new-source'})}));
+""")
+        self.assertEqual(result['gps']['value'], 'Capture City')
+        self.assertEqual(result['gps']['origin']['label'], 'GPS matched a verified local area')
+        self.assertFalse(result['gps']['editable'])
+        self.assertEqual(result['manual']['value'], 'Manual City')
+        self.assertEqual(result['manual']['origin']['kind'], 'manual')
+        self.assertEqual(result['conflict'], [])
+        self.assertNotEqual(result['stale']['kind'], 'manual')
+
     def test_saved_court_label_is_a_preference_not_source_or_ai_evidence(self):
         result = self.run_guidance("""
 const intake={court_label_preference:{label:'Tribunal de Example City',original_fields:{payment_entity:'Long court name'}}};
@@ -474,6 +493,38 @@ class MultiCaseReviewGuidanceTests(unittest.TestCase):
                                 capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_picker_timezone_provenance_survives_rereview_and_resume_without_stale_authority(self):
+        result = self.run_guidance("""
+const intake={source_sha256:'fictional-source',photo_metadata_date:'2026-07-02'};
+const original={field:'photo_metadata_date',value:'2026-07-02',source:'google_photos_creation_time',confidence:'high',
+ reason:'Google Photos timestamp converted in saved Europe/Lisbon timezone; editable timezone assumption.'};
+const prior={intake,source_evidence:{field_evidence:[original]}};
+const fresh={status:'needs_info',intake,questions:[{field:'payment_entity'}],
+ review_evidence:{field_evidence:[{...original,source:'visible_google_photos_metadata',reason:'Generic manual review'}],
+ attention:{status:'needs_review'}}};
+const next=g.retainCaptureDateOrigin(fresh,prior);
+const resumed=g.retainCaptureDateOrigin(fresh,JSON.parse(JSON.stringify(next)));
+console.log(JSON.stringify({next,resumed,
+ origin:g.reviewFactOrigin('photo_metadata_date',intake.photo_metadata_date,next,intake),
+ fact:g.beginnerReviewFacts(next,intake)[1],
+ changedSource:g.retainCaptureDateOrigin({...fresh,intake:{...intake,source_sha256:'different'}},prior),
+ changedDate:g.retainCaptureDateOrigin({...fresh,intake:{...intake,photo_metadata_date:'2026-07-03'}},prior),
+ unverified:g.retainCaptureDateOrigin(fresh,{...prior,source_evidence:{field_evidence:[{...original,confidence:'low'}]}})}));
+""")
+        for key in ('next', 'resumed'):
+            value = result[key]
+            self.assertEqual(value['status'], 'needs_info')
+            self.assertEqual(value['questions'], [{'field': 'payment_entity'}])
+            self.assertEqual(value['review_evidence']['attention'], {'status': 'needs_review'})
+            evidence = value['review_evidence']['field_evidence'][0]
+            self.assertEqual(evidence['source'], 'google_photos_creation_time')
+            self.assertIn('editable timezone assumption', evidence['reason'])
+        self.assertEqual(result['origin']['kind'], 'metadata')
+        self.assertIn('timezone default is editable', result['origin']['label'])
+        self.assertEqual(result['fact']['origin'], {'kind': 'metadata', 'label': 'Google Photos date · confirm date and timezone'})
+        for key in ('changedSource', 'changedDate', 'unverified'):
+            self.assertEqual(result[key]['review_evidence']['field_evidence'][0]['source'], 'visible_google_photos_metadata')
 
     def test_node_unicode_round_trip_ignores_windows_default_text_encoding(self):
         expected = 'S\u00e3o Jo\u00e3o \u00b7 \u6771\u4eac'

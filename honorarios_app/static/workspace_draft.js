@@ -34,7 +34,7 @@ export function workspaceDraftSnapshot(state, fields = {}) {
     travel_choice: workspaceInputCopy(state.sourceTravelChoice),
     batch_intakes: (state.batchIntakes || []).map(workspaceInputCopy),
     answers: String(fields.answers || ""),
-    email_grouping: fields.email_grouping === "individual" ? "individual" : "source",
+    email_grouping: ["individual", "manual_visit"].includes(fields.email_grouping) ? fields.email_grouping : "source",
     packet_mode: fields.packet_mode === true,
     manual_fields: fields.manual_fields ? workspaceInputCopy(fields.manual_fields) : null,
   };

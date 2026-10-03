@@ -24,8 +24,21 @@ if ($pythonPin -notmatch '^3\.11\.\d+$') { throw 'Expected an exact Python 3.11 
 $oldEnv = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 Push-Location $projectRoot
 try {
+    $envPython = $null
+    if (Test-Path -LiteralPath $envPath) {
+        $envItem = Get-Item -LiteralPath $envPath -Force
+        if (-not $envItem.PSIsContainer -or ($envItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Existing environment must be a regular directory.' }
+        $envPython = Join-Path $envPath 'Scripts\python.exe'
+        if (-not (Test-Path -LiteralPath (Join-Path $envPath 'pyvenv.cfg')) -or -not (Test-Path -LiteralPath $envPython)) { throw 'Existing directory is not a supported environment; it has been preserved.' }
+        # Refuse to repair/replace a mismatching environment, even with an explicit interpreter.
+        Invoke-Checked $envPython @('scripts/check_dev_environment.py')
+    }
     if ($PythonExecutable) {
         $pythonExe = (Resolve-Path -LiteralPath $PythonExecutable).Path
+    } elseif ($envPython) {
+        # Reuse the proven environment's base instead of discovering an unrelated installation.
+        $pythonOutput = @(Invoke-Checked $envPython @('-I', '-c', 'import sys; print(sys._base_executable)'))
+        $pythonExe = ($pythonOutput | Select-Object -Last 1).ToString().Trim()
     } else {
         $pythonOutput = @(Invoke-Checked $uvExe @('python', 'find', $pythonPin, '--no-project', '--no-python-downloads'))
         $pythonExe = ($pythonOutput | Select-Object -Last 1).ToString().Trim()
@@ -33,14 +46,6 @@ try {
     if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'Pinned Python is not installed.' }
     Invoke-Checked $pythonExe @('-I', '-c', "import sys,xml.dom.minidom,html.entities,ssl,sqlite3,venv; assert sys.version.split()[0] == '$pythonPin'; print('Pinned Python and standard library: ready')")
     Invoke-Checked $uvExe @('lock', '--check', '--offline', '--python', $pythonExe, '--no-python-downloads')
-    if (Test-Path -LiteralPath $envPath) {
-        $envItem = Get-Item -LiteralPath $envPath -Force
-        if (-not $envItem.PSIsContainer -or ($envItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Existing environment must be a regular directory.' }
-        $envPython = Join-Path $envPath 'Scripts\python.exe'
-        if (-not (Test-Path -LiteralPath (Join-Path $envPath 'pyvenv.cfg')) -or -not (Test-Path -LiteralPath $envPython)) { throw 'Existing directory is not a supported environment; it has been preserved.' }
-        # Refuse to repair/replace any mismatching existing environment.
-        Invoke-Checked $envPython @('scripts/check_dev_environment.py')
-    }
     [Environment]::SetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', $envPath, 'Process')
     Invoke-Checked $uvExe @('sync', '--locked', '--extra', 'dev', '--inexact', '--python', $pythonExe, '--no-python-downloads')
     $envPython = Join-Path $envPath 'Scripts\python.exe'

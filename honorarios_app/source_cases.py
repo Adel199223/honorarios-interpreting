@@ -12,6 +12,7 @@ SPACED_SUFFIX_TAIL = re.compile(
     r'(?:[ \t]+[A-Za-z0-9](?=[ \t]|$|[.,;:!?)])){2,}'
     r'|[ \t]+[A-Z0-9](?=[ \t]|$|[.,;:!?)])'
 )
+GROUPED_SUFFIX_TAIL = re.compile(r'(?:[ \t]+[A-Z0-9]{2,4})+(?=$|[.,;:!?)])')
 ALTERNATIVE = re.compile(r'\b(?:ou|or|ileg[ií]v\w*|unreadable|uncertain|ambiguous|incerto)\b|\?', re.IGNORECASE)
 
 
@@ -25,13 +26,21 @@ def source_case_rows(text: str, ai_recovery: dict[str, Any]) -> list[dict[str, s
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     ambiguous_cases: set[str] = set()
+    fragmented_cases: set[str] = set()
     non_case_references: set[str] = set()
+    unresolved_bases: set[str] = set()
     fields = ai_recovery.get('fields') or {}
     raw_text = str(text or '')
     legacy = str(fields.get('raw_case_number') or fields.get('case_number') or '')
     # A date/place uncertainty in another sentence must not erase a readable ID.
     # Periods inside case references are followed by a digit, not whitespace.
     lines = re.split(r'\n|(?<=[.!;])\s+', raw_text)
+    declared = ai_recovery.get('case_numbers')
+    declared_values = {valid_source_case(value) for value in declared if isinstance(value, str)} if isinstance(declared, list) else set()
+
+    def case_base(value: str) -> str:
+        match = re.match(r'\d+/\d{2}\.\d', value)
+        return match.group() if match else ''
 
     def add(raw: str, canonical: str = '') -> None:
         key = canonical or 'unresolved:' + raw.strip().casefold()
@@ -63,11 +72,31 @@ def source_case_rows(text: str, ai_recovery: dict[str, Any]) -> list[dict[str, s
                     ambiguous_cases.update((valid_source_case(raw), valid_source_case(match.group())))
                     add(raw)
                     continue
+                # A short OCR block such as "GD SRP" is one source reference,
+                # not a complete "GD" case plus an unrelated model-only ID.
+                # Only two multi-character blocks at a line boundary, agreeing
+                # with one declared full reading, can resolve automatically.
+                # Letter-by-letter fragments above deliberately stay unresolved.
+                prefix = valid_source_case(match.group())
+                suffix = re.search(r'\.\d([A-Z][A-Z0-9]*)$', prefix)
+                grouped_tail = GROUPED_SUFFIX_TAIL.match(line[match.end():]) if suffix and len(suffix.group(1)) <= 3 else None
+                if grouped_tail:
+                    raw = match.group() + grouped_tail.group()
+                    joined = valid_source_case(raw)
+                    base = case_base(prefix)
+                    readings = {value for value in declared_values if case_base(value) == base}
+                    fragmented_cases.add(prefix)
+                    if len(grouped_tail.group().split()) == 1 and readings == {joined} and joined:
+                        add(raw, joined)
+                    else:
+                        unresolved_bases.add(base)
+                        fragmented_cases.add(joined)
+                        add(raw)
+                    continue
                 value = valid_source_case(match.group())
                 if value:
                     add(match.group(), value)
 
-    declared = ai_recovery.get('case_numbers')
     if isinstance(declared, list):
         for raw in declared:
             if not isinstance(raw, str) or not raw.strip():
@@ -79,6 +108,10 @@ def source_case_rows(text: str, ai_recovery: dict[str, Any]) -> list[dict[str, s
             if value and value in seen and value not in ambiguous_cases:
                 continue
             if value and value in ambiguous_cases:
+                continue
+            if value and value in fragmented_cases:
+                continue
+            if value and case_base(value) in unresolved_bases:
                 continue
             add(raw)
     if not rows and legacy:

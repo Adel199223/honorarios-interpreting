@@ -21,11 +21,40 @@ if ($Synthetic) {
     }
     if ((Test-Path -LiteralPath $runtimeAbsolute) -and @(Get-ChildItem -LiteralPath $runtimeAbsolute -Force).Count -gt 0) { throw 'Synthetic runtime must be new or empty. Existing files were preserved.' }
 }
+$isolateProviderEnvironment = [bool]$Synthetic
+if ($runtimeAbsolute -and -not $Synthetic) {
+    $markerPath = Join-Path $runtimeAbsolute 'config/synthetic-runtime.local.json'
+    if (Test-Path -LiteralPath $markerPath) {
+        $markerItem = Get-Item -LiteralPath $markerPath -Force
+        if ($markerItem.PSIsContainer -or ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Synthetic runtime marker must be a regular JSON file.' }
+        try { $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json }
+        catch { throw 'Synthetic runtime marker is unreadable; launch stopped.' }
+        if ($marker.attestation -cne 'honorarios_synthetic_runtime_v1' -or $marker.runtime -cne 'synthetic_isolated' -or
+            $marker.isolated_runtime -isnot [bool] -or -not $marker.isolated_runtime -or
+            $marker.synthetic_runtime -isnot [bool] -or -not $marker.synthetic_runtime -or
+            $marker.send_allowed -isnot [bool] -or $marker.send_allowed -or
+            $marker.write_allowed -isnot [bool] -or $marker.write_allowed) { throw 'Synthetic runtime marker is invalid; launch stopped.' }
+        $isolateProviderEnvironment = $true
+    }
+}
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
 try { $probe.Start() } catch { throw "Port $Port is occupied. Choose another port; existing apps were left running." } finally { $probe.Stop() }
 if (-not (Test-Path -LiteralPath $pythonExe)) { throw 'Run scripts/setup_dev_env.ps1 first.' }
 Push-Location $projectRoot
+$savedEnvironment = @{}
 try {
+    if ($isolateProviderEnvironment) {
+        # Match the portable runner's child boundary. A reopened synthetic
+        # runtime must be isolated just like its initial -Synthetic launch.
+        foreach ($entry in @(Get-ChildItem Env:)) {
+            $name = $entry.Name
+            if ($name -in @('OPENAI_API_KEY', 'PYTHONPATH', 'PYTHONHOME') -or
+                ($name -match '^(GMAIL_|GOOGLE_|HONORARIOS_)' -and $name -ne 'HONORARIOS_UV_EXECUTABLE')) {
+                $savedEnvironment[$name] = $entry.Value
+                [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+        }
+    }
     & $pythonExe scripts/check_dev_environment.py
     if ($LASTEXITCODE -ne 0) { throw 'Environment check failed; launch stopped.' }
     if ($CheckOnly) { Write-Host "Ready to launch LegalPDF Honorarios at http://127.0.0.1:$Port/"; return }
@@ -35,4 +64,9 @@ try {
     Write-Host "LegalPDF Honorarios: http://127.0.0.1:$Port/ (Ctrl+C to stop)"
     & $pythonExe @launchArgs
     if ($LASTEXITCODE -ne 0) { throw "Server exited with code $LASTEXITCODE." }
-} finally { Pop-Location }
+} finally {
+    foreach ($name in $savedEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+    }
+    Pop-Location
+}

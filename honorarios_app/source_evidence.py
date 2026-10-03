@@ -21,6 +21,10 @@ FIELD_EVIDENCE_LABELS = {
     "case_number": "Case number",
     "service_date": "Service date",
     "photo_metadata_date": "Metadata date",
+    "photo_metadata_city": "Capture city",
+    "photo_gps_city": "GPS area city candidate",
+    "photo_capture_city": "Capture city used for defaults",
+    "photo_gps": "Original photo GPS",
     "recipient_email": "Recipient email",
     "payment_entity": "Payment entity",
     "service_entity": "Service entity",
@@ -204,7 +208,7 @@ def build_field_evidence(
 
     raw_visible_text = str(ai_recovery.get("raw_visible_text") or "")
     independent_text = _independent_source_text(candidate, raw_visible_text)
-    metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
+    metadata_date = str(metadata.get("exif_date") or metadata.get("picker_capture_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
 
     def add(field: str, value: Any, *, source: str, confidence: str, reason: str, raw_value: Any = "", excerpt: str = "") -> None:
         if field in seen_fields or value in (None, ""):
@@ -233,7 +237,7 @@ def build_field_evidence(
     if metadata_date:
         metadata_source = _photo_metadata_date_source(candidate, metadata, ai_recovery)
         ai_metadata = metadata_source == "openai_ocr"
-        metadata_verified = bool(metadata.get("exif_date") or metadata.get("visible_metadata_date")) and not ai_metadata
+        metadata_verified = bool(metadata.get("exif_date") or metadata.get("picker_capture_date") or metadata.get("visible_metadata_date")) and not ai_metadata
         add(
             "photo_metadata_date",
             metadata_date,
@@ -242,6 +246,8 @@ def build_field_evidence(
             reason=(
                 "AI read a possible capture date. Check the original metadata; a capture date does not confirm the service date."
                 if ai_metadata
+                else "Google Photos creation time was converted using the saved capture timezone. This is an editable timezone assumption, not proof of where the photo was taken."
+                if metadata_source == "google_photos_creation_time"
                 else "Visible Google Photos metadata supplied a capture date, not confirmation of the service date."
                 if metadata_source == "visible_google_photos_metadata"
                 else "Image metadata supplied a capture date, not confirmation of the service date."
@@ -249,6 +255,19 @@ def build_field_evidence(
                 else "A capture-date candidate was supplied for review. Check its origin and confirm whether the service happened then."
             ),
         )
+
+    if metadata.get('photo_metadata_city'):
+        add('photo_metadata_city', metadata['photo_metadata_city'], source='embedded_location_created', confidence='high',
+            reason='The original image explicitly names its creation city in embedded metadata. A shown location or legacy City field is not used as capture location.')
+    if metadata.get('gps_coordinates'):
+        gps = metadata['gps_coordinates']
+        add('photo_gps', f"{gps['latitude']:.6f}, {gps['longitude']:.6f}", source='exif_gps', confidence='high',
+            reason='Original camera GPS coordinates. A configured verified local area may supply city evidence, but these coordinates do not establish the service building.')
+    gps_match = metadata.get('gps_city_match') or {}
+    if gps_match.get('status') == 'matched':
+        add('photo_gps_city', gps_match.get('city'), source='verified_gps_area', confidence='medium',
+            reason='GPS matched a verified local area. This is derived city evidence, not an embedded city name or proof of the physical service venue. Conflicting city evidence still needs your answer.',
+            excerpt='; '.join(str(area.get('source_url') or '') for area in gps_match.get('matches', [])))
 
     if 'source_case_numbers' in candidate and candidate.get('case_number'):
         case = normalize_case_number(candidate['case_number'])
@@ -278,6 +297,20 @@ def build_field_evidence(
                     reason='Your saved short court label matches this ordinary court and its exact recipient. The original source wording is retained; you can edit this label.')
     photo_defaults = candidate.get("photo_defaults_applied") or {}
     if isinstance(photo_defaults, dict):
+        city_source = photo_defaults.get('photo_city_source')
+        if city_source in {'verified_gps_area', 'user_confirmed_capture_city'}:
+            add('photo_capture_city', photo_defaults.get('photo_city'), source=city_source, confidence='medium' if city_source == 'verified_gps_area' else 'high',
+                reason='GPS matched a verified local area; the resulting city is an editable inference, not an embedded city or physical venue.'
+                if city_source == 'verified_gps_area' else 'You supplied the capture city for this original photo.')
+        agency = photo_defaults.get('source_agency_evidence') or {}
+        if isinstance(agency, dict):
+            excerpt = str(agency.get('evidence_text') or '')
+            for field in ('service_entity', 'service_entity_type'):
+                if agency.get(field) and _values_match(candidate.get(field), agency[field]):
+                    # A local pattern over AI-read text is still AI evidence.
+                    source = 'document_text' if excerpt and _text_contains_value(independent_text, excerpt) else 'openai_ocr'
+                    add(field, agency[field], source=source, confidence='medium', excerpt=excerpt,
+                        reason='Recovered from corroborated source letterhead; does not establish physical venue. ' + str(agency.get('reason') or ''))
         for field in ("service_date", "payment_entity", "recipient_email", "service_place"):
             value = photo_defaults.get(field)
             if value and _values_match(candidate.get(field), value) and not (
@@ -292,6 +325,10 @@ def build_field_evidence(
                 )
                 if field == "service_date" and photo_defaults.get("original_service_date"):
                     reason += f" The source also suggested {photo_defaults['original_service_date']}; the photo default takes priority."
+                if field != 'service_date' and photo_defaults.get('photo_city_source') == 'user_confirmed_capture_city':
+                    reason += ' You supplied the capture city for this photo; it was not inferred from GPS or printed text.'
+                elif field != 'service_date' and photo_defaults.get('photo_city_source') == 'verified_gps_area':
+                    reason += ' GPS matched a verified local area to supply the city; the city is derived, not an embedded metadata name.'
                 add(field, value, source="photo_default", confidence="medium", reason=reason)
 
     if str(candidate.get("service_date_source") or "").strip().lower() in CONFIRMED_SERVICE_DATE_SOURCES:
@@ -614,11 +651,13 @@ def fold_match_text(value: Any) -> str:
 
 
 def _photo_metadata_date_source(candidate: dict[str, Any], metadata: dict[str, Any], ai_recovery: dict[str, Any]) -> str:
-    metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
+    metadata_date = str(metadata.get("exif_date") or metadata.get("picker_capture_date") or metadata.get("visible_metadata_date") or candidate.get("photo_metadata_date") or "").strip()
     if not metadata_date:
         return "image_metadata"
     if str(metadata.get("exif_date") or "").strip() == metadata_date:
         return "image_metadata"
+    if str(metadata.get('picker_capture_date') or '').strip() == metadata_date:
+        return 'google_photos_creation_time'
     if _ai_field_value(ai_recovery, "photo_metadata_date") == metadata_date:
         return "openai_ocr"
     if str(metadata.get("visible_metadata_date") or "").strip() == metadata_date:

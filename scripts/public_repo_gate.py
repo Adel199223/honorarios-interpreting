@@ -41,6 +41,7 @@ BLOCKED_PATH_PATTERNS = [
     ("config/profile.json", "local personal/payment profile"),
     ("config/*.local.json", "local credentials or runtime config"),
     ("config/*token*.json", "local OAuth token material"),
+    ("config/*.oauth.lock", "local OAuth token coordination state"),
     ("data/duplicate-index.json", "local duplicate history"),
     ("data/gmail-draft-log.json", "local Gmail draft history"),
     ("data/precedents.json", "local case precedent history"),

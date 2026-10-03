@@ -23,9 +23,11 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_dev_env.ps1
 .\.venv311\Scripts\python.exe scripts/check_dev_environment.py --json
 ```
 
-The setup helper creates the project `.venv311` environment. It checks pinned prerequisites and standard-library integrity before changing an environment. An existing environment must already pass the read-only check; a mismatch is preserved and refused. No automatic Python download or global package upgrade occurs. A different disposable environment name may be supplied with `-VenvName .venv311-check`, or a complete existing pinned interpreter with `-PythonExecutable <path>`.
+The setup helper creates the project `.venv311` environment. It checks pinned prerequisites and standard-library integrity before changing an environment. An existing environment must already pass the read-only check; a mismatch is preserved and refused, including when an explicit interpreter is supplied. For a healthy existing environment, setup reuses its base interpreter so an unrelated installed Python cannot displace the working runtime. Without an existing environment, it discovers an already-installed exact-version interpreter through uv. No automatic Python download or global package upgrade occurs. A different disposable environment name may be supplied with `-VenvName .venv311-check`, or a complete existing pinned interpreter with `-PythonExecutable <path>`; the explicit interpreter takes priority after the existing-environment check.
 
 The initial September check found the old Python 3.11 installation missing `xml.dom.minidom`. A separate complete uv-managed Python 3.11.9 was provisioned and verified; the old Python/global environment was left intact. On another PC, provision the exact interpreter deliberately before setup. See [uv's lock and sync documentation](https://docs.astral.sh/uv/concepts/projects/sync/) for the locked installation behavior.
+
+If Windows application control rejects an interpreter's unsigned native dependencies, preserve it and provision a complete approved signed distribution of the same pinned Python version in isolation. Python's official [NuGet distribution](https://docs.python.org/3.11/using/windows.html#the-nuget-org-packages) supports side-by-side installations. Verify its signatures and standard-library imports, then use `-PythonExecutable` with a new disposable environment before replacing a broken project environment with a preserved beforeimage. Do not disable security controls or substitute individual DLLs. Normal setup does not perform this repair automatically.
 
 Start the source-checkout app:
 
@@ -62,6 +64,8 @@ PDF page rendering needs `pdftoppm` (Poppler) on `PATH`. It is required for AI r
 Browser click-through needs the documented browser adapter or Playwright tooling. A missing optional capability must be reported as a blocker for that check. API-level isolated smoke remains useful without a browser.
 
 AI, Google Photos and direct Gmail OAuth are optional, private local configuration. This setup does not configure credentials or make provider calls. If an existing OAuth configuration uses the historical port, its callback and chosen launch port must agree; changing that provider configuration is a separate reviewed operation. Manual Draft Handoff remains available without Gmail OAuth.
+
+Fresh and reopened attested synthetic runtimes strip inherited OpenAI, Google/Gmail, runtime and Python overrides before launching their child processes. The isolated smoke launcher applies the same protection and enables fake Gmail only when requested. Both restore the prior environment on exit, including failure. Ordinary saved runtimes keep their configured provider environment. This prevents a browser smoke upload from accidentally using a developer's global API key.
 
 ## Distribution scope
 

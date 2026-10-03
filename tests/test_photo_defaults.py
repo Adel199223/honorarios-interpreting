@@ -445,6 +445,11 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertIn('leave photo_metadata_date and photo_metadata_city empty', pdf_prompt)
         photo_prompt = _prompt_for_source('photo', '')
         self.assertIn('Do not use the issue date, signing/closing date, a future appointment', photo_prompt)
+        for prompt in (pdf_prompt, photo_prompt):
+            self.assertIn('Extract each role independently', prompt)
+            self.assertIn('fill service_entity and service_entity_type', prompt)
+            self.assertIn('Leave service_place empty and warn', prompt)
+            self.assertIn('A letterhead address alone', prompt)
 
     def test_notification_beyond_read_coverage_stops_before_ocr_or_preparation(self):
         for count, scanned, limit in ((9, False, 8), (4, True, 3), (4, 'last', 3)):
@@ -716,7 +721,7 @@ class PhotoDefaultTests(unittest.TestCase):
                 result = self.upload(photo_city=city,
                     ai_fields={'payment_entity': 'Comando Distrital de Header City'})
                 self.assertEqual(result['review']['status'], 'needs_info')
-                self.assertIn('payment_entity', self.question_fields(result))
+                self.assertIn('photo_capture_city' if not city else 'payment_entity', self.question_fields(result))
                 candidate = result['candidate_intake']
                 self.assertFalse(candidate.get('payment_entity'))
                 self.assertFalse(candidate.get('recipient_email'))
@@ -731,6 +736,157 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(result['review']['status'], 'needs_info')
         self.assertIn('payment_entity', self.question_fields(result))
         self.assertFalse(result['candidate_intake'].get('payment_entity'))
+
+    def city_answer(self, intake, city=CAPTURE_CITY):
+        from scripts.intake_questions import missing_questions
+        questions = missing_questions(intake)
+        question = next(row for row in questions if row['field'] == 'photo_capture_city')
+        return apply_numbered_answers({'intake': intake, 'answers': f"{question['number']}. {city}"}, self.paths)
+
+    def test_one_capture_city_answer_resolves_court_venue_contact_and_saved_distance(self):
+        self.enable(venue=True, mappings={CAPTURE_CITY: {
+            **court_record(), 'addressee': f'Exmo. Senhor Juiz de Direito\n{CAPTURE_COURT}'}})
+        result = self.missing_venue_upload(photo_city=None)
+        self.assertEqual(self.question_fields(result), {'photo_capture_city'})
+        original = copy.deepcopy(result['candidate_intake'])
+        original['transport'] = {}  # Original-photo path has no recovered destination.
+        protected = {path: path.read_bytes() for path in [*self.root.joinpath('config').glob('*.json'),
+                                                        *self.root.joinpath('data').glob('*.json')]}
+        with patch('honorarios_app.services.recover_source_with_openai', side_effect=AssertionError('No reread')):
+            final = self.city_answer(original)
+        self.assertEqual(final['status'], 'ready', final)
+        intake = final['effective_intake']
+        self.assertEqual(intake['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(intake['addressee'], f'Exmo. Senhor Juiz de Direito\n{CAPTURE_COURT}')
+        self.assertNotIn('Procurador', final['draft_text'])
+        self.assertEqual(intake['service_place'], CAPTURE_COURT)
+        self.assertEqual(final['recipient'], CAPTURE_RECIPIENT)
+        self.assertEqual(intake['transport']['destination'], CAPTURE_CITY)
+        self.assertEqual(intake['transport']['km_one_way'], 12)
+        self.assertEqual(intake['service_date'], original['service_date'])
+        self.assertEqual(intake['photo_metadata_date'], original['photo_metadata_date'])
+        self.assertEqual(intake['source_sha256'], original['source_sha256'])
+        self.assertEqual(intake['photo_capture_city_source_sha256'], original['source_sha256'])
+        self.assertEqual(final['applied_fields'], ['photo_capture_city'])
+        self.assertEqual({path: path.read_bytes() for path in protected}, protected)
+        self.assertFalse(final['send_allowed'])
+        payer = next(row for row in final['review_evidence']['field_evidence'] if row['field'] == 'payment_entity')
+        self.assertEqual(payer['source'], 'photo_default')
+        self.assertIn('You supplied the capture city', payer['reason'])
+        self.assertEqual(review_intake_with_profile_evidence(final['intake'], self.paths)['status'], 'ready')
+
+    def test_numbered_payment_entity_uses_judge_for_court_and_prosecutor_for_mp(self):
+        self.enable(venue=True)
+        for payer, title in ((CAPTURE_COURT, 'Exmo. Senhor Juiz de Direito'),
+                             ('Ministério Público de Capture City', 'Exmo. Senhor Procurador da República')):
+            with self.subTest(payer=payer):
+                candidate = self.missing_venue_upload(photo_city='Unknown City')['candidate_intake']
+                apply_answer_to_intake(candidate, 'payment_entity', payer)
+                self.assertEqual(candidate['addressee'], title + '\n' + payer)
+
+    def test_capture_city_preserves_named_source_venue_and_manual_distance(self):
+        self.enable(venue=True)
+        candidate = self.upload(photo_city=None)['candidate_intake']
+        before_place = candidate['service_place']
+        candidate['transport'] = {'destination': 'Example City', 'km_one_way': 37}
+        final = self.city_answer(candidate)
+        self.assertEqual(final['intake']['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(final['intake']['service_place'], before_place)
+        self.assertEqual(final['intake']['transport'], candidate['transport'])
+        self.assertNotIn('service_place', final['intake']['photo_defaults_applied'])
+
+    def test_capture_city_preserves_manual_payer_and_required_clears(self):
+        self.enable(venue=True)
+        for changes in ({'payment_entity': 'Example Court', 'addressee': 'Example Court'},
+                        {'review_cleared_fields': ['payment_entity', 'service_place', 'transport.km_one_way']}):
+            with self.subTest(changes=changes):
+                candidate = self.missing_venue_upload(photo_city=None)['candidate_intake']
+                candidate.update(changes)
+                if changes.get('review_cleared_fields'):
+                    candidate['transport']['km_one_way'] = ''
+                final = self.city_answer(candidate)
+                if 'payment_entity' in changes:
+                    self.assertEqual(final['intake']['payment_entity'], 'Example Court')
+                    self.assertFalse(final['intake'].get('recipient_email'))
+                else:
+                    self.assertEqual(final['status'], 'needs_info')
+                    self.assertFalse(final['intake'].get('payment_entity'))
+                    self.assertFalse(final['intake'].get('service_place'))
+                    self.assertFalse(final['intake'].get('transport', {}).get('km_one_way'))
+                    self.assertTrue({'payment_entity', 'service_entity', 'transport.km_one_way'} <=
+                                    {row['field'] for row in final['questions']})
+
+    def test_unknown_or_ambiguous_city_contact_still_requires_payment_details(self):
+        for mappings, city in (({}, 'Unknown City'),
+                              ({CAPTURE_CITY: court_record(), CAPTURE_CITY.lower(): court_record('Other court')}, CAPTURE_CITY),
+                              ({CAPTURE_CITY: {'payment_entity': CAPTURE_COURT}}, CAPTURE_CITY)):
+            with self.subTest(mappings=mappings):
+                self.enable(venue=True, mappings=mappings)
+                final = self.city_answer(self.missing_venue_upload(photo_city=None)['candidate_intake'], city)
+                self.assertEqual(final['status'], 'needs_info')
+                fields = {row['field'] for row in final['questions']}
+                self.assertIn('payment_entity', fields)
+                self.assertIn('recipient_email', fields)
+                self.assertFalse(final['intake'].get('recipient_email'))
+
+    def test_capture_city_answer_is_stale_for_a_different_source(self):
+        self.enable(venue=True)
+        final = self.city_answer(self.missing_venue_upload(photo_city=None)['candidate_intake'])
+        candidate = copy.deepcopy(final['intake'])
+        candidate['source_sha256'] = 'f' * 64
+        stale = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(stale['status'], 'needs_info')
+        self.assertIn('photo_capture_city', {row['field'] for row in stale['questions']})
+        with self.assertRaises(IntakeError):
+            prepare_intakes([candidate], self.paths)
+        fresh = self.city_answer(candidate)
+        self.assertEqual(fresh['intake']['photo_capture_city_source_sha256'], 'f' * 64)
+        self.assertEqual(fresh['status'], 'ready', fresh)
+
+    def test_rebound_effective_city_recomputes_derived_distance_but_preserves_manual_edit(self):
+        self.enable(venue=True, mappings={CAPTURE_CITY: court_record(),
+            'Other City': court_record('Tribunal de Other City', 'other@' + COURT_DOMAIN)})
+        profiles = json.loads(self.paths.personal_profiles.read_text(encoding='utf-8'))
+        profiles['profiles'][0]['travel_distances_by_city']['Other City'] = 99
+        write_json(self.paths.personal_profiles, profiles)
+        candidate = self.missing_venue_upload(photo_city=None)['candidate_intake']
+        candidate['transport'] = {}
+        candidate['auto_profile'] = {'auto_applied': True, 'profile_key': 'example_interpreting'}
+        first = self.city_answer(candidate)
+        self.assertEqual(first['effective_intake']['transport']['km_one_way'], 12)
+        self.assertEqual(first['effective_intake']['photo_capture_city_applied_fields']['transport.km_one_way'], 12)
+        for manual_km in (None, 37):
+            with self.subTest(manual_km=manual_km):
+                stale = copy.deepcopy(first['effective_intake'])
+                stale['source_sha256'] = 'f' * 64
+                if manual_km is not None:
+                    stale['transport']['km_one_way'] = manual_km
+                second = self.city_answer(stale, 'Other City')
+                self.assertEqual(second['status'], 'ready', second)
+                self.assertEqual(second['effective_intake']['transport']['destination'], 'Other City')
+                self.assertEqual(second['effective_intake']['transport']['km_one_way'], manual_km or 99)
+
+    def test_sent_duplicate_stops_before_missing_capture_city(self):
+        self.enable(venue=True)
+        candidate = self.missing_venue_upload(photo_city=None)['candidate_intake']
+        write_json(self.paths.duplicate_index, [{'case_number': CASE_NUMBER, 'service_date': CAPTURE_DATE, 'status': 'sent'}])
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'duplicate')
+        self.assertEqual(review['questions'], [])
+
+    def test_capture_city_answer_cannot_resolve_date_conflict_or_translation(self):
+        self.enable(venue=True)
+        candidate = self.missing_venue_upload(photo_city=None)['candidate_intake']
+        candidate.update(service_date=PRINTED_DATE, service_date_source='document_text',
+                         photo_metadata_date_requires_confirmation=True)
+        final = self.city_answer(candidate)
+        self.assertEqual(final['status'], 'needs_info')
+        self.assertIn('service_date_source', {row['field'] for row in final['questions']})
+        self.assertEqual(final['intake']['service_date'], PRINTED_DATE)
+        candidate['source_text'] = 'Tradução de documento traduzido com 100 palavras.'
+        candidate['ai_recovery'] = {}
+        final = self.city_answer(candidate)
+        self.assertEqual(final['status'], 'set_aside')
 
     def test_court_without_confirmed_recipient_cannot_use_unrelated_default_email(self):
         self.enable(mappings={CAPTURE_CITY: {
@@ -842,6 +998,178 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertNotIn('service_place', result['candidate_intake']['photo_defaults_applied'])
         self.assertEqual(result['candidate_intake']['payment_entity'], CAPTURE_COURT)
 
+    def test_noncourt_agency_without_host_requires_one_physical_venue_after_city_answer(self):
+        self.enable(venue=True)
+        for agency, kind, host in (
+            ('Guarda Nacional Republicana - Comando Territorial de Header City', 'gnr', 'Posto da GNR de Capture City'),
+            ('Polícia de Segurança Pública - Comando Distrital de Header City', 'psp', 'Esquadra da PSP de Capture City'),
+            ('Polícia Judiciária - Diretoria do Sul', 'police', 'Posto da GNR de Capture City'),
+        ):
+            with self.subTest(agency=agency):
+                source = f'{agency}\nProcesso {CASE_NUMBER}\nAuto de compromisso do intérprete.'
+                result = self.upload(photo_city=None, visible_text=source, ai_fields={
+                    'service_entity': agency, 'service_entity_type': kind, 'service_place': '',
+                    'service_place_phrase': '', 'locality': '',
+                })
+                answered = self.city_answer(result['candidate_intake'])
+                candidate = answered['intake']
+                self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+                self.assertEqual(candidate['recipient_email'], CAPTURE_RECIPIENT)
+                self.assertEqual(candidate['service_entity'], agency)
+                self.assertEqual(candidate['service_entity_type'], kind)
+                self.assertFalse(candidate.get('service_place'))
+                self.assertEqual(candidate['photo_defaults_applied']['venue_status'], 'missing_noncourt_venue')
+                venue_questions = [q for q in answered['questions'] if q['field'] == 'service_place']
+                self.assertEqual(len(venue_questions), 1)
+                self.assertEqual('Polícia Judiciária' in venue_questions[0]['question'], kind == 'police')
+                with self.assertRaises(IntakeError):
+                    prepare_intakes([candidate], self.paths)
+                resolved = apply_numbered_answers({'intake': candidate,
+                    'answer_text': f"{venue_questions[0]['number']}. {host}"}, self.paths)
+                self.assertEqual(resolved['intake']['service_place'], host)
+                self.assertNotEqual(resolved['intake']['photo_defaults_applied'].get('venue_status'), 'missing_noncourt_venue')
+                self.assertNotIn('service_place', {q['field'] for q in resolved.get('questions', [])})
+                self.assertEqual(resolved['intake']['ai_recovery']['fields']['service_entity'], agency)
+                self.assertFalse(any('source names a non-court agency' in warning for warning in resolved['intake']['ai_recovery']['warnings']))
+
+    def test_noncourt_heading_without_ai_entity_blocks_venue_default_but_not_payer(self):
+        self.enable(venue=True)
+        result = self.upload(visible_text=f'GUARDA NACIONAL REPUBLICANA\nCOMANDO TERRITORIAL DE Header City\nProcesso {CASE_NUMBER}',
+            ai_fields={'service_entity': '', 'service_entity_type': '', 'service_place': '', 'locality': ''})
+        self.assertEqual(result['candidate_intake']['service_entity_type'], 'gnr')
+        self.assertEqual(result['candidate_intake']['payment_entity'], CAPTURE_COURT)
+        self.assertFalse(result['candidate_intake'].get('service_place'))
+        self.assertIn('service_place', self.question_fields(result))
+
+    def test_concrete_noncourt_type_without_name_still_requires_physical_venue(self):
+        self.enable(venue=True)
+        for kind, label, heading in (
+            ('gnr', 'Guarda Nacional Republicana', 'G.N.R.'),
+            ('psp', 'Polícia de Segurança Pública', 'P.S.P.'),
+            ('police', 'Polícia', 'P.J.'),
+        ):
+            with self.subTest(kind=kind):
+                result = self.upload(photo_city=None,
+                    visible_text=f'{heading}\nAuto de compromisso do intérprete. Processo {CASE_NUMBER}',
+                    ai_fields={'service_entity': '', 'service_entity_type': kind,
+                               'service_place': '', 'service_place_phrase': '', 'locality': ''})
+                answered = self.city_answer(result['candidate_intake'])
+                candidate = answered['intake']
+                self.assertEqual(candidate['service_entity'], label)
+                self.assertEqual(candidate['service_entity_type'], kind)
+                self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+                self.assertEqual(candidate['recipient_email'], CAPTURE_RECIPIENT)
+                self.assertFalse(candidate.get('service_place'))
+                self.assertEqual(candidate['photo_defaults_applied']['venue_status'], 'missing_noncourt_venue')
+                self.assertEqual(len([q for q in answered['questions'] if q['field'] == 'service_place']), 1)
+                with self.assertRaises(IntakeError):
+                    prepare_intakes([candidate], self.paths)
+
+    def test_generic_other_type_without_agency_name_keeps_court_venue_default(self):
+        self.enable(venue=True)
+        result = self.upload(visible_text=f'Processo {CASE_NUMBER}\nServiço de interpretação.',
+            ai_fields={'service_entity': '', 'service_entity_type': 'other',
+                       'service_place': '', 'service_place_phrase': '', 'locality': ''})
+        self.assertEqual(result['candidate_intake']['service_place'], CAPTURE_COURT)
+        self.assertEqual(result['candidate_intake']['service_entity_type'], 'court')
+        self.assertNotIn('service_place', self.question_fields(result))
+
+    def test_cropped_letterhead_recovers_only_corroborated_agency_with_source_provenance(self):
+        self.enable(venue=True)
+        for fragment, domain, agency, kind in (
+            ('Nacional Republicana', 'gnr.pt', 'Guarda Nacional Republicana', 'gnr'),
+            ('de Segurança Pública', 'psp.pt', 'Polícia de Segurança Pública', 'psp'),
+            ('Judiciária', 'pj.pt', 'Polícia Judiciária', 'police'),
+        ):
+            with self.subTest(kind=kind):
+                source = (f'NUIPC {CASE_NUMBER}\n{fragment}\nCOMANDO DE Header City\n'
+                          f'Email: fictional@{domain}\nAuto de compromisso do intérprete.\n'
+                          'Remeta ao tribunal competente.')
+                result = self.upload(photo_city=None, visible_text=source,
+                    ai_fields={'service_entity': '', 'service_entity_type': '',
+                               'service_place': '', 'service_place_phrase': '', 'locality': ''})
+                answered = self.city_answer(result['candidate_intake'])
+                candidate = answered['intake']
+                self.assertEqual(candidate['service_entity'], agency)
+                self.assertEqual(candidate['service_entity_type'], kind)
+                self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+                self.assertFalse(candidate.get('service_place'))
+                self.assertEqual(len([q for q in answered['questions'] if q['field'] == 'service_place']), 1)
+                evidence = candidate['photo_defaults_applied']['source_agency_evidence']
+                self.assertEqual(evidence['service_entity'], agency)
+                self.assertIn(f'fictional@{domain}', evidence['evidence_text'])
+                self.assertNotIn('Remeta', evidence['evidence_text'])
+                self.assertFalse(candidate['ai_recovery']['fields']['service_entity'])
+                self.assertFalse(candidate['ai_recovery']['fields']['service_entity_type'])
+                rows = [row for row in result['source_evidence']['field_evidence']
+                        if row['field'] in {'service_entity', 'service_entity_type'}]
+                self.assertEqual(len(rows), 2)
+                self.assertTrue(all(row['source'] == 'openai_ocr' for row in rows))
+                self.assertTrue(all('does not establish physical venue' in row['reason'] for row in rows))
+                with self.assertRaises(IntakeError):
+                    prepare_intakes([candidate], self.paths)
+
+    def test_partial_agency_does_not_use_body_contacts_forwarding_or_ambiguous_evidence(self):
+        self.enable(venue=True)
+        fragment = 'Nacional Republicana\nEmail: fictional@gnr.pt'
+        for source in (
+            'Nacional Republicana\nRua Example, Header City',
+            'Email: fictional@gnr.pt\nRua Example, Header City',
+            'Nacional Republicana\nEmail: fictional@gnr.pt.example.com',
+            'Tribunal de Capture City\n' + fragment,
+            'Notifique os contactos seguintes:\n' + fragment,
+            'Mensagem encaminhada\n' + fragment,
+            'From: court@example.com\n' + fragment,
+            '> ' + fragment,
+            'Auto de compromisso\n' + fragment,
+            'Nacional Republicana\nAuto de compromisso\nEmail: fictional@gnr.pt',
+            fragment + '\nSegurança Pública\nEmail: fictional@psp.pt',
+            fragment + '\nJudiciária',
+            '\n'.join(['linha'] * 24) + '\n' + fragment,
+            ('x' * 1800) + '\n' + fragment,
+        ):
+            with self.subTest(source=source[:60]):
+                result = self.upload(visible_text=source + f'\nProcesso {CASE_NUMBER}',
+                    ai_fields={'service_entity': '', 'service_entity_type': '',
+                               'service_place': '', 'service_place_phrase': '', 'locality': ''})
+                candidate = result['candidate_intake']
+                self.assertNotIn('source_agency_evidence', candidate['photo_defaults_applied'])
+                self.assertEqual(candidate['service_place'], CAPTURE_COURT)
+
+    def test_explicit_venue_override_survives_cropped_agency_recovery_and_city_reanswer(self):
+        self.enable(venue=True)
+        source = f'Nacional Republicana\nEmail: fictional@gnr.pt\nAuto de compromisso {CASE_NUMBER}'
+        candidate = self.upload(photo_city=None, visible_text=source,
+            ai_fields={'service_entity': '', 'service_entity_type': '',
+                       'service_place': '', 'service_place_phrase': '', 'locality': ''})['candidate_intake']
+        apply_answer_to_intake(candidate, 'service_place', CAPTURE_COURT)
+        final = self.city_answer(candidate)
+        self.assertEqual(final['intake']['service_place'], CAPTURE_COURT)
+        self.assertEqual(final['intake']['service_entity_type'], 'court')
+        self.assertNotIn('service_place', {q['field'] for q in final.get('questions', [])})
+        self.assertFalse(final['intake']['ai_recovery']['fields']['service_entity'])
+
+    def test_incidental_police_reference_does_not_block_ordinary_court_venue_default(self):
+        self.enable(venue=True)
+        result = self.upload(visible_text=f'Tribunal de Capture City\nProcesso {CASE_NUMBER}\nNotifique a GNR para envio dos documentos.',
+            ai_fields={'service_entity': '', 'service_entity_type': '', 'service_place': '', 'locality': ''})
+        self.assertEqual(result['candidate_intake']['service_place'], CAPTURE_COURT)
+        self.assertNotIn('service_place', self.question_fields(result))
+
+    def test_explicit_court_venue_answer_overrides_agency_clue_and_survives_city_reanswer(self):
+        self.enable(venue=True)
+        source = f'GUARDA NACIONAL REPUBLICANA\nCOMANDO TERRITORIAL DE Header City\nProcesso {CASE_NUMBER}'
+        candidate = self.upload(photo_city=None, visible_text=source,
+            ai_fields={'service_entity': 'Guarda Nacional Republicana', 'service_entity_type': 'gnr',
+                       'service_place': '', 'service_place_phrase': '', 'locality': ''})['candidate_intake']
+        apply_answer_to_intake(candidate, 'service_place', CAPTURE_COURT)
+        final = self.city_answer(candidate)
+        self.assertEqual(final['intake']['service_place'], CAPTURE_COURT)
+        self.assertEqual(final['intake']['service_entity_type'], 'court')
+        self.assertNotEqual(final['intake']['photo_defaults_applied'].get('venue_status'), 'missing_noncourt_venue')
+        self.assertNotIn('service_place', {q['field'] for q in final.get('questions', [])})
+        self.assertEqual(final['intake']['ai_recovery']['fields']['service_entity'], 'Guarda Nacional Republicana')
+
     def test_multiple_station_headings_need_venue_choice(self):
         self.enable(venue=True)
         result = self.upload(visible_text=f'ESQUADRA DE Capture City\nPOSTO DA GNR DE Other City\nProcesso {CASE_NUMBER}',
@@ -898,7 +1226,7 @@ class PhotoDefaultTests(unittest.TestCase):
             with self.subTest(city=city):
                 result = self.missing_venue_upload(photo_city=city)
                 self.assertEqual(result['review']['status'], 'needs_info')
-                self.assertIn('payment_entity', self.question_fields(result))
+                self.assertIn('photo_capture_city' if not city else 'payment_entity', self.question_fields(result))
                 self.assertFalse(result['candidate_intake'].get('photo_defaults_applied', {}).get('service_place'))
         self.enable(venue=True, mappings={CAPTURE_CITY: {
             'payment_entity': CAPTURE_COURT, 'addressee': CAPTURE_COURT,
@@ -929,6 +1257,92 @@ class PhotoDefaultTests(unittest.TestCase):
         self.assertEqual(review['intake']['service_entity'], place)
         self.assertEqual(review['intake']['service_entity_type'], 'gnr')
         self.assertEqual(review['intake']['payment_entity'], CAPTURE_COURT)
+
+    def test_visible_source_venue_edit_replaces_old_station_in_preview_and_pdf(self):
+        self.enable(venue=True)
+        original = self.upload()['candidate_intake']
+        for place, kind, forbidden in ((CAPTURE_COURT, 'court', 'Esquadra de Example City'),
+                                       ('Esquadra da PSP de Example City', 'psp', 'na Esquadra de Example City')):
+            with self.subTest(place=place):
+                candidate = copy.deepcopy(original)
+                candidate['service_place_phrase'] = 'na Esquadra de Example City'
+                candidate['service_place'] = place
+                candidate['review_cleared_fields'] = ['service_place']  # Actual form merge contract.
+                original_trip = copy.deepcopy(candidate['transport'])
+                review = review_intake_with_profile_evidence(candidate, self.paths)
+                self.assertEqual(review['status'], 'ready', review)
+                self.assertEqual(review['intake']['service_entity'], place)
+                self.assertEqual(review['intake']['service_entity_type'], kind)
+                self.assertEqual(review['intake']['entities_differ'], kind != 'court')
+                self.assertEqual(review['intake']['transport'], original_trip)
+                self.assertIn(place, review['draft_text'])
+                self.assertNotIn(forbidden, review['draft_text'])
+                prepared = prepare_intakes([review['intake']], self.paths)
+                text = '\n'.join(page.extract_text() or '' for page in PdfReader(prepared['items'][0]['pdf']).pages)
+                self.assertIn(place, text)
+                self.assertNotIn(forbidden, text)
+                repeated = review_intake_with_profile_evidence(review['intake'], self.paths)
+                self.assertEqual(repeated['draft_text'], review['draft_text'])
+
+    def test_visible_payer_edit_refreshes_judge_salutation_and_retains_new_contact(self):
+        self.enable(venue=True)
+        for kind in ('photo', 'notification_pdf'):
+            with self.subTest(kind=kind):
+                candidate = copy.deepcopy(self.upload()['candidate_intake'])
+                candidate.update(source_kind=kind, payment_entity='Tribunal de New City', addressee='',
+                                 recipient_email='new@' + COURT_DOMAIN, court_email='', court_email_key='',
+                                 review_cleared_fields=['payment_entity'])
+                if kind != 'photo':
+                    candidate.pop('photo_defaults_applied', None)
+                review = review_intake_with_profile_evidence(candidate, self.paths)
+                self.assertEqual(review['status'], 'ready', review)
+                self.assertEqual(review['intake']['addressee'], 'Exmo. Senhor Juiz de Direito\nTribunal de New City')
+                self.assertEqual(review['recipient'], 'new@' + COURT_DOMAIN)
+                self.assertEqual(review['intake']['service_place'], candidate['service_place'])
+                self.assertNotIn('Procurador', review['draft_text'])
+
+    def test_visible_pj_physical_venue_edit_retains_agency_and_updates_host_phrase(self):
+        self.enable(venue=True)
+        candidate = copy.deepcopy(self.upload()['candidate_intake'])
+        candidate.update(source_text=f'Processo {CASE_NUMBER}\nPolícia Judiciária. Diligência de interpretação realizada na Esquadra de Example City.',
+                         service_entity='Polícia Judiciária', service_entity_type='police',
+                         service_place_phrase='em diligência da Polícia Judiciária realizada na Esquadra de Example City',
+                         service_place='Posto da GNR de Example City', review_cleared_fields=['service_place'])
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'ready', review)
+        self.assertEqual(review['intake']['service_entity'], 'Polícia Judiciária')
+        self.assertIn('Polícia Judiciária', review['draft_text'])
+        self.assertIn('Posto da GNR de Example City', review['draft_text'])
+        self.assertNotIn('Esquadra de Example City', review['draft_text'])
+        self.assertEqual(review_intake_with_profile_evidence(review['intake'], self.paths)['draft_text'], review['draft_text'])
+
+    def test_payer_edit_cannot_restore_old_auto_profile_recipient(self):
+        candidate = json.loads((Path(__file__).resolve().parents[1] / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
+        candidate.update(source_kind='notification_pdf', payment_entity=CAPTURE_COURT, addressee='',
+                         recipient_email='', court_email='', court_email_key='',
+                         auto_profile={'auto_applied': True, 'profile_key': 'example_interpreting'},
+                         review_cleared_fields=['payment_entity', 'recipient_email'])
+        review = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(review['status'], 'needs_info')
+        self.assertFalse(review['intake'].get('recipient_email'))
+        self.assertFalse(review['intake'].get('court_email'))
+        self.assertIn('recipient_email', {row['field'] for row in review['questions']})
+        self.assertEqual(review['intake']['addressee'], f'Exmo. Senhor Juiz de Direito\n{CAPTURE_COURT}')
+
+    def test_cleared_ordinary_venue_asks_neutral_question_and_pj_keeps_specific_question(self):
+        self.enable(venue=True)
+        original = self.upload()['candidate_intake']
+        for pj in (False, True):
+            with self.subTest(pj=pj):
+                candidate = copy.deepcopy(original)
+                candidate.update(service_place='', review_cleared_fields=['service_place'])
+                if pj:
+                    candidate['source_text'] += '\nPolícia Judiciária'
+                review = review_intake_with_profile_evidence(candidate, self.paths)
+                self.assertEqual(review['status'], 'needs_info')
+                question = next(row['question'] for row in review['questions'] if row['field'] == 'service_place')
+                self.assertEqual('Polícia Judiciária' in question, pj)
+                self.assertIn('building and city', question)
 
     def test_cleared_default_venue_stays_missing_during_later_profile_review(self):
         self.enable(venue=True)

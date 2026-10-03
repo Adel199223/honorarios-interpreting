@@ -1,8 +1,10 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.request
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -17,6 +19,77 @@ from scripts.legalpdf_adapter_caller import synthetic_notification_pdf as adapte
 
 
 from test_public_candidate_smoke import PublicCandidateSmokeTests
+
+
+class IsolatedSmokeProviderEnvironmentTests(unittest.TestCase):
+    def test_actual_isolated_server_cannot_use_inherited_providers_for_auto_photo_upload(self):
+        from scripts.isolated_app_smoke import run_isolated_app_smoke
+        from scripts.local_app_smoke import _TINY_PNG, post_multipart_http
+        sentinels = {
+            'OPENAI_API_KEY': 'fictional-inherited-key',
+            'HONORARIOS_OPENAI_MODEL': 'fictional-inherited-model',
+            'HONORARIOS_OPENAI_REASONING_EFFORT': 'low',
+            'HONORARIOS_OPENAI_TIMEOUT_SECONDS': '30',
+            'GMAIL_CLIENT_ID': 'fictional-gmail-client',
+            'GMAIL_CLIENT_SECRET': 'fictional-gmail-secret',
+            'GMAIL_TOKEN_PATH': 'fictional-external-gmail-token.json',
+            'GOOGLE_PHOTOS_CLIENT_ID': 'fictional-photos-client',
+            'GOOGLE_PHOTOS_CLIENT_SECRET': 'fictional-photos-secret',
+            'GOOGLE_PHOTOS_TOKEN_PATH': 'fictional-external-photos-token.json',
+            'HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE': '1',
+            'HONORARIOS_UV_EXECUTABLE': 'fictional-uv',
+            'PYTHONPATH': 'fictional-import-path',
+            'PYTHONHOME': 'fictional-python-home',
+        }
+        def runner(base_url, **_options):
+            for name in sentinels:
+                if name == 'HONORARIOS_UV_EXECUTABLE':
+                    self.assertEqual(os.environ.get(name), sentinels[name])
+                else:
+                    self.assertNotIn(name, os.environ)
+            for route in ('ai', 'gmail', 'google-photos'):
+                with urllib.request.urlopen(f'{base_url}/api/{route}/status', timeout=5) as response:
+                    status = json.load(response)
+                self.assertFalse(status['configured'])
+            uploaded = post_multipart_http(f'{base_url}/api/sources/upload',
+                {'source_kind': 'photo', 'ai_recovery': 'auto', 'profile': 'example_interpreting'},
+                'fictional-isolated-photo.png', _TINY_PNG, 'image/png')
+            self.assertEqual(uploaded['status'], 'uploaded')
+            self.assertEqual(uploaded['ai_recovery']['status'], 'unconfigured')
+            self.assertFalse(uploaded['ai_recovery']['attempted'])
+            self.assertFalse(uploaded['send_allowed'])
+            return {'status': 'ready', 'failure_count': 0, 'checks': []}
+
+        with patch.dict(os.environ, sentinels), \
+             patch('honorarios_app.ai_recovery.OpenAI', side_effect=AssertionError('No provider client is allowed.')) as provider, \
+             patch('httpx.HTTPTransport.handle_request', side_effect=AssertionError('No external HTTP is allowed.')):
+            result = run_isolated_app_smoke(smoke_runner=runner)
+            provider.assert_not_called()
+            self.assertEqual(result['status'], 'ready')
+            for name, value in sentinels.items():
+                self.assertEqual(os.environ.get(name), value)
+
+    def test_requested_fake_gmail_is_available_only_inside_smoke_and_environment_restores_after_failure(self):
+        from scripts.isolated_app_smoke import run_isolated_app_smoke
+        def runner(_base_url, **_options):
+            self.assertNotIn('OPENAI_API_KEY', os.environ)
+            self.assertEqual(os.environ.get('HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE'), '1')
+            raise RuntimeError('fictional smoke failure')
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'fictional-restore-key',
+                                    'HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE': '0'}):
+            with self.assertRaisesRegex(RuntimeError, 'fictional smoke failure'):
+                run_isolated_app_smoke(smoke_runner=runner, gmail_api_checks=True)
+            self.assertEqual(os.environ.get('OPENAI_API_KEY'), 'fictional-restore-key')
+            self.assertEqual(os.environ.get('HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE'), '0')
+
+    def test_server_start_failure_restores_absent_provider_variables_as_absent(self):
+        from scripts.isolated_app_smoke import run_isolated_app_smoke
+        with patch.dict(os.environ, {}, clear=True), \
+             patch('scripts.isolated_app_smoke._start_server', side_effect=RuntimeError('fictional start failure')):
+            with self.assertRaisesRegex(RuntimeError, 'fictional start failure'):
+                run_isolated_app_smoke(gmail_api_checks=True)
+            self.assertNotIn('OPENAI_API_KEY', os.environ)
+            self.assertNotIn('HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE', os.environ)
 
 
 class LocalBrowserBoundaryTests(unittest.TestCase):
@@ -108,7 +181,8 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
                 response = self.client.get(f'/api/{provider}/oauth/callback?code=fictional-code&state=fictional-state',
                                            headers={'Origin': 'https://accounts.google.com', 'Sec-Fetch-Site': 'cross-site'})
                 self.assertEqual(response.status_code, 200)
-                callback.assert_called_once_with(code='fictional-code', state='fictional-state', paths=self.app.state.paths)
+                callback.assert_called_once_with(code='fictional-code', state='fictional-state', paths=self.app.state.paths,
+                                                 **({'error': ''} if provider == 'gmail' else {}))
         self.assertEqual(self.snapshot(), before)
 
 

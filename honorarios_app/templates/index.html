@@ -63,6 +63,7 @@
               <h2>LegalPDF Honorários</h2>
               <p id="topbar-status">Upload a source, review what was found, answer only what is missing, then preview before any draft step.</p>
             </div>
+            <button class="ghost-button" id="open-photos-source" type="button">Google Photos</button>
             <details class="panel-actions technical-actions-menu">
               <summary class="ghost-button technical-actions-summary">Advanced</summary>
               <div class="technical-actions-content">
@@ -133,8 +134,16 @@
               </div>
 
               <form class="upload-form unified-source-form" id="source-upload-form">
-                <label for="source-file">Add source file</label>
-                <input id="source-file" name="file" type="file" accept="application/pdf,.pdf,image/*">
+                <div id="camera-source-controls" class="hidden">
+                  <button type="button" id="choose-camera-source">Add source file</button>
+                  <span class="field-hint">Opens your phone's Camera folder</span>
+                  <button type="button" id="choose-other-source" class="mini-button">Choose another file</button>
+                  <p id="camera-selected-source" role="status">No photo selected</p>
+                </div>
+                <div id="native-source-controls">
+                  <label for="source-file">Add source file</label>
+                  <input id="source-file" name="file" type="file" accept="application/pdf,.pdf,image/*">
+                </div>
                 <button type="submit">Review source</button>
                 <p class="field-hint">Choose one local notification PDF, photo, or screenshot, then click Review source. The app stops for review before any PDF or Gmail draft step.</p>
               </form>
@@ -149,7 +158,7 @@
               <p class="field-hint">When enabled, OpenAI reads the source to suggest details. Check its suggestions before creating the PDF.</p>
               <details class="secondary-upload-options">
                 <summary>Other source options</summary>
-                <p class="field-hint">Best result: upload the original or downloaded photo when you can. Use this section only for a selected Google Photos item, or when a screenshot includes visible metadata such as date, location, or filename; the app will still ask you to confirm the service date before PDF creation.</p>
+                <p class="field-hint">Upload an original or downloaded photo to keep its camera date and available GPS metadata. Google Photos Picker supplies creation time but removes GPS location; enter the capture city if it is missing. Your saved photo defaults apply only to unambiguous evidence, and you can edit the result before PDF creation.</p>
                 <div class="upload-grid primary-upload-grid">
                   <form class="upload-form" id="notification-upload-form">
                     <label for="notification-file">Notification PDF only</label>
@@ -180,7 +189,7 @@
                     <button type="button" id="google-photos-picker-import">Import Picker selection</button>
                   </div>
                   <input id="google-photos-file" name="file" type="file" accept="image/*">
-                  <textarea id="google-photos-metadata" rows="3" placeholder="Paste visible Google Photos metadata, filename, or date text here. Example: Apr 15&#10;20260415_205459.jpg"></textarea>
+                  <textarea id="google-photos-metadata" rows="3" placeholder="Optional: capture city or date visible in Google Photos. Original camera metadata and Picker creation time are read automatically when available."></textarea>
                   <button type="submit">Import selected Google Photos photo</button>
                   <p class="field-hint" id="google-photos-status-summary">OAuth Picker is not connected in this standalone app yet. Connect OAuth when credentials are configured, or import one downloaded photo with pasted visible metadata.</p>
                   <div class="result-card compact-result hidden" id="google-photos-picker-result"></div>
@@ -280,7 +289,7 @@
                 <span class="status-chip info" id="status-pill">idle</span>
               </div>
               <p class="panel-copy" id="review-status">Upload a source or enter details manually to begin.</p>
-              <section class="result-card claim-choice-card" aria-labelledby="request-claim-heading">
+              <section class="result-card claim-choice-card" id="request-claim-card" aria-labelledby="request-claim-heading">
                 <label id="request-claim-heading" for="request-claim-mode"><strong>What does this request claim?</strong></label>
                 <select id="request-claim-mode">
                   <option value="both">Interpreting + travel</option>
@@ -293,7 +302,7 @@
               <section class="result-card source-case-review hidden" id="source-case-review" aria-labelledby="source-case-heading">
                 <strong id="source-case-heading">Cases found in this source</strong>
                 <p id="source-case-summary"></p>
-                <div class="source-travel-choice claim-choice-card">
+                <div class="source-travel-choice claim-choice-card" id="source-travel-controls">
                   <label for="source-travel-mode"><strong>Travel for these source cases</strong></label>
                   <select id="source-travel-mode">
                     <option value="shared">One shared trip</option>
@@ -394,6 +403,7 @@
                 <label for="batch-email-grouping"><strong>Emails for queued requests</strong></label>
                 <select id="batch-email-grouping">
                   <option value="source" selected>One email per source</option>
+                  <option value="manual_visit">One email for this manual visit</option>
                   <option value="individual">Separate emails</option>
                 </select>
                 <small id="batch-email-grouping-note">Each request keeps its own PDF. Requests from the same source PDF or photo go in one email to their reviewed recipient.</small>
@@ -419,7 +429,7 @@
             <section class="panel workspace-panel workspace-action-rail interpretation-action-rail">
               <div class="workspace-action-buttons simple-action-buttons">
                 <button type="button" id="review-intake" class="primary-button hidden">Review recovered details</button>
-                <button type="button" id="build-profile">Enter details manually</button>
+                <button type="button" id="build-profile" disabled title="Loading saved profiles. Wait for the app to finish loading.">Enter details manually</button>
                 <details class="action-overflow-menu">
                   <summary>Advanced</summary>
                   <div class="action-overflow-content">
@@ -458,6 +468,7 @@
             </div>
           </div>
 
+          <div id="personal-profile-alert" class="result-card hidden" role="status" aria-live="polite"></div>
           <div class="panel profile-summary-panel">
             <p id="personal-profile-count">No profiles loaded yet.</p>
             <p class="eyebrow">Main Profile Summary</p>
@@ -834,6 +845,21 @@
             </div>
           </div>
           <div id="pending-gmail-attempts"></div>
+          <div class="panel" id="gmail-sent-sync-panel">
+            <div class="panel-header">
+              <div><p class="eyebrow">Gmail status</p><h3>Keep sent requests up to date</h3><p class="panel-copy">Checks sent mail and updates verified matches in your local history.</p></div>
+              <span class="status-chip info" id="gmail-sent-sync-chip">Not checked</span>
+            </div>
+            <p id="gmail-sent-sync-summary" role="status" aria-live="polite">Sent status is checked automatically when you open Recent Work.</p>
+            <div class="button-row"><button type="button" id="gmail-sent-sync-now" disabled>Sync now</button><button type="button" id="gmail-sent-sync-enable" class="hidden" disabled>Enable sent-status sync</button><a id="gmail-sent-sync-authorization" class="hidden" target="_blank" rel="noopener noreferrer">Open Google authorization</a></div>
+            <p class="field-hint" id="gmail-sent-sync-checked-at">Last checked: Not checked yet</p>
+            <p class="field-hint">Counts refer to emails; a grouped email updates all its included requests.</p>
+            <div class="form-grid compact-grid hidden" id="gmail-sent-sync-counts">
+              <div>Checked: <strong id="gmail-sent-sync-checked">Unknown</strong></div><div>Updated to sent: <strong id="gmail-sent-sync-sent">Unknown</strong></div><div>Unchanged: <strong id="gmail-sent-sync-unchanged">Unknown</strong></div>
+              <div class="hidden">Still drafted: <strong id="gmail-sent-sync-drafted">Unknown</strong></div><div class="hidden">Needs review: <strong id="gmail-sent-sync-review">Unknown</strong></div><div class="hidden">Errors: <strong id="gmail-sent-sync-errors">Unknown</strong></div>
+            </div>
+            <ul id="gmail-sent-sync-warnings"></ul>
+          </div>
           <div class="panel history-filter-panel">
             <div class="panel-header">
               <div>
@@ -894,6 +920,7 @@
           <button type="button" class="ghost-button" id="personal-profile-close">Close</button>
         </div>
         <p class="panel-copy" id="personal-profile-drawer-summary">Update the details, then save.</p>
+        <div id="personal-profile-drawer-alert" class="result-card hidden" role="status" aria-live="polite"></div>
         <form id="personal-profile-form" class="profile-editor-form">
           <input type="hidden" id="pp_id">
           <div class="form-grid compact-grid">
@@ -1299,7 +1326,25 @@
       </section>
     </div>
 
-    <script type="importmap">{"imports":{"/static/review_guidance.js":"/static/review_guidance.js?v={{ asset_version }}","/static/workspace_draft.js":"/static/workspace_draft.js?v={{ asset_version }}"}}</script>
+    <dialog id="sent-duplicate-dialog" aria-labelledby="sent-duplicate-title" aria-describedby="sent-duplicate-explanation sent-duplicate-details sent-duplicate-question">
+      <h2 id="sent-duplicate-title">This fee request was already sent</h2>
+      <p id="sent-duplicate-explanation">A sent request already covers this case and service date. Choose No to stop. Reviewing its details will keep new PDF and Gmail draft creation blocked.</p>
+      <p id="sent-duplicate-details"></p>
+      <p id="sent-duplicate-question"><strong>Do you want to continue reviewing this request?</strong></p>
+      <div class="button-row">
+        <button type="button" class="primary-button" id="sent-duplicate-stop" autofocus>No — stop</button>
+        <button type="button" id="sent-duplicate-review">Yes — review details</button>
+      </div>
+    </dialog>
+    <dialog id="camera-picker" aria-labelledby="camera-picker-title">
+      <div class="camera-picker-heading"><h2 id="camera-picker-title">Phone Camera</h2><button type="button" id="camera-picker-close">Cancel</button></div>
+      <p>Choose a photo from the previews below. Its original capture date and GPS are kept. You will review it before any fee PDF is created.</p>
+      <form id="camera-search-form" class="button-row"><label for="camera-search">Find a photo</label><input id="camera-search" type="search" placeholder="Date (2026-10-02) or filename"><button type="submit" id="camera-search-button">Search</button><button type="button" id="camera-picker-refresh">Refresh photos</button></form>
+      <p id="camera-picker-status" role="status" aria-live="polite"></p>
+      <div id="camera-picker-files" class="camera-picker-files" aria-label="Camera photos"></div>
+      <div class="button-row"><button type="button" id="camera-picker-previous">Previous</button><button type="button" id="camera-picker-next">Next</button><button type="button" id="camera-picker-other">Choose another file</button></div>
+    </dialog>
+    <script type="importmap">{"imports":{"/static/review_guidance.js":"/static/review_guidance.js?v={{ asset_version }}","/static/workspace_draft.js":"/static/workspace_draft.js?v={{ asset_version }}","/static/camera_picker.js":"/static/camera_picker.js?v={{ asset_version }}"}}</script>
     <script type="module" src="/static/app.js?v={{ asset_version }}"></script>
   </body>
 </html>

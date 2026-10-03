@@ -16,9 +16,12 @@ import httpx
 
 from scripts.build_email_draft import validate_draft_payload
 from scripts.generate_pdf import IntakeError
+from scripts.state_store import atomic_write_json, state_file_lock
 
 
 GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
+GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_DRAFTS_CREATE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
@@ -238,7 +241,19 @@ def read_gmail_token(token_path: Path) -> dict[str, Any]:
 
 
 def write_gmail_token(token_path: Path, token: dict[str, Any]) -> None:
-    _write_json_object(token_path, token)
+    atomic_write_json(token_path, token)
+
+
+def _granted_scopes(token: dict[str, Any]) -> set[str]:
+    return set(str(token.get("scope") or "").split())
+
+
+def gmail_sent_read_ready(config_path: Path) -> bool:
+    config = gmail_config(config_path)
+    token = read_gmail_token(config["token_path"])
+    return bool(config["client_id"] and config["client_secret"]
+                and (token.get("access_token") or token.get("refresh_token"))
+                and _granted_scopes(token) & {GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE, "https://mail.google.com/"})
 
 
 def _google_error_message(response: httpx.Response | None, fallback: str) -> str:
@@ -341,6 +356,7 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
         token_store_present = False
     configured = bool(config["client_id"] and config["client_secret"])
     connected = bool(configured and token_store_present and (access_token_present or refresh_token_present))
+    compose_ready = connected and bool(_granted_scopes(token) & {GMAIL_COMPOSE_SCOPE, GMAIL_MODIFY_SCOPE, "https://mail.google.com/"})
     recommended_mode = "gmail_api" if connected else "manual_handoff"
     setup = gmail_setup_payload(
         config_path=config_path,
@@ -354,7 +370,7 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
         "scope": GMAIL_COMPOSE_SCOPE,
         "configured": configured,
         "connected": connected,
-        "draft_create_ready": connected,
+        "draft_create_ready": compose_ready,
         "manual_handoff_ready": True,
         "recommended_mode": recommended_mode,
         "client_id_source": config["client_id_source"],
@@ -379,23 +395,25 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
     }
 
 
-def gmail_oauth_start(config_path: Path) -> dict[str, Any]:
+def gmail_oauth_start(config_path: Path, *, purpose: str = "drafts") -> dict[str, Any]:
+    if purpose not in {"drafts", "sent_sync"}:
+        raise IntakeError("Unknown Gmail authorization purpose.")
     config = gmail_config(config_path)
     if not config["client_id"] or not config["client_secret"]:
         raise IntakeError("Gmail OAuth needs GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET or config/gmail.local.json.")
     state = secrets.token_urlsafe(24)
-    token = read_gmail_token(config["token_path"])
-    token.update({
-        "oauth_state": state,
-        "oauth_started_at": datetime.now(timezone.utc).isoformat(),
-        "scope": GMAIL_COMPOSE_SCOPE,
-    })
-    write_gmail_token(config["token_path"], token)
+    scopes = GMAIL_COMPOSE_SCOPE + (" " + GMAIL_READONLY_SCOPE if purpose == "sent_sync" else "")
+    with state_file_lock(config["token_path"].with_suffix(".oauth.lock")):
+        token = read_gmail_token(config["token_path"])
+        token.update({"oauth_state": state, "oauth_started_at": datetime.now(timezone.utc).isoformat(),
+                      "oauth_requested_scope": scopes, "oauth_purpose": purpose})
+        write_gmail_token(config["token_path"], token)
     query = urlencode({
         "client_id": config["client_id"],
         "redirect_uri": config["redirect_uri"],
         "response_type": "code",
-        "scope": GMAIL_COMPOSE_SCOPE,
+        "scope": scopes,
+        "include_granted_scopes": "true",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -404,7 +422,7 @@ def gmail_oauth_start(config_path: Path) -> dict[str, Any]:
         "status": "authorization_ready",
         "authorization_url": f"{GOOGLE_OAUTH_AUTH_URL}?{query}",
         "state": state,
-        "scope": GMAIL_COMPOSE_SCOPE,
+        "scope": scopes,
         "redirect_uri_source": config["redirect_uri_source"],
         "gmail_api_action": "users.drafts.create",
         "draft_only": True,
@@ -412,28 +430,74 @@ def gmail_oauth_start(config_path: Path) -> dict[str, Any]:
     }
 
 
-def gmail_oauth_callback(*, code: str, state: str, config_path: Path) -> dict[str, Any]:
+def _gmail_account_hash(access_token: str) -> str:
+    # Used only with a granted read scope; the address is never exposed or retained.
+    with httpx.Client(timeout=20) as client:
+        response = client.get("https://gmail.googleapis.com/gmail/v1/users/me/profile",
+                              headers={"Authorization": f"Bearer {access_token}"})
+        response.raise_for_status()
+        address = str(response.json().get("emailAddress") or "").strip().casefold()
+    if not address or "@" not in address:
+        raise IntakeError("Google did not confirm the Gmail account. Reconnect Gmail.")
+    return hashlib.sha256(address.encode("utf-8")).hexdigest()
+
+
+def _oauth_exchange_checked(form: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return dict(exchange_google_token(form))
+    except (IntakeError, httpx.HTTPError, ValueError, TypeError):
+        raise IntakeError("Google authorization could not be verified. Your existing connection is unchanged.") from None
+
+
+def gmail_oauth_callback(*, code: str, state: str, config_path: Path, error: str = "") -> dict[str, Any]:
     config = gmail_config(config_path)
-    token = read_gmail_token(config["token_path"])
-    expected_state = str(token.get("oauth_state") or "").strip()
-    if not expected_state or state != expected_state:
-        raise IntakeError("Gmail OAuth state mismatch. Start the OAuth flow again.")
-    if not code:
-        raise IntakeError("Gmail OAuth callback is missing an authorization code.")
-    exchanged = exchange_google_token({
-        "client_id": config["client_id"],
-        "client_secret": config["client_secret"],
-        "code": code,
-        "grant_type": "authorization_code",
-        "redirect_uri": config["redirect_uri"],
-    })
-    stored = {
-        **{key: value for key, value in token.items() if key.startswith("oauth_")},
-        **exchanged,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-        "scope": exchanged.get("scope") or GMAIL_COMPOSE_SCOPE,
-    }
-    write_gmail_token(config["token_path"], stored)
+    with state_file_lock(config["token_path"].with_suffix(".oauth.lock")):
+        token = read_gmail_token(config["token_path"])
+        expected_state = str(token.get("oauth_state") or "").strip()
+        if not expected_state or not secrets.compare_digest(state, expected_state):
+            raise IntakeError("Gmail OAuth state mismatch. Start the OAuth flow again.")
+        try:
+            started = datetime.fromisoformat(str(token.get("oauth_started_at") or ""))
+            fresh = timedelta(0) <= datetime.now(timezone.utc) - started <= timedelta(minutes=15)
+        except (ValueError, TypeError):
+            fresh = False
+        # Consume this callback even on denial or partial grant, preserving working credentials.
+        retained = {key: value for key, value in token.items() if not key.startswith("oauth_")}
+        write_gmail_token(config["token_path"], retained)
+        if not fresh:
+            raise IntakeError("Gmail authorization expired. Start the connection again.")
+        if error:
+            raise IntakeError("Google authorization was not completed. Your existing Gmail connection is unchanged.")
+        if not code:
+            raise IntakeError("Gmail OAuth callback is missing an authorization code.")
+        try:
+            exchanged = _oauth_exchange_checked({"client_id": config["client_id"], "client_secret": config["client_secret"],
+                "code": code, "grant_type": "authorization_code", "redirect_uri": config["redirect_uri"]})
+            requested = set(str(token.get("oauth_requested_scope") or GMAIL_COMPOSE_SCOPE).split())
+            granted = _granted_scopes(exchanged)
+            if not requested.issubset(granted) or not exchanged.get("access_token"):
+                raise IntakeError("Required Gmail permissions were not granted. Your existing connection is unchanged.")
+            account_hash = ""
+            if granted & {GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE, "https://mail.google.com/"}:
+                account_hash = _gmail_account_hash(exchanged["access_token"])
+            if not exchanged.get("refresh_token") and token.get("refresh_token"):
+                previous_account = str(token.get("gmail_account_hash") or "")
+                if not previous_account and account_hash:
+                    refreshed = _oauth_exchange_checked({"client_id": config["client_id"], "client_secret": config["client_secret"],
+                        "refresh_token": token["refresh_token"], "grant_type": "refresh_token"})
+                    if _granted_scopes(refreshed) & {GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE, "https://mail.google.com/"}:
+                        previous_account = _gmail_account_hash(str(refreshed.get("access_token") or ""))
+                if not account_hash or previous_account != account_hash:
+                    raise IntakeError("Reconnect Gmail with consent to save a lasting connection. Your existing connection is unchanged.")
+                exchanged["refresh_token"] = token["refresh_token"]
+            stored = {**exchanged, "connected_at": datetime.now(timezone.utc).isoformat()}
+            if account_hash:
+                stored["gmail_account_hash"] = account_hash
+        except IntakeError:
+            raise
+        except (httpx.HTTPError, ValueError, TypeError):
+            raise IntakeError("Google authorization could not be verified. Your existing connection is unchanged.") from None
+        write_gmail_token(config["token_path"], stored)
     return {
         "status": "connected",
         "provider": "gmail_api",
@@ -447,6 +511,12 @@ def gmail_oauth_callback(*, code: str, state: str, config_path: Path) -> dict[st
 
 
 def gmail_access_token(config_path: Path) -> tuple[str, dict[str, Any]]:
+    config = gmail_config(config_path)
+    with state_file_lock(config["token_path"].with_suffix(".oauth.lock")):
+        return _gmail_access_token_unlocked(config_path)
+
+
+def _gmail_access_token_unlocked(config_path: Path) -> tuple[str, dict[str, Any]]:
     config = gmail_config(config_path)
     token = read_gmail_token(config["token_path"])
     access_token = str(token.get("access_token") or "").strip()

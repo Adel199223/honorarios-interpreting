@@ -12,8 +12,8 @@ const element=selector=>{
   if(!elements.has(selector)){
     elements.set(selector,{id:selector.slice(1),listeners:{},checked:false,disabled:false,textContent:'',innerHTML:'',className:'',dataset:{},
       addEventListener(event,listener){this.listeners[event]=listener;},
-      classList:{add(){},remove(){},toggle(){},contains(){return false}},setAttribute(){},getAttribute(){return ''},removeAttribute(){},
-      focus(){},scrollIntoView(){},reset(){},querySelector(s){return element(s)},querySelectorAll(){return []}});
+      classList:{add(){},remove(){},toggle(name,value){this.values??={};this.values[name]=value??!this.values[name];},contains(){return false}},setAttribute(){},getAttribute(){return ''},removeAttribute(){},
+      focus(){context.document.activeElement=this;},showModal(){this.open=true;this.openCount=(this.openCount||0)+1;},close(){this.open=false;},scrollIntoView(){},reset(){},querySelector(s){return element(s)},querySelectorAll(){return []}});
     Object.defineProperty(elements.get(selector),'value',{get(){return this._value||''},set(v){this._value=String(v??'')}});
   }return elements.get(selector);
 };
@@ -45,15 +45,23 @@ const listenerSource=(id,event='click')=>{
 };
 ['#check-active-drafts','#create-gmail-api-draft','#record-draft','#record-parsed-prepared-draft','#prepare-source-email-replacement'].forEach(id=>{app+='\n'+listenerSource(id);});
 app+='\n'+listenerSource('#saved-court-email','change');
+app+='\n'+listenerSource('#sent-duplicate-stop')+'\n'+listenerSource('#sent-duplicate-review')+'\n'+listenerSource('#sent-duplicate-dialog','cancel');
+app+='\n'+listenerSource('#build-profile');
+app+='\n'+listenerSource('#pp_add_distance')+'\n'+listenerSource('#personal-profile-form','submit');
 app+='\n'+listenerSource('#preflight-batch-intakes');
 app+='\n'+listenerSource('#batch-email-grouping','change')+'\n'+listenerSource('#prepared-email-member','change');
 const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
 app+='\nloadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
 app+='\nthis.api.recoverGmailAttempt=recoverGmailAttempt;this.api.renderGmailStatus=renderGmailStatus;this.api.renderHistoryDraftActionResult=renderHistoryDraftActionResult;';
+app+='\nObject.assign(this.api,{applyReview,reviewIntake,resolveSentDuplicateDecision,renderSourceCaseList,syncActionGates,syncManualEntryGate,setServerConnected,setServerDisconnected});';
+app+='\nObject.assign(this.api,{importGooglePhotosPickerSelection,recoverLocalSourceFile,openPersonalProfileDrawer,closePersonalProfileDrawer,saveCurrentPersonalProfile,renderDraftLifecycle,renderHistoryRecords});';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
+const sentReview=(row=alpha,status='sent')=>({status:'duplicate',intake:row,questions:[],message:'Previously sent request',
+ duplicate:{case_number:row.case_number,service_date:row.service_date,service_period_label:row.service_period_label||'',...(status===null?{}:{status}),sent_date:'2026-10-02',recipient:'<court@example.test>'},
+ next_safe_action:{state:'stop_duplicate_sent',blocked:true},send_allowed:false});
 const prepare=()=>({status:'prepared',items:[alpha,beta].map((row,i)=>({...row,recipient:row.recipient_email,pdf:`/fictional/${i?'beta':'alpha'}.pdf`,draft_payload:`/fictional/${i?'beta':'alpha'}.json`,attachment_count:1,png_preview_urls:[`/fictional/${i?'beta':'alpha'}.png`],gmail_create_draft_args:{to:row.recipient_email,subject:row.case_number,attachment_files:[`/fictional/${i?'beta':'alpha'}.pdf`]}})),prepared_review_material:{effective_intakes:[alpha,beta]},prepared_review:{manifest:'/fictional/prepared.json',prepared_review_token:'fictional-token',review_fingerprint:'fictional-fingerprint',payload_paths:['/fictional/alpha.json','/fictional/beta.json']},next_safe_action:{state:'review_gmail_draft_args',blocked:false}});
 const photoRows=()=>[alpha,...Array.from({length:5},(_,index)=>({...beta,case_number:`${711+index}/26.0TSTXX`,claim_interpreting:true,claim_transport:index===0,travel_group_id:'photo-trip-beta'}))];
 const groupedPrepare=()=>{
@@ -70,6 +78,513 @@ class EmailRoutingUiTests(unittest.TestCase):
         result=subprocess.run(['node','--input-type=module','-'],input=script,text=True,encoding='utf-8',capture_output=True,timeout=20,cwd=ROOT)
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
+
+    def test_source_recovery_guard_and_busy_controls_cover_post_upload_review(self):
+        result=self.run_js("""
+a.state.reference={service_profiles:{example_interpreting:{}}};a.setServerConnected();
+element('#source-upload-form button[type=submit]').textContent='Review source';
+let releaseReview,reviewStarted;const started=new Promise(resolve=>reviewStarted=resolve);const gate=new Promise(resolve=>releaseReview=resolve);let uploads=0,reviews=0;
+context.fetch=async(url,options)=>{
+ if(url==='/api/sources/upload'){uploads++;return {ok:true,json:async()=>({candidate_intake:{...alpha},source:{sha256:alpha.source_sha256,source_kind:'photo',filename:'fictional.png'}})};}
+ if(url==='/api/review'){reviews++;reviewStarted();await gate;return {ok:true,json:async()=>({status:'ready',intake:JSON.parse(options.body).intake,questions:[],next_safe_action:{state:'prepare_pdf'}})};}
+ throw new Error('Unexpected route '+url);
+};
+const file={name:'fictional.png',size:10,lastModified:1,type:'image/png'};
+const first=a.uploadSource('photo',{file});await started;
+a.syncActionGates();const selectors=['#source-upload-form button[type=submit]','#source-file','#choose-camera-source','#choose-other-source','#build-profile'];
+const busy=selectors.every(s=>element(s).disabled),label=element(selectors[0]).textContent;
+const repeated=await a.uploadSource('photo',{file});let manualError='';try{await a.buildIntakeFromProfile()}catch(error){manualError=error.message;}
+const beforeRelease=uploads;releaseReview();await first;
+console.log(JSON.stringify({busy,label,repeated,manualError,beforeRelease,uploads,reviews,cleared:a.state.sourceRecoveryKeys.size===0,reenabled:selectors.every(s=>!element(s).disabled),restoredLabel:element(selectors[0]).textContent}));
+""")
+        self.assertTrue(result['busy'])
+        self.assertIn('Reviewing',result['label'])
+        self.assertIsNone(result['repeated'])
+        self.assertIn('Wait for the source review',result['manualError'])
+        self.assertEqual((result['beforeRelease'],result['uploads'],result['reviews']),(1,1,1))
+        self.assertTrue(result['cleared'])
+        self.assertTrue(result['reenabled'])
+        self.assertEqual(result['restoredLabel'],'Review source')
+
+    def test_drop_paste_and_new_file_identity_cannot_bypass_active_source_recovery(self):
+        result=self.run_js("""
+let release;const gate=new Promise(resolve=>release=resolve);let uploads=0;
+context.fetch=async()=>{uploads++;await gate;return {ok:false,status:503,json:async()=>({message:'fictional failure'})}};
+const file={name:'fictional.png',size:10,lastModified:1,type:'image/png'};
+const first=a.recoverLocalSourceFile(file).catch(()=>null);const initialStatus=element('#source-drop-status').textContent;
+const changedTimestamp=await a.uploadSource('photo',{file:{...file,lastModified:2}});
+const differentDropped=await a.recoverLocalSourceFile({...file,name:'different.png',lastModified:3});
+element('#google-photos-session-id').value='new-picker-session';const picker=await a.importGooglePhotosPickerSelection();
+const beforeRelease=uploads,keys=a.state.sourceRecoveryKeys.size,statusUnchanged=element('#source-drop-status').textContent===initialStatus;
+a.clearPreparedArtifacts('new source/reset');a.state.currentIntake={...beta};release();await first;
+console.log(JSON.stringify({uploads,beforeRelease,keys,changedTimestamp,differentDropped,picker,statusUnchanged,current:a.state.currentIntake.case_number,cleared:a.state.sourceRecoveryKeys.size===0}));
+""")
+        self.assertEqual((result['uploads'],result['beforeRelease'],result['keys']),(1,1,1))
+        for key in ['changedTimestamp','differentDropped','picker']:
+            self.assertIsNone(result[key],key)
+        self.assertTrue(result['statusUnchanged'])
+        self.assertTrue(result['cleared'])
+        self.assertEqual(result['current'],'711/26.0TSTXX')
+
+    def test_source_guard_survives_form_edit_reset_and_failure_then_allows_retry(self):
+        result=self.run_js("""
+a.state.reference={service_profiles:{example_interpreting:{}}};a.setServerConnected();
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);
+let release;const gate=new Promise(resolve=>release=resolve);let uploads=0;
+context.fetch=async()=>{uploads++;await gate;return {ok:false,status:503,json:async()=>({message:'fictional source failure'})}};
+const file={name:'fictional.png',size:10,lastModified:1,type:'image/png'};
+const first=a.uploadSource('photo',{file});const repeated=await a.uploadSource('photo',{file});
+element('#intake-form').listeners.input({target:{id:'service_place'}});
+const afterEdit=await a.uploadSource('photo',{file});a.clearPreparedArtifacts('reset');a.state.currentIntake={...beta};
+const afterReset=await a.uploadSource('photo',{file});const beforeRelease=uploads;release();const stale=await first;
+let retryError='';try{await a.uploadSource('photo',{file})}catch(error){retryError=error.message;}
+a.state.workspaceDraft.runtimeChanged=true;let setupError='';try{await a.uploadSource('photo',{file})}catch(error){setupError=error.message;}
+const runtimeDisabled=element('#source-upload-form button[type=submit]').disabled;a.state.workspaceDraft.runtimeChanged=false;a.setServerConnected();
+console.log(JSON.stringify({beforeRelease,uploads,repeated,afterEdit,afterReset,stale,retryError,setupError,runtimeDisabled,current:a.state.currentIntake.case_number,cleared:a.state.sourceRecoveryKeys.size===0,pending:a.state.sourceUploadPending,enabled:!element('#source-upload-form button[type=submit]').disabled}));
+""")
+        self.assertEqual(result['beforeRelease'],1)
+        self.assertEqual(result['uploads'],2)
+        for key in ['repeated','afterEdit','afterReset','stale','pending']:
+            self.assertIsNone(result[key],key)
+        self.assertEqual(result['retryError'],'fictional source failure')
+        self.assertIn('workspace changed',result['setupError'])
+        self.assertEqual(result['current'],'711/26.0TSTXX')
+        for key in ['runtimeDisabled','cleared','enabled']:
+            self.assertTrue(result[key],key)
+
+    def test_google_picker_import_guard_covers_followup_review_without_second_import(self):
+        result=self.run_js("""
+element('#google-photos-session-id').value='fictional-session';let release,started;
+const gate=new Promise(resolve=>release=resolve),reviewStarted=new Promise(resolve=>started=resolve);let imports=0;
+context.fetch=async(url,options)=>{
+ if(url==='/api/google-photos/picker/import'){imports++;return {ok:true,json:async()=>({candidate_intake:{...alpha},source:{sha256:alpha.source_sha256}})};}
+ if(url==='/api/review'){started();await gate;return {ok:true,json:async()=>({status:'ready',intake:JSON.parse(options.body).intake,next_safe_action:{state:'prepare_pdf'}})};}
+ throw new Error('Unexpected '+url);
+};
+const first=a.importGooglePhotosPickerSelection();await reviewStarted;const repeated=await a.importGooglePhotosPickerSelection();release();await first;
+console.log(JSON.stringify({imports,repeated,cleared:a.state.sourceRecoveryKeys.size===0}));
+""")
+        self.assertEqual(result['imports'],1)
+        self.assertIsNone(result['repeated'])
+        self.assertTrue(result['cleared'])
+
+    def test_profile_distance_errors_are_local_and_blank_cannot_be_saved_as_zero(self):
+        result=self.run_js("""
+a.openPersonalProfileDrawer({id:'fictional-profile',travel_distances_by_city:{'Original City':12}});
+const failures=[];for(const value of ['-10','','   ','not-a-number']){
+ element('#pp_distance_city').value='New City';element('#pp_distance_km').value=value;element('#pp_add_distance').listeners.click();
+ failures.push({message:element('#personal-profile-drawer-alert').textContent,visible:!element('#personal-profile-drawer-alert').className.includes('hidden'),unchanged:JSON.stringify(a.state.currentPersonalProfile.travel_distances_by_city)==='{"Original City":12}'});
+}
+element('#pp_distance_km').value='0';element('#pp_add_distance').listeners.click();
+const distances=a.state.currentPersonalProfile.travel_distances_by_city,success=element('#personal-profile-drawer-alert').textContent;
+element('#pp_distance_city').value='unfinished';a.openPersonalProfileDrawer({id:'other-profile',travel_distances_by_city:{}});
+console.log(JSON.stringify({failures,distances,success,calls,cleared:element('#personal-profile-drawer-alert').textContent===''&&element('#pp_distance_city').value===''}));
+""")
+        for row in result['failures']:
+            self.assertIn('valid one-way distance',row['message'])
+            self.assertTrue(row['visible'])
+            self.assertTrue(row['unchanged'])
+        self.assertEqual(result['distances'],{'Original City':12,'New City':0})
+        self.assertIn('Save profile to keep this change',result['success'])
+        self.assertTrue(result['cleared'])
+        self.assertEqual(result['calls'],[])
+        page=(ROOT/'honorarios_app/templates/index.html').read_text(encoding='utf-8')
+        for label in ['personal-profile-alert','personal-profile-drawer-alert']:
+            self.assertIn(f'id="{label}" class="result-card hidden" role="status" aria-live="polite"',page)
+
+    def test_profile_save_error_and_success_remain_visible_on_profiles(self):
+        result=self.run_js("""
+a.state.reference={};a.openPersonalProfileDrawer({id:'fictional-profile',travel_distances_by_city:{}});
+let callsToSave=0;context.fetch=async()=>{callsToSave++;return {ok:false,status:400,json:async()=>({detail:'Enter a valid applicant name'})}};
+await element('#personal-profile-form').listeners.submit({preventDefault(){}});
+const error=element('#personal-profile-drawer-alert').textContent;
+context.fetch=async()=>{callsToSave++;return {ok:true,json:async()=>({message:'Fictional profile saved.',profiles:{profiles:[],primary_profile_id:''}})}};
+await element('#personal-profile-form').listeners.submit({preventDefault(){}});
+console.log(JSON.stringify({error,callsToSave,message:element('#personal-profile-alert').textContent,visible:!element('#personal-profile-alert').className.includes('hidden'),loads:context.referenceLoads}));
+""")
+        self.assertEqual(result['error'],'Enter a valid applicant name')
+        self.assertEqual(result['message'],'Fictional profile saved.')
+        self.assertTrue(result['visible'])
+        self.assertEqual(result['callsToSave'],2)
+        self.assertEqual(result['loads'],1)
+
+    def test_invalid_advanced_distances_stop_before_save_and_valid_empty_object_clears(self):
+        result=self.run_js("""
+a.state.reference={};a.openPersonalProfileDrawer({id:'fictional-profile',travel_distances_by_city:{'Original City':12}});
+let saveCalls=0,payload;context.fetch=async(_url,options)=>{saveCalls++;payload=JSON.parse(options.body);return {ok:true,json:async()=>({message:'Saved.',profiles:{profiles:[]}})}};
+const failures=[];
+for(const raw of ['', '{bad', '[]', 'null', '12', '{"City":-1}', '{"City":null}', '{"City":""}', '{"City":"Infinity"}', '{"":12}']){
+ element('#pp_distances_json').value=raw;await element('#personal-profile-form').listeners.submit({preventDefault(){}});
+ failures.push({message:element('#personal-profile-drawer-alert').textContent,unchanged:a.state.currentPersonalProfile.travel_distances_by_city['Original City']===12,inputKept:element('#pp_distances_json').value===raw});
+}
+const beforeValid=saveCalls;element('#pp_distances_json').value='{}';await element('#personal-profile-form').listeners.submit({preventDefault(){}});
+console.log(JSON.stringify({failures,beforeValid,saveCalls,distances:payload.profile.travel_distances_by_city}));
+""")
+        for row in result['failures']:
+            self.assertIn('Advanced distance data',row['message'])
+            self.assertTrue(row['unchanged'])
+            self.assertTrue(row['inputKept'])
+        self.assertEqual(result['beforeValid'],0)
+        self.assertEqual(result['saveCalls'],1)
+        self.assertEqual(result['distances'],{})
+
+    def test_paper_submission_duplicate_words_are_distinct_and_keep_creation_blocked(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);
+const paper=sentReview();paper.duplicate={case_number:alpha.case_number,service_date:alpha.service_date,status:'sent',submission_channel:'paper',submission_evidence:'user_confirmed'};paper.message='Already submitted on paper.';
+a.applyReview(paper);const title=element('#sent-duplicate-title').textContent,explanation=element('#sent-duplicate-explanation').textContent,details=element('#sent-duplicate-details').textContent;
+element('#sent-duplicate-stop').listeners.click();const stopped=element('#alert').textContent,summary=element('#interpretation-review-home-result').innerHTML;
+a.applyReview(paper);element('#sent-duplicate-review').listeners.click();const continued=element('#alert').textContent;
+a.renderDraftLifecycle({status:'sent_duplicate',duplicate_records:[paper.duplicate],message:'Already submitted on paper.',replacement_allowed:false});
+const lifecycle=element('#draft-lifecycle-body').innerHTML,lifecycleChip=element('#draft-lifecycle-chip').textContent;
+a.state.reference={duplicates:[paper.duplicate],draft_log:[]};a.renderHistoryRecords();const history=element('#duplicate-list').innerHTML;
+const blocked=element('#prepare-intake').disabled&&element('#create-gmail-api-draft').disabled;
+a.applyReview(sentReview());const emailTitle=element('#sent-duplicate-title').textContent,emailDetails=element('#sent-duplicate-details').textContent;
+console.log(JSON.stringify({title,explanation,details,stopped,summary,continued,lifecycle,lifecycleChip,history,blocked,emailTitle,emailDetails,calls}));
+""")
+        self.assertEqual(result['title'],'This fee request was already submitted on paper')
+        self.assertIn('A paper submission',result['explanation'])
+        self.assertNotIn('Sent on',result['details'])
+        for key in ['stopped','summary','continued','lifecycle','lifecycleChip','history']:
+            self.assertIn('submitted on paper',result[key],key)
+        self.assertNotIn('Recorded sent details',result['summary'])
+        self.assertTrue(result['blocked'])
+        self.assertEqual(result['emailTitle'],'This fee request was already sent')
+        self.assertIn('Sent on: 2026-10-02',result['emailDetails'])
+        self.assertEqual(result['calls'],[])
+
+    def test_source_cases_distinguish_paper_and_email_completed_requests(self):
+        result=self.run_js("""
+const paper=sentReview(alpha);paper.duplicate.submission_channel='paper';paper.duplicate.submission_evidence='user_confirmed';delete paper.duplicate.sent_date;
+a.state.sourceCaseCandidates=[{candidate_intake:{...alpha},review:paper,needs_review:false},{candidate_intake:{...beta},review:sentReview(beta),needs_review:false}];
+a.renderSourceCaseList();const mixed=element('#source-case-list').innerHTML,mixedSummary=element('#source-case-summary').textContent;
+a.state.sourceCaseCandidates[1].review.duplicate.submission_channel='paper';a.state.sourceCaseCandidates[1].review.duplicate.submission_evidence='user_confirmed';a.renderSourceCaseList();
+console.log(JSON.stringify({mixed,mixedSummary,allPaper:element('#source-case-summary').textContent,paperRows:element('#source-case-list').innerHTML,calls}));
+""")
+        self.assertIn('Already submitted on paper',result['mixed'])
+        self.assertIn('Already sent',result['mixed'])
+        self.assertIn('already submitted.',result['mixedSummary'])
+        self.assertIn('already submitted on paper.',result['allPaper'])
+        self.assertEqual(result['paperRows'].count('Already submitted on paper'),2)
+        self.assertEqual(result['calls'],[])
+
+    def test_paper_wording_requires_confirmed_completed_evidence_on_raw_history_too(self):
+        result=self.run_js("""
+const variants=[{submission_evidence:undefined},{submission_evidence:'unverified'},
+ {status:'drafted'},{status:'trashed'},{submission_channel:'other'}];const results=[];
+for(const changes of variants){
+ const review=sentReview();review.duplicate={...review.duplicate,submission_channel:'paper',submission_evidence:'user_confirmed',...changes};
+ a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);a.applyReview(review);
+ a.renderDraftLifecycle({status:'blocked',duplicate_records:[review.duplicate],message:'Existing record',replacement_allowed:false});
+ a.state.reference={duplicates:[review.duplicate],draft_log:[]};a.renderHistoryRecords();
+ a.state.sourceCaseCandidates=[{candidate_intake:{...alpha},review,needs_review:false},{candidate_intake:{...beta},review:sentReview(beta),needs_review:false}];a.renderSourceCaseList();
+ results.push([element('#interpretation-review-home-result').innerHTML,element('#draft-lifecycle-body').innerHTML,
+   element('#draft-lifecycle-chip').textContent,element('#duplicate-list').innerHTML,element('#source-case-list').innerHTML,element('#source-case-summary').textContent]);
+}
+console.log(JSON.stringify({results,calls}));
+""")
+        for surfaces in result['results']:
+            for rendered in surfaces:
+                self.assertNotIn('submitted on paper',rendered)
+        self.assertEqual(result['calls'],[])
+
+    def test_sent_warning_no_is_default_and_preserves_siblings_queue_and_saved_work(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);a.state.batchIntakes=[{...beta}];
+a.state.workspaceDraft.pending={snapshot:{saved:'keep me'}};
+a.state.sourceCaseCandidates=[{candidate_intake:{...alpha},review:sentReview(),needs_review:false},{candidate_intake:{...beta},review:{status:'ready'},answers:'2. keep',needs_review:false}];
+a.state.sourceCaseSelectedIndex=0;
+a.applyReview(sentReview());const open=element('#sent-duplicate-dialog').open,focus=context.document.activeElement.id,details=element('#sent-duplicate-details').textContent;
+const before=JSON.stringify({queue:a.state.batchIntakes,cases:a.state.sourceCaseCandidates,pending:a.state.workspaceDraft.pending,current:a.state.currentIntake});
+element('#sent-duplicate-stop').listeners.click();
+console.log(JSON.stringify({open,focus,details,html:element('#sent-duplicate-details').innerHTML,closed:!element('#sent-duplicate-dialog').open,
+ same:before===JSON.stringify({queue:a.state.batchIntakes,cases:a.state.sourceCaseCandidates,pending:a.state.workspaceDraft.pending,current:a.state.currentIntake}),
+ status:a.state.lastReview.status,drawer:context.document.body.dataset.interpretationReviewDrawer,alert:element('#alert').textContent,
+ banner:element('#interpretation-review-home-result').innerHTML,calls}));
+""")
+        self.assertTrue(result['open'])
+        self.assertEqual(result['focus'],'sent-duplicate-stop')
+        self.assertIn('710/26.0TSTXX',result['details'])
+        self.assertIn('Service date 2026-10-01',result['details'])
+        self.assertIn('Sent on: 2026-10-02',result['details'])
+        self.assertIn('<court@example.test>',result['details'])
+        self.assertEqual(result['html'],'')
+        self.assertTrue(result['closed'])
+        self.assertTrue(result['same'])
+        self.assertEqual(result['status'],'duplicate')
+        self.assertEqual(result['drawer'],'closed')
+        self.assertIn('Stopped: this fee request was already sent',result['alert'])
+        self.assertIn('Stopped: this fee request was already sent',result['banner'])
+        self.assertEqual(result['calls'],[])
+        page=(ROOT/'honorarios_app/templates/index.html').read_text(encoding='utf-8')
+        self.assertIn('aria-labelledby="sent-duplicate-title"',page)
+        self.assertIn('id="sent-duplicate-stop" autofocus>No — stop',page)
+        self.assertIn('Do you want to continue reviewing this request?',page)
+
+    def test_manual_entry_waits_for_profiles_and_blank_form_uses_loaded_default(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.state.sourceFileNeedsReview=true;const original=a.state.currentIntake;const originalRevision=a.state.workflowRevision;
+a.syncManualEntryGate();const initialDisabled=element('#build-profile').disabled;let earlyError='';
+try{await a.buildIntakeFromProfile();}catch(error){earlyError=error.message;}
+await element('#build-profile').listeners.click();
+const untouched=a.state.currentIntake===original&&a.state.workflowRevision===originalRevision&&a.state.sourceFileNeedsReview;
+a.setServerConnected();const stillDisabled=element('#build-profile').disabled;
+a.state.reference={service_profiles:{court_mp_generic:{}}};a.syncManualEntryGate();const ready=!element('#build-profile').disabled;
+a.setServerDisconnected(new Error('offline'));const offlineDisabled=element('#build-profile').disabled;
+await element('#build-profile').listeners.click();const offlineUntouched=a.state.currentIntake===original&&a.state.workflowRevision===originalRevision;
+a.setServerConnected();const reconnected=!element('#build-profile').disabled;
+a.state.workspaceDraft.runtimeChanged=true;a.syncManualEntryGate();const runtimeDisabled=element('#build-profile').disabled;
+await element('#build-profile').listeners.click();let runtimeError='';try{await a.buildIntakeFromProfile();}catch(error){runtimeError=error.message;}
+const runtimeUntouched=a.state.currentIntake===original&&a.state.workflowRevision===originalRevision&&a.state.sourceFileNeedsReview;
+a.state.workspaceDraft.runtimeChanged=false;a.state.sourceFileNeedsReview=false;a.state.currentIntake=null;const sent=[];context.fetch=async(url,options)=>{const body=JSON.parse(options.body);sent.push({url,body});return {ok:true,json:async()=>url==='/api/intake/from-profile'?{intake:alpha}:{status:'needs_info',intake:alpha,questions:[{field:'service_date'}],next_safe_action:{state:'answer_questions',blocked:true}}}};
+await a.buildIntakeFromProfile({openDrawer:false});
+console.log(JSON.stringify({initialDisabled,earlyError,untouched,stillDisabled,ready,offlineDisabled,offlineUntouched,reconnected,runtimeDisabled,runtimeUntouched,runtimeError,sent}));
+""")
+        for key in ['initialDisabled','untouched','stillDisabled','ready','offlineDisabled','offlineUntouched','reconnected','runtimeDisabled','runtimeUntouched']:
+            self.assertTrue(result[key],key)
+        self.assertIn('Saved profiles are not ready',result['earlyError'])
+        self.assertIn('workspace changed',result['runtimeError'])
+        self.assertEqual([row['url'] for row in result['sent']],['/api/intake/from-profile','/api/review'])
+        self.assertEqual(result['sent'][0]['body'],{'profile':'court_mp_generic'})
+        page=(ROOT/'honorarios_app/templates/index.html').read_text(encoding='utf-8')
+        self.assertIn('id="build-profile" disabled',page)
+
+    def test_sent_summary_uses_history_not_current_form_and_survives_passive_refresh(self):
+        result=self.run_js("""
+const results=[];
+for(const status of ['sent',null]){
+ const current={...alpha,payment_entity:'Unreviewed payer',service_place:'Unreviewed station',recipient_email:'wrong@example.test',claim_interpreting:false,claim_transport:true};
+ a.state.currentIntake=current;a.fillFormFromIntake(current);
+ const review={...sentReview(current,status),recipient:'wrong-footer@example.test',auto_profile:{confidence:'low',profile_key:'generic'}};
+ review.duplicate={...review.duplicate,service_period_label:'Morning',draft_id:'historical-id',recipient_email:'recorded@example.test'};
+ a.applyReview(review);const before=JSON.stringify(a.state.currentIntake);element('#sent-duplicate-stop').listeners.click();
+ const stopped=element('#interpretation-review-home-result').innerHTML;a.refreshHomeWorkflow();
+ results.push({status,stopped,refreshed:element('#interpretation-review-home-result').innerHTML,
+ unchanged:before===JSON.stringify(a.state.currentIntake),claimHidden:element('#request-claim-card').classList.values.hidden,open:element('#sent-duplicate-dialog').open});
+}
+console.log(JSON.stringify({results,calls}));
+""")
+        for row in result['results']:
+            self.assertTrue(row['unchanged'])
+            self.assertTrue(row['claimHidden'])
+            self.assertFalse(row['open'])
+            for html in [row['stopped'],row['refreshed']]:
+                for expected in ['Already sent','No further answers are needed','Stopped: this fee request was already sent','710/26.0TSTXX','2026-10-01','2026-10-02','Morning','recorded@example.test']:
+                    self.assertIn(expected,html)
+                for absent in ['Needs answer','What I still need','data-review-correct-field','profile-fallback-notice','AI-read','Request includes','Unreviewed','wrong@example.test','wrong-footer@example.test','Existing draft:']:
+                    self.assertNotIn(absent,html)
+        self.assertEqual(result['calls'],[])
+
+    def test_sent_summary_omits_unknown_history_fields_and_renders_explicit_ones_only(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);const record={case_number:alpha.case_number,service_date:alpha.service_date,status:'sent'};
+const review={...sentReview(),duplicate:record};a.applyReview(review);const minimal=element('#interpretation-review-home-result').innerHTML;
+a.updateHomeReviewCard({...review,duplicate:{...record,recipient:'<recorded@example.test>',payment_entity:'Recorded court',service_place:'Recorded venue'}});
+console.log(JSON.stringify({minimal,explicit:element('#interpretation-review-home-result').innerHTML,calls}));
+""")
+        for absent in ['Recipient','Payment entity','Service place','Needs answer','Court Alpha','Police Alpha','alpha@example.test']:
+            self.assertNotIn(absent,result['minimal'])
+        for expected in ['&lt;recorded@example.test&gt;','Recorded court','Recorded venue']:
+            self.assertIn(expected,result['explicit'])
+        self.assertNotIn('<recorded@example.test>',result['explicit'])
+        self.assertEqual(result['calls'],[])
+
+    def test_sent_summary_does_not_suppress_normal_questions_draft_review_or_ready_actions(self):
+        result=self.run_js("""
+const current={...alpha,payment_entity:'',service_place:'',recipient_email:''};a.state.currentIntake=current;a.fillFormFromIntake(current);
+a.applyReview(sentReview(current));const sentHidden=element('#request-claim-card').classList.values.hidden;
+const rows=[{status:'needs_info',intake:current,questions:[{number:1,field:'payment_entity',question:'Which paying court?'}],next_safe_action:{state:'answer_questions',blocked:true}},
+ {...sentReview(current,'drafted'),next_safe_action:{state:'correct_existing_draft',blocked:true}},
+ {status:'ready',intake:alpha,questions:[],next_safe_action:{state:'prepare_pdf',blocked:false}}];
+const results=[];for(const row of rows){a.applyReview(row);results.push({status:row.status,html:element('#interpretation-review-home-result').innerHTML,claimHidden:element('#request-claim-card').classList.values.hidden});}
+console.log(JSON.stringify({sentHidden,results,calls}));
+""")
+        self.assertTrue(result['sentHidden'])
+        for row in result['results']:
+            self.assertFalse(row['claimHidden'])
+            self.assertNotIn('data-sent-history-summary',row['html'])
+            self.assertIn('data-review-correct-field',row['html'])
+        self.assertIn('Which paying court?',result['results'][0]['html'])
+        self.assertIn('Type your numbered answers',result['results'][0]['html'])
+        self.assertIn('Needs answer',result['results'][1]['html'])
+        self.assertIn('Review draft and PDF step',result['results'][2]['html'])
+        self.assertEqual(result['calls'],[])
+
+    def test_all_fresh_sent_source_hides_claim_prompts_but_mixed_or_stale_source_keeps_controls(self):
+        result=self.run_js("""
+const rows=[alpha,beta].map(row=>({candidate_intake:{...row},review:sentReview(row),needs_review:false,answers:'keep'}));
+a.state.sourceCaseCandidates=rows;a.state.batchIntakes=[{...beta}];a.state.workspaceDraft.pending={saved:'keep'};const results=[];
+for(const mode of ['sent','mixed','stale']){
+ if(mode==='mixed')rows[1].review={status:'ready',intake:beta,questions:[]};
+ if(mode==='stale'){rows[1].review=sentReview(beta);rows[1].needs_review=true;}
+ const before=JSON.stringify({rows,queue:a.state.batchIntakes,pending:a.state.workspaceDraft.pending});a.renderSourceCaseList();
+ results.push({mode,travelHidden:element('#source-travel-controls').classList.values.hidden,replacementHidden:element('#source-email-correction').classList.values.hidden,
+ summary:element('#source-case-summary').textContent,next:element('#source-case-next-action').textContent,list:element('#source-case-list').innerHTML,
+ unchanged:before===JSON.stringify({rows,queue:a.state.batchIntakes,pending:a.state.workspaceDraft.pending}),addDisabled:element('#add-source-cases-to-batch').disabled});
+}
+console.log(JSON.stringify({results,calls}));
+""")
+        sent=result['results'][0]
+        self.assertTrue(sent['travelHidden'])
+        self.assertTrue(sent['replacementHidden'])
+        self.assertTrue(sent['addDisabled'])
+        self.assertIn('All 2 requests in this source were already sent',sent['summary'])
+        self.assertIn('No further answers or new requests are needed',sent['next'])
+        self.assertEqual(sent['list'].count('Already sent'),2)
+        self.assertNotIn('Police Alpha',sent['list'])
+        self.assertNotIn('Interpreting',sent['list'])
+        for row in result['results'][1:]:
+            self.assertFalse(row['travelHidden'])
+            self.assertFalse(row['replacementHidden'])
+            self.assertNotIn('All 2 requests',row['summary'])
+        self.assertTrue(all(row['unchanged'] for row in result['results']))
+        self.assertEqual(result['calls'],[])
+
+    def test_sent_warning_yes_only_opens_blocked_review_details(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);a.applyReview(sentReview());
+element('#sent-duplicate-review').listeners.click();
+console.log(JSON.stringify({open:element('#sent-duplicate-dialog').open,drawer:context.document.body.dataset.interpretationReviewDrawer,
+status:a.state.lastReview.status,action:a.state.currentNextSafeAction.state,prepared:a.state.lastPrepared,
+disabled:['#drawer-prepare-intake','#drawer-prepare-intake-inline','#create-gmail-api-draft','#prepare-replacement-draft','#prepare-source-email-replacement'].map(id=>element(id).disabled),calls}));
+""")
+        self.assertFalse(result['open'])
+        self.assertEqual(result['drawer'],'open')
+        self.assertEqual(result['status'],'duplicate')
+        self.assertEqual(result['action'],'stop_duplicate_sent')
+        self.assertIsNone(result['prepared'])
+        self.assertTrue(all(result['disabled']))
+        self.assertEqual(result['calls'],[])
+
+    def test_sent_warning_escape_is_no_and_passive_render_never_reopens_it(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);a.applyReview(sentReview(alpha,null));let prevented=false;
+element('#sent-duplicate-dialog').listeners.cancel({preventDefault(){prevented=true;}});
+a.updateHomeReviewCard(a.state.lastReview);a.renderSourceCaseList();a.syncActionGates();
+const afterPassive={open:element('#sent-duplicate-dialog').open,count:element('#sent-duplicate-dialog').openCount,alert:element('#alert').textContent};
+a.applyReview(sentReview(alpha,null));console.log(JSON.stringify({prevented,afterPassive,afterFresh:{open:element('#sent-duplicate-dialog').open,count:element('#sent-duplicate-dialog').openCount},calls}));
+""")
+        self.assertTrue(result['prevented'])
+        self.assertFalse(result['afterPassive']['open'])
+        self.assertEqual(result['afterPassive']['count'],1)
+        self.assertIn('Stopped:',result['afterPassive']['alert'])
+        self.assertEqual(result['afterFresh'],{'open':True,'count':2})
+        self.assertEqual(result['calls'],[])
+
+    def test_sent_warning_ignores_drafts_unresolved_dates_and_mismatched_identity(self):
+        result=self.run_js("""
+const rows=[sentReview(alpha,'drafted'),{...sentReview(),status:'active_draft'},
+{...sentReview(),status:'needs_info',questions:[{field:'service_date'}]},sentReview({...alpha,service_date:'2026-02-30'}),
+sentReview({...alpha,service_date:''}),{...sentReview(),duplicate:{...sentReview().duplicate,case_number:beta.case_number}},
+{...sentReview({...alpha,service_period_label:'afternoon'}),duplicate:{...sentReview().duplicate,service_period_label:'morning'}}];
+const opened=[];for(const row of rows){a.state.currentIntake={...row.intake};a.fillFormFromIntake(a.state.currentIntake);a.applyReview(row);opened.push(Boolean(element('#sent-duplicate-dialog').open));}
+console.log(JSON.stringify({opened,calls}));
+""")
+        self.assertFalse(any(result['opened']))
+        self.assertEqual(result['calls'],[])
+
+    def test_sent_decision_is_invalidated_by_edits_and_rejects_other_stale_contexts(self):
+        result=self.run_js("""
+const results=[];
+for(const mutation of ['edit','identity','source','selection','review']){
+ a.state.currentIntake={...alpha};a.state.sourceCaseSelectedIndex=null;a.fillFormFromIntake(alpha);a.applyReview(sentReview());
+ if(mutation==='edit'){element('#service_place').value='Another venue';element('#intake-form').listeners.input({target:element('#service_place')});}
+ if(mutation==='identity')a.state.currentIntake={...beta};
+ if(mutation==='source')a.state.currentIntake={...alpha,source_sha256:'changed-source'};
+ if(mutation==='selection')a.state.sourceCaseSelectedIndex=1;
+ if(mutation==='review')a.state.lastReview={...a.state.lastReview};
+ context.document.body.dataset.interpretationReviewDrawer='sentinel';element('#alert').textContent='keep current message';
+ element('#sent-duplicate-review').listeners.click();
+ results.push({mutation,open:Boolean(element('#sent-duplicate-dialog').open),drawer:context.document.body.dataset.interpretationReviewDrawer,alert:element('#alert').textContent,stopped:a.state.sentDuplicateStoppedReview});
+}
+console.log(JSON.stringify({results,calls}));
+""")
+        for row in result['results']:
+            self.assertFalse(row['open'])
+            self.assertEqual(row['drawer'],'sentinel')
+            self.assertEqual(row['alert'],'keep current message')
+            self.assertIsNone(row['stopped'])
+        self.assertEqual(result['calls'],[])
+
+    def test_late_sent_review_cannot_prompt_for_the_next_source(self):
+        result=self.run_js("""
+a.state.currentIntake={...alpha};a.fillFormFromIntake(alpha);let release;deferred=new Promise(resolve=>release=resolve);deferredRoute='/api/review';responseOverride=sentReview();
+const pending=a.reviewIntake();a.clearPreparedArtifacts('new photo selected');a.state.currentIntake={...beta};a.fillFormFromIntake(beta);release();await pending;
+console.log(JSON.stringify({current:a.state.currentIntake.case_number,open:Boolean(element('#sent-duplicate-dialog').open),review:a.state.lastReview,calls}));
+""")
+        self.assertEqual(result['current'],'711/26.0TSTXX')
+        self.assertFalse(result['open'])
+        self.assertIsNone(result['review'])
+        self.assertEqual([row['url'] for row in result['calls']],['/api/review'])
+
+    def test_sent_or_unknown_child_keeps_source_replacement_disabled(self):
+        result=self.run_js("""
+const results=[];element('#source-correction-reason').value='Reviewed replacement reason';
+for(const status of ['sent',null,'drafted']){
+ a.state.sourceCaseCandidates=[alpha,beta].map(row=>({candidate_intake:row,review:sentReview(row,status),needs_review:false}));
+ a.syncActionGates();results.push({status,allowed:a.canPrepareSourceEmailReplacement(),disabled:element('#prepare-source-email-replacement').disabled});
+}
+console.log(JSON.stringify({results,calls}));
+""")
+        self.assertEqual(result['results'],[
+            {'status':'sent','allowed':False,'disabled':True},
+            {'status':None,'allowed':False,'disabled':True},
+            {'status':'drafted','allowed':True,'disabled':False}])
+        self.assertEqual(result['calls'],[])
+
+    def test_visible_venue_replacement_requests_dependent_reconciliation_without_changing_trip(self):
+        result = self.run_js("""
+const source={...alpha,service_place:'Posto da GNR de Alpha',service_entity:'GNR Alpha',service_entity_type:'gnr',
+service_place_phrase:'no Posto da GNR de Alpha',transport:{destination:'Alpha',km_one_way:25}};
+a.state.currentIntake=source;a.fillFormFromIntake(source);
+a.state.lastPrepared={sentinel:true};
+element('#service_place').value='Tribunal de Alpha';
+element('#intake-form').listeners.input({target:element('#service_place')});
+a.mergeFormIntoCurrentIntake();
+console.log(JSON.stringify({intake:a.state.currentIntake,prepared:a.state.lastPrepared}));
+""")
+        self.assertIn('service_place', result['intake']['review_cleared_fields'])
+        self.assertEqual(result['intake']['service_place'], 'Tribunal de Alpha')
+        self.assertEqual(result['intake']['payment_entity'], 'Court Alpha')
+        self.assertEqual(result['intake']['transport'], {'destination': 'Alpha', 'km_one_way': 25})
+        self.assertIsNone(result['prepared'])
+
+    def test_visible_payer_replacement_reconciles_salutation_for_photo_and_manual_inputs(self):
+        result = self.run_js("""
+const rows=[];
+for(const photo of [false,true])for(const newRecipient of ['', 'new@example.test']){
+ const source={...alpha,addressee:'Exmo. Senhor Procurador da República\\nOld MP',court_email:'old@example.test',court_email_key:'old',
+  recipient_override_reason:'old exception',...(photo?{photo_defaults_applied:{routing_status:'applied'}}:{})};
+ a.state.currentIntake=source;a.fillFormFromIntake(source);
+ element('#payment_entity').value='Tribunal de New City';
+ if(newRecipient)element('#recipient_email').value=newRecipient;
+ a.mergeFormIntoCurrentIntake();rows.push({photo,newRecipient,intake:JSON.parse(JSON.stringify(a.state.currentIntake))});
+}
+console.log(JSON.stringify(rows));
+""")
+        for row in result:
+            intake = row['intake']
+            self.assertIn('payment_entity', intake['review_cleared_fields'])
+            self.assertEqual(intake['addressee'], '')
+            self.assertEqual(intake['recipient_email'], row['newRecipient'])
+            if not row['newRecipient']:
+                self.assertIn('recipient_email', intake['review_cleared_fields'])
+            else:
+                self.assertNotIn('recipient_email', intake['review_cleared_fields'])
+            self.assertFalse(intake['court_email'])
+            self.assertFalse(intake['court_email_key'])
+            self.assertFalse(intake['recipient_override_reason'])
+            self.assertEqual(intake['service_place'], 'Police Alpha')
+
+    def test_unedited_visible_venue_and_payer_preserve_custom_details(self):
+        result = self.run_js("""
+const source={...alpha,addressee:'Custom reviewed addressee',service_place_phrase:'custom reviewed physical host phrase'};
+a.state.currentIntake=source;a.fillFormFromIntake(source);a.mergeFormIntoCurrentIntake();
+console.log(JSON.stringify(a.state.currentIntake));
+""")
+        self.assertEqual(result['addressee'], 'Custom reviewed addressee')
+        self.assertEqual(result['service_place_phrase'], 'custom reviewed physical host phrase')
+        self.assertNotIn('review_cleared_fields', result)
 
     def test_late_supporting_proof_never_attaches_to_a_new_request(self):
         result = self.run_js("""
@@ -579,6 +1094,61 @@ console.log(JSON.stringify({focused,batchVisible,scrolled,drawer:context.documen
                 self.assertIn('All queued requests are ready.' if status=='ready' else 'Fictional recipient needs review.',result['result'])
                 self.assertEqual([call['url'] for call in result['calls']],['/api/prepare/preflight'])
 
+    def test_manual_visit_selection_is_bound_to_preflight_and_invalidates_on_mode_change(self):
+        result=self.run_js("""
+const rows=[{...alpha,source_kind:'manual',source_sha256:'',claim_transport:true},
+ {...alpha,source_kind:'manual',source_sha256:'',case_number:'711/26.0TSTXX',claim_transport:false}];
+a.state.batchIntakes=rows;const before=JSON.stringify(rows);
+element('#batch-email-grouping').value='manual_visit';element('#batch-email-grouping').listeners.change();
+const note=element('#batch-email-grouping-note').textContent;
+await a.preflightBatchIntakes();const checked=a.batchPreflightSignature();
+await a.prepareBatchIntakes();
+element('#batch-email-grouping').value='individual';element('#batch-email-grouping').listeners.change();
+console.log(JSON.stringify({calls,note,unchanged:JSON.stringify(rows)===before,checked,changed:a.batchPreflightSignature(),
+ preflight:a.state.batchPreflight,prepared:a.state.lastPrepared,disabled:element('#prepare-batch-intakes').disabled}));
+""")
+        self.assertIn('confirms', result['note'])
+        self.assertIn('travel claimed once', result['note'])
+        self.assertTrue(result['unchanged'])
+        self.assertNotEqual(result['checked'], result['changed'])
+        self.assertIsNone(result['preflight'])
+        self.assertIsNone(result['prepared'])
+        self.assertTrue(result['disabled'])
+        for call in result['calls']:
+            self.assertEqual(call['body']['email_grouping'], 'manual_visit')
+            self.assertEqual([row['claim_transport'] for row in call['body']['intakes']], [True, False])
+        self.assertEqual(result['calls'][1]['body']['preflight_review'], {'token':'fictional-preflight'})
+
+    def test_manual_visit_replacement_keeps_mode_and_both_members(self):
+        result=self.run_js("""
+const prepared=groupedPrepare();prepared.email_grouping='manual_visit';prepared.items=prepared.items.slice(0,2);
+prepared.prepared_review_material.effective_intakes=prepared.prepared_review_material.effective_intakes.slice(0,2).map((row,index)=>({...row,source_kind:'manual',source_sha256:'',claim_transport:index===0}));
+prepared.email_groups=[{...prepared.email_groups[0],source_sha256:'',member_indices:[0,1],underlying_requests:prepared.items}];
+prepared.correction_mode=true;prepared.correction_reason='Correct both manual visit requests';
+a.renderPrepared(prepared);const options=element('#prepared-email-target').innerHTML;
+a.state.currentIntake=alpha;a.fillFormFromIntake(alpha);await a.prepareIntake({correctionMode:true});
+console.log(JSON.stringify({calls,options}));
+""")
+        self.assertIn('2 requests from one manual visit', result['options'])
+        for call in result['calls']:
+            self.assertEqual(call['body']['email_grouping'], 'manual_visit')
+            self.assertEqual(len(call['body']['intakes']), 2)
+            self.assertTrue(call['body']['correction_mode'])
+
+    def test_created_draft_next_action_points_to_existing_draft_and_resets_on_target_change(self):
+        result=self.run_js("""
+const prepared=prepare();prepared.next_safe_action={state:'review_gmail_draft_args',title:'Create Gmail Draft',button_id:'create-gmail-api-draft'};
+a.renderPrepared(prepared);a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
+await a.createGmailApiDraft();const completed=element('#next-safe-action-body').innerHTML,disabled=element('#create-gmail-api-draft').disabled;
+a.selectPreparedEmailTarget(1);
+console.log(JSON.stringify({completed,disabled,next:element('#next-safe-action-body').innerHTML,calls}));
+""")
+        self.assertIn('Review the created draft in Gmail', result['completed'])
+        self.assertNotIn('data-next-action-target="create-gmail-api-draft"', result['completed'])
+        self.assertTrue(result['disabled'])
+        self.assertIn('Create Gmail Draft', result['next'])
+        self.assertEqual(len(result['calls']), 1)
+
     def test_source_grouping_is_signed_without_combining_individual_pdfs(self):
         result=self.run_js("""
 a.state.batchIntakes=photoRows();const original=JSON.stringify(a.state.batchIntakes);
@@ -715,8 +1285,8 @@ console.log(JSON.stringify({oldIds,calls}));
 
     def test_photo_replacement_button_refreshes_all_children_before_atomic_prepare(self):
         result=self.run_js("""
-const rows=photoRows().slice(1);a.state.sourceCaseCandidates=rows.map(row=>({candidate_intake:row,review:{status:'duplicate',intake:row,effective_intake:row,questions:[]},needs_review:false}));a.state.sourceCaseSelectedIndex=0;a.state.currentIntake=rows[0];a.fillFormFromIntake(rows[0]);element('#source-correction-reason').value='Correct all five photo recipients';
-routeOverrides['/api/review']=body=>({status:'duplicate',intake:body.intake,effective_intake:body.intake,questions:[]});
+const rows=photoRows().slice(1);a.state.sourceCaseCandidates=rows.map(row=>({candidate_intake:row,review:{status:'duplicate',duplicate:{status:'drafted'},intake:row,effective_intake:row,questions:[]},needs_review:false}));a.state.sourceCaseSelectedIndex=0;a.state.currentIntake=rows[0];a.fillFormFromIntake(rows[0]);element('#source-correction-reason').value='Correct all five photo recipients';
+routeOverrides['/api/review']=body=>({status:'duplicate',duplicate:{status:'drafted'},intake:body.intake,effective_intake:body.intake,questions:[]});
 await element('#prepare-source-email-replacement').listeners.click();console.log(JSON.stringify({calls,queue:a.state.batchIntakes.length,status:element('#status-pill').textContent}));
 """)
         reviews=[call for call in result['calls'] if call['url']=='/api/review']
@@ -731,7 +1301,7 @@ await element('#prepare-source-email-replacement').listeners.click();console.log
 
     def test_photo_replacement_with_unresolved_child_creates_no_artifacts(self):
         result=self.run_js("""
-const rows=photoRows().slice(1);a.state.sourceCaseCandidates=rows.map(row=>({candidate_intake:row,review:{status:'duplicate',intake:row,effective_intake:row,questions:[]},needs_review:false}));a.state.sourceCaseSelectedIndex=0;a.state.currentIntake=rows[0];a.fillFormFromIntake(rows[0]);element('#source-correction-reason').value='Correct all five photo recipients';
+const rows=photoRows().slice(1);a.state.sourceCaseCandidates=rows.map(row=>({candidate_intake:row,review:{status:'duplicate',duplicate:{status:'drafted'},intake:row,effective_intake:row,questions:[]},needs_review:false}));a.state.sourceCaseSelectedIndex=0;a.state.currentIntake=rows[0];a.fillFormFromIntake(rows[0]);element('#source-correction-reason').value='Correct all five photo recipients';
 routeOverrides['/api/review']=body=>({status:body.intake.case_number.startsWith('715/')?'needs_info':'duplicate',intake:body.intake,effective_intake:body.intake,questions:body.intake.case_number.startsWith('715/')?[{field:'service_date'}]:[]});
 await element('#prepare-source-email-replacement').listeners.click();console.log(JSON.stringify({routes:calls.map(call=>call.url),prepared:a.state.lastPrepared,status:element('#status-pill').textContent,alert:element('#alert').textContent}));
 """)

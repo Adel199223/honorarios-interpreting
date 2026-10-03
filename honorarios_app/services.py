@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import base64
 import hashlib
 import hmac
 import json
@@ -17,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from PIL import Image
@@ -58,6 +59,7 @@ from scripts.generate_pdf import (
     duplicate_record_status,
     find_duplicate_record,
     format_duplicate_message,
+    paper_submission_confirmed,
     get_service_date_value,
     load_json,
     resolve_json_path,
@@ -74,24 +76,27 @@ from scripts.prepare_honorarios import (
     render_png,
     validate_intake_before_generation,
 )
-from scripts.record_gmail_draft import main as record_gmail_draft_main, validate_superseded_request_coverage, validate_source_group_history
+from scripts.record_gmail_draft import main as record_gmail_draft_main, validate_superseded_request_coverage, validate_source_group_history, apply_verified_sent_unlocked
 from scripts.request_identity import normalize_case_number, request_identity_key, request_identity_keys_overlap
-from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, validate_shared_travel_groups, validate_travel_payload_groups
+from scripts.claim_options import ClaimError, claim_metadata, recorded_travel_requests, travel_binding, validate_shared_travel_groups, validate_travel_payload_groups
 from scripts.entity_rules import build_service_place_clause, classify_entity_type, source_mentions_pj_context
 from scripts.source_parsing import explicit_service_places, service_date_evidence
 from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection, source_scope_fingerprint
 
 from .ai_recovery import (MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai,
-                          resolve_openai_config, should_attempt_ai_recovery, text_is_weak_for_pdf_ocr)
+                          resolve_openai_config, safe_api_usage_metadata, should_attempt_ai_recovery, text_is_weak_for_pdf_ocr)
 from .source_cases import source_case_rows, valid_source_case
+from .photo_metadata import PhotoMetadataError, extract_photo_metadata, picker_capture_metadata
 from .workspace_draft import workspace_runtime_id
-from .photo_defaults import apply_photo_defaults, apply_saved_court_label, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
+from .photo_defaults import apply_capture_city_answer, apply_photo_defaults, apply_saved_court_label, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
+from .gps_city import match_verified_gps_city
 from .gmail_draft_api import (
     GmailDraftCreateError,
     create_gmail_draft_from_payload,
     gmail_oauth_callback,
     gmail_oauth_start,
     gmail_status_payload,
+    gmail_sent_read_ready,
     save_gmail_local_config,
     verify_gmail_draft_exists,
 )
@@ -141,6 +146,7 @@ GOOGLE_PHOTOS_PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.media
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_PHOTOS_PICKER_SESSIONS_URL = "https://photospicker.googleapis.com/v1/sessions"
+GOOGLE_PHOTOS_PICKER_MEDIA_URL = "https://photospicker.googleapis.com/v1/mediaItems"
 MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 PDF_SUFFIXES = {".pdf"}
@@ -287,6 +293,8 @@ def _google_photos_config(config_path: Path) -> dict[str, Any]:
         config_path,
     )
     token_path = Path(token_path_text).expanduser() if token_path_text else config_path.with_name("google-photos-token.local.json")
+    if token_path_text and not token_path.is_absolute():
+        token_path = config_path.parent.parent / token_path
     return {
         "client_id": client_id,
         "client_id_source": client_id_source,
@@ -310,27 +318,64 @@ def _read_google_photos_token(token_path: Path) -> dict[str, Any]:
 
 
 def _write_google_photos_token(token_path: Path, token: dict[str, Any]) -> None:
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(json.dumps(token, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(token_path, token)
+
+
+def _photos_scope_granted(token: dict[str, Any]) -> bool:
+    return GOOGLE_PHOTOS_PICKER_SCOPE in str(token.get("scope") or "").split()
+
+
+def _photos_response(response: httpx.Response, action: str) -> dict[str, Any]:
+    """Provider URLs and response bodies can contain bearer access material."""
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        code = response.status_code
+        guidance = {
+            400: "The Google Photos request was rejected. Start a new Picker session or reconnect OAuth.",
+            401: "Google Photos authorization expired. Reconnect Google Photos OAuth.",
+            403: "Google Photos permission or API access is unavailable. Enable Photos Picker API for the OAuth project and reconnect with the Picker permission.",
+            404: "This Google Photos Picker session or photo is no longer available. Open a new Picker session.",
+            429: "Google Photos is temporarily rate limited. Try again later.",
+        }.get(code, "Google Photos is temporarily unavailable. Try again later.")
+        raise IntakeError(f"{guidance} ({action}; HTTP {code})") from exc
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise IntakeError(f"Google Photos returned an unreadable response during {action}. Try again later.") from exc
+    if not isinstance(payload, dict):
+        raise IntakeError(f"Google Photos returned an unexpected response during {action}.")
+    return payload
+
+
+def _photos_network_error(exc: httpx.RequestError) -> IntakeError:
+    return IntakeError("Google Photos could not be reached. Check the connection and retry; no request was prepared.")
 
 
 def _google_photos_access_token(paths: AppPaths) -> tuple[str, dict[str, Any]]:
     config = _google_photos_config(paths.google_photos_config)
     token = _read_google_photos_token(config["token_path"])
+    if not _photos_scope_granted(token):
+        raise IntakeError("Google Photos Picker permission is missing. Connect Google Photos OAuth first.")
     access_token = str(token.get("access_token") or "").strip()
     if access_token and not _token_expired(token):
         return access_token, token
     refresh_token = str(token.get("refresh_token") or "").strip()
     if refresh_token and config["client_id"] and config["client_secret"]:
-        refreshed = _exchange_google_token({
-            "client_id": config["client_id"],
-            "client_secret": config["client_secret"],
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        })
+        try:
+            refreshed = _exchange_google_token({
+                "client_id": config["client_id"],
+                "client_secret": config["client_secret"],
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            })
+        except IntakeError:
+            raise IntakeError("Google Photos authorization could not be refreshed. Reconnect Google Photos OAuth.") from None
         token.update(refreshed)
         if "refresh_token" not in token:
             token["refresh_token"] = refresh_token
+        if not _photos_scope_granted(token):
+            raise IntakeError("Google Photos Picker permission is missing. Reconnect Google Photos OAuth.")
         _write_google_photos_token(config["token_path"], token)
         access_token = str(token.get("access_token") or "").strip()
         if access_token:
@@ -341,7 +386,7 @@ def _google_photos_access_token(paths: AppPaths) -> tuple[str, dict[str, Any]]:
 def _token_expired(token: dict[str, Any]) -> bool:
     expires_at = str(token.get("expires_at") or "").strip()
     if not expires_at:
-        return False
+        return True
     try:
         expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
     except ValueError:
@@ -352,10 +397,14 @@ def _token_expired(token: dict[str, Any]) -> bool:
 
 
 def _exchange_google_token(form: dict[str, Any]) -> dict[str, Any]:
-    with httpx.Client(timeout=30) as client:
-        response = client.post(GOOGLE_OAUTH_TOKEN_URL, data=form)
-        response.raise_for_status()
-        payload = response.json()
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(GOOGLE_OAUTH_TOKEN_URL, data=form)
+            payload = _photos_response(response, "authorization")
+    except httpx.RequestError as exc:
+        raise _photos_network_error(exc) from exc
+    if not str(payload.get("access_token") or "").strip():
+        raise IntakeError("Google Photos did not return an access token. Reconnect Google Photos OAuth.")
     output = dict(payload)
     expires_in = int(output.get("expires_in") or 0)
     if expires_in:
@@ -368,6 +417,7 @@ def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
     token_store_present = False
     access_token_present = False
     refresh_token_present = False
+    token: dict[str, Any] = {}
     try:
         token_store_present = config["token_path"].exists()
         token = _read_google_photos_token(config["token_path"])
@@ -376,7 +426,9 @@ def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
     except OSError:
         token_store_present = False
     configured = bool(config["client_id"] and config["client_secret"])
-    connected = bool(configured and token_store_present and (access_token_present or refresh_token_present))
+    scope_granted = _photos_scope_granted(token)
+    access_token_valid = access_token_present and not _token_expired(token)
+    connected = bool(configured and scope_granted and (access_token_valid or refresh_token_present))
     return {
         "provider": "google_photos",
         "scope": GOOGLE_PHOTOS_PICKER_SCOPE,
@@ -384,6 +436,14 @@ def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
         "connected": connected,
         "manual_import_ready": True,
         "oauth_picker_ready": connected,
+        "connection_verified": False,
+        "scope_granted": scope_granted,
+        "refresh_needed": bool(connected and not access_token_valid),
+        "metadata_capabilities": {
+            "capture_timestamp": True,
+            "location_from_picker": False,
+            "original_file_exif": True,
+        },
         "client_id_source": config["client_id_source"],
         "client_secret_configured": bool(config["client_secret"]),
         "client_secret_source": config["client_secret_source"],
@@ -394,7 +454,7 @@ def google_photos_status_payload(config_path: Path) -> dict[str, Any]:
         "refresh_token_present": refresh_token_present,
         "token_path_source": config["token_path_source"],
         "message": (
-            "Google Photos OAuth Picker is connected."
+            "Google Photos authorization is saved. Open the Picker to verify access. Picker supplies a capture timestamp; it does not supply location."
             if connected
             else "OAuth Picker is not connected in this standalone app yet; use selected-photo import with local image metadata."
         ),
@@ -407,11 +467,13 @@ def google_photos_oauth_start(paths: AppPaths) -> dict[str, Any]:
     if not config["client_id"] or not config["client_secret"]:
         raise IntakeError("Google Photos OAuth needs GOOGLE_PHOTOS_CLIENT_ID and GOOGLE_PHOTOS_CLIENT_SECRET or config/google-photos.local.json.")
     state = secrets.token_urlsafe(24)
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
     token = _read_google_photos_token(config["token_path"])
     token.update({
         "oauth_state": state,
         "oauth_started_at": datetime.now(timezone.utc).isoformat(),
-        "scope": GOOGLE_PHOTOS_PICKER_SCOPE,
+        "oauth_code_verifier": verifier,
     })
     _write_google_photos_token(config["token_path"], token)
     query = urlencode({
@@ -422,6 +484,8 @@ def google_photos_oauth_start(paths: AppPaths) -> dict[str, Any]:
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     })
     return {
         "status": "authorization_ready",
@@ -437,23 +501,38 @@ def google_photos_oauth_callback(*, code: str, state: str, paths: AppPaths) -> d
     config = _google_photos_config(paths.google_photos_config)
     token = _read_google_photos_token(config["token_path"])
     expected_state = str(token.get("oauth_state") or "").strip()
-    if not expected_state or state != expected_state:
+    if not expected_state or not secrets.compare_digest(state.encode("utf-8"), expected_state.encode("utf-8")):
         raise IntakeError("Google Photos OAuth state mismatch. Start the OAuth flow again.")
+    try:
+        started = datetime.fromisoformat(str(token.get("oauth_started_at") or ""))
+        fresh = timedelta(0) <= datetime.now(timezone.utc) - started <= timedelta(minutes=10)
+    except (ValueError, TypeError):
+        fresh = False
+    if not fresh or not token.get("oauth_code_verifier"):
+        raise IntakeError("Google Photos OAuth authorization expired. Start the OAuth flow again.")
     if not code:
         raise IntakeError("Google Photos OAuth callback is missing an authorization code.")
+    verifier = token["oauth_code_verifier"]
+    # A callback is single-use, including when token exchange fails. Existing
+    # authorization survives so a failed reconnect does not erase it.
+    _write_google_photos_token(config["token_path"], {key: value for key, value in token.items() if not key.startswith("oauth_")})
     exchanged = _exchange_google_token({
         "client_id": config["client_id"],
         "client_secret": config["client_secret"],
         "code": code,
         "grant_type": "authorization_code",
         "redirect_uri": config["redirect_uri"],
+        "code_verifier": verifier,
     })
     stored = {
-        **{key: value for key, value in token.items() if key.startswith("oauth_")},
         **exchanged,
         "connected_at": datetime.now(timezone.utc).isoformat(),
-        "scope": exchanged.get("scope") or GOOGLE_PHOTOS_PICKER_SCOPE,
+        # OAuth permits omission when the granted scope is exactly the request.
+        # An explicit empty/different grant still fails the check below.
+        "scope": exchanged.get("scope", GOOGLE_PHOTOS_PICKER_SCOPE),
     }
+    if not _photos_scope_granted(stored):
+        raise IntakeError("Google Photos Picker permission was not granted. Reconnect and allow selected-photo access.")
     _write_google_photos_token(config["token_path"], stored)
     return {
         "status": "connected",
@@ -470,17 +549,19 @@ def google_photos_create_picker_session(payload: dict[str, Any], paths: AppPaths
     max_items = int(payload.get("max_items") or 1)
     request_body = {
         "pickingConfig": {
-            "maxItemCount": max(1, min(max_items, 50)),
+            "maxItemCount": str(max(1, min(max_items, 50))),
         }
     }
-    with httpx.Client(timeout=30) as client:
-        response = client.post(
-            GOOGLE_PHOTOS_PICKER_SESSIONS_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
-            json=request_body,
-        )
-        response.raise_for_status()
-        data = response.json()
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(
+                GOOGLE_PHOTOS_PICKER_SESSIONS_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=request_body,
+            )
+            data = _photos_response(response, "open Picker")
+    except httpx.RequestError as exc:
+        raise _photos_network_error(exc) from exc
     return {
         "status": "picker_session_created",
         "session_id": data.get("id") or data.get("sessionId") or "",
@@ -497,12 +578,53 @@ def _extract_media_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _media_file_info(item: dict[str, Any]) -> dict[str, str]:
     media_file = item.get("mediaFile") or item.get("media_file") or item
+    if not isinstance(media_file, dict):
+        raise IntakeError("Google Photos returned unreadable photo information. Open a new Picker session.")
     return {
         "id": str(item.get("id") or item.get("mediaItemId") or media_file.get("id") or "google-photo"),
         "filename": str(media_file.get("filename") or media_file.get("fileName") or item.get("filename") or "google-photo.jpg"),
         "mime_type": str(media_file.get("mimeType") or media_file.get("mime_type") or item.get("mimeType") or "image/jpeg"),
         "base_url": str(media_file.get("baseUrl") or media_file.get("base_url") or item.get("baseUrl") or ""),
+        "create_time": str(item.get("createTime") or ""),
+        "type": str(item.get("type") or ""),
     }
+
+
+def _photos_session_media(client: httpx.Client, session_id: str, access_token: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    # Google rejects mediaItems.list before the picker is complete.
+    session = _photos_response(client.get(
+        f"{GOOGLE_PHOTOS_PICKER_SESSIONS_URL}/{quote(session_id, safe='')}", headers=headers,
+    ), "check selection")
+    if session.get("mediaItemsSet") is not True:
+        return session, []
+    items: list[dict[str, str]] = []
+    page_token = ""
+    seen_tokens: set[str] = set()
+    for _ in range(10):
+        params = {"sessionId": session_id, "pageSize": 100}
+        if page_token:
+            params["pageToken"] = page_token
+        payload = _photos_response(client.get(
+            GOOGLE_PHOTOS_PICKER_MEDIA_URL, headers=headers, params=params,
+        ), "read selection")
+        items.extend(_media_file_info(item) for item in _extract_media_items(payload) if isinstance(item, dict))
+        page_token = str(payload.get("nextPageToken") or "")
+        if not page_token:
+            return session, items
+        if page_token in seen_tokens:
+            break
+        seen_tokens.add(page_token)
+    raise IntakeError("Google Photos returned an incomplete selection. Open a new Picker session and choose one image.")
+
+
+def _photos_download_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    hostname = parsed.hostname or ""
+    if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in (None, 443)
+            or not (hostname == "googleusercontent.com" or hostname.endswith(".googleusercontent.com"))):
+        raise IntakeError("Google Photos returned an unexpected download address. Open a new Picker session.")
+    return base_url if base_url.endswith("=d") else f"{base_url}=d"
 
 
 def google_photos_list_session_media(session_id: str, paths: AppPaths) -> dict[str, Any]:
@@ -510,20 +632,19 @@ def google_photos_list_session_media(session_id: str, paths: AppPaths) -> dict[s
     safe_session_id = str(session_id or "").strip()
     if not safe_session_id:
         raise IntakeError("Google Photos Picker session ID is required.")
-    with httpx.Client(timeout=30) as client:
-        response = client.get(
-            f"{GOOGLE_PHOTOS_PICKER_SESSIONS_URL}/{safe_session_id}/mediaItems",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        response.raise_for_status()
-        data = response.json()
-    items = [_media_file_info(item) for item in _extract_media_items(data)]
+    try:
+        with httpx.Client(timeout=30) as client:
+            session, items = _photos_session_media(client, safe_session_id, access_token)
+    except httpx.RequestError as exc:
+        raise _photos_network_error(exc) from exc
     return {
         "status": "media_items_ready" if items else "waiting_for_selection",
         "session_id": safe_session_id,
+        "media_items_set": session.get("mediaItemsSet") is True,
+        "polling_config": session.get("pollingConfig") or {},
         "selected_count": len(items),
         "items": [
-            {"id": item["id"], "filename": item["filename"], "mime_type": item["mime_type"]}
+            {"id": item["id"], "filename": item["filename"], "mime_type": item["mime_type"], "create_time": item["create_time"]}
             for item in items
         ],
         "send_allowed": False,
@@ -535,26 +656,36 @@ def google_photos_import_selected(payload: dict[str, Any], paths: AppPaths) -> d
     session_id = str(payload.get("session_id") or "").strip()
     if not session_id:
         raise IntakeError("Google Photos Picker session ID is required.")
-    with httpx.Client(timeout=30) as client:
-        media_response = client.get(
-            f"{GOOGLE_PHOTOS_PICKER_SESSIONS_URL}/{session_id}/mediaItems",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        media_response.raise_for_status()
-        media_payload = media_response.json()
-        items = [_media_file_info(item) for item in _extract_media_items(media_payload)]
-        if not items:
-            raise IntakeError("No selected Google Photos media item is available yet.")
-        selected = items[0]
-        if not selected["base_url"]:
-            raise IntakeError("Selected Google Photos media item does not include a downloadable base URL.")
-        download_url = selected["base_url"]
-        if not download_url.endswith("=d"):
-            download_url = f"{download_url}=d"
-        download_response = client.get(download_url, headers={"Authorization": f"Bearer {access_token}"})
-        download_response.raise_for_status()
-        content = download_response.content
-        content_type = download_response.headers.get("content-type") or selected["mime_type"] or "image/jpeg"
+    try:
+        with httpx.Client(timeout=30) as client:
+            _session, items = _photos_session_media(client, session_id, access_token)
+            if not items:
+                raise IntakeError("No selected Google Photos image is available yet. Finish selection in the Picker, then check again.")
+            if len(items) != 1:
+                raise IntakeError("Choose exactly one Google Photos image per source import. Open a new Picker session; no image was imported.")
+            selected = items[0]
+            if selected["type"] == "VIDEO" or not selected["mime_type"].startswith("image/"):
+                raise IntakeError("The selected Google Photos item is not an image. Choose a photo of the source document.")
+            if not selected["base_url"]:
+                raise IntakeError("Selected Google Photos image does not include a downloadable base URL.")
+            download_url = _photos_download_url(selected["base_url"])
+            # Bound the download before buffering it; photo uploads use the same limit.
+            with client.stream("GET", download_url, headers={"Authorization": f"Bearer {access_token}"}) as response:
+                if response.status_code >= 400:
+                    _photos_response(response, "download photo")
+                if response.is_redirect:
+                    raise IntakeError("Google Photos redirected the download unexpectedly. Open a new Picker session.")
+                content_type = response.headers.get("content-type") or selected["mime_type"]
+                content_parts: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes():
+                    total += len(chunk)
+                    if total > MAX_SOURCE_UPLOAD_BYTES:
+                        raise IntakeError("The selected Google Photos image exceeds the 25 MiB upload limit.")
+                    content_parts.append(chunk)
+                content = b"".join(content_parts)
+    except httpx.RequestError as exc:
+        raise _photos_network_error(exc) from exc
 
     visible_text = "\n".join(
         part
@@ -570,8 +701,10 @@ def google_photos_import_selected(payload: dict[str, Any], paths: AppPaths) -> d
         content=content,
         source_kind="photo",
         profile_name=str(payload.get("profile") or ""),
+        personal_profile_id=str(payload.get("personal_profile_id") or ""),
         visible_text=visible_text,
         ai_recovery_mode=str(payload.get("ai_recovery") or "auto"),
+        provider_metadata={"google_photos_create_time": selected["create_time"], "google_photos_filename": selected["filename"]},
         paths=paths,
     )
     result["google_photos"] = {
@@ -657,6 +790,41 @@ def extract_candidate_fields(text: str, paths: AppPaths, *, source_kind: str = "
         fields["recipient_email"] = next(iter(source_emails))
 
     place_fields, _warning = _source_place_fields(source_text, paths)
+    explicit_places = explicit_service_places(source_text)
+    # A bare city in a police district header must not replace a physical host
+    # or its travel destination supplied by a profile or source.
+    matched_place = str(place_fields.get('service_place') or '').strip()
+    destination = str(place_fields.get('transport_destination') or '').strip()
+    if (source_kind == 'photo' and not explicit_places and matched_place
+            and fold_match_text(matched_place) == fold_match_text(destination)):
+        place_fields.pop('service_place', None)
+        place_fields.pop('transport_destination', None)
+        place_fields.pop('km_one_way', None)
+    if source_kind == 'photo' and not explicit_places:
+        stations = re.findall(r'^\s*((?:Esquadra|Posto(?: Territorial)?)(?: da (?:PSP|GNR))? de [^\n]+)',
+                              source_text, re.IGNORECASE | re.MULTILINE)
+        stations = {fold_match_text(value.strip().rstrip('.')): value.strip().rstrip('.') for value in stations}
+        if len(stations) == 1:
+            host = next(iter(stations.values()))
+            # Re-match travel against the actual station, never a district or
+            # issuer elsewhere in the document. Unknown hosts need a distance.
+            host_travel, _ = _source_place_fields(host, paths)
+            place_fields.pop('transport_destination', None)
+            place_fields.pop('km_one_way', None)
+            for key in ('transport_destination', 'km_one_way'):
+                if key in host_travel:
+                    place_fields[key] = host_travel[key]
+            entity = 'Polícia Judiciária' if source_mentions_pj_context({'source_text': source_text}) else host
+            place_fields.update(service_place=host, service_entity=entity,
+                                service_entity_type=classify_entity_type(entity), entities_differ=True,
+                                source_station_place=host,
+                                service_place_phrase=build_service_place_clause(
+                                    {'service_place': host, 'source_text': source_text}, entity))
+    if source_kind == 'photo' and (explicit_places or place_fields.get('source_station_place')):
+        host = str(place_fields.get('service_place') or '').strip()
+        if host:
+            place_fields.setdefault('transport_destination', host)
+            place_fields['source_transport_host'] = host
     fields.update(place_fields)
     return fields
 
@@ -884,8 +1052,10 @@ def _default_addressee(payment_entity: str) -> str:
     entity = str(payment_entity or "").strip()
     if not entity:
         return ""
-    if "procurador" in fold_match_text(entity):
+    if re.search(r'\b(?:procurador|procuradora|juiz|juiza)\b', fold_match_text(entity)):
         return entity
+    if classify_entity_type(entity) == 'court':
+        return f"Exmo. Senhor Juiz de Direito\n{entity}"
     return f"Exmo. Senhor Procurador da República\n{entity}"
 
 
@@ -1012,7 +1182,11 @@ def _service_profile_defaults(profile_key: str, profiles: dict[str, Any]) -> dic
     defaults = profile.get("defaults") or {}
     if not isinstance(defaults, dict):
         return {}
-    return copy.deepcopy(defaults)
+    defaults = copy.deepcopy(defaults)
+    # A reusable profile's display label is not evidence of a request source.
+    # Actual upload/caller filenames remain on the intake merged over defaults.
+    defaults.pop("source_filename", None)
+    return defaults
 
 
 def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any]) -> None:
@@ -1031,10 +1205,11 @@ def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any
         value = transport.get('km_one_way') if field == 'transport.km_one_way' else original.get(field)
         if str(value if value is not None else '').strip():
             if field == 'service_place':
-                entity_type = classify_entity_type(str(value))
-                merged.update(service_entity=value, service_entity_type=entity_type,
+                entity = 'Polícia Judiciária' if source_mentions_pj_context(original) else value
+                entity_type = classify_entity_type(str(entity))
+                merged.update(service_entity=entity, service_entity_type=entity_type,
                               entities_differ=entity_type not in {'court', 'ministerio_publico'},
-                              service_place_phrase=build_service_place_clause({'service_place': value}, str(value)))
+                              service_place_phrase=build_service_place_clause({'service_place': value, 'service_entity': entity}, str(entity)))
             elif field == 'payment_entity' and not str(original.get('addressee') or '').strip():
                 merged['addressee'] = _default_addressee(str(value))
             continue  # A new field edit or numbered answer resolves the removal.
@@ -1104,12 +1279,27 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
         preserve_photo_routing(intake, reviewed_intake)
         reviewed_intake["service_profile_key"] = profile_key
         reviewed_intake.setdefault("closing_date", app_current_date())
+    # An unresolved distance for a newly recovered host must not inherit a
+    # service profile's previous destination distance during another review.
+    # Personal-profile lookup still runs below against the actual destination.
+    if (intake.get('source_transport_distance_pending')
+            and (intake.get('transport') or {}).get('km_one_way') in (None, '')):
+        reviewed_intake.setdefault('transport', {})['km_one_way'] = ''
     preserve_review_field_clears(intake, reviewed_intake)
     reviewed_intake["auto_profile"] = profile_decision
 
     review = review_intake(reviewed_intake, paths)
     candidate = copy.deepcopy(review.get("effective_intake") or reviewed_intake)
     candidate.setdefault("auto_profile", profile_decision)
+    if (candidate.get('photo_capture_city') and candidate.get('photo_capture_city_source_sha256') == candidate.get('source_sha256')
+            and 'transport.km_one_way' in (review.get('personal_profile') or {}).get('applied', [])):
+        # The browser adopts effective_intake, including the automatically found
+        # distance. Retain its provenance so a later source/city rebind clears
+        # only that unchanged derived value, never a subsequent manual edit.
+        derived = copy.deepcopy(candidate.get('photo_capture_city_applied_fields') or {})
+        derived['transport.km_one_way'] = candidate['transport']['km_one_way']
+        for target in (candidate, reviewed_intake, review.get('effective_intake') or {}):
+            target['photo_capture_city_applied_fields'] = copy.deepcopy(derived)
 
     deterministic_fields = extract_candidate_fields(str(candidate.get("source_text") or evidence_text), paths,
                                                     source_kind=str(candidate.get("source_kind") or ""))
@@ -1213,6 +1403,8 @@ def _safe_ai_recovery_for_intake(ai_recovery: dict[str, Any]) -> dict[str, Any]:
         "missing_fields",
         "translation_indicators",
         "warnings",
+        "api_usage",
+        "api_usage_receipt",
     ]
     return {key: copy.deepcopy(ai_recovery.get(key)) for key in keys if key in ai_recovery}
 
@@ -1272,12 +1464,44 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
         "service_entity_type": _first_ai_field(ai_recovery, "service_entity_type"),
         "service_place": _first_ai_field(ai_recovery, "service_place", "locality"),
     }
+    # A newly filled, grounded physical host needs a coherent service entity.
+    # Existing places, including manual/profile city labels, stay authoritative.
+    existing_place = str(intake.get('service_place') or '').strip()
+    ai_place = _first_ai_field(ai_recovery, 'service_place')
+    named_host = re.match(r'^(?:esquadra|posto(?: territorial)?|hospital|gabinete|instituto|edif[ií]cio|tribunal)\b',
+                          ai_place, re.IGNORECASE)
+    grounded_host = ai_place and re.search(r'(?<!\w)' + re.escape(fold_match_text(ai_place)) + r'(?!\w)',
+                                          fold_match_text(str(intake.get('source_text') or '')))
+    if (not existing_place and named_host and grounded_host
+            and 'service_place' not in (intake.get('review_cleared_fields') or [])):
+        intake['service_place'] = ai_place
+        transport = copy.deepcopy(intake.get('transport') or {})
+        previous_destination = fold_match_text(str(transport.get('destination') or ''))
+        actual_locality = fold_match_text(_first_ai_field(ai_recovery, 'locality'))
+        host_label = fold_match_text(ai_place)
+        same_destination = previous_destination == host_label or bool(
+            actual_locality and previous_destination == actual_locality and host_label.endswith(' ' + actual_locality))
+        if not same_destination:
+            transport.update(destination=ai_place, km_one_way='')
+            intake['source_transport_distance_pending'] = True
+            intake['transport'] = transport
+        existing_type = str(intake.get('service_entity_type') or '').strip().casefold()
+        if not intake.get('service_entity') or existing_type in {'', 'court', 'ministerio_publico'}:
+            entity = 'Polícia Judiciária' if source_mentions_pj_context(intake) else ai_place
+            entity_type = 'police' if entity == 'Polícia Judiciária' else classify_entity_type(entity)
+            intake.update(service_entity=entity, service_entity_type=entity_type,
+                          entities_differ=entity_type not in {'court', 'ministerio_publico'})
+        intake['service_place_phrase'] = build_service_place_clause(
+            {'service_place': ai_place, 'source_text': intake.get('source_text', '')},
+            str(intake.get('service_entity') or ai_place))
     # Source prose can be a future summons rather than a completed-service
     # clause. Keep that evidence under ai_recovery; render a location from the
     # resolved venue unless an existing profile/manual clause was supplied.
     for key, value in fill_if_missing.items():
+        if key == 'service_place' and key in (intake.get('review_cleared_fields') or []):
+            continue
         existing_value = str(intake.get(key) or "").strip()
-        if key == "service_entity_type" and value and existing_value == "court" and value in {"gnr", "psp", "police", "other"}:
+        if key == "service_entity_type" and not existing_place and value and existing_value == "court" and value in {"gnr", "psp", "police", "other"}:
             intake[key] = value
         elif value and not existing_value:
             intake[key] = value
@@ -1297,44 +1521,8 @@ def merge_ai_recovery_into_intake(intake: dict[str, Any], ai_recovery: dict[str,
 
 def image_metadata_from_bytes(content: bytes) -> dict[str, Any]:
     try:
-        with Image.open(BytesIO(content)) as image:
-            image.load()
-            metadata: dict[str, Any] = {
-                "width": image.width,
-                "height": image.height,
-                "format": image.format or "",
-            }
-            exif = image.getexif()
-            orientation = exif.get(274)
-            if orientation not in (None, ""):
-                metadata["exif_orientation"] = int(orientation)
-            # Cameras normally store DateTimeOriginal in the nested Exif IFD.
-            # Top-level DateTime is the image modification time, not capture.
-            try:
-                capture_exif = exif.get_ifd(34665)
-            except (KeyError, TypeError, ValueError, OSError):
-                capture_exif = {}
-            for value in (capture_exif.get(36867), exif.get(36867),
-                          capture_exif.get(36868), exif.get(36868)):
-                exif_date = parse_exif_date(value)
-                if exif_date:
-                    metadata["exif_date"] = exif_date
-                    break
-            warnings: list[str] = []
-            if not metadata.get('exif_date') and parse_exif_date(exif.get(306)):
-                warnings.append('The image has an EXIF modification date but no capture date. Confirm the actual photo/service date.')
-            min_side = min(image.width, image.height)
-            max_side = max(image.width, image.height)
-            if min_side < 320:
-                warnings.append("Image is very narrow or small; the legal document may be cropped or only partially visible.")
-            if min_side and max_side / min_side > 3:
-                warnings.append("Image aspect ratio is unusually narrow or wide; inspect for cropped or partial document content.")
-            if orientation not in (None, 1, ""):
-                warnings.append("Image has EXIF orientation metadata; verify the visible text direction before generating.")
-            if warnings:
-                metadata["warnings"] = warnings
-            return metadata
-    except OSError as exc:
+        return extract_photo_metadata(content)
+    except PhotoMetadataError as exc:
         raise IntakeError("Uploaded photo/screenshot is not a readable image.") from exc
 
 
@@ -1647,9 +1835,12 @@ def build_partial_intake_from_profile(
             transport["destination"] = transport_destination
         if km_one_way not in (None, ""):
             transport["km_one_way"] = km_one_way
+        elif fields.get('source_transport_host'):
+            transport['km_one_way'] = ''
+            intake['source_transport_distance_pending'] = True
         intake["transport"] = transport
 
-    photo_metadata_date = str(metadata.get("exif_date") or metadata.get("visible_metadata_date") or "").strip()
+    photo_metadata_date = str(metadata.get("exif_date") or metadata.get("picker_capture_date") or metadata.get("visible_metadata_date") or "").strip()
     if source_kind == "photo" and photo_metadata_date:
         intake["photo_metadata_date"] = photo_metadata_date
         if intake.get("service_date") and intake.get("service_date") == photo_metadata_date:
@@ -1658,6 +1849,49 @@ def build_partial_intake_from_profile(
             intake.setdefault("service_date_source", "photo_metadata")
 
     return intake
+
+
+def record_source_api_usage(
+    recovery: dict[str, Any], *, stored_path: Path, filename: str,
+    source_kind: str, source_sha256: str, paths: AppPaths,
+) -> dict[str, Any]:
+    """Persist one safe receipt per attempted provider call, before later review.
+
+    All cases recovered from this source share this receipt. Its random ID
+    distinguishes repeated billed reads even when their source bytes are equal.
+    Receipt failure must never make a successful reading appear to need a retry.
+    """
+    if recovery.get("attempted") is not True:
+        return recovery
+    result = copy.deepcopy(recovery)
+    metadata = result.get("api_usage") if isinstance(result.get("api_usage"), dict) else {}
+    metadata.setdefault("requested_model", result.get("model"))
+    result["api_usage"] = safe_api_usage_metadata(metadata)
+    receipt_id = secrets.token_hex(16)
+    receipt_path = stored_path.with_name(f"{stored_path.name}.{receipt_id}.api-usage.json")
+    status = result.get("status")
+    receipt = {
+        "schema_version": 1,
+        "receipt_id": receipt_id,
+        "provider": "openai",
+        "attempted": True,
+        "recovery_status": status if isinstance(status, str) and status in {"ok", "failed"} else "unknown",
+        "source": {"filename": safe_upload_filename(filename), "sha256": source_sha256, "kind": source_kind},
+        "api_usage": result["api_usage"],
+        "send_allowed": False,
+    }
+    try:
+        artifact_url = artifact_url_for_path(receipt_path, paths)
+        atomic_write_json(receipt_path, receipt)
+        result["api_usage_receipt"] = {"status": "saved", "receipt_id": receipt_id,
+            "stored_path": str(receipt_path.resolve()), "artifact_url": artifact_url}
+    except Exception:  # noqa: BLE001 - accounting failure must not trigger another billed read.
+        result["api_usage_receipt"] = {"status": "failed", "receipt_id": receipt_id}
+        if not isinstance(result.get("warnings"), list):
+            result["warnings"] = []
+        result["warnings"].append(
+            "The API usage receipt could not be saved. The reading result is retained; do not repeat it solely to record usage.")
+    return result
 
 
 def recover_source_upload(
@@ -1670,6 +1904,7 @@ def recover_source_upload(
     personal_profile_id: str = "",
     visible_text: str = "",
     ai_recovery_mode: str = "auto",
+    provider_metadata: dict[str, Any] | None = None,
     paths: AppPaths,
 ) -> dict[str, Any]:
     suffix = validate_upload(source_kind, filename, content_type or "", content)
@@ -1696,9 +1931,37 @@ def recover_source_upload(
                 "or enter the complete reviewed source text using manual intake. No request was prepared.")
     else:
         metadata = image_metadata_from_bytes(content)
+        photo_preferences = load_photo_defaults(paths.ai_config)
+        # Provider metadata comes only from the server's selected-media response.
+        # The ordinary upload endpoint does not accept these trusted fields.
+        if provider_metadata is not None:
+            picker_metadata = picker_capture_metadata(
+                str(provider_metadata.get('google_photos_create_time') or ''),
+                original_metadata=metadata,
+                capture_timezone=str(photo_preferences.get('capture_timezone') or ''),
+            )
+            provider_warnings = picker_metadata.pop('warnings', [])
+            metadata.update(picker_metadata)
+            metadata.setdefault('warnings', []).extend(provider_warnings)
+            metadata['location_availability'] = 'Google Photos Picker removes GPS location; use original-file metadata or enter the capture city.'
+        capture_locations = [row for row in metadata.get('embedded_location_candidates', []) if row.get('scope') == 'capture']
+        if capture_locations:
+            metadata['photo_metadata_city_candidates'] = [row['city'] for row in capture_locations]
+            unique_cities = {fold_match_text(row['city']): row['city'] for row in capture_locations}
+            if len(unique_cities) == 1:
+                metadata['photo_metadata_city'] = next(iter(unique_cities.values()))
+                metadata['photo_metadata_city_source'] = 'embedded_location_created'
+        if not capture_locations and metadata.get('gps_coordinates') and photo_preferences.get('verified_gps_areas', []) == []:
+            metadata.setdefault('warnings', []).append('The original photo contains GPS coordinates. Check the capture city; coordinates are not automatically mapped to a court or venue.')
     if visible_text.strip():
         extracted_text = "\n".join(part for part in [extracted_text, visible_text.strip()] if part)
-    visible_metadata_context = "\n".join(part for part in [filename, visible_text.strip()] if part)
+    # Renamed/exported filenames are only a fallback when original/provider
+    # capture metadata is absent; they cannot manufacture a conflicting day.
+    visible_metadata_context = visible_text.strip()
+    if not metadata.get('exif_date') and not metadata.get('picker_create_time'):
+        visible_metadata_context = "\n".join(part for part in [filename, visible_metadata_context] if part)
+    elif provider_metadata is not None:
+        visible_metadata_context = "\n".join(line for line in visible_metadata_context.splitlines() if line.strip() != filename.strip())
     visible_metadata_date = extract_visible_metadata_date(visible_metadata_context)
     if source_kind == "photo" and visible_metadata_date:
         metadata["visible_metadata_date"] = visible_metadata_date
@@ -1753,6 +2016,8 @@ def recover_source_upload(
         source_metadata=metadata,
         rendered_page_images=[str(path.resolve()) for path in rendered_page_paths],
     )
+    ai_recovery = record_source_api_usage(ai_recovery, stored_path=stored_path, filename=filename,
+        source_kind=source_kind, source_sha256=digest, paths=paths)
     if unread_pdf_pages and (ai_recovery.get("status") != "ok" or not str(ai_recovery.get("raw_visible_text") or "").strip()):
         raise IntakeError(
             "This PDF contains pages without readable text, and AI image reading did not complete. "
@@ -1776,11 +2041,30 @@ def recover_source_upload(
         contact_text=combine_text_parts(extracted_text, str(ai_recovery.get('raw_visible_text') or '')),
     )
     candidate = merge_ai_recovery_into_intake(candidate, ai_recovery)
+    if source_kind == 'photo':
+        # Keep private verified areas and their citations local. This derived
+        # evidence is added only after the existing source-recovery boundary.
+        gps_city_match = match_verified_gps_city(metadata, photo_preferences)
+        if gps_city_match['status'] != 'disabled':
+            metadata['gps_city_match'] = gps_city_match
+            gps_warning = {
+                'invalid_configuration': 'The saved GPS area list is invalid. Enter the capture city; no area from that list was used.',
+                'invalid_gps': 'The original GPS coordinates are invalid. Enter the capture city; no GPS area was used.',
+                'ambiguous': 'The original GPS matches verified areas for different cities. Enter the actual capture city.',
+                'outside_verified_areas': 'The original GPS is outside the verified local areas. No nearest city was guessed.',
+            }.get(gps_city_match['status'])
+            if gps_warning:
+                metadata.setdefault('warnings', []).append(gps_warning)
     apply_photo_defaults(
         candidate, preferences=load_photo_defaults(paths.ai_config), metadata=metadata,
         ai_recovery=ai_recovery, directory=read_json_list(paths.court_emails),
         explicit_profile=profile_decision.get('mode') == 'explicit_profile',
     )
+    if metadata.get('picker_date_conflict'):
+        # Two capture sources disagree even when the printed service date agrees
+        # with one of them. Keep both in evidence and require an explicit date.
+        candidate['service_date'] = ''
+        candidate['photo_metadata_date_requires_confirmation'] = True
     apply_saved_court_label(candidate, load_photo_defaults(paths.ai_config),
                            explicit_profile=profile_decision.get('mode') == 'explicit_profile')
     if (
@@ -1845,6 +2129,9 @@ def recover_source_upload(
             "raw_case_number": candidate.get("raw_case_number", candidate.get("source_case_number", "")),
             "service_date": candidate.get("service_date", ""),
             "photo_metadata_date": candidate.get("photo_metadata_date", ""),
+            "photo_metadata_city": metadata.get('photo_metadata_city', ''),
+            "photo_metadata_origin": metadata.get('exif_date_source') or metadata.get('picker_date_source') or '',
+            "photo_capture_timezone": metadata.get('picker_capture_timezone', ''),
             "recipient_email": candidate.get("recipient_email", ""),
             "service_place": candidate.get("service_place", ""),
             "question_count": len(review.get("questions") or []),
@@ -4420,6 +4707,10 @@ def _preflight_review_material(
     correction_reason: str,
     email_grouping: str = "individual",
 ) -> dict[str, Any]:
+    if email_grouping == 'manual_visit':
+        if packet_mode:
+            raise IntakeError('A manual visit email keeps separate PDFs. Turn off packet mode.')
+        effective_intakes = bind_manual_visit(effective_intakes, recipients)
     return {
         "version": PREPARED_REVIEW_VERSION,
         "kind": "preflight",
@@ -4430,7 +4721,8 @@ def _preflight_review_material(
         "correction_mode": bool(correction_mode),
         "correction_reason": str(correction_reason or "").strip(),
         "email_grouping": normalize_email_grouping(email_grouping),
-        "email_groups": source_email_group_plan(effective_intakes, recipients) if email_grouping == "source" and not packet_mode else [],
+        "email_groups": source_email_group_plan(effective_intakes, recipients, email_grouping=email_grouping)
+                        if email_grouping in {'source', 'manual_visit'} and not packet_mode else [],
     }
 
 
@@ -4535,7 +4827,7 @@ def _prepared_review_material(
     email_grouping: str = "individual",
     email_groups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    targets = [packet] if packet else (email_groups if email_grouping == "source" else items)
+    targets = [packet] if packet else (email_groups if email_grouping in {'source', 'manual_visit'} else items)
     target_summaries = [_target_payload_summary(target) for target in targets if isinstance(target, dict)]
     return {
         "version": PREPARED_REVIEW_VERSION,
@@ -5158,11 +5450,8 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
     if field == "service_place":
         intake["service_place"] = value
         if not str(intake.get("service_place_phrase") or "").strip():
-            source_context = combine_text_parts(str(intake.get("source_text") or ""), str(intake.get("service_entity") or ""))
-            if "policia judiciaria" in fold_match_text(source_context):
-                intake["service_place_phrase"] = f"em diligência da Polícia Judiciária realizada em {value}"
-            else:
-                intake["service_place_phrase"] = f"em diligência realizada em {value}"
+            entity = 'Polícia Judiciária' if source_mentions_pj_context(intake) else str(intake.get('service_entity') or value)
+            intake['service_place_phrase'] = build_service_place_clause(intake, entity)
         return
 
     if field == "service_entity":
@@ -5198,7 +5487,11 @@ def apply_numbered_answers(payload: dict[str, Any], paths: AppPaths) -> dict[str
         field = str(question.get("field") or "")
         if field not in mapped:
             continue
-        apply_answer_to_intake(intake, field, mapped[field])
+        if field == 'photo_capture_city':
+            apply_capture_city_answer(intake, mapped[field], preferences=load_photo_defaults(paths.ai_config),
+                                      directory=read_json_list(paths.court_emails))
+        else:
+            apply_answer_to_intake(intake, field, mapped[field])
         applied_fields.append(field)
 
     review = review_intake_with_profile_evidence(intake, paths)
@@ -5230,6 +5523,10 @@ def duplicate_payload(record: dict[str, Any] | None) -> dict[str, Any] | None:
     ]
     payload = {key: record.get(key, "") for key in keys if record.get(key, "")}
     payload.setdefault("status", duplicate_record_status(record))
+    if paper_submission_confirmed(record):
+        payload.update(submission_channel='paper', submission_evidence='user_confirmed')
+    elif record.get('submission_channel') == 'email':
+        payload['submission_channel'] = 'email'
     return payload
 
 
@@ -5295,7 +5592,9 @@ def draft_lifecycle_for_intake(intake: dict[str, Any], paths: AppPaths) -> dict[
     if replacement_allowed:
         message = "Active/drafted request found. Correction mode can prepare a replacement draft after a reason is provided."
     elif has_sent_duplicate:
-        message = "A sent request already exists for this case/date. Correction mode is not available."
+        message = ("This case/date was already submitted on paper. Correction mode is not available."
+                   if any(paper_submission_confirmed(record) for record in duplicate_records)
+                   else "A sent request already exists for this case/date. Correction mode is not available.")
     elif duplicate_records or active_drafts:
         message = "A blocking draft lifecycle record exists for this request."
     return {
@@ -5386,7 +5685,9 @@ def review_next_safe_action(status: str, *, questions: list[dict[str, Any]] | No
         return next_safe_action(
             state="stop_duplicate_sent",
             title="Stop before generating",
-            detail="A sent request already exists for this case/date. Treat this as a likely duplicate unless you confirm a separate service period.",
+            detail=("This case/date was already submitted on paper. Treat this as a likely duplicate unless you confirm a separate service period."
+                    if paper_submission_confirmed(duplicate or {})
+                    else "A sent request already exists for this case/date. Treat this as a likely duplicate unless you confirm a separate service period."),
             blocked=True,
         )
     if status == "active_draft":
@@ -5475,10 +5776,20 @@ def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tup
     intake = copy.deepcopy(intake)
     preserve_review_field_clears(intake, intake)
     reconcile_photo_venue_edit(intake)
+    # Older numbered venue answers used a generic "em" clause even before
+    # GNR/PSP/Tribunal names. Normalize only that exact generated form on re-review.
+    place = str(intake.get('service_place') or '').strip()
+    if place and intake.get('service_place_phrase') == f'em diligência realizada em {place}':
+        entity = 'Polícia Judiciária' if source_mentions_pj_context(intake) else str(intake.get('service_entity') or place)
+        intake['service_place_phrase'] = build_service_place_clause({**intake, 'service_place_phrase': ''}, entity)
     _normalize_source_case_confirmation(intake)
     profile = selected_personal_profile(paths, intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
     preserve_review_field_clears(intake, effective)
+    payer = str(effective.get('payment_entity') or '').strip()
+    if (not str(effective.get('addressee') or '').strip()
+            and classify_entity_type(payer) in {'court', 'ministerio_publico'}):
+        effective['addressee'] = _default_addressee(payer)
     if 'transport.km_one_way' in effective.get('review_cleared_fields', []):
         provenance['applied'] = [field for field in provenance['applied'] if field != 'transport.km_one_way']
         provenance['distance_source'] = ''
@@ -5654,12 +5965,35 @@ def gmail_api_config_save(payload: dict[str, Any], paths: AppPaths) -> dict[str,
     return save_gmail_local_config(payload, paths.gmail_config)
 
 
-def gmail_api_oauth_start(paths: AppPaths) -> dict[str, Any]:
-    return gmail_oauth_start(paths.gmail_config)
+def gmail_api_oauth_start(paths: AppPaths, *, purpose: str = "drafts") -> dict[str, Any]:
+    return gmail_oauth_start(paths.gmail_config, purpose=purpose)
 
 
-def gmail_api_oauth_callback(*, code: str, state: str, paths: AppPaths) -> dict[str, Any]:
-    return gmail_oauth_callback(code=code, state=state, config_path=paths.gmail_config)
+def gmail_api_oauth_callback(*, code: str, state: str, paths: AppPaths, error: str = "") -> dict[str, Any]:
+    return gmail_oauth_callback(code=code, state=state, config_path=paths.gmail_config, error=error)
+
+
+def gmail_sent_sync_status(paths: AppPaths) -> dict[str, Any]:
+    from .gmail_sent_sync import fake_gmail_sent_sync_enabled, sent_sync_last_result
+    gmail = gmail_api_status(paths)
+    fake = fake_gmail_sent_sync_enabled(paths)
+    ready = fake or gmail_sent_read_ready(paths.gmail_config)
+    return {"status": "ready" if ready else "authorization_required" if gmail.get("configured") else "disconnected",
+            "configured": fake or bool(gmail.get("configured")), "connected": fake or bool(gmail.get("connected")),
+            "read_ready": ready, "workspace_id": workspace_runtime_id(paths), "last_result": sent_sync_last_result(paths),
+            "send_allowed": False, "gmail_write_allowed": False}
+
+
+def gmail_sent_sync(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    from .gmail_sent_sync import sync_gmail_sent_status
+    workspace_id = workspace_runtime_id(paths)
+    if payload.get("workspace_id") != workspace_id:
+        raise IntakeError("The app workspace changed. Reload before checking Gmail.")
+    if not isinstance(payload.get("force", False), bool):
+        raise IntakeError("Sync force must be true or false.")
+    result = sync_gmail_sent_status(paths, force=payload.get("force", False),
+        apply_confirmed=lambda record, evidence: apply_verified_sent_unlocked(paths.draft_log, paths.duplicate_index, record, evidence))
+    return {**result, "workspace_id": workspace_id, "send_allowed": False, "gmail_write_allowed": False}
 
 
 def gmail_api_draft_verify(payload: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
@@ -5810,6 +6144,11 @@ def _assert_gmail_create_duplicate_clear(
             " · ".join(str(item) for item in blocker.get("request_identity", {}).values() if item)
             for blocker in sent_blockers
         ]
+        if any(paper_submission_confirmed(row) for blocker in sent_blockers for row in blocker.get('duplicate_records', [])):
+            raise IntakeError(
+                "Gmail draft creation blocked before contacting Gmail because a request was already submitted on paper: "
+                + '; '.join(descriptions) + '.'
+            )
         raise IntakeError(
             "Gmail draft creation blocked before contacting Gmail because a sent or non-replaceable "
             f"request already exists: {'; '.join(descriptions)}."
@@ -5984,7 +6323,7 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
             "review_fingerprint": prepared_review["review_fingerprint"],
         }
         try:
-            record_result = record_draft(record_payload, paths)
+            record_result = record_draft(record_payload, paths, _attempt_lock_held=True)
         except (IntakeError, OSError, ValueError) as exc:
             update_attempt(attempt, error=str(exc))
             with contextlib.suppress(OSError):
@@ -6104,7 +6443,7 @@ def reconcile_gmail_create_attempt(payload: dict[str, Any], paths: AppPaths) -> 
         if previous and previous.get("status") not in {"active", "drafted"}:
             raise IntakeError("This Gmail draft was already sent or retired locally. Recovery cannot restore it to active.")
         try:
-            recorded = record_draft(record_payload, paths, _trusted_prepared_recovery=attempt["prepared_review"])
+            recorded = record_draft(record_payload, paths, _trusted_prepared_recovery=attempt["prepared_review"], _attempt_lock_held=True)
         except (IntakeError, OSError, ValueError) as exc:
             update_attempt(attempt, error=str(exc))
             with contextlib.suppress(OSError):
@@ -6129,9 +6468,8 @@ def manual_handoff_packet(payload: dict[str, Any], paths: AppPaths) -> dict[str,
     with attempt_lock(paths.draft_log):
         if pending_attempt(load_attempts(paths.draft_log), _prepared_payload_request_identities(draft_payload)):
             raise IntakeError("Recover the pending Gmail attempt for these requests before building another manual handoff.")
-    if draft_payload.get('email_grouping') == 'source':
         if _coerce_supersedes(payload.get('supersedes')) and not prepared_review.get('correction_mode'):
-            raise IntakeError('Group replacement requires a prepared review created in correction mode.')
+            raise IntakeError('Draft replacement requires a prepared review created in correction mode.')
         if prepared_review.get('correction_reason') and _gmail_correction_reason(payload) != prepared_review['correction_reason']:
             raise IntakeError('Correction reason does not match the prepared review.')
         _assert_gmail_create_duplicate_clear(request_payload=payload, draft_payload=draft_payload, paths=paths)
@@ -6240,6 +6578,9 @@ def build_profile_intake(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
         source_text=payload.get("source_text"),
         notes=payload.get("notes"),
     )
+    if not str(payload.get("source_filename") or "").strip():
+        # Manual entry inherits service details, not the profile's source label.
+        intake.pop("source_filename", None)
     personal_profile_id = str(payload.get("personal_profile_id") or "").strip()
     if personal_profile_id:
         intake["personal_profile_id"] = personal_profile_id
@@ -6273,13 +6614,45 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
         }
 
     questions = missing_questions(effective_intake)
+    source_case_valid = bool(valid_source_case(effective_intake.get("case_number")))
+    # Verified older history can contain a reference without the digit after
+    # the year. A single such reference may warn on an exact history match,
+    # but its missing-case question still prevents creating a new request.
+    history_only_case = bool(re.fullmatch(
+        r'\s*\d+\s*/\s*\d{2}\s*\.\s*[A-Z][A-Z0-9]*(?:\.[A-Z0-9]+)*\s*',
+        str(effective_intake.get("case_number") or ""), re.IGNORECASE,
+    )) and not bool(intake.get("case_number_requires_confirmation"))
+    if effective_intake.get("case_number") and not source_case_valid:
+        # A manually pasted alternative is still unresolved, even without an upload flag.
+        questions = missing_questions({**effective_intake, "case_number": ""})
+    missing_response = None
     if questions:
-        return {
+        missing_response = {
             "status": "needs_info",
             "message": "Missing information before PDF generation.",
             "questions": question_payload(questions),
             "question_text": format_numbered_questions(questions),
             "next_safe_action": review_next_safe_action("needs_info", questions=question_payload(questions)),
+            "send_allowed": False,
+        }
+        # Establish the request identity and scope before consulting its history.
+        # Payer, venue and travel details cannot change an already-recorded case/day.
+        identity_fields = {"case_number", "service_date", "service_date_source", "mixed_notice_scope"}
+        if history_only_case:
+            identity_fields.remove("case_number")
+        if (any(question["field"] in identity_fields for question in questions)
+                or not (source_case_valid or history_only_case)):
+            return missing_response
+
+    try:
+        # Match the shared generator's calendar validation before either history read.
+        datetime.strptime(get_service_date_value(effective_intake), "%Y-%m-%d")
+    except (IntakeError, ValueError) as exc:
+        return {
+            "status": "error",
+            "message": f"A valid service date in YYYY-MM-DD is required before checking duplicates: {exc}",
+            "questions": [],
+            "next_safe_action": review_next_safe_action("error"),
             "send_allowed": False,
         }
 
@@ -6306,6 +6679,9 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "next_safe_action": review_next_safe_action("active_draft"),
             "send_allowed": False,
         }
+
+    if missing_response:
+        return missing_response
 
     try:
         email_config = load_json(paths.email_config)
@@ -6374,15 +6750,60 @@ def underlying_requests_for_packet(items: list[dict[str, Any]]) -> list[dict[str
 
 
 def normalize_email_grouping(value: Any = "individual") -> str:
-    if value not in ("individual", "source"):
-        raise IntakeError("email_grouping must be individual or source.")
+    if value not in ("individual", "source", "manual_visit"):
+        raise IntakeError("email_grouping must be individual, source, or manual_visit.")
     return value
 
 
-def source_email_group_plan(intakes: list[dict[str, Any]], recipients: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """Only an explicit source hash establishes email membership; empty hashes never merge."""
+def bind_manual_visit(intakes: list[dict[str, Any]], recipients: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Bind an explicitly selected manual visit without inventing a source file."""
+    if len(intakes) < 2 or len(intakes) != len(recipients):
+        raise IntakeError('One manual visit email needs at least two reviewed manual requests.')
+    bindings = []
+    owners = 0
+    for intake, contact in zip(intakes, recipients):
+        if (str(intake.get('source_kind') or '') not in {'', 'manual', 'manual_review'}
+                or any(intake.get(key) for key in ('source_sha256', 'source_file', 'source_filename', 'photo_metadata_date'))
+                or (intake.get('ai_recovery') or {}).get('attempted')):
+            raise IntakeError('Manual visit grouping accepts manually entered requests only. Keep uploaded sources in their source email groups.')
+        try:
+            claims = claim_metadata(intake)
+            visit = travel_binding(intake)
+        except ClaimError as exc:
+            raise IntakeError(str(exc)) from exc
+        payer = fold_match_text(str(intake.get('payment_entity') or ''))
+        recipient = str(contact.get('recipient') or '').strip().lower()
+        if not payer or not recipient:
+            raise IntakeError('A manual visit needs a clear paying authority and validated recipient for every request.')
+        bindings.append((*visit, payer, recipient))
+        owners += int(claims['claim_transport'])
+    if len(set(bindings)) != 1:
+        raise IntakeError('One manual visit requires the same date, physical venue, destination, origin, payer, recipient and personal profile. Review each request or choose separate emails.')
+    if owners != 1:
+        raise IntakeError('Choose exactly one request to claim travel for this manual visit; set the others to interpreting only.')
+    identities = sorted(request_identity_key(row) for row in intakes)
+    visit_id = 'manual-visit-' + stable_json_hash({'binding': bindings[0], 'requests': identities})
+    result = copy.deepcopy(intakes)
+    for intake in result:
+        intake.update(source_kind='manual_review', manual_visit_id=visit_id,
+                      manual_visit_provenance='user_declared_manual_visit', travel_group_id=visit_id)
+    return result
+
+
+def source_email_group_plan(intakes: list[dict[str, Any]], recipients: list[dict[str, str]], *, email_grouping: str = 'source') -> list[dict[str, Any]]:
+    """Group by source hash, or by an explicitly selected, validated manual visit."""
     if len(intakes) != len(recipients):
         raise IntakeError("Source email group recipient count does not match the requests.")
+    if email_grouping == 'manual_visit':
+        members = bind_manual_visit(intakes, recipients)
+        source_email_body(members, signature_name='')
+        visit_id = members[0]['manual_visit_id']
+        return [{'source_sha256': '', 'recipient': str(recipients[0]['recipient']).strip().lower(),
+                 'personal_profile_id': members[0]['personal_profile_id'], 'member_indices': list(range(len(members))),
+                 'email_grouping': 'manual_visit', 'group_id': 'manual-email-' + visit_id.removeprefix('manual-visit-'),
+                 'manual_visit_id': visit_id, 'manual_visit_provenance': 'user_declared_manual_visit'}]
+    if email_grouping != 'source':
+        raise IntakeError('This email grouping does not create grouped child PDFs.')
     groups: list[dict[str, Any]] = []
     by_source: dict[str, dict[str, Any]] = {}
     for index, (intake, contact) in enumerate(zip(intakes, recipients)):
@@ -6428,6 +6849,9 @@ def build_source_email_groups(*, plans: list[dict[str, Any]], intakes: list[dict
                          recipient=plan["recipient"], pdf=str(Path(item["pdf"]).resolve()),
                          pdf_sha256=file_sha256(Path(item["pdf"])), draft_payload=str(Path(item["draft_payload"]).resolve()),
                          draft_payload_sha256=file_sha256(Path(item["draft_payload"])))
+            if plan.get('email_grouping') == 'manual_visit':
+                child.update({key: child_payload[key] for key in
+                    ('manual_visit_id', 'manual_visit_provenance', 'source_kind', 'service_place', 'payment_entity')})
             children.append(child)
             for attachment in child_payload["attachment_files"]:
                 if attachment not in attachments:
@@ -6441,7 +6865,8 @@ def build_source_email_groups(*, plans: list[dict[str, Any]], intakes: list[dict
             payload['body'] = source_email_body([intakes[index] for index in indices], signature_name=signature)
             payload['subject'] = ('Requerimentos de honorários' if any(intakes[index].get('claim_interpreting', True) for index in indices)
                                   else 'Requerimentos de despesas de transporte')
-        payload.update(email_grouping='source', email_group_id=plan['group_id'], source_sha256=plan['source_sha256'],
+        group_kind = str(plan.get('email_grouping') or 'source')
+        payload.update(email_grouping=group_kind, email_group_id=plan['group_id'], source_sha256=plan['source_sha256'],
                        personal_profile_id=plan['personal_profile_id'], member_indices=indices,
                        underlying_requests=children, child_payload_paths=[child['draft_payload'] for child in children],
                        attachment_files=attachments, attachment_file_list=attachments,
@@ -6454,7 +6879,7 @@ def build_source_email_groups(*, plans: list[dict[str, Any]], intakes: list[dict
             raise IntakeError("Source email group is blocked: " + "; ".join(errors))
         payload_path = paths.draft_output_dir / f"{plan['group_id']}-{secrets.token_hex(4)}.draft.json"
         payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        groups.append({**copy.deepcopy(plan), 'email_grouping': 'source', 'case_number': payload['case_number'],
+        groups.append({**copy.deepcopy(plan), 'email_grouping': group_kind, 'case_number': payload['case_number'],
                        'service_date': payload['service_date'], 'service_period_label': payload['service_period_label'],
                        'underlying_requests': children, 'child_payload_paths': payload['child_payload_paths'],
                        'attachment_files': attachments, 'attachment_count': len(attachments),
@@ -6689,6 +7114,11 @@ def preflight_intakes(
     seen_keys: dict[tuple[str, str, str], str] = {}
     group_error = ''
     try:
+        if email_grouping == 'manual_visit':
+            if packet_mode:
+                raise IntakeError('A manual visit email keeps separate PDFs. Turn off packet mode.')
+            contacts = [{'recipient': resolve_recipient(intake, email_config, court_directory)[0]} for intake in effective_intakes]
+            effective_intakes = bind_manual_visit(effective_intakes, contacts)
         validate_shared_travel_groups(effective_intakes, prior_requests=recorded_claims(paths))
         if correction_mode:
             lifecycles = [draft_lifecycle_for_intake(intake, paths) for intake in effective_intakes]
@@ -6752,9 +7182,9 @@ def preflight_intakes(
 
     packet: dict[str, Any] | None = None
     email_groups: list[dict[str, Any]] = []
-    if email_grouping == "source" and not packet_mode and not blockers:
+    if email_grouping in {'source', 'manual_visit'} and not packet_mode and not blockers:
         try:
-            email_groups = source_email_group_plan(effective_intakes, [{"recipient": item["recipient"]} for item in items])
+            email_groups = source_email_group_plan(effective_intakes, [{"recipient": item["recipient"]} for item in items], email_grouping=email_grouping)
         except IntakeError as exc:
             blockers.append({"index": None, "message": str(exc), "send_allowed": False, "write_allowed": False})
     if packet_mode and not blockers:
@@ -6852,6 +7282,11 @@ def prepare_intakes(
     seen_keys: dict[tuple[str, str, str], Path] = {}
     lifecycle_checks: list[dict[str, Any]] = []
     try:
+        if email_grouping == 'manual_visit':
+            if packet_mode:
+                raise IntakeError('A manual visit email keeps separate PDFs. Turn off packet mode.')
+            contacts = [{'recipient': resolve_recipient(intake, email_config, court_directory)[0]} for intake in effective_intakes]
+            effective_intakes = bind_manual_visit(effective_intakes, contacts)
         validate_shared_travel_groups(effective_intakes, prior_requests=recorded_claims(paths))
     except ClaimError as exc:
         raise IntakeError(str(exc)) from exc
@@ -6898,9 +7333,9 @@ def prepare_intakes(
         validate_packet_recipients(effective_intakes, email_config, court_directory)
 
     email_group_plans = []
-    if email_grouping == "source" and not packet_mode:
+    if email_grouping in {'source', 'manual_visit'} and not packet_mode:
         contacts = [{"recipient": resolve_recipient(intake, email_config, court_directory)[0]} for intake in effective_intakes]
-        email_group_plans = source_email_group_plan(effective_intakes, contacts)
+        email_group_plans = source_email_group_plan(effective_intakes, contacts, email_grouping=email_grouping)
 
     write_intake_files(effective_intakes, intake_paths)
 
@@ -7058,7 +7493,7 @@ def _record_draft_once(payload: dict[str, Any], paths: AppPaths) -> None:
     stdout = StringIO()
     stderr = StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        code = record_gmail_draft_main(args)
+        code = record_gmail_draft_main(args, _attempt_lock_held=True)
     if code != 0:
         detail = stderr.getvalue().strip()
         message = "Could not record Gmail draft. Check payload path and draft/message IDs."
@@ -7134,6 +7569,24 @@ def record_draft(
     *,
     require_handoff_reviewed_for_prepared_payload: bool = False,
     _trusted_prepared_recovery: dict[str, Any] | None = None,
+    _attempt_lock_held: bool = False,
+) -> dict[str, Any]:
+    # Serialize manual recording with durable direct-create reservations. This
+    # internal keyword avoids reacquiring a nonreentrant lock during recovery;
+    # HTTP request fields cannot supply it.
+    outer = contextlib.nullcontext() if _attempt_lock_held else attempt_lock(paths.draft_log)
+    with outer:
+        return _record_draft_unlocked(payload, paths,
+                                      require_handoff_reviewed_for_prepared_payload=require_handoff_reviewed_for_prepared_payload,
+                                      _trusted_prepared_recovery=_trusted_prepared_recovery)
+
+
+def _record_draft_unlocked(
+    payload: dict[str, Any],
+    paths: AppPaths,
+    *,
+    require_handoff_reviewed_for_prepared_payload: bool = False,
+    _trusted_prepared_recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload_path = str(payload.get("payload") or "").strip()
     status = str(payload.get("status") or "active").strip()
@@ -7142,23 +7595,27 @@ def record_draft(
         alias = _resolve_optional_path(payload['draft_payload'])
         if alias.is_file():
             alias_data = load_json(alias)
-            if alias_data.get('email_grouping') == 'source':
+            if alias_data.get('email_grouping') in {'source', 'manual_visit'}:
                 # The compatibility alias must not bypass source-group review signing.
                 payload = {**payload, 'payload': str(alias)}
                 payload_path = str(alias)
-    if payload_path and (status in {"active", "drafted"} or (status == 'sent' and not existing_sent_transition and _load_draft_payload_for_response(payload).get('email_grouping') == 'source')):
+    if payload_path and (status in {"active", "drafted"} or (status == 'sent' and not existing_sent_transition and _load_draft_payload_for_response(payload).get('email_grouping') in {'source', 'manual_visit'})):
         review = (_trusted_prepared_recovery if _trusted_prepared_recovery is not None
                   else require_current_prepared_review(payload, payload_path, paths))
         if require_handoff_reviewed_for_prepared_payload and not bool(payload.get("gmail_handoff_reviewed")):
             raise IntakeError("Review the PDF preview and exact Gmail draft args before local recording.")
         _, draft_data = _load_prepared_draft_payload(payload_path)
-        if draft_data.get('email_grouping') == 'source':
-            superseded = _coerce_supersedes(payload.get('supersedes'))
-            if superseded and not review.get('correction_mode'):
-                raise IntakeError('Group replacement requires a prepared review created in correction mode.')
-            reason = _gmail_correction_reason(payload) or str(review.get('correction_reason') or '')
-            if review.get('correction_reason') and reason != review['correction_reason']:
-                raise IntakeError('Correction reason does not match the prepared review.')
+        superseded = _coerce_supersedes(payload.get('supersedes'))
+        try:
+            validate_superseded_request_coverage(_prepared_payload_request_identities(draft_data), load_draft_log(paths.draft_log), superseded)
+        except ValueError as exc:
+            raise IntakeError(str(exc)) from exc
+        if superseded and not review.get('correction_mode'):
+            raise IntakeError('Draft replacement requires a prepared review created in correction mode.')
+        reason = _gmail_correction_reason(payload) or str(review.get('correction_reason') or '')
+        if review.get('correction_reason') and reason != review['correction_reason']:
+            raise IntakeError('Correction reason does not match the prepared review.')
+        if draft_data.get('email_grouping') in {'source', 'manual_visit'}:
             try:
                 validate_source_group_history(draft_data, load_draft_log(paths.draft_log), read_json_list(paths.duplicate_index),
                                               draft_id=str(payload.get('draft_id') or ''), supersedes=superseded, reason=reason, status=status)

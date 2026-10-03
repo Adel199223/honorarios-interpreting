@@ -26,6 +26,58 @@ DEFAULT_COURT_EMAILS = ROOT / "data" / "court-emails.json"
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "email-drafts"
 COURT_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@tribunais\.org\.pt\b", re.IGNORECASE)
 PAYLOAD_SCHEMA_VERSION = 1
+SEPARATE_PDF_GROUP_MODES = {'source', 'manual_visit'}
+MANUAL_VISIT_FIELDS = ('manual_visit_id', 'manual_visit_provenance', 'source_kind', 'service_place', 'payment_entity')
+
+
+def manual_visit_member_errors(payload: dict[str, Any], member: dict[str, Any]) -> list[str]:
+    """Pure declaration/visit checks, shared with bounded sent reconciliation."""
+    errors: list[str] = []
+    visit_id = str(payload.get('manual_visit_id') or '')
+    if not re.fullmatch(r'manual-visit-[a-f0-9]{64}', visit_id):
+        errors.append('Manual visit requires its bounded derived manual_visit_id.')
+    for row in (payload, member):
+        if (row.get('manual_visit_id') != visit_id or row.get('manual_visit_provenance') != 'user_declared_manual_visit'
+                or row.get('source_kind') != 'manual_review'
+                or any(str(row.get(key) or '').strip() for key in ('source_sha256', 'source_file', 'source_filename'))):
+            errors.append('Manual visit requires an explicit manual declaration without photo/source provenance.')
+            break
+    recipient = str(payload.get('to') or payload.get('recipient') or '').strip().lower()
+    member_recipient = str(member.get('to') or member.get('recipient') or '').strip().lower()
+    for key in ('service_date', 'personal_profile_id'):
+        value = str(payload.get(key) or '').strip()
+        if not value or str(member.get(key) or '').strip() != value:
+            errors.append(f'Manual visit child has a conflicting or missing {key}.')
+    for key in ('service_place', 'payment_entity'):
+        value = ' '.join(normalize_text(str(payload.get(key) or '')).split())
+        other = ' '.join(normalize_text(str(member.get(key) or '')).split())
+        if not value or other != value:
+            errors.append(f'Manual visit child has a conflicting or missing {key}.')
+    if not recipient or member_recipient != recipient:
+        errors.append('Manual visit child has a conflicting or missing recipient.')
+    if member.get('travel_group_id') != visit_id:
+        errors.append('Manual visit child must retain its declared travel group.')
+    binding = member.get('travel_group_binding')
+    if (not isinstance(binding, list) or len(binding) != 5
+            or binding[0] != member.get('service_date') or binding[3] != member.get('personal_profile_id')
+            or ' '.join(normalize_text(str(binding[1])).split()) != ' '.join(normalize_text(str(member.get('service_place') or '')).split())):
+        errors.append('Manual visit child trip binding differs from its physical visit metadata.')
+    return errors
+
+
+def manual_visit_group_metadata_errors(payload: dict[str, Any], children: list[dict[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    if len(children) < 2:
+        errors.append('Manual visit email requires at least two reviewed requests.')
+    for member in children:
+        errors.extend(manual_visit_member_errors(payload, member))
+    if sum(member.get('claim_transport') is True for member in children) != 1:
+        errors.append('Manual visit requires exactly one travel-bearing request.')
+    try:
+        validate_travel_payload_groups(children)
+    except ValueError as exc:
+        errors.append(str(exc))
+    return errors
 
 
 def extract_court_emails(text: str) -> list[str]:
@@ -229,7 +281,7 @@ def attachment_array_errors(value: Any, field_name: str) -> list[str]:
 
 def validate_draft_payload(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    if payload.get('email_grouping') == 'source':
+    if payload.get('email_grouping') in SEPARATE_PDF_GROUP_MODES:
         errors.extend(source_email_group_errors(payload))
     try:
         children = payload.get('underlying_requests')
@@ -280,6 +332,9 @@ def source_email_group_errors(payload: dict[str, Any]) -> list[str]:
     if not str(payload.get('email_group_id') or '').strip():
         errors.append('Source email group requires email_group_id.')
     source_hash = str(payload.get('source_sha256') or '')
+    manual_visit = payload.get('email_grouping') == 'manual_visit'
+    if manual_visit:
+        errors.extend(manual_visit_group_metadata_errors(payload, [child for child in children if isinstance(child, dict)]))
     profile = str(payload.get('personal_profile_id') or '')
     recipient = str(payload.get('to') or '').strip().lower()
     child_paths = payload.get('child_payload_paths')
@@ -330,6 +385,10 @@ def source_email_group_errors(payload: dict[str, Any]) -> list[str]:
             for key in ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding'):
                 if child.get(key) != data.get(key):
                     raise ValueError('child claim metadata changed')
+            if manual_visit:
+                metadata_errors = manual_visit_member_errors(payload, data)
+                if metadata_errors or any(child.get(key) != data.get(key) for key in MANUAL_VISIT_FIELDS):
+                    raise ValueError('child manual-visit declaration or physical-visit metadata changed')
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             errors.append(f'Source email group child {index + 1} is stale or invalid: {exc}. Prepare the group again.')
     return errors
@@ -451,6 +510,10 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
         raise IntakeError(str(exc)) from exc
     if isinstance(intake.get("underlying_requests"), list):
         payload["underlying_requests"] = intake["underlying_requests"]
+    if intake.get('manual_visit_id'):
+        payload.update({key: intake[key] for key in MANUAL_VISIT_FIELDS if key in intake})
+        payload['source_sha256'] = str(intake.get('source_sha256') or '')
+        payload['personal_profile_id'] = str(intake.get('personal_profile_id') or personal_profile_key)
     return payload
 
 

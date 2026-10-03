@@ -231,16 +231,26 @@ def find_duplicate_record(
     return None
 
 
+def paper_submission_confirmed(record: dict[str, Any]) -> bool:
+    """Completed paper history blocks as sent without claiming an email exists."""
+    return (duplicate_record_status(record) == 'sent'
+            and record.get('submission_channel') == 'paper'
+            and record.get('submission_evidence') == 'user_confirmed')
+
+
 def format_duplicate_message(record: dict[str, Any]) -> str:
     status = duplicate_record_status(record)
+    paper = paper_submission_confirmed(record)
     details = [
         "Possible duplicate found before PDF generation.",
-        f"Status: already {status}",
+        "Status: already submitted on paper" if paper else f"Status: already {status}",
         f"Case number: {record.get('case_number', '')}",
         f"Service date: {record.get('service_date', '')}",
     ]
+    if paper:
+        details.append("Submission evidence: user confirmed")
     if record.get("sent_date"):
-        details.append(f"Already sent: {record['sent_date']}")
+        details.append(f"Already submitted on paper: {record['sent_date']}" if paper else f"Already sent: {record['sent_date']}")
     if record.get("service_period_label"):
         details.append(f"Service period: {record['service_period_label']}")
     if record.get("draft_id"):

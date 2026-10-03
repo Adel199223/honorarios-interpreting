@@ -19,6 +19,7 @@ config/email.json
 config/profile.json
 config/*.local.json
 config/*token*.json
+config/*.oauth.lock
 data/gmail-draft-log.json
 data/duplicate-index.json
 data/profile-change-log.json
@@ -32,3 +33,6 @@ data/.gmail-*.lock
 # Generated PDFs, draft payloads, manifests, intake snapshots, and previews.
 output/
 tmp/
+
+# Private browser inspection artifacts.
+.playwright-cli/

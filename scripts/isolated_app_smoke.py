@@ -31,6 +31,14 @@ from scripts.local_app_smoke import run_smoke
 SmokeRunner = Callable[..., dict[str, Any]]
 
 
+def _provider_environment_name(name: str) -> bool:
+    """Match the credential/override boundary used by portable validation."""
+    upper = name.upper()
+    return upper in {'OPENAI_API_KEY', 'PYTHONPATH', 'PYTHONHOME'} or (
+        upper.startswith(('GMAIL_', 'GOOGLE_', 'HONORARIOS_')) and upper != 'HONORARIOS_UV_EXECUTABLE'
+    )
+
+
 def _free_port(host: str) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((host, 0))
@@ -53,7 +61,7 @@ def _wait_for_ready(base_url: str, timeout_seconds: float = 10.0) -> None:
 
 def _start_server(runtime_root: Path, host: str, port: int) -> tuple[uvicorn.Server, threading.Thread]:
     app = create_app(**runtime_path_overrides(runtime_root))
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=2))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     return server, thread
@@ -101,8 +109,13 @@ def run_isolated_app_smoke(
     base_url = f"http://{host}:{selected_port}"
     server: uvicorn.Server | None = None
     thread: threading.Thread | None = None
-    previous_fake_gmail = os.environ.get("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE")
+    previous_provider_environment = {name: value for name, value in os.environ.items() if _provider_environment_name(name)}
     try:
+        # A temporary data directory alone does not isolate inherited API keys,
+        # OAuth tokens or provider overrides. Keep them absent for the entire
+        # server lifetime; only this launcher's requested fake mode is allowed.
+        for name in previous_provider_environment:
+            os.environ.pop(name, None)
         seed_active_draft = bool(
             browser_prepare_replacement
             or browser_recent_work_lifecycle
@@ -164,11 +177,13 @@ def run_isolated_app_smoke(
         if server is not None:
             server.should_exit = True
         if thread is not None:
-            thread.join(timeout=5)
-        if previous_fake_gmail is None:
-            os.environ.pop("HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE", None)
-        else:
-            os.environ["HONORARIOS_FAKE_GMAIL_DRAFT_API_FOR_SMOKE"] = previous_fake_gmail
+            # Never restore live credentials while the synthetic server still
+            # accepts or finishes requests. Uvicorn bounds graceful shutdown.
+            thread.join()
+        for name in list(os.environ):
+            if _provider_environment_name(name):
+                os.environ.pop(name, None)
+        os.environ.update(previous_provider_environment)
         if temp_dir is not None and not keep_runtime:
             temp_dir.cleanup()
 

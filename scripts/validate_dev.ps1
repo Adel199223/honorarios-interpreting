@@ -25,6 +25,7 @@ try {
     if (($actualExport -replace "`r`n", "`n") -ne ($expectedExport -replace "`r`n", "`n")) { throw 'requirements.txt does not match the tracked lock export.' }
     Invoke-Check $pythonExe @('scripts/check_project_docs.py')
     Invoke-Check node @('--check', 'honorarios_app/static/app.js')
+    Invoke-Check node @('--check', 'honorarios_app/static/camera_picker.js')
     Invoke-Check node @('--check', 'honorarios_app/static/review_guidance.js')
     Invoke-Check node @('--check', 'scripts/browser_iab_smoke.mjs')
     # The full/package groups include an actual offline installed-wheel test.
