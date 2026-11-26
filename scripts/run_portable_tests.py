@@ -29,7 +29,7 @@ PUBLIC_TEST_FILES = frozenset({
     'test_source_email_groups.py', 'test_workspace_draft.py', 'test_local_backup.py',
     'test_google_photos.py', 'test_photo_metadata.py', 'test_source_location.py',
     'test_request_exclusions.py', 'test_request_exclusion_guards.py',
-    'test_gnr_city_default.py',
+    'test_gnr_city_default.py', 'test_confirmed_locations.py', 'test_confirmed_location_integration.py',
     'test_early_duplicates.py', 'test_camera_folder.py', 'test_camera_picker_ui.py',
     'test_gmail_sent_sync.py', 'test_gmail_sent_sync_api.py', 'test_gmail_sent_sync_ui.py',
     'test_retained_draft_warnings.py',
@@ -102,8 +102,8 @@ def copy_portable_checkout(source: Path, target: Path) -> None:
         'requirements.txt', 'README.md', 'CONTRIBUTING.md', 'LICENSE', 'SECURITY.md',
         'agent.md', 'APP_KNOWLEDGE.md', '.githooks/pre-commit',
         'config/email.example.json', 'config/profile.example.json', 'config/profiles.example.json',
-        'config/gmail.example.json', 'config/google-photos.example.json',
-        'data/court-emails.example.json', 'data/known-destinations.example.json',
+        'config/gmail.example.json', 'config/google-photos.example.json', 'config/photo-defaults.example.json',
+        'data/README.md', 'data/court-emails.example.json', 'data/known-destinations.example.json',
         'data/service-profiles.example.json', 'examples/intake.synthetic.example.json',
         'tests/portable-suite.txt', 'tests/portable-groups.json',
     )]
@@ -130,7 +130,7 @@ def isolated_environment(environ: dict[str, str]) -> dict[str, str]:
     env = dict(environ)
     for name in list(env):
         upper = name.upper()
-        if upper in ('OPENAI_API_KEY', 'PYTHONPATH', 'PYTHONHOME') or (
+        if upper in ('OPENAI_API_KEY', 'GEMINI_API_KEY', 'PYTHONPATH', 'PYTHONHOME') or (
             upper.startswith(('GMAIL_', 'GOOGLE_', 'HONORARIOS_')) and upper != 'HONORARIOS_UV_EXECUTABLE'
         ):
             env.pop(name, None)

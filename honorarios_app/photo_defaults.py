@@ -11,7 +11,7 @@ from typing import Any
 
 from scripts.entity_rules import build_service_place_clause, classify_entity_type, normalize_text, source_mentions_pj_context
 from scripts.generate_pdf import IntakeError
-from scripts.source_parsing import explicit_service_places, ministerio_publico_venue_evidence
+from scripts.source_parsing import explicit_service_places, interpreting_appointment_dates, ministerio_publico_venue_evidence
 
 ROUTING_FIELDS = ('payment_entity', 'addressee', 'recipient_email', 'court_email',
                   'court_email_key', 'recipient_override_reason', 'court_email_override_reason')
@@ -215,9 +215,29 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
             previous = str(intake.get('service_date') or '').strip()
             if previous and previous != capture:
                 applied['original_service_date'] = previous
-            intake.update(service_date=capture, photo_metadata_date=capture,
-                          service_date_source='photo_metadata', photo_metadata_date_requires_confirmation=False)
-            applied['service_date'] = capture
+            future_appointments = tuple(
+                value
+                for value in interpreting_appointment_dates(str(intake.get('source_text') or ''))
+                if value > capture
+            )
+            if future_appointments and 'user_confirmed' not in str(intake.get('service_date_source') or ''):
+                intake.pop('service_date', None)
+                intake.pop('service_date_source', None)
+                intake.update(
+                    photo_metadata_date=capture,
+                    photo_metadata_date_requires_confirmation=True,
+                )
+                applied['date_status'] = 'future_appointment_in_source'
+                applied['future_appointment_dates'] = list(future_appointments)
+                warnings.append(
+                    f"This photo mentions a future interpreting appointment ({', '.join(future_appointments)}) "
+                    f"after its capture date ({capture}). The capture date was not prefilled as the service date; "
+                    'confirm the actual completed interpreting date once the service has taken place.'
+                )
+            else:
+                intake.update(service_date=capture, photo_metadata_date=capture,
+                              service_date_source='photo_metadata', photo_metadata_date_requires_confirmation=False)
+                applied['service_date'] = capture
         else:
             intake.pop('service_date', None)
             intake['photo_metadata_date_requires_confirmation'] = True
@@ -263,8 +283,19 @@ def apply_photo_defaults(intake: dict[str, Any], *, preferences: dict[str, Any],
     # a police command/district header alone still is not a physical venue.
     if venue_enabled and not source_places and len(stations) == 1:
         host = stations[0].strip().rstrip('.')
+        host = re.sub(
+            r'^(esquadra|posto(?:\s+territorial)?)(?:\s+(da)\s+(psp|gnr))?\s+(de)\b',
+            lambda m: (
+                (' '.join(w.capitalize() if i == 0 else w.lower() for i, w in enumerate(m.group(1).split()))
+                 if (m.group(1).isupper() or m.group(1).islower()) else m.group(1))
+                + (f' {m.group(2).lower()} {m.group(3).upper()}' if m.group(3) else '')
+                + f' {m.group(4).lower()}'
+            ),
+            host,
+            flags=re.IGNORECASE,
+        )
         if city and _city_key(host).endswith(' de ' + _city_key(city)):
-            host = host[:-len(city)].capitalize() + city
+            host = re.sub(r'(\s+de\s+)' + re.escape(city) + r'$', lambda m: m.group(1) + city, host, flags=re.IGNORECASE)
         intake.update(service_place=host, service_entity=str(fields.get('service_entity') or host),
                       service_entity_type=classify_entity_type(host),
                       service_place_phrase=f'em diligência realizada {"na" if host.lower().startswith("esquadra") else "no"} {host}')
@@ -520,7 +551,11 @@ def reconcile_photo_venue_edit(intake: dict[str, Any]) -> None:
         intake.update(service_entity_type='', entities_differ=False)
     elif aliases_changed or intake.get('service_entity_type') in ('court', '', None):
         entity_type = classify_entity_type(entity or place)
-        intake.update(service_entity_type=entity_type, entities_differ=entity_type not in {'court', 'ministerio_publico'})
+        payment_type = classify_entity_type(str(intake.get('payment_entity') or ''))
+        entities_differ = entity_type not in {'court', 'ministerio_publico'} or (
+            entity_type == 'ministerio_publico' and payment_type == 'court'
+        )
+        intake.update(service_entity_type=entity_type, entities_differ=entities_differ)
     if place == entity:
         intake['photo_venue_last_value'] = place
 

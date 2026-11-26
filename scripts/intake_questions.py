@@ -221,7 +221,23 @@ def missing_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if not has_value(intake, rule["field"]):
             question = {**rule, "number": len(questions) + 1}
-            if travel_only and rule['field'] == 'service_date':
+            if (
+                rule["field"] == "service_date"
+                and isinstance(photo_defaults, dict)
+                and photo_defaults.get("date_status") == "future_appointment_in_source"
+            ):
+                future_dates = ", ".join(str(item) for item in (photo_defaults.get("future_appointment_dates") or []))
+                capture_day = str(intake.get("photo_metadata_date") or "").strip()
+                question.update(
+                    question=(
+                        f"This photo is a summons for a future appointment ({future_dates}) captured on "
+                        f"{capture_day}. On which date did you actually complete the in-person interpreting service?"
+                    ),
+                    answer_hint=(
+                        "Do not draft before the service happens. After it is completed, enter the actual service date in YYYY-MM-DD."
+                    ),
+                )
+            elif travel_only and rule['field'] == 'service_date':
                 question.update(question='What date did you attend in person as an interpreter?',
                                 answer_hint='Use YYYY-MM-DD. If the image metadata date is the actual attendance date, give that date.')
             questions.append(question)

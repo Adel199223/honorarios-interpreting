@@ -27,6 +27,7 @@ try {
     Invoke-Check node @('--check', 'honorarios_app/static/app.js')
     Invoke-Check node @('--check', 'honorarios_app/static/camera_picker.js')
     Invoke-Check node @('--check', 'honorarios_app/static/review_guidance.js')
+    Invoke-Check node @('--check', 'honorarios_app/static/workspace_draft.js')
     Invoke-Check node @('--check', 'scripts/browser_iab_smoke.mjs')
     # The full/package groups include an actual offline installed-wheel test.
     Invoke-Check $pythonExe @('scripts/run_portable_tests.py', '--group', $Group)

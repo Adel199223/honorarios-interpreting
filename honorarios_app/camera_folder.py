@@ -121,7 +121,7 @@ def _safe_name(name: Any) -> str:
     return name
 
 
-def _selected_info(root: Path, name: str) -> tuple[Path, os.stat_result]:
+def _regular_info(root: Path, name: str) -> tuple[Path, os.stat_result]:
     path = root / name
     try:
         info = path.stat(follow_symlinks=False)
@@ -129,11 +129,16 @@ def _selected_info(root: Path, name: str) -> tuple[Path, os.stat_result]:
             raise CameraFolderError("Choose a regular Camera photo, not a folder or link.")
         if path.resolve(strict=True).parent != root:
             raise CameraFolderError("Choose a photo inside the configured Camera folder.")
-        if info.st_size <= 0 or info.st_size > MAX_CAMERA_FILE_BYTES:
-            raise CameraFolderError("Choose a nonempty Camera photo no larger than 25 MiB.")
         return path, info
     except (OSError, RuntimeError) as exc:
         raise CameraFolderError("The Camera photo is unavailable. Open Camera again and select it again.") from exc
+
+
+def _selected_info(root: Path, name: str) -> tuple[Path, os.stat_result]:
+    path, info = _regular_info(root, name)
+    if info.st_size <= 0 or info.st_size > MAX_CAMERA_FILE_BYTES:
+        raise CameraFolderError("Choose a nonempty Camera photo no larger than 25 MiB.")
+    return path, info
 
 
 def list_camera_files(
@@ -149,6 +154,7 @@ def list_camera_files(
     root = _camera_root(config_path)
     search = _search_text(query)
     items: list[dict[str, Any]] = []
+    oversized_count = 0
     truncated = False
     try:
         with os.scandir(root) as entries:
@@ -162,8 +168,13 @@ def list_camera_files(
                         continue
                     # lstat and resolution deliberately reject links, including
                     # links whose target happens to be inside the same folder.
-                    _, info = _selected_info(root, name)
+                    _, info = _regular_info(root, name)
                 except CameraFolderError:
+                    continue
+                if info.st_size > MAX_CAMERA_FILE_BYTES:
+                    oversized_count += 1
+                    continue
+                if info.st_size <= 0:
                     continue
                 items.append({"name": name, "size": info.st_size, "modified_ns": info.st_mtime_ns,
                               "fingerprint": _fingerprint(root, name, info)})
@@ -174,7 +185,7 @@ def list_camera_files(
     end = offset + limit
     return {"configured": True, "label": CAMERA_LABEL, "items": items[offset:end], "total": total,
             "offset": offset, "limit": limit, "next_offset": end if end < total else None,
-            "truncated": truncated}
+            "truncated": truncated, "oversized_count": oversized_count}
 
 
 def _same_file(left: os.stat_result, right: os.stat_result) -> bool:

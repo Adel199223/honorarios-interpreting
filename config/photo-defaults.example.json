@@ -6,5 +6,6 @@
   "capture_timezone": "",
   "verified_gps_areas": [],
   "verified_gps_venues": [],
+  "confirmed_source_locations": [],
   "city_courts": {}
 }

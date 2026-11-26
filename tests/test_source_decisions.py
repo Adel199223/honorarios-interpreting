@@ -141,6 +141,13 @@ class NotificationDateTests(unittest.TestCase):
 
 
 class SourcePlaceRoleTests(unittest.TestCase):
+    def test_attendance_penalty_does_not_supply_a_service_place(self):
+        penalty = ('indispensável à realização da diligência e, bem assim, de ser condenado no pagamento das\n'
+                   'despesas ocasionadas pela sua não comparência.')
+        self.assertEqual(explicit_service_places(penalty), ())
+        self.assertEqual(explicit_service_places(
+            'Local da diligência: Tribunal de Cidade Exemplo.\n' + penalty), ('Tribunal de Cidade Exemplo',))
+
     def test_court_host_on_line_after_wrapped_service_date_label(self):
         self.assertEqual(explicit_service_places(
             'Declara-se que o serviço de interpretação foi realizado em\n'

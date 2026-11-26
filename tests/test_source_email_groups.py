@@ -977,6 +977,67 @@ class GmailAttemptRecoveryTests(unittest.TestCase):
         with self.fake_transport():
             self.assertEqual(self.client().post('/api/gmail/drafts/create', json=request).json()['status'], 'created')
 
+    def test_rejected_oauth_refresh_never_posts_draft_and_retains_manual_handoff(self):
+        import httpx
+        from honorarios_app import gmail_draft_api as gmail
+        from honorarios_app.gmail_attempts import load_attempts
+        request=self.prepared_request();client=self.client()
+        self.paths.gmail_config.write_text(json.dumps({'client_id':'fictional.apps.googleusercontent.com','client_secret':'fictional-client-secret'}))
+        token_path=self.paths.gmail_config.with_name('gmail-token.local.json')
+        token_path.write_text(json.dumps({'access_token':'fictional-expired','refresh_token':'fictional-refresh',
+            'expires_at':'2020-01-01T00:00:00+00:00','scope':gmail.GMAIL_COMPOSE_SCOPE}))
+        before=(self.paths.duplicate_index.read_bytes(),self.paths.draft_log.read_bytes(),token_path.read_bytes())
+        payload_path=Path(request['payload']);payload_before=payload_path.read_bytes()
+        network=[];original_client=httpx.Client
+        def handler(incoming):
+            network.append(incoming.url.path)
+            self.assertEqual(incoming.url.path,'/token')
+            return httpx.Response(400,json={'error':'invalid_grant','error_description':'fictional-private-detail'})
+        def factory(*args,**kwargs):return original_client(*args,**kwargs,transport=httpx.MockTransport(handler))
+        with patch.object(gmail,'fake_gmail_draft_api_enabled',return_value=False),patch.object(gmail.httpx,'Client',side_effect=factory):
+            response=client.post('/api/gmail/drafts/create',json=request)
+            self.assertEqual(response.status_code,200);data=response.json()
+            self.assertEqual(data['status'],'not_created');self.assertTrue(data['reauthorization_required'])
+            self.assertFalse(data['gmail_draft_create_called']);self.assertFalse(data['create_retry_allowed'])
+            self.assertNotIn('fictional-private-detail',response.text)
+            self.assertFalse(data.get('draft_id'));self.assertFalse(data.get('message_id'))
+            second=client.post('/api/gmail/drafts/create',json=request).json()
+            self.assertEqual(second['attempt_id'],data['attempt_id'])
+            self.assertEqual(second['status'],'not_created')
+            status=client.get('/api/gmail/status').json()
+            self.assertFalse(status['connected']);self.assertTrue(status['manual_handoff_ready'])
+        self.assertEqual(network,['/token'])
+        self.assertEqual(len(load_attempts(self.paths.draft_log)),1)
+        attempt=load_attempts(self.paths.draft_log)[0]
+        self.assertEqual(attempt['state'],'not_created');self.assertEqual(attempt['failure_stage'],'oauth_refresh')
+        self.assertEqual(before,(self.paths.duplicate_index.read_bytes(),self.paths.draft_log.read_bytes(),token_path.read_bytes()))
+        self.assertEqual(payload_path.read_bytes(),payload_before)
+        self.assertEqual(manual_handoff_packet(request,self.paths)['status'],'ready')
+
+    def test_known_auth_failure_marker_write_error_still_returns_unambiguous_not_created(self):
+        from honorarios_app import gmail_draft_api as gmail
+        request=self.prepared_request()
+        self.paths.gmail_config.write_text(json.dumps({'client_id':'fictional.apps.googleusercontent.com','client_secret':'fictional-secret'}))
+        self.paths.gmail_config.with_name('gmail-token.local.json').write_text(json.dumps({'access_token':'fictional-expired',
+            'refresh_token':'fictional-refresh','expires_at':'2020-01-01T00:00:00+00:00','scope':gmail.GMAIL_COMPOSE_SCOPE}))
+        with patch.object(gmail,'fake_gmail_draft_api_enabled',return_value=False),patch.object(gmail,'exchange_google_token',side_effect=gmail.GmailAuthorizationRequired()),patch.object(gmail,'_write_authorization_rejection',side_effect=OSError('fictional storage failure')),patch.object(gmail.httpx,'Client',side_effect=AssertionError('Draft POST must not be reached')):
+            data=self.client().post('/api/gmail/drafts/create',json=request).json()
+        self.assertEqual(data['status'],'not_created');self.assertFalse(data['gmail_draft_create_called'])
+        self.assertFalse(data['gmail_status']['connected']);self.assertEqual(data['gmail_status']['setup']['status'],'reconnect_required')
+        self.assertIn('reconnecting',data['gmail_status']['message']);self.assertFalse(data.get('draft_id'))
+
+    def test_marked_precheck_does_not_relabel_an_unrelated_terminal_failure(self):
+        from honorarios_app import gmail_draft_api as gmail
+        request=self.prepared_request();client=self.client()
+        self.paths.gmail_config.write_text(json.dumps({'client_id':'fictional.apps.googleusercontent.com','client_secret':'fictional-secret'}))
+        self.paths.gmail_config.with_name('gmail-token.local.json').write_text(json.dumps({'access_token':'fictional-access','refresh_token':'fictional-refresh','scope':gmail.GMAIL_COMPOSE_SCOPE}))
+        with self.fake_transport(http_status=401):
+            self.assertEqual(client.post('/api/gmail/drafts/create',json=request).status_code,400)
+        gmail.remember_rejected_gmail_authorization(self.paths.gmail_config,expected_revision=gmail.gmail_credential_revision(self.paths.gmail_config))
+        with patch.object(gmail,'fake_gmail_draft_api_enabled',return_value=False),patch('honorarios_app.services.create_gmail_draft_from_payload',side_effect=AssertionError('Precheck must not create')):
+            result=client.post('/api/gmail/drafts/create',json=request).json()
+        self.assertEqual(result['status'],'not_created');self.assertEqual(result['attempt_id'],'')
+
     def test_concurrent_same_request_creates_only_one_remote_draft(self):
         from concurrent.futures import ThreadPoolExecutor
         request = self.prepared_request()
@@ -1313,6 +1374,36 @@ class ManualVisitEmailTests(unittest.TestCase):
         self.assertEqual(record_draft(request, self.paths)['recorded_duplicate_count'], 3)
         log = json.loads(self.paths.draft_log.read_text(encoding='utf-8'))
         self.assertEqual([r['status'] for r in log], ['superseded', 'active'])
+
+    def test_active_drafts_for_matches_child_members_and_antigravity_handoff_escapes_cmd(self):
+        from honorarios_app.services import active_drafts_for, load_draft_log
+        from scripts.antigravity_gmail_handoff import build_antigravity_gmail_handoff
+
+        rows = self.rows(3)
+        prepared = self.prepare(rows)
+        group = prepared['email_groups'][0]
+        record_draft({**self.request(prepared, group), 'draft_id': 'fictional-group-active', 'message_id': 'fictional-msg-active'}, self.paths)
+        self.assertEqual([item['draft_id'] for item in active_drafts_for(rows[2], load_draft_log(self.paths.draft_log))], ['fictional-group-active'])
+
+        payload_path = Path(group['draft_payload'])
+        payload = json.loads(payload_path.read_text(encoding='utf-8'))
+        payload['subject'] = 'Honorários 100% presencial'
+        payload['gmail_create_draft_args']['subject'] = 'Honorários 100% presencial'
+        payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        body_dir = self.root / 'handoff-bodies'
+        handoff = build_antigravity_gmail_handoff(payload_path, body_dir=body_dir)
+        self.assertEqual(handoff['status'], 'ready')
+        self.assertTrue(handoff['draft_only'])
+        self.assertFalse(handoff['send_allowed'])
+        self.assertIn('$env:AGY_UNATTENDED = "1"; gmail mutate create-draft', handoff['powershell_command'])
+        self.assertIn('100%% presencial', handoff['cli_command'])
+        self.assertTrue(Path(handoff['body_file']).is_file())
+
+        payload['gmail_create_draft_args']['subject'] = 'Bad "quote" subject'
+        payload['subject'] = 'Bad "quote" subject'
+        payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        with self.assertRaisesRegex(IntakeError, 'double quotes'):
+            build_antigravity_gmail_handoff(payload_path, body_dir=body_dir)
 
 
 if __name__ == '__main__':

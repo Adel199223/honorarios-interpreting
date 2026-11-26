@@ -122,6 +122,81 @@ class SavedCourtLabelTests(unittest.TestCase):
 
 
 class PhotoDefaultTests(unittest.TestCase):
+
+    def test_no_ai_fields_cropped_mp_upload_resolves_confirmed_city_and_host_outside_old_circle(self):
+        self.enable(venue=True)
+        geometry = {'geometry_basis': 'user_confirmed_photo_venue',
+                    'confirmation_source_sha256': 'b' * 64, 'confirmation_date': '2026-11-13'}
+        preferences = json.loads(self.defaults_path.read_text(encoding='utf-8'))
+        preferences['verified_gps_areas'] = [
+            {'city': CAPTURE_CITY, 'latitude': .0011, 'longitude': 0, 'radius_m': 100,
+             'source_url': 'https://places.example.test/old-city-point'},
+            {'city': CAPTURE_CITY, 'latitude': 0, 'longitude': 0, 'radius_m': 50,
+             'source_url': 'https://places.example.test/current-postal-address', **geometry}]
+        preferences['verified_gps_venues'] = [{
+            'id': 'fictional-new-court', 'city': CAPTURE_CITY,
+            'service_entity': f'Ministério Público de {CAPTURE_CITY}',
+            'service_entity_type': 'ministerio_publico', 'service_place': CAPTURE_COURT,
+            'latitude': 0, 'longitude': 0, 'radius_m': 50,
+            'required_source_phrases': ['ministerio publico', 'local criminal', f'inqueritos de {CAPTURE_CITY}'],
+            'source_urls': ['https://places.example.test/current-postal-address'], **geometry}]
+        write_json(self.defaults_path, preferences)
+        write_json(self.paths.service_profiles, {'court_mp_generic': {'defaults': {
+            'service_entity_type': 'court', 'entities_differ': False,
+            'claim_transport': True, 'transport': {'round_trip_phrase': 'ida_volta'}}}})
+        raw = BytesIO()
+        Image.new('RGB', (600, 900), 'white').save(raw, format='JPEG')
+        meta = {'exif_date': CAPTURE_DATE, 'gps_coordinates': {
+            'latitude': -.0001, 'longitude': 0, 'source': 'exif_gps'}}
+        original_gps = copy.deepcopy(meta['gps_coordinates'])
+        for first, newline in ((f'[…]radoria da República da Comarca de {CAPTURE_CITY}', '\n'),
+                               (f'[…]radoria da República da Comarca de {CAPTURE_CITY}', '\r\n'),
+                               (f'Procuradoria da República da Comarca de {CAPTURE_CITY}', '\n'),
+                               (f'Ministério Público\nProcuradoria da República da Comarca de {CAPTURE_CITY}', '\n')):
+            source = (f'Processo: {CASE_NUMBER}\nReferência: 12345678\n{first}\n'
+                      f'[…]Local Criminal- 1ª Sec Inquéritos de {CAPTURE_CITY}\n'
+                      '[…]argo da Rua Antiga')
+            source = source.replace('\n', newline)
+            with self.subTest(heading=first), patch('honorarios_app.services.image_metadata_from_bytes',
+                                                  return_value=copy.deepcopy(meta)):
+                result = recover_source_upload(filename='fictional-court.jpg', content_type='image/jpeg',
+                    content=raw.getvalue(), source_kind='photo', profile_name='auto', visible_text=source,
+                    ai_recovery_mode='off', paths=self.paths)
+            candidate = result['candidate_intake']
+            self.assertEqual(result['ai_recovery']['status'], 'skipped')
+            self.assertEqual(candidate['source_text'], source)
+            self.assertEqual(candidate['service_date'], CAPTURE_DATE)
+            self.assertEqual(candidate['service_place'], CAPTURE_COURT)
+            self.assertEqual(candidate['service_entity_type'], 'ministerio_publico')
+            self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+            self.assertEqual(candidate['transport']['km_one_way'], 12)
+            self.assertEqual(result['review']['questions'], [])
+            self.assertEqual(result['review']['status'], 'ready')
+            self.assertEqual(result['source']['metadata']['gps_coordinates'], original_gps)
+            self.assertNotIn('photo_metadata_city', result['source']['metadata'])
+            self.assertEqual(len(result['source']['metadata']['gps_city_match']['matches']), 1)
+            self.assertEqual(result['source']['metadata']['gps_city_match']['matches'][0]['geometry_basis'],
+                             'user_confirmed_photo_venue')
+            row = next(row for row in result['source_evidence']['field_evidence']
+                       if row['field'] == 'service_place')
+            self.assertIn('user-confirmed photo location', row['reason'])
+            self.assertIn('not a surveyed building footprint', row['reason'])
+            if 'Ministério Público' not in source:
+                agency = next(row for row in result['source_evidence']['field_evidence']
+                              if row['field'] == 'source_agency_type')
+                self.assertIn('radoria da República', agency['excerpt'])
+                self.assertNotIn('Ministério Público', agency['excerpt'])
+            # Browser upload is followed by ordinary JSON review. With its exact
+            # source text retained, even CRLF source provenance must survive.
+            reviewed = review_intake_with_profile_evidence(copy.deepcopy(candidate), self.paths)
+            self.assertEqual(reviewed['intake']['source_text'], source)
+            self.assertEqual(reviewed['intake']['source_location_evidence'], candidate['source_location_evidence'])
+            fields = reviewed['review_evidence']['field_evidence']
+            self.assertTrue(any(row['field'] == 'service_place' for row in fields))
+            if 'Ministério Público' not in source:
+                self.assertTrue(any(row['field'] == 'source_agency_type' for row in fields))
+            city_row = next(row for row in fields if row['field'] == 'photo_capture_city')
+            self.assertIn('user-confirmed photo-location point', city_row['reason'])
     def test_explicit_review_clears_survive_default_reapplication_and_ask_again(self):
         original = json.loads((Path(__file__).resolve().parents[1] / 'examples/intake.synthetic.example.json').read_text(encoding='utf-8'))
         original['auto_profile'] = {'auto_applied': True, 'profile_key': 'example_interpreting'}
@@ -1770,6 +1845,95 @@ class PhotoDefaultTests(unittest.TestCase):
         effective, paragraph = self.assert_changed_venue_paragraph(candidate, place, 'psp')
         self.assertEqual(effective['service_place_phrase'], phrase)
         self.assertIn(phrase, paragraph)
+
+    def test_lowercase_named_station_preserves_gnr_acronym_and_city_casing(self):
+        self.enable(venue=True)
+        for heading, expected in (
+            (f'posto territorial da gnr de {CAPTURE_CITY.lower()}', f'Posto territorial da GNR de {CAPTURE_CITY}'),
+            (f'Posto Territorial da GNR de {CAPTURE_CITY.lower()}', f'Posto Territorial da GNR de {CAPTURE_CITY}'),
+        ):
+            with self.subTest(heading=heading):
+                result = self.upload(
+                    visible_text=f'{heading}\nProcesso {CASE_NUMBER}',
+                    ai_fields={'service_place': '', 'service_entity': 'Guarda Nacional Republicana', 'locality': CAPTURE_CITY},
+                )
+                self.assertEqual(result['candidate_intake']['service_place'], expected)
+
+    def test_future_summons_photo_does_not_prefill_capture_date_as_service_date(self):
+        self.enable(venue=True)
+        for wrapped_date in ('28-09-2026', '28-09-\n2026'):
+            with self.subTest(wrapped_date=wrapped_date):
+                summons_text = (
+                    f'Tribunal de {CAPTURE_CITY}\nProcesso {CASE_NUMBER}\nNOTA DE NOTIFICAÇÃO\n'
+                    'Fica devidamente notificado Fictional Applicant, na qualidade de Intérprete,\n'
+                    f'Para comparecer ao Tribunal de {CAPTURE_CITY}, no próximo dia {wrapped_date}, às 14:00 horas.'
+                )
+                result = self.upload(visible_text=summons_text, ai_fields={'service_date': CAPTURE_DATE})
+                candidate = result['candidate_intake']
+                self.assertEqual(candidate.get('service_date', ''), '')
+                self.assertEqual(candidate['photo_metadata_date'], CAPTURE_DATE)
+                self.assertTrue(candidate['photo_metadata_date_requires_confirmation'])
+                self.assertEqual(candidate['photo_defaults_applied']['date_status'], 'future_appointment_in_source')
+                self.assertEqual(candidate['photo_defaults_applied']['future_appointment_dates'], ['2026-09-28'])
+                self.assertEqual(result['review']['status'], 'needs_info')
+                self.assertIn('service_date', self.question_fields(result))
+                question = next(q for q in result['review']['questions'] if q['field'] == 'service_date')
+                self.assertIn('2026-09-28', question['question'])
+                self.assertIn(CAPTURE_DATE, question['question'])
+                with self.assertRaises(IntakeError):
+                    prepare_intakes([candidate], self.paths)
+                answered = copy.deepcopy(candidate)
+                apply_answer_to_intake(answered, 'service_date', '2026-09-28')
+                reviewed = review_intake_with_profile_evidence(answered, self.paths)
+                self.assertEqual(reviewed['status'], 'ready', reviewed)
+                self.assertEqual(reviewed['intake']['service_date'], '2026-09-28')
+
+        for non_future_text in (
+            f'{SOURCE_TEXT}\nna qualidade de Intérprete, comparecer no dia 26-09-2026.',
+            f'{SOURCE_TEXT}\nna qualidade de Intérprete, comparecer no dia 24-09-2026.',
+            f'{SOURCE_TEXT}\nFoi nomeado intérprete.\nO arguido deve comparecer em 28-09-2026.',
+            f'{SOURCE_TEXT}\nIntérprete: Fictional Applicant.\nAudiência cancelada em 28-09-2026.',
+        ):
+            with self.subTest(non_future_text=non_future_text[-40:]):
+                result = self.upload(visible_text=non_future_text)
+                self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
+                self.assertEqual(result['review']['status'], 'ready', result['review'])
+
+    def test_mp_termo_compareceu_nestes_servicos_resolves_host_and_saved_distance(self):
+        self.enable(venue=True)
+        write_json(self.paths.service_profiles, {'court_mp_generic': {
+            'description': 'Fictional generic court or prosecutor fallback.',
+            'defaults': {'service_entity_type': 'court', 'entities_differ': False,
+                         'claim_transport': True, 'transport': {'round_trip_phrase': 'ida_volta'}},
+        }})
+        host = f'Procuradoria do Juízo Local Criminal- 1ª Sec Inquéritos de {CAPTURE_CITY}'
+        source = (
+            f'MINISTÉRIO PÚBLICO - Procuradoria da República da Comarca de {CAPTURE_CITY}\n'
+            f'{host}\n'
+            f'Palácio da Justiça de {CAPTURE_CITY}\n'
+            f'Referência: 123456\n'
+            f'Inquérito {CASE_NUMBER}\n'
+            'TERMO\n'
+            'Em 26-09-2026, consigno que o intérprete Fictional Applicant compareceu nestes Serviços do Ministério Público.'
+        )
+        result = self.upload(
+            visible_text=source,
+            independent_visible_text=False,
+            ai_fields={
+                'service_place': f'Serviços do Ministério Público - Palácio da Justiça de {CAPTURE_CITY}',
+                'service_entity': f'Ministério Público - {host}',
+                'service_entity_type': 'ministerio_publico',
+                'locality': CAPTURE_CITY,
+            },
+        )
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['service_place'], host)
+        self.assertEqual(candidate['service_entity_type'], 'ministerio_publico')
+        self.assertTrue(candidate['entities_differ'])
+        self.assertEqual(candidate['payment_entity'], CAPTURE_COURT)
+        self.assertEqual(candidate['transport']['km_one_way'], 12)
+        self.assertEqual(result['review']['status'], 'ready', result['review'])
+        self.assertEqual(result['review']['questions'], [])
 
 
 if __name__ == '__main__':

@@ -30,6 +30,9 @@ jobs:
             uv export --locked --no-emit-project --no-header --format requirements-txt --quiet | diff - requirements.txt
             .venv311/bin/python scripts/check_project_docs.py
             node --check honorarios_app/static/app.js
+            node --check honorarios_app/static/camera_picker.js
+            node --check honorarios_app/static/review_guidance.js
+            node --check honorarios_app/static/workspace_draft.js
             node --check scripts/browser_iab_smoke.mjs
             .venv311/bin/python scripts/run_portable_tests.py
             .venv311/bin/python scripts/isolated_app_smoke.py --source-upload-checks

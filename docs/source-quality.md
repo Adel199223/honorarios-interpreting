@@ -1,6 +1,39 @@
 # Source decisions and AI reading
+## Reusable confirmed physical venues
+
+A deliberately configured MP or PJ venue may set `source_city_basis: "verified_gps"` to recognize new photos, cases and dates at an already confirmed venue point. This mode requires valid `user_confirmed_photo_venue` metadata, a radius no greater than 50 m, current original EXIF GPS inside that point and an independently matched capture city equal to the venue city. Legacy rows keep their literal source-city requirement. The enabled catalog still validates as a whole, and more than one matching venue remains ambiguous across both modes.
+
+The source must have its own full agency and a specific unit heading. A cityless full MP label plus its own Local Criminal line may use GPS city; the existing two-line cropped Procuradoria corroboration remains separately labeled. Case/table delimiters bound body mentions, and only a bounded digital-signature preamble can precede the issuer. Quotes, forwarding, narrative between agency and unit, conflicting local unit/capture cities, a named physical host, deliberate profiles and manual edits/clears prevent automatic replacement. Recognized source agency/unit wording stays intact; a PJ source can have a GNR host and a court payer.
+
+Source Evidence labels the result **Reusable GPS + source venue**, quotes actual header excerpts and distinguishes GPS city from printed words. A previously confirmed point is not a claim that this new photo was individually confirmed. Reference links supply context, not surveyed building coordinates or proof of attendance. Current source/text hashes bind the new proof; the older confirmation hash describes the saved point's provenance. This rule does not choose dates, copy an earlier request's payer, learn a global exceptional distance or replace ordinary recipient/duplicate/freshness checks. Missing or outside GPS still needs the normal answer.
+
+
+## Previously confirmed source locations
+
+An optional local `confirmed_source_locations` catalog reuses explicitly saved answers only for the same original photo SHA-256, normalized case and an allowed current service date. It never chooses or changes the service date. Each entry has an ID, a real ISO saved/reuse confirmation date and an evidence reference, plus independently optional capture-city, physical-host, paying-authority/contact and profile-bound travel facts. At most 128 entries and 16 dates per entry are accepted; the entire catalog validates before any entry applies.
+
+Physical host and source agency remain separate: a PJ assignment can have a GNR host and a court payer; an MP assignment can take place at court. Source Evidence and the ordinary Service place badge label a saved host as **Previously confirmed for this photo**, while original agency excerpts keep their source provenance. A saved answer is editable, not printed/embedded evidence, a public building survey or proof of attendance. Its saved/reuse date is not a claim about when the user first answered.
+
+Reuse runs for each selected child and again during normal review. A different source, case, current date, changed catalog or removed confirmation revokes only unchanged derived fields, including ordinary personal travel that depended on the remembered host. Named hosts, conflicting agencies, explicit service profiles, manual edits/clears and zero distance remain authoritative. Invalid/conflicting saved facts hold review visibly. Confirmed exceptional distance additionally requires the same personal profile, origin and destination; it does not add a global distance or city-to-payer rule. Ordinary saved personal distances still use the existing travel helper and keep that provenance.
+
+The app does not learn or write this catalog automatically. Existing date, scope, duplicate, recipient, prepared-artifact and draft-only guards remain in force. Payment/attendance penalty prose such as `pagamento das despesas` is not a physical venue.
+
+An explicitly configured venue may be proposed from original photo GPS and two specific own prosecutor-header lines, including a visibly cropped Procuradoria label. This is derived agency evidence: retain actual excerpts and source text/hash, and keep an unprinted full agency label out of literal matches. A city or MP heading alone still leaves the physical host unresolved. Explicit venues/profiles/clears and conflicting source evidence take priority.
+
+City and venue catalogs may optionally mark a user-confirmed photo point with geometry_basis=user_confirmed_photo_venue, confirmation_source_sha256 and confirmation_date. Such rows require a valid ISO date, exact lowercase 64-hex hash and radius at most 50 m. Supporting official sources establish postal context; they do not survey the point or prove attendance. Source Evidence must visibly distinguish this saved user basis from embedded location and printed venue facts.
+
+A case cited only in a bounded instruction to obtain/join a certificate or copy from another inquiry is documentary context, not another interpreting request. Source Evidence keeps that case and quoted clause. Any independent foreground occurrence retains its normal review; isolated document words do not exclude cases, and uncertain document/background membership remains unresolved. Existing cached groups are not silently pruned or given a new travel owner. A selected documentary-only case blocks review/preparation until the actual service source is reviewed. This deterministic rule is separate from a completed fee source's history-only identity.
+
 
 The app should identify the date and place of the interpreting service, distinguish the paying authority from the physical host, and ask when an important fact is missing or conflicting. Notification PDFs use an explicit interpreting appointment date as the editable service-date default. Issue, certification, closing and file dates do not supply that default. Photos follow the separate saved capture-day rule below. Familiar profiles must not replace an unfamiliar court or city.
+
+## Completed fee-source history
+
+A foreground completed fee demand can identify an earlier service independently of the current photo date. When one full visible case and one explicitly performed-service date match blocking saved history, review shows a separately labeled **Source service identity — history check only** before unrelated scope, payer or travel questions. The intake date and saved photo defaults remain unchanged. No match leaves the normal review questions and generation rules in place.
+
+This guard does not infer in-person work, police preparation, submission dates, email sending or payment. Ambiguous cases/dates, incidental background, model-only fields and ordinary attendance documents do not supply this special identity. Changing a case, date or period cannot silently repoint the source claim: a separate-service answer is bound to the current source and edited identity, then ordinary scope, date and duplicate checks run again. Source or identity changes invalidate that answer.
+
+Preflight, preparation and prepared handoff/create/record boundaries recheck current history for each relevant child. The normal same-request duplicate, correction and exact-record retry safeguards remain authoritative. Source evidence retained in local prepared metadata is never added to Gmail draft arguments.
 
 ## Notification PDFs and mixed work
 

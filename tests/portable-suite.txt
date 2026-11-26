@@ -40,3 +40,5 @@ test_gmail_sent_sync.py
 test_gmail_sent_sync_api.py
 test_gmail_sent_sync_ui.py
 test_retained_draft_warnings.py
+test_confirmed_locations.py
+test_confirmed_location_integration.py

@@ -544,6 +544,10 @@ def build_email_payload(intake: dict[str, Any], pdf_path: Path, email_config: di
         payload.update({key: intake[key] for key in MANUAL_VISIT_FIELDS if key in intake})
         payload['source_sha256'] = str(intake.get('source_sha256') or '')
         payload['personal_profile_id'] = str(intake.get('personal_profile_id') or personal_profile_key)
+    from honorarios_app.source_history import source_history_evidence
+    evidence = source_history_evidence(intake)
+    if evidence is not None:
+        payload['source_history_evidence'] = evidence
     return payload
 
 
@@ -569,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         intake = load_json(args.intake)
+        from honorarios_app.source_history import require_completed_fee_history_clear
+        require_completed_fee_history_clear(intake, args.duplicate_index)
         require_requests_not_excluded(intake, args.duplicate_index)
         email_config = load_json(args.email_config)
         directory = json.loads(resolve_json_path(args.court_emails).read_text(encoding="utf-8"))
@@ -582,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
         output_path = args.output or default_output_path(args.pdf)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    except (IntakeError, RequestExclusionError, OSError, json.JSONDecodeError) as exc:
+    except (IntakeError, RequestExclusionError, OSError, ValueError) as exc:
         print(f"Cannot build Gmail draft payload: {exc}", file=sys.stderr)
         return 2
 

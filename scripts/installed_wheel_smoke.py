@@ -77,6 +77,9 @@ with patch.object(socket.socket, "connect", guarded_connect), patch.object(socke
         page = client.get("/")
         assert page.status_code == 200 and "LegalPDF Honorários" in page.text
         assert client.get("/static/app.js").status_code == 200
+        assert client.get("/static/camera_picker.js").status_code == 200
+        assert client.get("/static/review_guidance.js").status_code == 200
+        assert client.get("/static/workspace_draft.js").status_code == 200
         assert client.get("/static/style.css").status_code == 200
         def fetch_json(url):
             from urllib.parse import urlparse

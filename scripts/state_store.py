@@ -25,7 +25,14 @@ def atomic_write_json(path: Path, value: Any) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt >= 4:
+                    raise
+                time.sleep(0.05)
     finally:
         if temporary is not None and temporary.exists():
             temporary.unlink()

@@ -132,6 +132,7 @@ def render_png(pdf_path: Path, render_dir: Path) -> list[str]:
         check=False,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     if result.returncode != 0:
         raise IntakeError(f"pdftoppm failed for {pdf_path}: {result.stderr.strip()}")
@@ -161,12 +162,19 @@ def active_drafts_for(intake: dict[str, Any], draft_log: list[dict[str, Any]]) -
     for record in draft_log:
         if str(record.get("status") or "").strip() != "active":
             continue
-        record_key = request_identity_key(record)
-        if record_key[0] != intake_key[0] or record_key[1] != intake_key[1]:
-            continue
-        if intake_key[2] and record_key[2] and intake_key[2] != record_key[2]:
-            continue
-        active.append(record)
+        members = record.get("underlying_requests")
+        candidates = [row for row in members if isinstance(row, dict)] if isinstance(members, list) and members else [record]
+        matched = False
+        for candidate in candidates:
+            record_key = request_identity_key(candidate)
+            if record_key[0] != intake_key[0] or record_key[1] != intake_key[1]:
+                continue
+            if intake_key[2] and record_key[2] and intake_key[2] != record_key[2]:
+                continue
+            matched = True
+            break
+        if matched:
+            active.append(record)
     return active
 
 
@@ -188,6 +196,8 @@ def validate_intake_before_generation(
         raise IntakeError(format_translation_rejection(translation_matches))
 
     try:
+        from honorarios_app.source_history import require_completed_fee_history_clear
+        require_completed_fee_history_clear(intake, duplicate_index, draft_log)
         require_requests_not_excluded(intake, duplicate_index)
     except RequestExclusionError as exc:
         raise IntakeError(str(exc)) from exc

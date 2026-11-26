@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -19,6 +20,107 @@ from honorarios_app.source_evidence import (
 
 
 class SourceEvidenceTests(unittest.TestCase):
+    def user_point_candidate(self):
+        excerpts = ['radoria da República da Comarca de Fictional City',
+                    'Local Criminal - 1ª Sec Inquéritos de Fictional City']
+        text = '\n'.join(excerpts) + '\nLargo Old Address'
+        point = {'geometry_basis': 'user_confirmed_photo_venue', 'confirmation_source_sha256': 'a' * 64,
+                 'confirmation_date': '2026-11-01', 'radius_m': 50}
+        location = {**point, 'source': 'verified_gps_source_venue', 'source_sha256': 'b' * 64,
+                    'source_text_sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                    'service_entity': 'Ministério Público de Fictional City', 'service_entity_type': 'ministerio_publico',
+                    'city': 'Fictional City', 'service_place': 'Tribunal de Fictional City', 'distance_m': 2.5,
+                    'reason': 'Editable inferred venue, not proof of attendance or interpreting.',
+                    'source_urls': ['https://places.example.test/current-postal-address'],
+                    'matched_source_phrases': ['local criminal', 'inqueritos de fictional city'],
+                    'source_agency_corroboration': {'basis': 'corroborated_procuradoria_heading',
+                        'derived_agency_type': 'ministerio_publico', 'city': 'Fictional City', 'raw_excerpts': excerpts}}
+        candidate = {'source_text': text, 'source_sha256': 'b' * 64, 'photo_metadata_date': '2026-10-18',
+                     'service_entity': location['service_entity'], 'service_entity_type': location['service_entity_type'],
+                     'service_place': location['service_place'], 'source_location_evidence': location,
+                     'photo_defaults_applied': {'photo_city': 'Fictional City', 'photo_city_source': 'verified_gps_area'}}
+        return candidate, point
+
+    def test_user_point_city_and_venue_explain_confirmation_separately_from_public_address(self):
+        candidate, point = self.user_point_candidate()
+        area = {**point, 'source_url': 'https://places.example.test/current-postal-address'}
+        metadata = {'gps_city_match': {'status': 'matched', 'city': 'Fictional City', 'matches': [area]}}
+        for source_metadata in (metadata, {}):
+            with self.subTest(rereview=not source_metadata):
+                rows = {row['field']: row for row in self.fields(candidate=candidate, metadata=source_metadata)}
+                for field in ('photo_capture_city', 'service_place'):
+                    reason = rows[field]['reason']
+                    self.assertIn('user-confirmed photo-location point', reason)
+                    self.assertIn('radius 50 m', reason)
+                    self.assertIn('confirmed 2026-11-01', reason)
+                    self.assertIn('not publicly verified building coordinates', reason)
+                    self.assertIn('postal address separately', reason)
+                    self.assertNotIn('confirmed 2026-10-18', reason)
+                if source_metadata:
+                    self.assertIn('user-confirmed photo-location point', rows['photo_gps_city']['reason'])
+                    self.assertEqual(rows['photo_gps_city']['excerpt'], area['source_url'])
+        self.assertEqual(candidate['photo_metadata_date'], '2026-10-18')
+
+    def test_derived_mp_agency_quotes_actual_cropped_lines_without_inventing_literal_name(self):
+        candidate, _ = self.user_point_candidate()
+        for ai in ({}, {'status': 'ok', 'raw_visible_text': candidate['source_text'], 'fields': {}}):
+            rows = {row['field']: row for row in self.fields(candidate=candidate, ai_recovery=ai)}
+            agency = rows['source_agency_type']
+            self.assertEqual(agency['label'], 'Derived source agency')
+            self.assertEqual(agency['source'], 'corroborated_source_heading')
+            self.assertEqual(agency['value'], 'ministerio_publico')
+            self.assertEqual(agency['excerpt'], '\n'.join(candidate['source_location_evidence']['source_agency_corroboration']['raw_excerpts']))
+            self.assertNotIn('Ministério Público', agency['excerpt'])
+            self.assertIn('not claimed as literal source text', agency['reason'])
+            self.assertNotIn('ministerio publico', rows['service_place']['excerpt'])
+            if ai:
+                self.assertIn('recovered by AI', agency['reason'])
+        self.assertIn('Largo Old Address', candidate['source_text'])
+
+    def test_stale_or_edited_venue_proof_does_not_label_current_service_as_user_point_or_derived_mp(self):
+        candidate, _ = self.user_point_candidate()
+        for changes in ({'source_sha256': 'c' * 64}, {'source_text': candidate['source_text'] + '\nEdited'},
+                        {'service_place': 'Manual venue'}, {'service_entity': 'Manual agency'},
+                        {'service_entity_type': 'other'}, {'photo_capture_city': 'Other City'}):
+            with self.subTest(changes=changes):
+                rows = self.fields(candidate={**candidate, **changes})
+                self.assertFalse(any(row['field'] == 'source_agency_type' for row in rows))
+                self.assertFalse(any('user-confirmed photo-location point' in row['reason'] for row in rows))
+        candidate['source_location_evidence']['source_agency_corroboration']['raw_excerpts'][0] = 'Invented complete heading'
+        self.assertFalse(any(row['field'] == 'source_agency_type' for row in self.fields(candidate=candidate)))
+
+    def test_legacy_venue_never_receives_user_point_label_and_bad_metadata_is_not_described_as_confirmed(self):
+        candidate, _ = self.user_point_candidate()
+        location = candidate['source_location_evidence']
+        for key in ('geometry_basis', 'confirmation_source_sha256', 'confirmation_date'):
+            del location[key]
+        self.assertFalse(any('user-confirmed photo-location point' in row['reason'] for row in self.fields(candidate=candidate)))
+        location.update(geometry_basis='user_confirmed_photo_venue', confirmation_source_sha256='a' * 64,
+                        confirmation_date='2026-11-01', radius_m=50.01)
+        self.assertFalse(any('user-confirmed photo-location point' in row['reason'] for row in self.fields(candidate=candidate)))
+
+    def test_documentary_source_context_is_rendered_visibly_and_escaped(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / 'honorarios_app/static/app.js').read_text(encoding='utf-8')
+        body = source.split('function renderSourceEvidence(data) {', 1)[1].split('function renderAiRecovery', 1)[0].rsplit('}', 1)[0]
+        script = r"""
+const boxes = new Map();
+function $(selector) { if (!boxes.has(selector)) boxes.set(selector, {innerHTML:'', className:'',querySelector:()=>null}); return boxes.get(selector); }
+function escapeHtml(value) { return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'); }
+function renderFieldEvidence() { return ''; }
+function renderSourceAttention() { return ''; }
+const render = (data) => new Function('data','$','escapeHtml','renderFieldEvidence','renderSourceAttention', BODY)(data,$,escapeHtml,renderFieldEvidence,renderSourceAttention);
+const row={case_number:'711/26.0TSTXX',excerpt:'Junte certidão <img src=x onerror=evil()>',documentary_only:true};
+render({review_evidence:{case_number:'710/26.0TSTXX',documentary_case_references:[row]}});
+let html=$('#source-evidence-body').innerHTML;
+if (!html.includes('excluded from requests') || !html.includes(row.case_number) || !html.includes('&lt;img') || html.includes('<img src=x')) throw Error('Missing or unsafe documentary evidence');
+render({review_evidence:{case_number:'710/26.0TSTXX',documentary_case_references:[]}});
+if ($('#source-evidence-body').innerHTML.includes(row.case_number)) throw Error('Stale documentary evidence survived changed source');
+""".replace('BODY', json.dumps(body))
+        run = subprocess.run(['node', '--input-type=module', '-'], input=script, text=True,
+                             capture_output=True, check=False)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_corroborated_letterhead_retains_ai_origin_and_never_claims_a_physical_venue(self):
         text = 'NACIONAL REPUBLICANA\nCOMANDO TERRITORIAL DE Fictional City'
         agency = {'service_entity': 'Guarda Nacional Republicana', 'service_entity_type': 'gnr',

@@ -5,6 +5,7 @@ import sys
 from io import BytesIO
 from pathlib import Path
 
+from PIL import Image, ImageOps
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -12,7 +13,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
 class PacketError(ValueError):
@@ -20,7 +21,20 @@ class PacketError(ValueError):
 
 
 def image_pdf_buffer(image_path: Path) -> BytesIO:
-    image = ImageReader(str(image_path))
+    with Image.open(image_path) as raw_image:
+        oriented = ImageOps.exif_transpose(raw_image)
+        if oriented.mode in ("RGBA", "LA") or (oriented.mode == "P" and "transparency" in oriented.info):
+            rgba = oriented.convert("RGBA")
+            rgb = Image.new("RGB", rgba.size, "white")
+            rgb.paste(rgba, mask=rgba.getchannel("A"))
+        elif oriented.mode != "RGB":
+            rgb = oriented.convert("RGB")
+        else:
+            rgb = oriented
+        encoded = BytesIO()
+        rgb.save(encoded, format="PNG")
+        encoded.seek(0)
+    image = ImageReader(encoded)
     image_width, image_height = image.getSize()
     page_width, page_height = A4
     margin = 16 * mm

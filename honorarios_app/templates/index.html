@@ -85,8 +85,8 @@
 
                     <div class="compact-gmail-strip ai-status-strip">
                       <div>
-                        <strong>OpenAI OCR / Autofill</strong>
-                        <p id="ai-status-summary">Checking local OpenAI recovery status...</p>
+                        <strong>AI OCR / Autofill</strong>
+                        <p id="ai-status-summary">Checking local AI recovery status (Gemini / OpenAI)...</p>
                       </div>
                       <span class="status-chip info" id="ai-status-pill">checking</span>
                     </div>
@@ -155,7 +155,7 @@
                 <span class="status-chip info">Review first</span>
               </div>
               <p class="field-hint" id="source-drop-status">Click the drop area, then press Ctrl+V to review a copied screenshot.</p>
-              <p class="field-hint">When enabled, OpenAI reads the source to suggest details. Check its suggestions before creating the PDF.</p>
+              <p class="field-hint">When enabled, AI OCR (Gemini 4 Neon / Decisions API or OpenAI fallback) reads the source to suggest details. Check its suggestions before creating the PDF.</p>
               <details class="secondary-upload-options">
                 <summary>Other source options</summary>
                 <p class="field-hint">Upload an original or downloaded photo to keep its camera date and available GPS metadata. Google Photos Picker supplies creation time but removes GPS location; enter the capture city if it is missing. Your saved photo defaults apply only to unambiguous evidence, and you can edit the result before PDF creation.</p>
@@ -920,7 +920,7 @@
     </div>
 
     <div class="workspace-drawer-backdrop hidden" id="personal-profile-drawer-backdrop" aria-hidden="true">
-      <section class="workspace-drawer workspace-drawer-profile" id="personal-profile-drawer" aria-labelledby="personal-profile-drawer-title">
+      <section class="workspace-drawer workspace-drawer-profile" id="personal-profile-drawer" role="dialog" aria-modal="true" aria-labelledby="personal-profile-drawer-title">
         <div class="workspace-drawer-header">
           <div>
             <p class="eyebrow">Profiles</p>
@@ -1044,7 +1044,7 @@
     </div>
 
     <div class="workspace-drawer-backdrop hidden" id="interpretation-review-drawer-backdrop" aria-hidden="true">
-      <section class="workspace-drawer workspace-drawer-interpretation" id="interpretation-review-drawer" aria-labelledby="interpretation-review-drawer-title">
+      <section class="workspace-drawer workspace-drawer-interpretation" id="interpretation-review-drawer" role="dialog" aria-modal="true" aria-labelledby="interpretation-review-drawer-title">
         <div class="workspace-drawer-header">
           <div>
             <p class="eyebrow">Interpretation</p>
@@ -1070,7 +1070,7 @@
           <div class="result-header">
             <div>
               <strong>AI Recovery</strong>
-              <p>OpenAI OCR/autofill output appears here as review evidence only.</p>
+              <p>AI OCR/autofill and Decisions API corroboration appear here as review evidence only.</p>
             </div>
             <span class="status-chip info" id="ai-recovery-status-chip">AI</span>
           </div>

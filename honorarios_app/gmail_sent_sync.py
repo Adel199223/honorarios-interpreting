@@ -695,6 +695,8 @@ def sync_gmail_sent_status(paths: Any, *, force: bool = False, apply_confirmed: 
         return _finished(key, _result("partial" if needs_review else "complete", checked_count=checked, sent_count=sent, unchanged_count=len(active) - sent,
                        still_drafted_count=still_drafted, missing_draft_count=len(missing_drafts), needs_review_count=len(active) - sent - still_drafted, error_count=errors,
                        warnings=warnings, managed_data_changed=managed_changed))
+    except gmail_api.GmailAuthorizationRequired:
+        return _idle_result(key, "authorization_required", warnings=[gmail_api.GMAIL_REAUTHORIZE_MESSAGE])
     except (Unconfirmed, OSError, ValueError, TypeError, httpx.HTTPError):
         return _idle_result(key, "error", warnings=["Sent-status checking could not finish. Existing duplicate protection was kept."])
     finally:

@@ -14,6 +14,7 @@ import unicodedata
 
 from scripts.request_identity import normalize_case_number
 from scripts.source_parsing import explicit_service_places, ministerio_publico_venue_evidence
+from .gps_city import _geometry_metadata
 from .source_cases import source_case_rows
 
 
@@ -30,6 +31,9 @@ FIELD_EVIDENCE_LABELS = {
     "payment_entity": "Payment entity",
     "service_entity": "Service entity",
     "service_entity_type": "Service entity type",
+    "source_agency_type": "Derived source agency",
+    "confirmed_source_agency": "Source agency (separate from host)",
+    "source_venue_header": "Own source heading",
     "service_place": "Service place",
     "service_place_phrase": "Service place phrase",
     "transport_destination": "Transport destination",
@@ -38,6 +42,18 @@ FIELD_EVIDENCE_LABELS = {
 CONFIRMED_SERVICE_DATE_SOURCES = frozenset({
     "user_confirmed", "user_confirmed_exception", "document_text_user_confirmed", "photo_metadata_user_confirmed",
 })
+
+
+def _user_confirmed_point_reason(value: Any) -> str:
+    if not isinstance(value, dict) or not _geometry_metadata(value):
+        return ''
+    if value.get('source_city_basis') == 'verified_gps':
+        return (f" The reusable venue point was previously user-confirmed (radius {value['radius_m']:g} m; "
+                f"confirmed {value['confirmation_date']}). Reference links provide location context, "
+                'not a surveyed footprint or a confirmation of this new photo.')
+    return (f" The area uses a user-confirmed photo-location point (radius {value['radius_m']:g} m; "
+            f"confirmed {value['confirmation_date']}), not publicly verified building coordinates. "
+            "Cited pages support the postal address separately.")
 
 
 def _date_text_variants(value: Any) -> list[str]:
@@ -163,12 +179,26 @@ def _values_match(left: Any, right: Any) -> bool:
     return fold_match_text(left_text) == fold_match_text(right_text)
 
 
-def _ai_source_for_field(field: str, value: Any, raw_visible_text: str, metadata_date: str) -> tuple[str, str, str]:
+def _ai_ocr_source(ai_recovery: dict[str, Any] | None, *, with_photo_metadata: bool = False) -> str:
+    is_gemini = isinstance(ai_recovery, dict) and ai_recovery.get("provider") == "gemini"
+    if with_photo_metadata:
+        return "gemini_and_photo_metadata" if is_gemini else "openai_and_photo_metadata"
+    return "gemini_ocr" if is_gemini else "openai_ocr"
+
+
+def _ai_source_for_field(
+    field: str,
+    value: Any,
+    raw_visible_text: str,
+    metadata_date: str,
+    ai_recovery: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
     if field == "service_date" and metadata_date and str(value or "").strip() == metadata_date:
-        return "openai_and_photo_metadata", "medium", "AI suggested this service date and it matches the capture date. Agreement does not confirm when the service happened; check the source and confirm the date."
+        return _ai_ocr_source(ai_recovery, with_photo_metadata=True), "medium", "AI suggested this service date and it matches the capture date. Agreement does not confirm when the service happened; check the source and confirm the date."
+    ocr_source = _ai_ocr_source(ai_recovery)
     if _text_contains_value(raw_visible_text, value):
-        return "openai_ocr", "medium", "AI read this value in its recovered text. That text is from the same AI response, not independent confirmation; check the original source."
-    return "openai_ocr", "low", "AI suggested this value without a matching excerpt in its recovered text. It may be inferred; check and correct it against the original source."
+        return ocr_source, "medium", "AI read this value in its recovered text. That text is from the same AI response, not independent confirmation; check the original source."
+    return ocr_source, "low", "AI suggested this value without a matching excerpt in its recovered text. It may be inferred; check and correct it against the original source."
 
 
 def _independent_source_text(candidate: dict[str, Any], raw_visible_text: str) -> str:
@@ -237,7 +267,7 @@ def build_field_evidence(
 
     if metadata_date:
         metadata_source = _photo_metadata_date_source(candidate, metadata, ai_recovery)
-        ai_metadata = metadata_source == "openai_ocr"
+        ai_metadata = metadata_source in {"openai_ocr", "gemini_ocr"}
         metadata_verified = bool(metadata.get("exif_date") or metadata.get("picker_capture_date") or metadata.get("visible_metadata_date")) and not ai_metadata
         add(
             "photo_metadata_date",
@@ -265,15 +295,68 @@ def build_field_evidence(
         add('photo_gps', f"{gps['latitude']:.6f}, {gps['longitude']:.6f}", source='exif_gps', confidence='high',
             reason='Original camera GPS coordinates. A configured verified local area may supply city evidence, but these coordinates do not establish the service building.')
     gps_match = metadata.get('gps_city_match') or {}
+    city_point_reason = ''
     if gps_match.get('status') == 'matched':
+        city_point_reason = next((reason for area in gps_match.get('matches', [])
+                                  if (reason := _user_confirmed_point_reason(area))), '')
         add('photo_gps_city', gps_match.get('city'), source='verified_gps_area', confidence='medium',
-            reason='GPS matched a verified local area. This is derived city evidence, not an embedded city name or proof of the physical service venue. Conflicting city evidence still needs your answer.',
+            reason='GPS matched a configured local area. This is derived city evidence, not an embedded city name or proof of the physical service venue. Conflicting city evidence still needs your answer.' + city_point_reason,
             excerpt='; '.join(str(area.get('source_url') or '') for area in gps_match.get('matches', [])))
+
+
+    confirmation = candidate.get('confirmed_source_location_evidence') or {}
+    confirmation_bound = (isinstance(confirmation, dict)
+        and confirmation.get('source') == 'previously_confirmed_source_location'
+        and confirmation.get('source_kind') == candidate.get('source_kind') == 'photo'
+        and confirmation.get('source_sha256') == candidate.get('source_sha256')
+        and confirmation.get('case_number') == normalize_case_number(candidate.get('case_number') or '')
+        and confirmation.get('service_date') == str(candidate.get('service_date') or '')
+        and confirmation.get('source_text_sha256') == hashlib.sha256(str(candidate.get('source_text') or '').encode()).hexdigest())
+    if confirmation_bound:
+        facts = confirmation.get('fact_groups') or {}
+        if isinstance(facts, dict):
+            reason = ('Previously confirmed for this exact photo, case and allowed service day. '
+                      f"Saved for reuse on {confirmation.get('confirmation_date', '')}; this is not the original answer date. "
+                      'These are editable saved answers, not printed or embedded evidence or proof of attendance.')
+            remembered = {}
+            if facts.get('capture_city') and _values_match(candidate.get('photo_capture_city'), facts['capture_city']):
+                remembered['photo_capture_city'] = candidate['photo_capture_city']
+            if facts.get('physical_host') and _values_match(candidate.get('service_place'), facts['physical_host']):
+                remembered['service_place'] = candidate['service_place']
+            route = facts.get('payment_route') or {}
+            if isinstance(route, dict):
+                for field in ('payment_entity', 'recipient_email'):
+                    if route.get(field) and _values_match(candidate.get(field), route[field]):
+                        remembered[field] = candidate[field]
+            travel = facts.get('travel') or {}
+            transport = candidate.get('transport') or {}
+            if (isinstance(travel, dict) and travel
+                    and candidate.get('personal_profile_id') == travel.get('personal_profile_id')
+                    and _values_match(transport.get('origin'), travel.get('origin'))
+                    and _values_match(transport.get('destination'), travel.get('destination'))
+                    and transport.get('km_one_way') == travel.get('km_one_way')):
+                remembered.update(transport_destination=transport['destination'], km_one_way=transport['km_one_way'])
+            for field, value in remembered.items():
+                add(field, value, source='previously_confirmed_source_location', confidence='high', reason=reason)
+            context = confirmation.get('source_agency_context') or {}
+            if isinstance(context, dict) and context.get('service_entity_type') == candidate.get('service_entity_type'):
+                kind = context.get('service_entity_type')
+                aliases = {'gnr': ('Guarda Nacional Republicana', 'GNR'),
+                           'police': ('Polícia Judiciária',),
+                           'psp': ('Polícia de Segurança Pública', 'PSP'),
+                           'ministerio_publico': ('Ministério Público',)}
+                names = (str(candidate.get('service_entity') or ''), *aliases.get(kind, ()))
+                agency = next((name for name in names if name and _text_contains_value(str(candidate.get('source_text') or ''), name)), '')
+                if agency:
+                    source = 'document_text' if _text_contains_value(independent_text, agency) else _ai_ocr_source(ai_recovery)
+                    add('confirmed_source_agency', agency, source=source, confidence='high' if source == 'document_text' else 'medium',
+                        reason='The source identifies the agency. The separately saved host answer does not make this a user-provided agency or change its paying authority.',
+                        excerpt=_line_excerpt(str(candidate.get('source_text') or ''), agency))
 
     if 'source_case_numbers' in candidate and candidate.get('case_number'):
         case = normalize_case_number(candidate['case_number'])
         for text, source, confidence in ((independent_text, 'deterministic_text', 'high'),
-                                         (raw_visible_text, 'openai_ocr', 'medium')):
+                                         (raw_visible_text, _ai_ocr_source(ai_recovery), 'medium')):
             matched = next((row for row in source_case_rows(text, {}) if row['case_number'] == case), None)
             if matched:
                 add('case_number', case, source=source, confidence=confidence,
@@ -284,7 +367,7 @@ def build_field_evidence(
     station = candidate.get('source_station_place')
     if station and _values_match(candidate.get('service_place'), station):
         for text, source, confidence in ((independent_text, 'document_text', 'high'),
-                                         (raw_visible_text, 'openai_ocr', 'medium')):
+                                         (raw_visible_text, _ai_ocr_source(ai_recovery), 'medium')):
             if _text_contains_value(text, station):
                 add('service_place', station, source=source, confidence=confidence,
                     excerpt=_line_excerpt(text, station), reason='The source names this specific police station. Check the venue for this appointment; the city-court fallback was not used.')
@@ -295,18 +378,52 @@ def build_field_evidence(
     location_defaults = candidate.get('photo_defaults_applied') or {}
     current_capture_city = candidate.get('photo_capture_city') or (
         location_defaults.get('photo_city') if isinstance(location_defaults, dict) else '')
-    if (isinstance(source_location, dict) and source_location.get('source') in {'verified_gps_source_venue', 'gnr_capture_city_default'}
+    bound_source_location = (isinstance(source_location, dict) and source_location.get('source') in {'verified_gps_source_venue', 'gnr_capture_city_default'}
             and source_location.get('source_sha256') == candidate.get('source_sha256')
             and source_location.get('source_text_sha256') == hashlib.sha256(location_source_text.encode('utf-8')).hexdigest()
             and _values_match(candidate.get('service_entity'), source_location.get('service_entity'))
             and _values_match(candidate.get('service_entity_type'), source_location.get('service_entity_type'))
             and (not current_capture_city or _values_match(current_capture_city, source_location.get('city')))
-            and _values_match(candidate.get('service_place'), source_location.get('service_place'))):
-        add('service_place', candidate.get('service_place'), source=source_location['source'], confidence='medium',
+            and _values_match(candidate.get('service_place'), source_location.get('service_place')))
+    if bound_source_location:
+        recurring = source_location.get('source_city_basis') == 'verified_gps'
+        heading = source_location.get('source_heading_evidence') or {}
+        heading = heading if isinstance(heading, dict) else {}
+        heading_excerpts = heading.get('raw_excerpts') if isinstance(heading, dict) else None
+        valid_heading = (recurring and heading.get('basis') == 'own_agency_unit_heading'
+                         and heading.get('city_basis') == 'verified_gps'
+                         and isinstance(heading_excerpts, list) and len(heading_excerpts) == 2
+                         and all(isinstance(value, str) and value.strip() and value in location_source_text
+                                 for value in heading_excerpts))
+        add('service_place', candidate.get('service_place'),
+            source='reusable_verified_gps_source_venue' if recurring else source_location['source'], confidence='medium',
             reason=str(source_location.get('reason') or '')
                    + (f" Photo GPS is {source_location.get('distance_m')} m from the verified venue point."
-                      if source_location['source'] == 'verified_gps_source_venue' else ''),
-            excerpt='; '.join(str(value) for value in source_location.get('matched_source_phrases') or []))
+                      if source_location['source'] == 'verified_gps_source_venue' else '')
+                   + _user_confirmed_point_reason(source_location),
+            excerpt='\n'.join(heading_excerpts) if valid_heading else
+                    '; '.join(str(value) for value in source_location.get('matched_source_phrases') or []))
+        if valid_heading:
+            add('source_venue_header', '\n'.join(heading_excerpts),
+                source='document_text' if all(value in independent_text for value in heading_excerpts) else _ai_ocr_source(ai_recovery),
+                confidence='high' if all(value in independent_text for value in heading_excerpts) else 'medium',
+                reason='These are the actual own agency/unit header excerpts. Current original GPS supplies the city; '
+                       'the saved venue association supplies the editable physical host. Neither city nor host is invented as printed text.',
+                excerpt='\n'.join(heading_excerpts))
+        corroboration = source_location.get('source_agency_corroboration') or {}
+        excerpts = corroboration.get('raw_excerpts') if isinstance(corroboration, dict) else None
+        if (isinstance(corroboration, dict)
+                and corroboration.get('basis') == 'corroborated_procuradoria_heading'
+                and corroboration.get('derived_agency_type') == 'ministerio_publico'
+                and source_location.get('service_entity_type') == 'ministerio_publico'
+                and _values_match(corroboration.get('city'), source_location.get('city'))
+                and isinstance(excerpts, list) and len(excerpts) == 2
+                and all(isinstance(value, str) and value.strip() and value in location_source_text for value in excerpts)):
+            add('source_agency_type', 'ministerio_publico', source='corroborated_source_heading', confidence='medium',
+                reason='Ministério Público is a derived agency classification from two matching own-header lines. The full agency name is not claimed as literal source text; the quoted excerpts retain any cropping. This classification alone does not establish the service building or attendance.'
+                       + (' The heading excerpts were recovered by AI; local corroboration is not independent confirmation.'
+                          if ai_recovery.get('status') == 'ok' and not all(value in independent_text for value in excerpts) else ''),
+                excerpt='\n'.join(excerpts))
 
     court_label = candidate.get('court_label_preference') or {}
     if isinstance(court_label, dict):
@@ -318,8 +435,14 @@ def build_field_evidence(
     if isinstance(photo_defaults, dict):
         city_source = photo_defaults.get('photo_city_source')
         if city_source in {'verified_gps_area', 'user_confirmed_capture_city'}:
+            capture_point_reason = ''
+            if city_source == 'verified_gps_area':
+                if _values_match(photo_defaults.get('photo_city'), gps_match.get('city')):
+                    capture_point_reason = city_point_reason
+                if not capture_point_reason and bound_source_location:
+                    capture_point_reason = _user_confirmed_point_reason(source_location)
             add('photo_capture_city', photo_defaults.get('photo_city'), source=city_source, confidence='medium' if city_source == 'verified_gps_area' else 'high',
-                reason='GPS matched a verified local area; the resulting city is an editable inference, not an embedded city or physical venue.'
+                reason='GPS matched a configured local area; the resulting city is an editable inference, not an embedded city or physical venue.' + capture_point_reason
                 if city_source == 'verified_gps_area' else 'You supplied the capture city for this original photo.')
         agency = photo_defaults.get('source_agency_evidence') or {}
         if isinstance(agency, dict):
@@ -327,7 +450,7 @@ def build_field_evidence(
             for field in ('service_entity', 'service_entity_type'):
                 if agency.get(field) and _values_match(candidate.get(field), agency[field]):
                     # A local pattern over AI-read text is still AI evidence.
-                    source = 'document_text' if excerpt and _text_contains_value(independent_text, excerpt) else 'openai_ocr'
+                    source = 'document_text' if excerpt and _text_contains_value(independent_text, excerpt) else _ai_ocr_source(ai_recovery)
                     add(field, agency[field], source=source, confidence='medium', excerpt=excerpt,
                         reason='Recovered from corroborated source letterhead; does not establish physical venue. ' + str(agency.get('reason') or ''))
         for field in ("service_date", "payment_entity", "recipient_email", "service_place"):
@@ -356,7 +479,7 @@ def build_field_evidence(
     mp_place = str(candidate.get('source_mp_place') or '')
     if mp_place and _values_match(candidate.get('service_place'), mp_place):
         independent_mp = ministerio_publico_venue_evidence(independent_text).place
-        source = 'document_text' if _values_match(independent_mp, mp_place) else 'openai_ocr'
+        source = 'document_text' if _values_match(independent_mp, mp_place) else _ai_ocr_source(ai_recovery)
         for field in ('service_place', 'service_entity'):
             if _values_match(candidate.get(field), mp_place):
                 add(field, mp_place, source=source, confidence='high' if source == 'document_text' else 'medium',
@@ -388,7 +511,7 @@ def build_field_evidence(
             ai_value = _ai_field_value(ai_recovery, field)
             if ai_recovery.get("status") == "ok" and not _text_contains_value(independent_text, deterministic_value):
                 if _text_contains_value(raw_visible_text, deterministic_value):
-                    source, confidence, reason = _ai_source_for_field(field, value, raw_visible_text, metadata_date)
+                    source, confidence, reason = _ai_source_for_field(field, value, raw_visible_text, metadata_date, ai_recovery)
                     add(field, value, source=source, confidence=confidence, reason=reason, excerpt=_line_excerpt(raw_visible_text, deterministic_value))
                     continue
                 if ai_value and _values_match(value, normalize_case_number(ai_value) if field == "case_number" else ai_value):
@@ -427,7 +550,7 @@ def build_field_evidence(
             value = _field_from_candidate(candidate, field)
             ai_value = _ai_field_value(ai_recovery, field)
             if ai_value and _values_match(value, normalize_case_number(ai_value) if field == "case_number" else ai_value):
-                source, confidence, reason = _ai_source_for_field(field, value, raw_visible_text, metadata_date)
+                source, confidence, reason = _ai_source_for_field(field, value, raw_visible_text, metadata_date, ai_recovery)
                 add(
                     field,
                     value,
@@ -523,6 +646,15 @@ def build_source_attention(
 ) -> dict[str, Any]:
     flags: list[dict[str, Any]] = []
     review_status = str(review.get("status") or "").strip()
+    source_history = review.get('source_history_identity')
+    if isinstance(source_history, dict):
+        flags.append(_attention_flag(
+            'source_history_identity', 'review' if review.get('source_history_separate_service_confirmed') else 'blocked', 'Source service identity — history check only',
+            f"The completed fee source identifies {source_history.get('case_number', '')} on {source_history.get('service_date', '')}. " +
+            ('You confirmed the edited identity is a separate service; normal review and history checks still apply.'
+             if review.get('source_history_separate_service_confirmed') else
+             'Matching saved history blocks another request; the intake date and work-scope choice are unchanged.'),
+        ))
 
     if review_status == "set_aside":
         flags.append(_attention_flag(
@@ -636,6 +768,17 @@ def build_source_attention(
                 "Still missing from the candidate: " + ", ".join(critical_missing),
             ))
 
+    decisions_info = ai_recovery.get("decisions") if isinstance(ai_recovery, dict) else None
+    if isinstance(decisions_info, dict):
+        for decision_flag in decisions_info.get("flags") or []:
+            if isinstance(decision_flag, dict) and decision_flag.get("code") and decision_flag.get("title"):
+                flags.append(_attention_flag(
+                    f"gemini_decision_{decision_flag['code']}",
+                    "review",
+                    str(decision_flag["title"]),
+                    str(decision_flag.get("detail") or ""),
+                ))
+
     if str(profile_decision.get("mode") or "") == "auto_fallback":
         flags.append(_attention_flag(
             "profile_fallback",
@@ -694,7 +837,7 @@ def _photo_metadata_date_source(candidate: dict[str, Any], metadata: dict[str, A
     if str(metadata.get('picker_capture_date') or '').strip() == metadata_date:
         return 'google_photos_creation_time'
     if _ai_field_value(ai_recovery, "photo_metadata_date") == metadata_date:
-        return "openai_ocr"
+        return _ai_ocr_source(ai_recovery)
     if str(metadata.get("visible_metadata_date") or "").strip() == metadata_date:
         return "visible_google_photos_metadata"
     return "image_metadata"

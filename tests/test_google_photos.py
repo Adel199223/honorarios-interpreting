@@ -230,6 +230,23 @@ class GooglePhotosTests(unittest.TestCase):
         self.assertEqual(self.read_token()['access_token'], 'fictional-access')
         self.assertFalse(any(key.startswith('oauth_') for key in self.read_token()))
 
+    def test_status_redacts_paths_oauth_error_consumes_pkce_and_reconnect_keeps_refresh_token(self):
+        status = app.google_photos_status_payload(self.config)
+        self.assertEqual(status['client_id_source'], 'config/google-photos.local.json')
+        self.assertNotIn(str(self.root), json.dumps(status))
+
+        denied_start = app.google_photos_oauth_start(self.paths)
+        with self.assertRaisesRegex(IntakeError, 'canceled or denied'):
+            app.google_photos_oauth_callback(code='', state=denied_start['state'], paths=self.paths, error='access_denied')
+        token_after_denial = self.read_token()
+        self.assertEqual(token_after_denial['refresh_token'], 'fictional-refresh')
+        self.assertFalse(any(key.startswith('oauth_') for key in token_after_denial))
+
+        reconnect_start = app.google_photos_oauth_start(self.paths)
+        self.token_payload.pop('refresh_token', None)
+        app.google_photos_oauth_callback(code='fictional-code', state=reconnect_start['state'], paths=self.paths)
+        self.assertEqual(self.read_token()['refresh_token'], 'fictional-refresh')
+
     def test_oauth_omitted_scope_means_requested_scope_but_explicit_empty_is_refused(self):
         started = app.google_photos_oauth_start(self.paths)
         self.token_payload.pop('scope')
