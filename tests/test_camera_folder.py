@@ -205,6 +205,70 @@ class CameraFolderTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(CameraFolderError, "25 MiB"):
                 read_camera_file(self.config, name, "0" * 64)
 
+    def test_oversized_count_matches_filename_search_across_pages_without_content_reads(self):
+        for name in ("20261101_small.jpg", "20261101_other.png", "20261001_small.jpg"):
+            self.photo(name)
+        for name in ("20261101_large.JPG", "20261101_large.jpeg", "20261001_large.jpg", "20261101_video.mp4", "20261101_unsupported.heic"):
+            with (self.camera / name).open("wb") as handle:
+                handle.truncate(MAX_CAMERA_FILE_BYTES + 1)
+        self.photo("20261101_empty.jpg", b"")
+        original_open = Path.open
+        def config_only(path, mode="r", *args, **kwargs):
+            self.assertEqual(path, self.config)
+            self.assertEqual(mode, "rb")
+            return original_open(path, mode, *args, **kwargs)
+        with patch.object(Path, "open", config_only):
+            first = list_camera_files(self.config, query="2026-11-01", limit=1)
+            second = list_camera_files(self.config, query="2026-11-01", offset=1, limit=1)
+            oversized_only = list_camera_files(self.config, query="20261101large")
+            unrelated = list_camera_files(self.config, query="2026-09")
+        self.assertEqual((first["total"], first["oversized_count"], first["next_offset"]), (2, 2, 1))
+        self.assertEqual((second["total"], second["oversized_count"], second["next_offset"]), (2, 2, None))
+        self.assertEqual((oversized_only["items"], oversized_only["total"], oversized_only["oversized_count"]), ([], 0, 2))
+        self.assertEqual(unrelated["oversized_count"], 0)
+        self.assertNotIn(str(self.root), json.dumps(first))
+
+    def test_oversized_count_excludes_rejected_nonregular_and_escaped_entries(self):
+        target = self.photo().resolve(strict=True)
+        original_stat = Path.stat
+        for mode in (stat.S_IFDIR, stat.S_IFLNK, stat.S_IFIFO):
+            def nonregular(path, *args, **kwargs):
+                info = original_stat(path, *args, **kwargs)
+                if path == target:
+                    values = list(info)
+                    values[0], values[6] = mode, MAX_CAMERA_FILE_BYTES + 1
+                    return os.stat_result(values)
+                return info
+            with self.subTest(mode=mode), patch.object(Path, "stat", nonregular):
+                result = list_camera_files(self.config)
+                self.assertEqual((result["items"], result["oversized_count"]), ([], 0))
+        with target.open("wb") as handle:
+            handle.truncate(MAX_CAMERA_FILE_BYTES + 1)
+        original_resolve = Path.resolve
+        def escaped(path, *args, **kwargs):
+            return self.root / "outside.jpg" if path == target else original_resolve(path, *args, **kwargs)
+        with patch.object(Path, "resolve", escaped):
+            self.assertEqual(list_camera_files(self.config)["oversized_count"], 0)
+        def unavailable(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("private device path is unavailable")
+            return original_stat(path, *args, **kwargs)
+        with patch.object(Path, "stat", unavailable):
+            self.assertEqual(list_camera_files(self.config)["oversized_count"], 0)
+
+    def test_oversized_count_is_bounded_and_recomputed_after_refresh(self):
+        for index in range(4):
+            with (self.camera / f"20261101_{index}.jpg").open("wb") as handle:
+                handle.truncate(MAX_CAMERA_FILE_BYTES + 1)
+        with patch.object(camera_folder, "MAX_CAMERA_SCAN_ENTRIES", 2):
+            result = list_camera_files(self.config)
+        self.assertTrue(result["truncated"])
+        self.assertEqual((result["total"], result["oversized_count"]), (0, 2))
+        self.photo("20261101_0.jpg", b"now-small")
+        refreshed = list_camera_files(self.config)
+        self.assertEqual((refreshed["total"], refreshed["oversized_count"]), (1, 3))
+        self.assertFalse(refreshed["truncated"])
+
     def test_changed_size_or_mtime_rejects_old_listing(self):
         target = self.photo()
         item = self.item()

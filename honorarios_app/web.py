@@ -14,6 +14,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from scripts.generate_pdf import ROOT as PROJECT_ROOT, IntakeError
 from scripts.build_public_candidate import build_public_candidate
@@ -22,6 +23,7 @@ from scripts.public_repo_gate import analyze_tracked
 
 from .services import (
     AppPaths,
+    MAX_SOURCE_UPLOAD_BYTES,
     ai_status_payload,
     apply_legalpdf_restore,
     apply_legalpdf_adapter_import_plan,
@@ -344,7 +346,7 @@ def create_app(**path_overrides: Any) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/google-photos/oauth/callback")
-    async def api_google_photos_oauth_callback(request: Request, code: str = "", state: str = ""):
+    async def api_google_photos_oauth_callback(request: Request, code: str = "", state: str = "", error: str = ""):
         # Ordinary navigation should finish at a readable page without retaining
         # the authorization code/state in its address. API callers keep JSON.
         accepted: dict[str, float] = {}
@@ -361,7 +363,10 @@ def create_app(**path_overrides: Any) -> FastAPI:
         browser = accepted.get("text/html", 0) > 0 and accepted.get("text/html", 0) >= accepted.get("application/json", 0)
         headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
         try:
-            result = google_photos_oauth_callback(code=code, state=state, paths=paths)
+            callback_kwargs: dict[str, Any] = {"code": code, "state": state, "paths": paths}
+            if error:
+                callback_kwargs["error"] = error
+            result = await run_in_threadpool(google_photos_oauth_callback, **callback_kwargs)
         except (IntakeError, OSError, ValueError) as exc:
             if browser:
                 return RedirectResponse("/google-photos/connection-error", status_code=303, headers=headers)
@@ -397,21 +402,21 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
     @app.post("/api/google-photos/picker/session")
     async def api_google_photos_picker_session(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
-            return google_photos_create_picker_session(payload or {}, paths)
+            return await run_in_threadpool(google_photos_create_picker_session, payload or {}, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/google-photos/picker/session/{session_id}")
     async def api_google_photos_picker_session_media(session_id: str) -> dict[str, Any]:
         try:
-            return google_photos_list_session_media(session_id, paths)
+            return await run_in_threadpool(google_photos_list_session_media, session_id, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/google-photos/picker/import")
     async def api_google_photos_picker_import(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return google_photos_import_selected(payload, paths)
+            return await run_in_threadpool(google_photos_import_selected, payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -434,11 +439,13 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/gmail/oauth/callback")
-    def api_gmail_oauth_callback(code: str = "", state: str = "", error: str = "") -> dict[str, Any]:
+    def api_gmail_oauth_callback(code: str = "", state: str = "", error: str = "") -> JSONResponse:
+        headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
         try:
-            return gmail_api_oauth_callback(code=code, state=state, paths=paths, error=error)
+            result = gmail_api_oauth_callback(code=code, state=state, paths=paths, error=error)
+            return JSONResponse(result, headers=headers)
         except (IntakeError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=str(exc), headers=headers) from exc
 
     @app.get("/api/gmail/sent-sync/status")
     def api_gmail_sent_sync_status() -> dict[str, Any]:
@@ -456,7 +463,7 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
     @app.post("/api/gmail/drafts/create")
     async def api_gmail_drafts_create(payload: dict[str, Any]) -> Any:
         try:
-            return create_and_record_gmail_api_draft(payload, paths)
+            return await run_in_threadpool(create_and_record_gmail_api_draft, payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",
@@ -468,7 +475,7 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
     @app.post("/api/gmail/drafts/verify")
     async def api_gmail_drafts_verify(payload: dict[str, Any]) -> Any:
         try:
-            return gmail_api_draft_verify(payload, paths)
+            return await run_in_threadpool(gmail_api_draft_verify, payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",
@@ -495,7 +502,7 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
     @app.post("/api/gmail/drafts/reconcile-not-found")
     async def api_gmail_drafts_reconcile_not_found(payload: dict[str, Any]) -> Any:
         try:
-            return reconcile_gmail_draft_not_found(payload, paths)
+            return await run_in_threadpool(reconcile_gmail_draft_not_found, payload, paths)
         except (IntakeError, OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={
                 "status": "blocked",
@@ -555,7 +562,8 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
     @app.post("/api/public-candidate/build")
     async def api_public_candidate_build() -> dict[str, Any]:
         try:
-            return build_public_candidate(PROJECT_ROOT)
+            target_root = paths.output_dir.parent / "public-candidate"
+            return build_public_candidate(PROJECT_ROOT, target_root)
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -703,7 +711,10 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
         intake = payload.get("intake", payload)
         if not isinstance(intake, dict):
             raise HTTPException(status_code=400, detail="Request must include an intake object.")
-        return review_intake_with_profile_evidence(intake, paths)
+        try:
+            return review_intake_with_profile_evidence(intake, paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/review/apply-answers")
     async def api_review_apply_answers(payload: dict[str, Any]) -> dict[str, Any]:
@@ -770,6 +781,19 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
         except (OSError, ValueError) as exc:
             return JSONResponse(status_code=400, content={"detail": "This photo preview is unavailable. You can still select the original photo."}, headers=headers)
 
+    async def _read_bounded_upload(upload: UploadFile) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await upload.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_SOURCE_UPLOAD_BYTES:
+                raise IntakeError("Uploaded file is too large.")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
     @app.post("/api/sources/upload")
     async def api_source_upload(
         file: UploadFile = File(...),
@@ -781,8 +805,9 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
         ai_recovery: str = Form("auto"),
     ) -> dict[str, Any]:
         try:
-            content = await file.read()
-            return recover_source_upload(
+            content = await _read_bounded_upload(file)
+            return await run_in_threadpool(
+                recover_source_upload,
                 filename=file.filename or "source",
                 content_type=file.content_type or "",
                 content=content,
@@ -801,8 +826,9 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
         file: UploadFile = File(...),
     ) -> dict[str, Any]:
         try:
-            content = await file.read()
-            return store_supporting_attachment_upload(
+            content = await _read_bounded_upload(file)
+            return await run_in_threadpool(
+                store_supporting_attachment_upload,
                 filename=file.filename or "supporting-attachment",
                 content_type=file.content_type or "",
                 content=content,
@@ -815,7 +841,11 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
     async def api_artifact(root_key: str, relative_path: str) -> FileResponse:
         try:
             path = resolve_artifact_path(root_key, relative_path, paths)
-            return FileResponse(path)
+            return FileResponse(path, headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "same-origin",
+            })
         except (IntakeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -848,7 +878,8 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
             })
         try:
             packet_mode = bool(payload.get("packet_mode", False))
-            require_current_preflight_review(
+            await run_in_threadpool(
+                require_current_preflight_review,
                 payload,
                 intakes,
                 paths,
@@ -856,7 +887,8 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
                 correction_reason=correction_reason if correction_mode else "",
                 email_grouping=payload.get("email_grouping", "individual"),
             )
-            return prepare_intakes(
+            return await run_in_threadpool(
+                prepare_intakes,
                 intakes,
                 paths,
                 render_previews=bool(payload.get("render_previews", False)),
@@ -938,7 +970,10 @@ p{{margin:20px 0}}</style></head><body><main><h1>{heading}</h1><p>{message}</p>
 
     @app.get("/api/history")
     async def api_history() -> dict[str, Any]:
-        reference = load_app_reference(paths)
+        try:
+            reference = load_app_reference(paths)
+        except (IntakeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         return {
             "duplicates": reference["duplicates"],
             "draft_log": reference["draft_log"],

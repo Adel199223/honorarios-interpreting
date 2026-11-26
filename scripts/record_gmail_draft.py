@@ -333,8 +333,10 @@ def validate_record_history(record: dict[str, Any], payload: dict[str, Any], rec
             if previous.get(field) and record.get(field) and previous[field] != record[field]:
                 raise ValueError(f'An existing draft ID cannot be rebound to a different {field}.')
         if previous.get('draft_payload_sha256') and record.get('draft_payload'):
-            if file_sha256(Path(record['draft_payload'])) != previous['draft_payload_sha256']:
-                raise ValueError('The recorded draft payload changed. Restore the original before recording.')
+            payload_file = Path(record['draft_payload'])
+            if status in {'active', 'sent'} or payload_file.is_file():
+                if file_sha256(payload_file) != previous['draft_payload_sha256']:
+                    raise ValueError('The recorded draft payload changed. Restore the original before recording.')
         old_status = str(previous.get('status') or 'sent')
         if ((old_status == 'sent' and status != 'sent') or
                 (old_status in {'trashed', 'superseded', 'not_found', 'archived'} and status in {'active', 'sent'})):
@@ -508,6 +510,8 @@ def _record_main(argv: list[str] | None = None) -> int:
         # Existing Sent transitions and cleanup may preserve real history.
         # New drafts/records must respect current user decisions for every child.
         if args.status == 'active' or (args.status == 'sent' and not previous):
+            from honorarios_app.source_history import require_completed_fee_history_clear
+            require_completed_fee_history_clear(payload or record, args.duplicate_index, args.log)
             require_requests_not_excluded(record, args.duplicate_index)
         if payload and (args.status == 'active' or (args.status == 'sent' and not previous)):
             errors = validate_draft_payload(payload)

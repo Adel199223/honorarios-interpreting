@@ -501,6 +501,130 @@ class MultiCaseSourceTests(unittest.TestCase):
         self.assertTrue(any(background in warning for warning in result['source_evidence']['warnings']))
         self.assertEqual(result['candidate_intake']['service_date'], CAPTURE_DATE)
 
+    def documentary_text(self):
+        return (f'Processo {CASES[0]} | Inquerito | 98765432\n'
+                'I. Vistos os autos.\n'
+                'II. Junte aos autos certidão da acusação proferida no âmbito do inquérito n.º\n'
+                f'{CASES[1]} e de despacho judicial ali proferido.')
+
+    def test_documentary_only_citation_is_evidence_not_a_service_child(self):
+        text = self.documentary_text()
+        result = self.scoped_upload(text=text, case_numbers=CASES[:2])
+        self.assertEqual(result['case_count'], 1)
+        candidate = result['candidate_intake']
+        self.assertEqual(candidate['case_number'], CASES[0])
+        self.assertEqual(candidate['source_case_numbers'], [CASES[0]])
+        self.assertEqual(candidate['source_text'], text)
+        self.assertEqual(candidate['service_date'], CAPTURE_DATE)
+        reference = result['source_evidence']['documentary_case_references'][0]
+        self.assertEqual(reference['case_number'], CASES[1])
+        self.assertTrue(reference['documentary_only'])
+        self.assertIn('Junte aos autos', reference['excerpt'])
+        reviewed = review_intake_with_profile_evidence(candidate, self.paths)
+        self.assertEqual(reviewed['review_evidence']['documentary_case_references'], [reference])
+        self.assertEqual(reviewed['status'], 'ready', reviewed)
+
+    def test_cached_or_manually_selected_documentary_child_blocks_all_boundaries(self):
+        result = self.scoped_upload(text=self.documentary_text(), case_numbers=CASES[:2])
+        stale = {**result['candidate_intake'], 'case_number': CASES[1],
+                 'case_number_requires_confirmation': False, 'source_case_numbers': list(CASES[:2]),
+                 'documentary_case_references': []}
+        review = review_intake_with_profile_evidence(stale, self.paths)
+        self.assertEqual(review['status'], 'needs_info')
+        self.assertIn('documentary cross-reference', review['message'])
+        self.assertEqual(review['questions'][0]['field'], 'case_number')
+        self.assertEqual(preflight_intakes([stale], self.paths, allow_duplicate=True)['status'], 'blocked')
+        uncertain = {**stale, 'ai_recovery': {**stale.get('ai_recovery', {}), 'source_scope': 'uncertain'}}
+        uncertain_review = review_intake_with_profile_evidence(uncertain, self.paths)
+        self.assertEqual(uncertain_review['status'], 'needs_info')
+        self.assertIn('membership is uncertain', uncertain_review['message'])
+        self.assertEqual(preflight_intakes([uncertain], self.paths)['status'], 'blocked')
+        with self.assertRaisesRegex(IntakeError, 'documentary cross-reference'):
+            prepare_intakes([stale], self.paths, allow_duplicate=True)
+        from honorarios_app.services import _require_request_exclusion_clear
+        from honorarios_app.source_history import source_history_evidence, require_completed_fee_history_clear
+        evidence = source_history_evidence(stale)
+        self.assertEqual(evidence['source_text'], self.documentary_text())
+        payload = {'underlying_requests': [{'case_number': CASES[1], 'service_date': CAPTURE_DATE,
+                                           'source_history_evidence': evidence}]}
+        with self.assertRaisesRegex(IntakeError, 'documentary cross-reference'):
+            _require_request_exclusion_clear(payload, self.paths)
+        with self.assertRaisesRegex(ValueError, 'documentary cross-reference'):
+            require_completed_fee_history_clear(payload, self.paths.duplicate_index, self.paths.draft_log)
+        self.assert_no_preparation_artifacts()
+
+    def test_all_documentary_source_does_not_restore_legacy_or_model_case(self):
+        text = self.documentary_text().split('II. ')[1]
+        result = self.scoped_upload(text=text, case_numbers=[CASES[1]])
+        self.assertEqual(result['case_count'], 1)
+        self.assertEqual(result['candidate_intake']['case_number'], '')
+        self.assertEqual(result['review']['status'], 'needs_info')
+        self.assertEqual(preflight_intakes([result['candidate_intake']], self.paths)['status'], 'blocked')
+        self.assert_no_preparation_artifacts()
+
+    def test_documentary_reference_preserves_local_payload_context_not_gmail_args(self):
+        result = self.scoped_upload(text=self.documentary_text(), case_numbers=CASES[:2])
+        prepared = prepare_intakes([result['candidate_intake']], self.paths, render_previews=False)
+        self.assertEqual(len(prepared['items']), 1)
+        item = prepared['items'][0]
+        payload = json.loads(Path(item['draft_payload']).read_text(encoding='utf-8'))
+        self.assertIn('source_history_evidence', payload)
+        self.assertEqual(payload['source_history_evidence']['source_text'], self.documentary_text())
+        self.assertNotIn('source_history_evidence', payload['gmail_create_draft_args'])
+        self.assertNotIn('Junte aos autos', json.dumps(payload['gmail_create_draft_args']))
+        text = '\n'.join(page.extract_text() or '' for page in PdfReader(item['pdf']).pages)
+        self.assertIn(CASES[0], text)
+        self.assertNotIn(CASES[1], text)
+
+    def test_old_prepared_documentary_child_cannot_handoff_create_or_record(self):
+        from honorarios_app.services import manual_handoff_packet, create_and_record_gmail_api_draft, record_draft
+        result = self.scoped_upload(text=self.documentary_text(), case_numbers=CASES[:2])
+        stale = {**result['candidate_intake'], 'case_number': CASES[1]}
+        # Simulate a reviewed preparation from the older implementation. The
+        # real signed material/target still freezes its own source text.
+        with patch('honorarios_app.services.documentary_case_role_error', return_value=''), \
+             patch('honorarios_app.source_history.documentary_case_role_error', return_value=''):
+            prepared = prepare_intakes([stale], self.paths, render_previews=False)
+        request = {'payload': prepared['items'][0]['draft_payload'],
+                   'prepared_review': prepared['prepared_review'], 'gmail_handoff_reviewed': True,
+                   'draft_id': 'fictional-doc-draft', 'message_id': 'fictional-doc-message',
+                   'thread_id': 'fictional-doc-thread'}
+        before = self.managed_snapshot()
+        for action in (manual_handoff_packet, record_draft):
+            with self.subTest(action=action.__name__):
+                with self.assertRaisesRegex(IntakeError, 'documentary cross-reference'):
+                    action(request, self.paths)
+        with patch('honorarios_app.services.create_gmail_draft_from_payload') as gmail:
+            with self.assertRaisesRegex(IntakeError, 'documentary cross-reference'):
+                create_and_record_gmail_api_draft(request, self.paths)
+            gmail.assert_not_called()
+        from scripts.record_gmail_draft import main as record_main
+        import contextlib
+        from io import StringIO
+        with contextlib.redirect_stderr(StringIO()) as errors:
+            code = record_main(['--payload', request['payload'], '--draft-id', request['draft_id'],
+                                '--message-id', request['message_id'], '--thread-id', request['thread_id'],
+                                '--log', str(self.paths.draft_log), '--duplicate-index', str(self.paths.duplicate_index)])
+        self.assertEqual(code, 2)
+        self.assertIn('documentary cross-reference', errors.getvalue())
+        self.assertEqual(self.managed_snapshot(), before)
+
+    def test_direct_cli_documentary_selection_stops_without_artifacts(self):
+        import subprocess, sys
+        result = self.scoped_upload(text=self.documentary_text(), case_numbers=CASES[:2])
+        stale = {**result['candidate_intake'], 'case_number': CASES[1]}
+        intake = self.root / 'fictional-document-reference.json'
+        write_json(intake, stale)
+        for script, options in [('generate_pdf.py', ['--allow-duplicate']),
+                                ('build_email_draft.py', ['--pdf', str(self.root/'missing.pdf')])]:
+            completed = subprocess.run([sys.executable, 'scripts/' + script, str(intake), *options,
+                '--duplicate-index', str(self.paths.duplicate_index)], cwd=Path(__file__).resolve().parents[1],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            self.assertIn('documentary cross-reference', completed.stderr)
+            self.assertNotIn('Traceback', completed.stderr)
+        self.assert_no_preparation_artifacts()
+
     def test_legitimate_foreground_multi_case_table_survives_incidental_background(self):
         result = self.scoped_upload(text=TABLE_TEXT, case_numbers=CASES,
                                     background='Separate underlying paper: 930/25.0TSTXX')
@@ -541,6 +665,64 @@ class MultiCaseSourceTests(unittest.TestCase):
 
 
 class MultiCaseNormalizationTests(unittest.TestCase):
+    def test_documentary_occurrences_are_bounded_and_independent_cases_survive(self):
+        from honorarios_app.source_cases import source_case_rows, documentary_case_references
+        directive = f'Junte aos autos certidão da acusação proferida no inquérito n.º\n{CASES[1]}.'
+        for text in (f'Processo {CASES[0]}\n' + directive,
+                     f'Processo {CASES[0]}\nJunção de cópia da acusação deduzida no processo {CASES[1]}.'):
+            with self.subTest(text=text):
+                rows = source_case_rows(text, {'case_numbers': list(CASES[:2]), 'fields': {'case_number': CASES[1]}})
+                self.assertEqual([row['case_number'] for row in rows], [CASES[0]])
+                self.assertTrue(documentary_case_references(text)[0]['documentary_only'])
+        for independent in (f'Processo {CASES[1]}', CASES[1],
+                            f'Nomeio intérprete para o processo {CASES[1]}.',
+                            f'Notifique o intérprete para comparecer no processo {CASES[1]}.'):
+            for text in (f'Processo {CASES[0]}\n{directive}\n{independent}',
+                         f'Processo {CASES[0]}\n{independent}\n{directive}'):
+                with self.subTest(text=text):
+                    self.assertEqual({row['case_number'] for row in source_case_rows(text, {})}, set(CASES[:2]))
+                    self.assertFalse(documentary_case_references(text)[0]['documentary_only'])
+
+    def test_document_words_without_bound_directive_never_suppress_a_case(self):
+        from honorarios_app.source_cases import source_case_rows, documentary_case_references
+        for reference in (f'Junte cópia aos autos do processo {CASES[1]}.',
+                          f'Remeta cópia para os autos do inquérito {CASES[1]}.',
+                          f'Junte certidão nos autos do processo {CASES[1]}.',
+                          f'Junte certidão ao processo {CASES[1]}.',
+                          f'Junte certidão no processo {CASES[1]}.',
+                          f'Remeta cópia para o inquérito {CASES[1]}.',
+                          f'Certidão da acusação do processo {CASES[1]}.',
+                          f'Acusação e despacho judicial. Processo {CASES[1]}.',
+                          f'Junte aos autos uma certidão. Processo {CASES[1]}.',
+                          f'Junte aos autos uma certidão\nProcesso {CASES[1]}',
+                          f'Junte cópia da acusação; nomeio intérprete no processo {CASES[1]}.',
+                          f'Junte cópia da acusação e notifique o intérprete para o processo {CASES[1]}.'):
+            text = f'Processo {CASES[0]}\n{reference}'
+            with self.subTest(text=text):
+                self.assertEqual(documentary_case_references(text), [])
+                self.assertEqual({row['case_number'] for row in source_case_rows(text, {})}, set(CASES[:2]))
+
+    def test_decomposed_accents_keep_exact_raw_context_and_sentence_boundaries(self):
+        import unicodedata
+        from honorarios_app.source_cases import documentary_case_references, source_case_rows
+        clause = f'Junte aos autos certidão da acusação proferida no âmbito do inquérito n.º\n{CASES[1]}.'
+        decomposed = unicodedata.normalize('NFD', clause)
+        text = f'Processo {CASES[0]}\n' + decomposed
+        reference = documentary_case_references(text)[0]
+        self.assertEqual(reference['excerpt'], decomposed)
+        self.assertEqual(text[reference['start']:reference['end']], CASES[1])
+        self.assertEqual([row['case_number'] for row in source_case_rows(text, {})], [CASES[0]])
+        separate = unicodedata.normalize('NFD', f'Junte certidão da acusação. Processo {CASES[1]}.')
+        self.assertEqual(documentary_case_references(separate), [])
+
+    def test_uncertain_documentary_scope_remains_unresolved_not_excluded(self):
+        from honorarios_app.source_cases import source_case_rows, documentary_case_references
+        text = f'Processo {CASES[0]}\nJunte certidão da acusação do processo {CASES[1]}.'
+        for ai in ({'source_scope': 'uncertain'}, {'incidental_background_text': text}):
+            with self.subTest(ai=ai):
+                self.assertEqual(documentary_case_references(text, ai), [])
+                self.assertFalse(any(row['case_number'] for row in source_case_rows(text, ai)))
+
     def test_grouped_suffix_does_not_erase_an_independently_printed_case(self):
         from honorarios_app.source_cases import source_case_rows
         for separate in ('710/26.0GD', '710/26.0GDXYZ'):
@@ -606,6 +788,21 @@ class MultiCaseNormalizationTests(unittest.TestCase):
         rows = source_case_rows('', {'source_scope': 'uncertain', 'fields': {}})
         self.assertEqual(len(rows), 1)
         self.assertFalse(rows[0]['case_number'])
+
+    def test_pipe_delimited_ocr_ou_in_unrelated_block_does_not_mark_case_ambiguous(self):
+        from honorarios_app.source_cases import source_case_rows
+        ocr_text = (
+            f'Processo Sumário - Fase preliminar {CASES[0]} | NOTA DE NOTIFICAÇÃO | '
+            'Profissão: Desconhecida ou sem Profissão'
+        )
+        rows = source_case_rows(ocr_text, {'case_numbers': [CASES[0]], 'source_scope': 'clear'})
+        self.assertEqual(rows, [{'case_number': CASES[0], 'raw_case_number': CASES[0]}])
+
+        ambiguous_ocr = f'Processo {CASES[0]} ou {CASES[1]} | NOTA DE NOTIFICAÇÃO | Outra coluna'
+        ambiguous_rows = source_case_rows(
+            ambiguous_ocr, {'case_numbers': [CASES[0], CASES[1]], 'source_scope': 'clear'}
+        )
+        self.assertEqual(ambiguous_rows, [{'case_number': '', 'raw_case_number': f'Processo {CASES[0]} ou {CASES[1]}'}])
 
 
 if __name__ == '__main__':

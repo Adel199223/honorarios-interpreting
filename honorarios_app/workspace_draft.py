@@ -36,7 +36,7 @@ def validate_workspace_resume(payload: dict[str, Any], paths: Any, profiles: dic
     choice = snapshot.get("travel_choice")
     if not isinstance(evidence, dict) or choice is not None and (
         not isinstance(choice, dict) or choice.get("mode") not in {"shared", "separate", "none"}
-        or choice.get("ownerIndex") is not None and (not isinstance(choice.get("ownerIndex"), int)
+        or choice.get("ownerIndex") is not None and (type(choice.get("ownerIndex")) is not int
                                                     or not 0 <= choice["ownerIndex"] < len(cases))
     ):
         raise IntakeError("The saved review inputs are invalid. Your current work was not changed.")
@@ -55,7 +55,11 @@ def validate_workspace_resume(payload: dict[str, Any], paths: Any, profiles: dic
     def retained_file(raw: Any, missing: set[str]) -> str:
         if not isinstance(raw, str) or not raw:
             return ""
-        path = Path(raw).resolve()
+        try:
+            path = Path(raw).resolve()
+        except (OSError, ValueError):
+            missing.add("file")
+            return ""
         if not path.is_relative_to(paths.source_upload_dir.resolve()) or not path.is_file():
             missing.add(Path(raw).name)
             return ""
@@ -88,7 +92,7 @@ def validate_workspace_resume(payload: dict[str, Any], paths: Any, profiles: dic
         restored_cases.append({"candidate_intake": intake(case["candidate_intake"]), "evidence": editable(case.get("evidence", {})),
                                "answers": str(case.get("answers") or ""), "queued_key": str(case.get("queued_key") or "")})
     selected = snapshot.get("selected_case")
-    selected = selected if isinstance(selected, int) and 0 <= selected < len(restored_cases) else (0 if len(restored_cases) > 1 else None)
+    selected = selected if type(selected) is int and 0 <= selected < len(restored_cases) else (0 if len(restored_cases) > 1 else None)
     current = intake(snapshot.get("current_intake"))
     manual = intake(snapshot.get("manual_fields"))
     restored_batch = [intake(row) for row in batch]

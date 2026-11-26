@@ -176,6 +176,21 @@ class PdfRulesTests(unittest.TestCase):
         self.assertFalse(pdf.exists())
         self.assertFalse(html.exists())
 
+    def test_build_packet_pdf_supports_webp_and_bmp_images(self):
+        from PIL import Image
+        from scripts.build_packet_pdf import build_packet_pdf
+
+        primary = self.root / 'primary.pdf'
+        generate_pdf(build_rendered_request(self.intake, self.profile), primary)
+        webp_path = self.root / 'support.webp'
+        bmp_path = self.root / 'support.bmp'
+        Image.new('RGB', (40, 30), color='navy').save(webp_path, format='WEBP')
+        Image.new('RGB', (40, 30), color='teal').save(bmp_path, format='BMP')
+        packet = self.root / 'packet.pdf'
+        build_packet_pdf([primary, webp_path, bmp_path], packet)
+        reader = PdfReader(packet)
+        self.assertEqual(len(reader.pages), 3)
+
 
 if __name__ == '__main__':
     unittest.main()

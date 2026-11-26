@@ -1,7 +1,8 @@
 // Read-only phone browsing; the existing upload/review flow owns source recovery.
 export function createCameraPicker({ requestJson, fetchFile, onState, onSelectionStart, onChoose, getRevision, isAvailable }) {
   const state = { configured: false, label: "Camera", open: false, busy: false,
-    items: [], query: "", offset: 0, nextOffset: null, total: 0, truncated: false, error: "" };
+    items: [], query: "", offset: 0, nextOffset: null, total: 0, truncated: false,
+    oversizedCount: 0, coverageWarning: "", error: "" };
   let nonce = 0;
   const snapshot = () => ({ ...state, items: state.items.map(item => ({ ...item })) });
   const emit = () => onState(snapshot());
@@ -27,6 +28,7 @@ export function createCameraPicker({ requestJson, fetchFile, onState, onSelectio
     const ticket = ++nonce;
     state.busy = true; state.error = ""; state.items = [];
     state.nextOffset = null; state.total = 0; state.truncated = false;
+    state.oversizedCount = 0; state.coverageWarning = "";
     state.query = String(query).trim(); state.offset = offset; emit();
     try {
       const result = await requestJson(`/api/camera/files?query=${encodeURIComponent(state.query)}&offset=${offset}&limit=50`);
@@ -34,6 +36,12 @@ export function createCameraPicker({ requestJson, fetchFile, onState, onSelectio
       if (!available()) { close(); return false; }
       state.items = result.items || []; state.nextOffset = result.next_offset ?? null;
       state.total = result.total || 0; state.truncated = result.truncated === true;
+      state.oversizedCount = Number.isSafeInteger(result.oversized_count) && result.oversized_count > 0
+        && result.oversized_count <= 5000 ? result.oversized_count : 0;
+      if (state.oversizedCount) {
+        const count = state.oversizedCount;
+        state.coverageWarning = `${count} ${count === 1 ? "photo exceeds" : "photos exceed"} 25 MiB and ${count === 1 ? "is" : "are"} not shown.${state.query ? " This count matches the filename search." : ""}${state.truncated ? " This count covers only the checked folder entries." : ""}`;
+      }
       return true;
     } catch (error) {
       if (ticket === nonce && state.open) state.error = error.message || "Camera could not be opened. Check the phone connection.";

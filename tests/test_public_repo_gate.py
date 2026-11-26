@@ -187,6 +187,31 @@ class PublicRepoGateTests(unittest.TestCase):
             self.assertEqual(load_json(profile_path)["applicant_name"], "Example Applicant")
             self.assertEqual(load_profiles(profiles_path)["example"]["payment_entity"], "Example Court")
 
+    def test_blocks_antigravity_private_overlays_and_allows_public_skills_and_hooks(self):
+        blocked = analyze_candidates([
+            CandidateFile("GEMINI.md", b"# local"),
+            CandidateFile("data/.paper-submissions.lock", b""),
+            CandidateFile("data/.gmail-create-attempts.lock", b""),
+            CandidateFile(".codex/state.json", b"{}"),
+            CandidateFile(".playwright-cli/log.txt", b"log"),
+        ])
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(len(blocked["path_blockers"]), 5)
+
+        allowed = analyze_candidates([
+            CandidateFile(".agents/skills/honorarios-request-workflow/SKILL.md", b"# Workflow Skill\nUse synthetic paths.\n"),
+            CandidateFile(".agents/hooks/guard_command.py", b"print('{\"decision\": \"allow\"}')\n"),
+        ])
+        self.assertTrue(allowed["public_repo_ready"], allowed)
+        self.assertEqual(allowed["blocker_count"], 0)
+
+        for gemini_key in ("AIza" + ("0" * 35), "AQ." + ("A" * 50)):
+            blocked_key = analyze_candidates([
+                CandidateFile("docs/snippet.md", f"key={gemini_key}\n".encode("utf-8")),
+            ])
+            self.assertEqual(blocked_key["status"], "blocked")
+            self.assertEqual(blocked_key["content_findings"][0]["kind"], "gemini_api_key")
+
 
 if __name__ == "__main__":
     unittest.main()

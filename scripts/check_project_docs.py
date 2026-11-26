@@ -15,7 +15,8 @@ def main() -> int:
     keys = (
         'runbook', 'app_knowledge', 'handoff', 'development_environment',
         'validation', 'integration_readiness', 'adapter_contract',
-        'plan_lifecycle', 'workflow_acceptance', 'user_guide', 'current_plan',
+        'plan_lifecycle', 'workflow_acceptance', 'source_quality',
+        'user_guide', 'google_photos', 'current_plan',
     )
     paths = [ROOT / manifest[key] for key in keys] + [ROOT / 'README.md', ROOT / 'CONTRIBUTING.md']
     paths += [ROOT / name for name in manifest.get('historical_references', [])]

@@ -12,6 +12,7 @@ const GUIDED_STEP_BY_STATE = {
   prepare_pdf: 4,
   prepare_batch: 4,
   review_gmail_draft_args: 5,
+  manual_draft_handoff: 5,
 };
 
 export function guidedStepForState(stateName = "idle") {
@@ -99,6 +100,14 @@ export function profileFallbackNotice(data = {}, intake = {}) {
 
 export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   if (!String(value || "").trim()) return { kind: "missing", label: "Needs an answer" };
+  const evidence = data.review_evidence || data.source_evidence || {};
+  const fields = Array.isArray(evidence.field_evidence)
+    ? evidence.field_evidence
+    : Object.entries(evidence.field_evidence || {}).map(([key, entry]) => ({ field: key, ...entry }));
+  const entry = fields.find(item => item.field === field && String(item.value || "").trim().toLowerCase() === String(value).trim().toLowerCase());
+  if (entry?.source === "previously_confirmed_source_location") {
+    return { kind: "default", label: "Previously confirmed for this photo · editable" };
+  }
   if (field === "photo_capture_city" && intake.photo_defaults_applied?.photo_city === value) {
     const source = intake.photo_defaults_applied.photo_city_source;
     if (source === "user_confirmed_capture_city" && intake.photo_capture_city === value
@@ -121,14 +130,9 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
       : "Your photo-city court default · editable";
     return { kind: "default", label };
   }
-  const evidence = data.review_evidence || data.source_evidence || {};
-  const fields = Array.isArray(evidence.field_evidence)
-    ? evidence.field_evidence
-    : Object.entries(evidence.field_evidence || {}).map(([key, entry]) => ({ field: key, ...entry }));
-  const entry = fields.find(item => item.field === field && String(item.value || "").trim().toLowerCase() === String(value).trim().toLowerCase());
   if (entry?.status === "conflicts_with_metadata") return { kind: "conflict", label: "Date conflict · answer the question" };
   const source = String(entry?.source || "");
-  if (source.startsWith("openai")) {
+  if (source.startsWith("openai") || source.startsWith("gemini")) {
     return { kind: "ai", label: entry.confidence === "low" ? "AI suggestion · check source" : "AI-read · check source" };
   }
   if (["deterministic_text", "document_text", "visible_email", "document_text_and_photo_metadata"].includes(source)) {
@@ -141,6 +145,7 @@ export function reviewFactOrigin(field, value, data = {}, intake = {}) {
   if (source === "known_destination") return { kind: "default", label: "Saved place/distance · check it" };
   if (source === "verified_gps_area") return { kind: "default", label: "GPS matched a verified local area" };
   if (source === "verified_gps_source_venue") return { kind: "default", label: "GPS + source venue default · editable" };
+  if (source === "reusable_verified_gps_source_venue") return { kind: "default", label: "Reusable GPS + source venue · editable" };
   if (source === "gnr_capture_city_default") return { kind: "default", label: "Your GNR + capture-city default · editable" };
   if (source === "embedded_location_created") return { kind: "metadata", label: "Embedded capture city" };
   if (source === "google_photos_creation_time") {
@@ -214,8 +219,13 @@ export function shortDateLabel(value) {
   if (!text) return "";
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return text;
-  const date = new Date(`${text}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return text;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (Number.isNaN(date.getTime()) || date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return text;
+  }
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 

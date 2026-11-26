@@ -389,6 +389,253 @@ class AIServiceClauseTests(unittest.TestCase):
         with self.assertRaisesRegex(IntakeError, 'service_place'):
             build_rendered_request(merged, self.profile)
 
+    def test_resolve_openai_config_redacts_absolute_filesystem_paths(self):
+        with tempfile.TemporaryDirectory(prefix='honorarios-ai-cfg-') as tmp:
+            cfg_dir = Path(tmp) / 'config'
+            cfg_dir.mkdir(parents=True)
+            cfg_path = cfg_dir / 'ai.local.json'
+            cfg_path.write_text(json.dumps({'api_key': 'fictional-test-credential'}), encoding='utf-8')
+            cfg = ai.resolve_openai_config(cfg_path, environ={})
+            self.assertTrue(cfg.configured)
+            self.assertEqual(cfg.key_source, 'config/ai.local.json')
+            self.assertNotIn(str(cfg_dir.parent), cfg.key_source)
+
+
+class GeminiNeonAndDecisionsTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='honorarios-gemini-public-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        create_synthetic_runtime(self.root)
+        self.paths = AppPaths(**runtime_path_overrides(self.root))
+        self.config = self.paths.ai_config
+        self.env = patch.dict(ai.os.environ, {}, clear=True)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        image = BytesIO()
+        Image.new('RGB', (16, 16), 'white').save(image, format='PNG')
+        self.image_bytes = image.getvalue()
+        self.fake_gemini_key = 'AIza' + ('1' * 35)
+
+    def test_default_status_and_config_resolution_with_openai_fallback(self):
+        default_status = ai.ai_status_payload(self.config)
+        self.assertEqual(default_status['provider'], 'gemini')
+        self.assertEqual(default_status['model'], 'gemini-4-neon')
+        self.assertEqual(default_status['thinking_level'], 'xhigh')
+        self.assertTrue(default_status['decisions_enabled'])
+        self.assertEqual(default_status['decisions_model'], 'gemini-decision-1')
+        self.assertFalse(default_status['configured'])
+
+        self.config.write_text(json.dumps({
+            'gemini_api_key': self.fake_gemini_key,
+            'thinking_level': 'minimal',
+        }), encoding='utf-8')
+        gemini_cfg = ai.resolve_ai_config(self.config, {})
+        self.assertEqual((gemini_cfg.provider, gemini_cfg.model, gemini_cfg.thinking_level, gemini_cfg.configured),
+                         ('gemini', 'gemini-4-neon', 'xhigh', True))
+        self.assertEqual(gemini_cfg.key_source, 'config/ai.local.json')
+        self.assertNotIn(str(self.root), gemini_cfg.key_source)
+
+        carbon_cfg = ai.resolve_ai_config(self.config, {'HONORARIOS_GEMINI_MODEL': 'gemini-4-carbon', 'HONORARIOS_GEMINI_THINKING_LEVEL': 'xhigh'})
+        self.assertEqual(carbon_cfg.thinking_level, 'high')
+
+        fallback_cfg = ai.resolve_ai_config(self.root / 'missing.json', {'OPENAI_API_KEY': 'fictional-openai-key'})
+        self.assertEqual((fallback_cfg.provider, fallback_cfg.model, fallback_cfg.decisions_enabled),
+                         ('openai', ai.DEFAULT_OPENAI_MODEL, False))
+
+        google_env_cfg = ai.resolve_ai_config(self.root / 'missing.json', {'GOOGLE_API_KEY': self.fake_gemini_key})
+        self.assertEqual((google_env_cfg.provider, google_env_cfg.key_source, google_env_cfg.configured),
+                         ('gemini', 'GOOGLE_API_KEY', True))
+
+    def test_gemini_neon_interactions_and_decisions_api_mocked_flow_and_receipt(self):
+        captured: list[tuple[str, dict, dict]] = []
+        decision_answers = {
+            'work_type': {'type': 'choice', 'choice': 'in_person_interpreting', 'confidence': 0.96, 'probabilities': {'in_person_interpreting': 0.96}},
+            'is_already_handled_police_fee_form': {'type': 'noul', 'noul': 0.91, 'confidence': 0.91},
+            'is_psp_pac_procedure': {'type': 'noul', 'noul': 0.04, 'confidence': 0.96},
+            'foreground_scope_clear': {'type': 'noul', 'noul': 0.92, 'confidence': 0.92},
+            'service_entity_type': {'type': 'choice', 'choice': 'gnr', 'confidence': 0.94, 'probabilities': {'gnr': 0.94}},
+            'has_multiple_distinct_cases': {'type': 'noul', 'noul': 0.03, 'confidence': 0.97},
+            'source_legibility': {'type': 'score', 'score': 1.85, 'confidence': 0.93},
+        }
+        interaction_payload = {
+            'raw_visible_text': 'GUARDA NACIONAL REPUBLICANA\nProcesso 710/26.0TSTXX\nServiço de interpretação em 26/09/2026.',
+            'case_numbers': ['710/26.0TSTXX'],
+            'source_scope': 'clear',
+            'incidental_background_text': '',
+            'fields': {
+                'raw_case_number': '710/26.0TSTXX',
+                'case_number': '710/26.0TSTXX',
+                'service_date': '2026-09-26',
+                'service_entity': 'Guarda Nacional Republicana',
+                'service_entity_type': 'gnr',
+                'service_place': 'GNR de Beja',
+            },
+            'translation_indicators': [],
+            'warnings': [],
+        }
+
+        def handler(request: ai.httpx.Request) -> ai.httpx.Response:
+            body = json.loads(request.content.decode('utf-8'))
+            captured.append((str(request.url), dict(request.headers), body))
+            if str(request.url) == ai.GEMINI_INTERACTIONS_URL:
+                return ai.httpx.Response(200, json={
+                    'id': 'v1_fictional_interaction',
+                    'model': 'gemini-4-neon',
+                    'status': 'completed',
+                    'service_tier': 'standard',
+                    'steps': [{'type': 'model_output', 'content': [{'type': 'text', 'text': json.dumps(interaction_payload)}]}],
+                    'usage': {
+                        'total_input_tokens': 120,
+                        'total_cached_tokens': 20,
+                        'total_output_tokens': 45,
+                        'total_thought_tokens': 15,
+                        'total_tokens': 180,
+                    },
+                })
+            if str(request.url) == ai.GEMINI_DECISIONS_URL:
+                return ai.httpx.Response(200, json={
+                    'answers': decision_answers,
+                    'usage': {'total_input_tokens': 64, 'total_output_tokens': 0, 'total_tokens': 64},
+                })
+            raise AssertionError(f'Unexpected URL: {request.url}')
+
+        transport = ai.httpx.MockTransport(handler)
+        orig_client = ai.httpx.Client
+        with patch.dict(ai.os.environ, {'GEMINI_API_KEY': self.fake_gemini_key}, clear=True), \
+             patch.object(ai.httpx, 'Client', side_effect=lambda **kw: orig_client(transport=transport, **kw)):
+            uploaded = services.recover_source_upload(
+                filename='fictional.png',
+                content_type='image/png',
+                content=self.image_bytes,
+                source_kind='photo',
+                paths=self.paths,
+            )
+
+        self.assertEqual([url for url, _h, _b in captured], [ai.GEMINI_INTERACTIONS_URL, ai.GEMINI_DECISIONS_URL])
+        _i_url, i_headers, i_body = captured[0]
+        self.assertEqual(i_headers.get('x-goog-api-key'), self.fake_gemini_key)
+        self.assertEqual(i_headers.get('api-revision'), '2026-05-20')
+        self.assertEqual(i_body['model'], 'gemini-4-neon')
+        self.assertEqual(i_body['generation_config'], {'thinking_level': 'xhigh', 'max_output_tokens': 65536})
+        for removed_param in ('temperature', 'top_p', 'top_k', 'thinking_budget'):
+            self.assertNotIn(removed_param, i_body['generation_config'])
+        self.assertFalse(i_body['store'])
+        self.assertEqual(i_body['response_format']['mime_type'], 'application/json')
+        self.assertEqual(i_body['input'][1]['type'], 'image')
+        self.assertEqual(i_body['input'][1]['resolution'], 'high')
+
+        _d_url, _d_headers, d_body = captured[1]
+        self.assertEqual(d_body['model'], 'gemini-decision-1')
+        self.assertEqual(set(d_body['questions']), set(ai.GEMINI_DECISION_QUESTIONS))
+
+        ai_rec = uploaded['ai_recovery']
+        self.assertEqual((ai_rec['provider'], ai_rec['model'], ai_rec['thinking_level']), ('gemini', 'gemini-4-neon', 'xhigh'))
+        self.assertEqual(ai_rec['api_usage']['response_id'], 'v1_fictional_interaction')
+        self.assertEqual(ai_rec['api_usage']['service_tier'], 'standard')
+        self.assertEqual(ai.DEFAULT_GEMINI_TIMEOUT_SECONDS, 900)
+        self.assertEqual(ai_rec['api_usage']['usage']['total_tokens'], 180)
+        self.assertEqual(ai_rec['decisions']['status'], 'ok')
+        self.assertEqual(ai_rec['decisions']['flags'][0]['code'], 'possible_police_fee_form')
+        self.assertEqual(ai_rec['api_usage_receipt']['status'], 'saved')
+        receipt_saved = json.loads(Path(ai_rec['api_usage_receipt']['stored_path']).read_text(encoding='utf-8'))
+        self.assertEqual(receipt_saved['provider'], 'gemini')
+        self.assertEqual(receipt_saved['decisions_usage']['usage']['total_tokens'], 64)
+        self.assertNotIn(self.fake_gemini_key, json.dumps(receipt_saved))
+        self.assertNotIn('raw_visible_text', json.dumps(receipt_saved))
+
+        field_sources = {item['field']: item['source'] for item in uploaded['source_evidence']['field_evidence']}
+        self.assertEqual(field_sources.get('case_number'), 'gemini_ocr')
+        self.assertIn('gemini_ocr', field_sources.values())
+        attention_codes = {item['code'] for item in uploaded['source_evidence']['attention']['flags']}
+        self.assertIn('gemini_decision_possible_police_fee_form', attention_codes)
+
+    def test_decisions_uncertain_scope_and_failure_resilience_plus_pdf_document_block(self):
+        captured: list[dict] = []
+
+        def handler(request: ai.httpx.Request) -> ai.httpx.Response:
+            body = json.loads(request.content.decode('utf-8'))
+            captured.append(body)
+            if str(request.url) == ai.GEMINI_INTERACTIONS_URL:
+                return ai.httpx.Response(200, json={
+                    'id': 'v1_pdf_test',
+                    'model': 'gemini-4-neon',
+                    'status': 'completed',
+                    'steps': [
+                        {'type': 'model_output', 'content': [{'type': 'text', 'text': '{"raw_visible_text": "Folha A e Folha B",'}]},
+                        {'type': 'model_output', 'content': [{'type': 'text', 'text': '"case_numbers": ["710/26.0TSTXX"], "fields": {"case_number": "710/26.0TSTXX", "raw_case_number": "710/26.0TSTXX"}}'}]},
+                    ],
+                })
+            return ai.httpx.Response(200, json={
+                'answers': {
+                    'foreground_scope_clear': {'type': 'noul', 'noul': 0.12, 'confidence': 0.88},
+                    'source_legibility': {'type': 'score', 'score': 0.55, 'confidence': 0.82},
+                },
+            })
+
+        transport = ai.httpx.MockTransport(handler)
+        orig_client = ai.httpx.Client
+        with patch.dict(ai.os.environ, {'GEMINI_API_KEY': self.fake_gemini_key}, clear=True), \
+             patch.object(ai.httpx, 'Client', side_effect=lambda **kw: orig_client(transport=transport, **kw)):
+            result = ai.recover_source_with_ai(
+                filename='weak.pdf',
+                content_type='application/pdf',
+                content=b'%PDF-1.4\n%%EOF\n',
+                source_kind='notification_pdf',
+                deterministic_text='short',
+                config_path=self.config,
+            )
+
+        self.assertEqual(captured[0]['input'][1], {'type': 'document', 'data': 'JVBERi0xLjQKJSVFT0YK', 'mime_type': 'application/pdf'})
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['source_scope'], 'uncertain')
+        self.assertNotIn('case_number', result['fields'])
+        self.assertEqual({f['code'] for f in result['decisions']['flags']}, {'uncertain_foreground_scope', 'low_source_legibility'})
+
+        def fail_decisions(request: ai.httpx.Request) -> ai.httpx.Response:
+            if str(request.url) == ai.GEMINI_INTERACTIONS_URL:
+                return ai.httpx.Response(200, json={
+                    'id': 'v1_resilient',
+                    'status': 'completed',
+                    'steps': [{'type': 'model_output', 'content': [{'type': 'text', 'text': '{"raw_visible_text": "Processo 710/26.0TSTXX", "fields": {"case_number": "710/26.0TSTXX"}}'}]}],
+                })
+            return ai.httpx.Response(503, text='backend busy')
+
+        resilient_transport = ai.httpx.MockTransport(fail_decisions)
+        with patch.dict(ai.os.environ, {'GEMINI_API_KEY': self.fake_gemini_key}, clear=True), \
+             patch.object(ai.httpx, 'Client', side_effect=lambda **kw: orig_client(transport=resilient_transport, **kw)):
+            resilient = ai.recover_source_with_ai(
+                filename='fictional.png',
+                content_type='image/png',
+                content=self.image_bytes,
+                source_kind='photo',
+                config_path=self.config,
+            )
+        self.assertEqual(resilient['status'], 'ok')
+        self.assertEqual(resilient['decisions']['status'], 'failed')
+        self.assertNotIn('backend busy', json.dumps(resilient))
+        self.assertTrue(ai.GEMINI_INTERACTIONS_URL.endswith('/v1beta/interactions'))
+
+        def free_tier_quota_handler(request: ai.httpx.Request) -> ai.httpx.Response:
+            return ai.httpx.Response(
+                429,
+                json={'error': {'message': 'Rate limit exceeded for model gemini-4-neon (limit: 0 input tokens per minute on Free Tier) SECRET TEXT'}},
+            )
+
+        quota_transport = ai.httpx.MockTransport(free_tier_quota_handler)
+        with patch.dict(ai.os.environ, {'GEMINI_API_KEY': self.fake_gemini_key}, clear=True), \
+             patch.object(ai.httpx, 'Client', side_effect=lambda **kw: orig_client(transport=quota_transport, **kw)):
+            quota_result = ai.recover_source_with_ai(
+                filename='fictional.png',
+                content_type='image/png',
+                content=self.image_bytes,
+                source_kind='photo',
+                config_path=self.config,
+            )
+        self.assertEqual(quota_result['status'], 'failed')
+        self.assertIn('Free Tier', quota_result['reason'])
+        self.assertNotIn('SECRET TEXT', json.dumps(quota_result))
+
 
 if __name__ == '__main__':
     unittest.main()

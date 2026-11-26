@@ -135,6 +135,72 @@ class GmailSentSyncApiTests(unittest.TestCase):
         self.assertFalse(response.json()['send_allowed'])
         self.assertEqual(self.token_path.read_bytes(),before)
 
+    def test_invalid_grant_refresh_marks_reconnect_without_token_change_or_retry(self):
+        import httpx
+        self.save_token({**self.original,'expires_at':'2020-01-01T00:00:00+00:00'})
+        before=self.token_path.read_bytes();seen=[];original_client=httpx.Client
+        def handler(request):
+            seen.append(str(request.url));return httpx.Response(400,json={'error':'invalid_grant','error_description':'fictional-secret-provider-detail'})
+        def factory(*args,**kwargs):return original_client(*args,**kwargs,transport=httpx.MockTransport(handler))
+        with patch.object(gmail.httpx,'Client',side_effect=factory):
+            with self.assertRaises(gmail.GmailAuthorizationRequired) as error:gmail.gmail_access_token(self.config)
+            self.assertNotIn('fictional-secret',str(error.exception))
+            with self.assertRaises(gmail.GmailAuthorizationRequired):gmail.gmail_access_token(self.config)
+        self.assertEqual(len(seen),1);self.assertEqual(self.token_path.read_bytes(),before)
+        marker=gmail._auth_rejection_path(gmail.gmail_config(self.config));raw=marker.read_bytes()
+        self.assertNotIn(b'fictional',raw);self.assertNotIn(b'fictional-secret-provider-detail',raw)
+        with patch.object(gmail.httpx,'Client',side_effect=AssertionError('Status must not contact Google')):
+            status=gmail.gmail_status_payload(self.config)
+            self.assertFalse(status['connected']);self.assertFalse(status['draft_create_ready'])
+            self.assertTrue(status['reauthorization_required']);self.assertTrue(status['manual_handoff_ready'])
+            self.assertEqual(status['recommended_mode'],'manual_handoff')
+        self.assertEqual(marker.read_bytes(),raw)
+        state=self.start()
+        self.assertTrue(gmail.gmail_status_payload(self.config)['reauthorization_required'])
+        with self.assertRaises(IntakeError):gmail.gmail_oauth_callback(code='',state=state,error='access_denied',config_path=self.config)
+        self.assertTrue(gmail.gmail_status_payload(self.config)['reauthorization_required'])
+        state=self.start()
+        with patch.object(gmail,'exchange_google_token',return_value=self.grant()),patch.object(gmail,'_gmail_account_hash',return_value='same-account'):
+            self.callback(state)
+        self.assertFalse(gmail.gmail_status_payload(self.config)['reauthorization_required'])
+        self.assertTrue(gmail.gmail_status_payload(self.config)['connected'])
+
+    def test_transient_refresh_errors_do_not_persist_reauthorization_rejection(self):
+        import httpx
+        self.save_token({**self.original,'expires_at':'2020-01-01T00:00:00+00:00'})
+        original_client=httpx.Client
+        for mode in ('server','network'):
+            def handler(request):
+                if mode=='network':raise httpx.ConnectError('fictional transient failure',request=request)
+                return httpx.Response(503,json={'error':'invalid_grant'})
+            def factory(*args,**kwargs):return original_client(*args,**kwargs,transport=httpx.MockTransport(handler))
+            with patch.object(gmail.httpx,'Client',side_effect=factory),self.assertRaises(IntakeError):gmail.gmail_access_token(self.config)
+            self.assertFalse(gmail._auth_rejection_path(gmail.gmail_config(self.config)).exists())
+            self.assertFalse(gmail.gmail_status_payload(self.config)['reauthorization_required'])
+
+    def test_known_rejection_marker_is_bound_to_credentials_and_not_oauth_state(self):
+        revision=gmail.gmail_credential_revision(self.config)
+        before=self.token_path.read_bytes()
+        gmail.remember_rejected_gmail_authorization(self.config,expected_revision=revision)
+        self.assertEqual(self.token_path.read_bytes(),before)
+        self.assertTrue(gmail.gmail_status_payload(self.config)['reauthorization_required'])
+        self.start();self.assertEqual(gmail.gmail_credential_revision(self.config),revision)
+        with self.assertRaises(IntakeError):gmail.remember_rejected_gmail_authorization(self.config,expected_revision='0'*64)
+        self.save_token({**self.original,'refresh_token':'fictional-replaced-refresh'})
+        self.assertFalse(gmail.gmail_status_payload(self.config)['reauthorization_required'])
+
+    def test_successful_callback_repairs_malformed_marker_but_denial_does_not(self):
+        marker=gmail._auth_rejection_path(gmail.gmail_config(self.config));marker.write_text('{broken')
+        self.assertTrue(gmail.gmail_status_payload(self.config)['reauthorization_required'])
+        state=self.start()
+        with self.assertRaises(IntakeError):gmail.gmail_oauth_callback(code='',state=state,error='access_denied',config_path=self.config)
+        self.assertEqual(marker.read_text(),'{broken')
+        state=self.start()
+        with patch.object(gmail,'exchange_google_token',return_value=self.grant()),patch.object(gmail,'_gmail_account_hash',return_value='same-account'):
+            self.callback(state)
+        self.assertEqual(json.loads(marker.read_text())['reason'],'authorized')
+        self.assertTrue(gmail.gmail_status_payload(self.config)['connected'])
+
     def test_cross_origin_cannot_start_sync_or_oauth(self):
         for route in ('/api/gmail/sent-sync','/api/gmail/oauth/start'):
             response=self.client.post(route,json={},headers={'Origin':'https://evil.example'})

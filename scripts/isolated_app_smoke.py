@@ -34,7 +34,7 @@ SmokeRunner = Callable[..., dict[str, Any]]
 def _provider_environment_name(name: str) -> bool:
     """Match the credential/override boundary used by portable validation."""
     upper = name.upper()
-    return upper in {'OPENAI_API_KEY', 'PYTHONPATH', 'PYTHONHOME'} or (
+    return upper in {'OPENAI_API_KEY', 'GEMINI_API_KEY', 'PYTHONPATH', 'PYTHONHOME'} or (
         upper.startswith(('GMAIL_', 'GOOGLE_', 'HONORARIOS_')) and upper != 'HONORARIOS_UV_EXECUTABLE'
     )
 

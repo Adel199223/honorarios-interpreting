@@ -1,8 +1,10 @@
+import asyncio
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 import unittest
@@ -10,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
@@ -237,6 +240,48 @@ class PublicRuntimeTests(PublicCandidateSmokeTests):
             self.assertFalse(data["managed_data_changed"])
             self.assertNotIn(str(runtime_root), dumped)
             self.assertNotIn("C:\\", dumped)
+
+    def test_source_upload_runs_off_event_loop_so_concurrent_health_succeeds(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_upload(**_kwargs):
+            started.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("timed out waiting for concurrent health check")
+            return {"status": "uploaded", "send_allowed": False}
+
+        async def exercise():
+            with tempfile.TemporaryDirectory() as tmp:
+                runtime_root = Path(tmp)
+                create_synthetic_runtime(runtime_root)
+                app = create_app(**runtime_path_overrides(runtime_root))
+                transport = httpx.ASGITransport(app=app)
+                with patch("honorarios_app.web.recover_source_upload", side_effect=blocking_upload):
+                    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8878") as client:
+                        upload_task = asyncio.create_task(
+                            client.post(
+                                "/api/sources/upload",
+                                data={"source_kind": "photo", "profile": "example_interpreting", "ai_recovery": "off"},
+                                files={"file": ("fictional-async.png", b"png-bytes", "image/png")},
+                            )
+                        )
+                        try:
+                            for _ in range(200):
+                                if started.is_set():
+                                    break
+                                await asyncio.sleep(0.01)
+                            self.assertTrue(started.is_set(), "upload handler did not enter recover_source_upload")
+                            health_response = await client.get("/api/health", timeout=2.0)
+                            self.assertEqual(health_response.status_code, 200)
+                            self.assertEqual(health_response.json()["status"], "ready")
+                        finally:
+                            release.set()
+                        upload_response = await upload_task
+                        self.assertEqual(upload_response.status_code, 200)
+                        self.assertEqual(upload_response.json()["status"], "uploaded")
+
+        asyncio.run(exercise())
 
 
     def test_diagnostics_status_lists_safe_smoke_commands(self):

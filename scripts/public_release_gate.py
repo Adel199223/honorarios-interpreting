@@ -11,9 +11,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 
 PRIVATE_PATHS = [
+    ".env",
+    ".env.*",
     "config/profile.json",
     "config/email.json",
     "config/*.local.json",
+    "config/*token*.json",
     "config/*.oauth.lock",
     "data/gmail-draft-log.json",
     "data/duplicate-index.json",
@@ -23,13 +26,17 @@ PRIVATE_PATHS = [
     "data/known-destinations.json",
     "data/service-profiles.json",
     "data/*.local.json",
+    "data/.*.lock",
     "output/",
     "tmp/",
+    ".codex/",
+    ".playwright-cli/",
     ".playwright-mcp/",
     ".tmp-test/",
     ".worktrees/",
     "worktrees/",
     "AGENTS.md",
+    "GEMINI.md",
 ]
 REQUIRED_PUBLIC_FILES = [
     "README.md",
@@ -39,7 +46,7 @@ REQUIRED_PUBLIC_FILES = [
     ".github/workflows/python-package.yml",
 ]
 
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".playwright-mcp", ".tmp-test", ".worktrees", "worktrees", "output", "tmp", "build", "dist"}
+SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".codex", ".playwright-cli", ".playwright-mcp", ".tmp-test", ".worktrees", "worktrees", "output", "tmp", "build", "dist"}
 SKIP_FILES = {"scripts/public_release_gate.py"}
 TEXT_SUFFIXES = {
     ".cfg",
@@ -65,8 +72,11 @@ PRIVATE_PATTERNS = [
     ("real_court_email", re.compile(r"\b[A-Z0-9._%+\-]+@tribunais\.org\.pt\b", re.IGNORECASE)),
     ("private_user_path", re.compile(r"C:[\\/]+Users[\\/]+FA507[^\s\"'`<>]+", re.IGNORECASE)),
     ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b")),
+    ("gemini_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("google_client_secret", re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{10,}\b")),
     ("google_access_token", re.compile(r"\bya29\.[A-Za-z0-9_\-\.]+\b")),
+    ("google_refresh_token", re.compile(r"\b1//[A-Za-z0-9_\-\.]{20,}\b")),
+    ("github_token", re.compile(r"\bgh[opsu]_[A-Za-z0-9_]{20,}\b")),
 ]
 
 

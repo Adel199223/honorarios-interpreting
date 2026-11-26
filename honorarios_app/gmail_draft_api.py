@@ -31,6 +31,75 @@ DEFAULT_GMAIL_REDIRECT_URI = "http://127.0.0.1:8765/api/gmail/oauth/callback"
 DEFAULT_GMAIL_TOKEN_PATH = "config/gmail-token.local.json"
 SAFE_GMAIL_CONFIG_LABEL = "config/gmail.local.json"
 SAFE_GMAIL_EXAMPLE_LABEL = "config/gmail.example.json"
+GMAIL_REAUTHORIZE_MESSAGE = "Gmail authorization needs reconnecting. Use Manual Draft Handoff or reconnect Gmail."
+
+
+class GmailAuthorizationRequired(IntakeError):
+    """Definitive refresh rejection or its revision-bound retained evidence."""
+
+    def __init__(self):
+        super().__init__(GMAIL_REAUTHORIZE_MESSAGE)
+
+
+def _credential_revision(config: dict[str, Any], token: dict[str, Any]) -> str:
+    # Never persist credentials or include transient authorization state. Starting
+    # or denying an OAuth flow cannot make the rejected connection ready again.
+    material = {'client_id': config['client_id'], 'client_secret': config['client_secret'],
+                'token_path': str(config['token_path'].resolve()),
+                'credentials': {key: token.get(key) for key in
+                    ('access_token', 'refresh_token', 'expires_at', 'scope', 'gmail_account_hash')}}
+    return hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def _auth_rejection_path(config: dict[str, Any]) -> Path:
+    return config['token_path'].with_name(config['token_path'].name + '.authorization.local.json')
+
+
+def _authorization_rejected(config: dict[str, Any], token: dict[str, Any]) -> bool:
+    path = _auth_rejection_path(config)
+    try:
+        with path.open('rb') as handle:
+            raw = handle.read(4097)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True  # A present unreadable state cannot enable a network write.
+    try:
+        value = json.loads(raw)
+        if (len(raw) > 4096 or not isinstance(value, dict) or value.get('schema_version') != 1
+                or value.get('reason') not in {'invalid_grant', 'authorized'}
+                or not isinstance(value.get('credential_revision'), str) or len(value['credential_revision']) != 64
+                or any(char not in '0123456789abcdef' for char in value['credential_revision'])):
+            return True
+        return value.get('reason') == 'invalid_grant' and value.get('credential_revision') == _credential_revision(config, token)
+    except (ValueError, TypeError):
+        return True
+
+
+def _write_authorization_rejection(config: dict[str, Any], revision: str) -> None:
+    atomic_write_json(_auth_rejection_path(config), {'schema_version': 1, 'reason': 'invalid_grant',
+        'credential_revision': revision, 'failure_stage': 'oauth_refresh',
+        'detected_at': datetime.now(timezone.utc).isoformat()})
+
+
+def gmail_credential_revision(config_path: Path) -> str:
+    """Local-only revision for a reviewed known-failure recovery checkpoint."""
+    config = gmail_config(config_path)
+    return _credential_revision(config, read_gmail_token(config['token_path']))
+
+
+def remember_rejected_gmail_authorization(config_path: Path, *, expected_revision: str) -> None:
+    """Retain an already verified refresh rejection without retrying a provider.
+
+    The caller must have actual invalid_grant evidence for this exact revision;
+    normal live refresh failures call the same private writer automatically.
+    """
+    config = gmail_config(config_path)
+    with state_file_lock(config['token_path'].with_suffix('.oauth.lock')):
+        revision = _credential_revision(config, read_gmail_token(config['token_path']))
+        if not secrets.compare_digest(str(expected_revision), revision):
+            raise IntakeError('Gmail credentials changed. Review the current authorization before recording its status.')
+        _write_authorization_rejection(config, revision)
 
 
 def fake_gmail_draft_api_enabled() -> bool:
@@ -206,18 +275,19 @@ def save_gmail_local_config(payload: dict[str, Any], config_path: Path) -> dict[
         raise IntakeError("Gmail OAuth client secret is required.")
     if Path(token_path).is_absolute():
         raise IntakeError("Gmail token path must stay relative to this project, for example config/gmail-token.local.json.")
-    if ".." in Path(token_path).parts:
-        raise IntakeError("Gmail token path must not contain parent-directory segments.")
+    token_parts = Path(token_path.replace("\\", "/")).parts
+    if ".." in token_parts or ":" in token_path or len(token_parts) < 2 or token_parts[0] != "config" or Path(token_path).suffix.lower() != ".json":
+        raise IntakeError("Gmail token path must be a JSON file inside config/, for example config/gmail-token.local.json.")
 
     existing = _read_json_object_if_exists(config_path)
     backup_label = ""
     if existing:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup_path = config_path.with_name(f"gmail.backup-{timestamp}.local.json")
-        _write_json_object(backup_path, existing)
+        atomic_write_json(backup_path, existing)
         backup_label = _safe_relative_label(backup_path, root=config_path.parent.parent)
 
-    _write_json_object(config_path, {
+    atomic_write_json(config_path, {
         "client_id": client_id,
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
@@ -252,6 +322,7 @@ def gmail_sent_read_ready(config_path: Path) -> bool:
     config = gmail_config(config_path)
     token = read_gmail_token(config["token_path"])
     return bool(config["client_id"] and config["client_secret"]
+                and not _authorization_rejected(config, token)
                 and (token.get("access_token") or token.get("refresh_token"))
                 and _granted_scopes(token) & {GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE, "https://mail.google.com/"})
 
@@ -265,6 +336,12 @@ def _google_error_message(response: httpx.Response | None, fallback: str) -> str
         payload = {}
     if isinstance(payload, dict):
         error = payload.get("error")
+        if isinstance(error, dict):
+            error = " - ".join(
+                str(error.get(k) or "").strip()
+                for k in ("status", "message", "code")
+                if str(error.get(k) or "").strip()
+            )
         description = payload.get("error_description")
         message = payload.get("message")
         parts = [str(item).strip() for item in (error, description, message) if str(item or "").strip()]
@@ -293,11 +370,22 @@ def exchange_google_token(form: dict[str, Any]) -> dict[str, Any]:
             response = client.post(GOOGLE_OAUTH_TOKEN_URL, data=form)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            detail = _google_error_message(exc.response, "Google rejected the OAuth token exchange.")
-            raise IntakeError(f"Google OAuth token exchange failed: {detail}") from exc
+            try:
+                rejected = exc.response.json()
+            except ValueError:
+                rejected = {}
+            if (form.get('grant_type') == 'refresh_token' and exc.response.status_code == 400
+                    and isinstance(rejected, dict) and rejected.get('error') == 'invalid_grant'):
+                raise GmailAuthorizationRequired() from None
+            raise IntakeError("Google rejected the OAuth token exchange. Check the Gmail connection or use Manual Draft Handoff.") from None
         except httpx.RequestError as exc:
             raise IntakeError("Google OAuth token exchange failed because the network request did not complete.") from exc
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise IntakeError("Google OAuth token exchange returned an unreadable response.") from exc
+    if not isinstance(payload, dict):
+        raise IntakeError("Google OAuth token exchange returned an unexpected response.")
     output = dict(payload)
     expires_in = int(output.get("expires_in") or 0)
     if expires_in:
@@ -347,6 +435,7 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
     token_store_present = False
     access_token_present = False
     refresh_token_present = False
+    token: dict[str, Any] = {}
     try:
         token_store_present = config["token_path"].exists()
         token = read_gmail_token(config["token_path"])
@@ -355,21 +444,26 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
     except OSError:
         token_store_present = False
     configured = bool(config["client_id"] and config["client_secret"])
-    connected = bool(configured and token_store_present and (access_token_present or refresh_token_present))
+    reauthorization_required = bool(token_store_present and _authorization_rejected(config, token))
+    connected = bool(configured and token_store_present and (access_token_present or refresh_token_present) and not reauthorization_required)
     compose_ready = connected and bool(_granted_scopes(token) & {GMAIL_COMPOSE_SCOPE, GMAIL_MODIFY_SCOPE, "https://mail.google.com/"})
-    recommended_mode = "gmail_api" if connected else "manual_handoff"
+    recommended_mode = "gmail_api" if compose_ready else "manual_handoff"
     setup = gmail_setup_payload(
         config_path=config_path,
         config=config,
         configured=configured,
-        connected=connected,
+        connected=compose_ready,
         token_store_present=token_store_present,
     )
+    if reauthorization_required:
+        setup.update(status='reconnect_required', next_step=GMAIL_REAUTHORIZE_MESSAGE,
+                     recommended_mode='manual_handoff', manual_handoff_ready=True)
     return {
         "provider": "gmail_api",
         "scope": GMAIL_COMPOSE_SCOPE,
         "configured": configured,
         "connected": connected,
+        "reauthorization_required": reauthorization_required,
         "draft_create_ready": compose_ready,
         "manual_handoff_ready": True,
         "recommended_mode": recommended_mode,
@@ -390,6 +484,7 @@ def gmail_status_payload(config_path: Path) -> dict[str, Any]:
         "message": (
             "Gmail Draft API is connected. The app can create reviewed drafts only; Manual Draft Handoff remains available as a safe fallback."
             if connected
+            else GMAIL_REAUTHORIZE_MESSAGE if reauthorization_required
             else "Manual Draft Handoff is ready. Gmail API OAuth is disconnected and optional direct draft creation can be connected later."
         ),
     }
@@ -498,6 +593,15 @@ def gmail_oauth_callback(*, code: str, state: str, config_path: Path, error: str
         except (httpx.HTTPError, ValueError, TypeError):
             raise IntakeError("Google authorization could not be verified. Your existing connection is unchanged.") from None
         write_gmail_token(config["token_path"], stored)
+        # A verified replacement authorization also repairs a malformed prior
+        # rejection marker. Denied/failed callbacks never reach this reset.
+        if _auth_rejection_path(config).exists():
+            try:
+                atomic_write_json(_auth_rejection_path(config), {'schema_version': 1, 'reason': 'authorized',
+                    'credential_revision': _credential_revision(config, stored),
+                    'detected_at': datetime.now(timezone.utc).isoformat()})
+            except OSError:
+                raise IntakeError('Gmail authorization succeeded, but its saved authorization status could not be updated. Preserve your PDF and use Manual Draft Handoff while local storage is repaired.') from None
     return {
         "status": "connected",
         "provider": "gmail_api",
@@ -519,17 +623,28 @@ def gmail_access_token(config_path: Path) -> tuple[str, dict[str, Any]]:
 def _gmail_access_token_unlocked(config_path: Path) -> tuple[str, dict[str, Any]]:
     config = gmail_config(config_path)
     token = read_gmail_token(config["token_path"])
+    if _authorization_rejected(config, token):
+        raise GmailAuthorizationRequired()
     access_token = str(token.get("access_token") or "").strip()
     if access_token and not token_expired(token):
         return access_token, token
     refresh_token = str(token.get("refresh_token") or "").strip()
     if refresh_token and config["client_id"] and config["client_secret"]:
-        refreshed = exchange_google_token({
-            "client_id": config["client_id"],
-            "client_secret": config["client_secret"],
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        })
+        try:
+            refreshed = exchange_google_token({
+                "client_id": config["client_id"],
+                "client_secret": config["client_secret"],
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            })
+        except GmailAuthorizationRequired:
+            # Even a local status-write failure cannot turn a rejected refresh
+            # into an uncertain Gmail draft-create outcome: POST was not reached.
+            try:
+                _write_authorization_rejection(config, _credential_revision(config, token))
+            except OSError:
+                pass
+            raise
         token.update(refreshed)
         if "refresh_token" not in token:
             token["refresh_token"] = refresh_token
@@ -561,9 +676,12 @@ def build_mime_message(gmail_create_draft_args: dict[str, Any]) -> EmailMessage:
         raise IntakeError("Gmail draft args must include attachment_files as a non-empty array.")
 
     message = EmailMessage()
-    message["To"] = to
-    message["Subject"] = subject
-    message.set_content(body)
+    try:
+        message["To"] = to
+        message["Subject"] = subject
+        message.set_content(body)
+    except ValueError as exc:
+        raise IntakeError(f"Gmail draft headers or body are invalid: {exc}") from exc
     for value in attachment_values:
         raw_path = Path(str(value or "").strip())
         if not raw_path.is_absolute():
@@ -634,7 +752,14 @@ def create_gmail_draft_from_payload(payload: dict[str, Any], config_path: Path) 
         except httpx.RequestError as exc:
             raise GmailDraftCreateError("The Gmail response was not received. A draft may already exist; check Gmail before creating another.",
                                         may_have_created=True) from exc
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise GmailDraftCreateError("Gmail returned an unreadable creation response. A draft may already exist; check Gmail before creating another.",
+                                        may_have_created=True) from exc
+    if not isinstance(data, dict):
+        raise GmailDraftCreateError("Gmail returned an unexpected creation response. A draft may already exist; check Gmail before creating another.",
+                                    may_have_created=True)
     message = data.get("message") if isinstance(data.get("message"), dict) else {}
     draft_id = str(data.get("id") or "").strip()
     message_id = str(message.get("id") or "").strip()
@@ -819,7 +944,12 @@ def verify_gmail_draft_exists(payload: dict[str, Any], config_path: Path) -> dic
         except httpx.HTTPStatusError as exc:
             detail = _google_error_message(exc.response, "Google rejected the draft verification request.")
             raise IntakeError(f"Gmail draft verification failed: {detail}. Local records were not changed.") from exc
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise IntakeError("Gmail draft verification returned an unreadable response. Local records were not changed.") from exc
+    if not isinstance(data, dict):
+        raise IntakeError("Gmail draft verification returned an unexpected response. Local records were not changed.")
 
     message = data.get("message") if isinstance(data.get("message"), dict) else {}
     found_draft_id = str(data.get("id") or draft_id).strip()

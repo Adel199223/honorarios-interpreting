@@ -91,15 +91,21 @@ from scripts.source_parsing import explicit_service_places, ministerio_publico_v
 from scripts.source_classification import classify_source_work, detect_translation_source, format_translation_rejection, source_scope_fingerprint
 
 from .ai_recovery import (MAX_PDF_OCR_PAGES, ai_status_payload, recover_source_with_openai,
-                          resolve_openai_config, safe_api_usage_metadata, should_attempt_ai_recovery, text_is_weak_for_pdf_ocr)
-from .source_cases import source_case_rows, valid_source_case
+                          resolve_openai_config, safe_api_usage_metadata, safe_decisions_usage_metadata,
+                          should_attempt_ai_recovery, text_is_weak_for_pdf_ocr)
+from .source_cases import (source_case_rows, valid_source_case, documentary_case_references,
+                           documentary_case_role_error)
+from .source_history import (completed_fee_source_identity, source_history_exception_fingerprint,
+                             completed_fee_history_match, require_completed_fee_history_clear, source_history_evidence)
 from .photo_metadata import PhotoMetadataError, extract_photo_metadata, picker_capture_metadata
 from .workspace_draft import workspace_runtime_id
 from .photo_defaults import apply_capture_city_answer, apply_photo_defaults, apply_saved_court_label, clear_missing_venue_warning, load_photo_defaults, preserve_photo_routing, reconcile_photo_venue_edit
 from .gps_city import match_verified_gps_city
 from .source_location import propose_verified_source_venue
+from .confirmed_locations import apply_confirmed_source_location
 from .gmail_draft_api import (
     GmailDraftCreateError,
+    GmailAuthorizationRequired,
     create_gmail_draft_from_payload,
     gmail_oauth_callback,
     gmail_oauth_start,
@@ -111,7 +117,7 @@ from .gmail_draft_api import (
 from .gmail_attempts import attempt_lock, load_attempts, save_attempts, new_attempt, pending_attempt, update_attempt
 from .backup import (runtime_lock, validate_attempts, export_recovery_capsules, validate_capsules,
                      merge_attempts, merge_history, restore_capsules, rebase_value, artifact_bindings, validate_history_coverage, TERMINAL)
-from scripts.state_store import atomic_write_json
+from scripts.state_store import atomic_write_json, state_file_lock
 from .personal_profiles import (
     LEGALPDF_PROFILE_IMPORT_CONFIRMATION_PHRASE,
     apply_profile_defaults_to_intake,
@@ -259,6 +265,13 @@ def _read_json_object_if_exists(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _safe_config_source_label(config_path: Path) -> str:
+    try:
+        return config_path.resolve().relative_to(ROOT.resolve()).as_posix()
+    except ValueError:
+        return f"config/{config_path.name}" if config_path.parent.name == "config" else config_path.name
+
+
 def _configured_value_and_source(
     config: dict[str, Any],
     env_name: str,
@@ -270,7 +283,7 @@ def _configured_value_and_source(
         return env_value, env_name
     config_value = str(config.get(config_name) or "").strip()
     if config_value:
-        return config_value, str(config_path)
+        return config_value, _safe_config_source_label(config_path)
     return "", ""
 
 
@@ -362,32 +375,33 @@ def _photos_network_error(exc: httpx.RequestError) -> IntakeError:
 
 def _google_photos_access_token(paths: AppPaths) -> tuple[str, dict[str, Any]]:
     config = _google_photos_config(paths.google_photos_config)
-    token = _read_google_photos_token(config["token_path"])
-    if not _photos_scope_granted(token):
-        raise IntakeError("Google Photos Picker permission is missing. Connect Google Photos OAuth first.")
-    access_token = str(token.get("access_token") or "").strip()
-    if access_token and not _token_expired(token):
-        return access_token, token
-    refresh_token = str(token.get("refresh_token") or "").strip()
-    if refresh_token and config["client_id"] and config["client_secret"]:
-        try:
-            refreshed = _exchange_google_token({
-                "client_id": config["client_id"],
-                "client_secret": config["client_secret"],
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            })
-        except IntakeError:
-            raise IntakeError("Google Photos authorization could not be refreshed. Reconnect Google Photos OAuth.") from None
-        token.update(refreshed)
-        if "refresh_token" not in token:
-            token["refresh_token"] = refresh_token
+    with state_file_lock(config["token_path"].with_suffix(".oauth.lock")):
+        token = _read_google_photos_token(config["token_path"])
         if not _photos_scope_granted(token):
-            raise IntakeError("Google Photos Picker permission is missing. Reconnect Google Photos OAuth.")
-        _write_google_photos_token(config["token_path"], token)
+            raise IntakeError("Google Photos Picker permission is missing. Connect Google Photos OAuth first.")
         access_token = str(token.get("access_token") or "").strip()
-        if access_token:
+        if access_token and not _token_expired(token):
             return access_token, token
+        refresh_token = str(token.get("refresh_token") or "").strip()
+        if refresh_token and config["client_id"] and config["client_secret"]:
+            try:
+                refreshed = _exchange_google_token({
+                    "client_id": config["client_id"],
+                    "client_secret": config["client_secret"],
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                })
+            except IntakeError:
+                raise IntakeError("Google Photos authorization could not be refreshed. Reconnect Google Photos OAuth.") from None
+            token.update(refreshed)
+            if "refresh_token" not in token:
+                token["refresh_token"] = refresh_token
+            if not _photos_scope_granted(token):
+                raise IntakeError("Google Photos Picker permission is missing. Reconnect Google Photos OAuth.")
+            _write_google_photos_token(config["token_path"], token)
+            access_token = str(token.get("access_token") or "").strip()
+            if access_token:
+                return access_token, token
     raise IntakeError("Google Photos Picker is not connected. Connect OAuth first or use selected-photo local import.")
 
 
@@ -477,13 +491,14 @@ def google_photos_oauth_start(paths: AppPaths) -> dict[str, Any]:
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
-    token = _read_google_photos_token(config["token_path"])
-    token.update({
-        "oauth_state": state,
-        "oauth_started_at": datetime.now(timezone.utc).isoformat(),
-        "oauth_code_verifier": verifier,
-    })
-    _write_google_photos_token(config["token_path"], token)
+    with state_file_lock(config["token_path"].with_suffix(".oauth.lock")):
+        token = _read_google_photos_token(config["token_path"])
+        token.update({
+            "oauth_state": state,
+            "oauth_started_at": datetime.now(timezone.utc).isoformat(),
+            "oauth_code_verifier": verifier,
+        })
+        _write_google_photos_token(config["token_path"], token)
     query = urlencode({
         "client_id": config["client_id"],
         "redirect_uri": config["redirect_uri"],
@@ -505,43 +520,49 @@ def google_photos_oauth_start(paths: AppPaths) -> dict[str, Any]:
     }
 
 
-def google_photos_oauth_callback(*, code: str, state: str, paths: AppPaths) -> dict[str, Any]:
+def google_photos_oauth_callback(*, code: str, state: str, paths: AppPaths, error: str = "") -> dict[str, Any]:
     config = _google_photos_config(paths.google_photos_config)
-    token = _read_google_photos_token(config["token_path"])
-    expected_state = str(token.get("oauth_state") or "").strip()
-    if not expected_state or not secrets.compare_digest(state.encode("utf-8"), expected_state.encode("utf-8")):
-        raise IntakeError("Google Photos OAuth state mismatch. Start the OAuth flow again.")
-    try:
-        started = datetime.fromisoformat(str(token.get("oauth_started_at") or ""))
-        fresh = timedelta(0) <= datetime.now(timezone.utc) - started <= timedelta(minutes=10)
-    except (ValueError, TypeError):
-        fresh = False
-    if not fresh or not token.get("oauth_code_verifier"):
-        raise IntakeError("Google Photos OAuth authorization expired. Start the OAuth flow again.")
-    if not code:
-        raise IntakeError("Google Photos OAuth callback is missing an authorization code.")
-    verifier = token["oauth_code_verifier"]
-    # A callback is single-use, including when token exchange fails. Existing
-    # authorization survives so a failed reconnect does not erase it.
-    _write_google_photos_token(config["token_path"], {key: value for key, value in token.items() if not key.startswith("oauth_")})
-    exchanged = _exchange_google_token({
-        "client_id": config["client_id"],
-        "client_secret": config["client_secret"],
-        "code": code,
-        "grant_type": "authorization_code",
-        "redirect_uri": config["redirect_uri"],
-        "code_verifier": verifier,
-    })
-    stored = {
-        **exchanged,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-        # OAuth permits omission when the granted scope is exactly the request.
-        # An explicit empty/different grant still fails the check below.
-        "scope": exchanged.get("scope", GOOGLE_PHOTOS_PICKER_SCOPE),
-    }
-    if not _photos_scope_granted(stored):
-        raise IntakeError("Google Photos Picker permission was not granted. Reconnect and allow selected-photo access.")
-    _write_google_photos_token(config["token_path"], stored)
+    with state_file_lock(config["token_path"].with_suffix(".oauth.lock")):
+        token = _read_google_photos_token(config["token_path"])
+        expected_state = str(token.get("oauth_state") or "").strip()
+        if not expected_state or not secrets.compare_digest(state.encode("utf-8"), expected_state.encode("utf-8")):
+            raise IntakeError("Google Photos OAuth state mismatch. Start the OAuth flow again.")
+        try:
+            started = datetime.fromisoformat(str(token.get("oauth_started_at") or ""))
+            fresh = timedelta(0) <= datetime.now(timezone.utc) - started <= timedelta(minutes=10)
+        except (ValueError, TypeError):
+            fresh = False
+        verifier = token.get("oauth_code_verifier")
+        # A callback is single-use, including on denial or failed token exchange.
+        # Existing authorization survives so a failed reconnect does not erase it.
+        cleaned_token = {key: value for key, value in token.items() if not key.startswith("oauth_")}
+        _write_google_photos_token(config["token_path"], cleaned_token)
+        if error:
+            raise IntakeError("Google Photos authorization was canceled or denied. Reconnect when ready.")
+        if not fresh or not verifier:
+            raise IntakeError("Google Photos OAuth authorization expired. Start the OAuth flow again.")
+        if not code:
+            raise IntakeError("Google Photos OAuth callback is missing an authorization code.")
+        exchanged = _exchange_google_token({
+            "client_id": config["client_id"],
+            "client_secret": config["client_secret"],
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": config["redirect_uri"],
+            "code_verifier": verifier,
+        })
+        stored = {
+            **exchanged,
+            "connected_at": datetime.now(timezone.utc).isoformat(),
+            # OAuth permits omission when the granted scope is exactly the request.
+            # An explicit empty/different grant still fails the check below.
+            "scope": exchanged.get("scope", GOOGLE_PHOTOS_PICKER_SCOPE),
+        }
+        if not stored.get("refresh_token") and cleaned_token.get("refresh_token"):
+            stored["refresh_token"] = cleaned_token["refresh_token"]
+        if not _photos_scope_granted(stored):
+            raise IntakeError("Google Photos Picker permission was not granted. Reconnect and allow selected-photo access.")
+        _write_google_photos_token(config["token_path"], stored)
     return {
         "status": "connected",
         "provider": "google_photos",
@@ -1271,7 +1292,7 @@ def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any
     allowed = {'case_number', 'service_date', 'photo_metadata_date', 'payment_entity',
                'service_place', 'recipient_email', 'service_period_label',
                'service_start_time', 'service_end_time', 'source_text', 'transport.km_one_way', 'closing_city',
-               'email_subject', 'email_body'}
+               'email_subject', 'email_body', 'transport.origin'}
     supplied = original.get('review_cleared_fields')
     if not isinstance(supplied, list):
         return
@@ -1280,7 +1301,7 @@ def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any
         if not isinstance(field, str) or field not in allowed:
             continue
         transport = original.get('transport') if isinstance(original.get('transport'), dict) else {}
-        value = transport.get('km_one_way') if field == 'transport.km_one_way' else original.get(field)
+        value = transport.get(field.split('.', 1)[1]) if field.startswith('transport.') else original.get(field)
         if str(value if value is not None else '').strip():
             if field == 'service_place':
                 entity = 'Polícia Judiciária' if source_mentions_pj_context(original) else value
@@ -1292,10 +1313,10 @@ def preserve_review_field_clears(original: dict[str, Any], merged: dict[str, Any
                 merged['addressee'] = _default_addressee(str(value))
             continue  # A new field edit or numbered answer resolves the removal.
         active.append(field)
-        if field == 'transport.km_one_way':
+        if field.startswith('transport.'):
             if not isinstance(merged.get('transport'), dict):
                 merged['transport'] = {}
-            merged.setdefault('transport', {})['km_one_way'] = ''
+            merged.setdefault('transport', {})[field.split('.', 1)[1]] = ''
         else:
             merged[field] = ''
         if field == 'service_date':
@@ -1396,6 +1417,7 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
         profiles=profiles,
     )
     review_evidence = {
+        "documentary_case_references": documentary_case_references(str(candidate.get('source_text') or ''), ai_recovery),
         "filename": "Manual review",
         "kind": "manual_review",
         "case_number": candidate.get("case_number", ""),
@@ -1428,7 +1450,8 @@ def review_intake_with_profile_evidence(intake: dict[str, Any], paths: AppPaths)
     }
     return {
         **review,
-        "intake": reviewed_intake,
+        "intake": candidate if (candidate.get('confirmed_source_location_evidence')
+                                or intake.get('confirmed_source_location_evidence')) else reviewed_intake,
         "auto_profile": profile_decision,
         "profile_proposal": profile_proposal,
         "review_evidence": review_evidence,
@@ -1474,6 +1497,7 @@ def _safe_ai_recovery_for_intake(ai_recovery: dict[str, Any]) -> dict[str, Any]:
         "reason",
         "provider",
         "model",
+        "thinking_level",
         "schema_name",
         "prompt_version",
         "raw_visible_text",
@@ -1484,6 +1508,8 @@ def _safe_ai_recovery_for_intake(ai_recovery: dict[str, Any]) -> dict[str, Any]:
         "missing_fields",
         "translation_indicators",
         "warnings",
+        "decisions",
+        "decisions_usage",
         "api_usage",
         "api_usage_receipt",
     ]
@@ -1652,8 +1678,15 @@ def _pdf_page_has_substantial_raster(page: Any) -> bool:
             elif operator == b"INLINE IMAGE":
                 total += scale
             elif operator == b"Do":
-                objects = resolved(resources.get("/XObject", {}))
-                obj = resolved(objects[operands[0]])
+                try:
+                    objects = resolved(resources.get("/XObject", {}))
+                    if not isinstance(objects, dict) or not operands:
+                        return page_area
+                    obj = resolved(objects[operands[0]])
+                except (KeyError, IndexError, TypeError, AttributeError):
+                    return page_area
+                if not hasattr(obj, "get"):
+                    return page_area
                 if obj.get("/Subtype") == "/Image":
                     total += scale
                 elif obj.get("/Subtype") == "/Form":
@@ -1697,8 +1730,9 @@ def render_pdf_pages_for_source(pdf_path: Path, *, max_pages: int = MAX_PDF_OCR_
             check=False,
             capture_output=True,
             text=True,
+            timeout=60,
         )
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         return [], [f"pdftoppm could not render weak/scanned PDF pages: {exc}"]
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown renderer error"
@@ -1777,6 +1811,8 @@ def store_supporting_attachment_upload(
 
 def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     candidate = result['candidate_intake']
+    result['source_evidence']['documentary_case_references'] = documentary_case_references(
+        result['extracted_text'], result['ai_recovery'])
     rows = source_case_rows(result['extracted_text'], result['ai_recovery'])
     if not rows:
         existing_case = str(candidate.get('case_number') or '')
@@ -1790,8 +1826,13 @@ def _review_source_cases(result: dict[str, Any], paths: AppPaths) -> dict[str, A
         if not row['case_number']:
             child['case_number_requires_confirmation'] = True
         # Source rows must carry the selected effective profile before UI grouping.
-        child, _, _ = effective_intake_for_profile(child, paths)
-        child_review = review_intake(child, paths)
+        try:
+            child, _, _ = effective_intake_for_profile(child, paths)
+        except (IntakeError, OSError, json.JSONDecodeError) as exc:
+            child_review = {'status': 'error', 'message': str(exc), 'questions': [],
+                'next_safe_action': review_next_safe_action('error'), 'send_allowed': False}
+        else:
+            child_review = review_intake(child, paths)
         child = copy.deepcopy(child_review.get('effective_intake') or child)
         evidence = build_field_evidence(
             candidate=child, deterministic_fields=extract_candidate_fields(result['extracted_text'], paths,
@@ -1901,10 +1942,17 @@ def build_partial_intake_from_profile(
     intake["source_file"] = str(stored_path.resolve())
     intake["source_kind"] = source_kind
     intake["source_sha256"] = digest
+    if source_kind == "notification_pdf" or (
+        source_kind == "photo" and (not explicit_profile or not str(intake.get("service_date") or "").strip())
+    ):
+        # An uploaded notification or auto-matched photo (or profile without an
+        # explicit default date) must not inherit a static recurring date or
+        # user-confirmed label before this source is reviewed.
+        intake.pop("service_date", None)
+        intake.pop("service_date_source", None)
     if source_kind == "notification_pdf":
         # A notification's appointment must come from this document, never a
         # recurring profile's date or photo/capture metadata.
-        intake.update(service_date="", service_date_source="")
         for field in ("photo_metadata_date", "photo_metadata_date_requires_confirmation", "photo_defaults_applied"):
             intake.pop(field, None)
     if extracted_text.strip():
@@ -1978,11 +2026,13 @@ def record_source_api_usage(
     receipt = {
         "schema_version": 1,
         "receipt_id": receipt_id,
-        "provider": "openai",
+        "provider": result.get("provider") if result.get("provider") in {"gemini", "openai"} else "openai",
         "attempted": True,
         "recovery_status": status if isinstance(status, str) and status in {"ok", "failed"} else "unknown",
         "source": {"filename": safe_upload_filename(filename), "sha256": source_sha256, "kind": source_kind},
         "api_usage": result["api_usage"],
+        **({"decisions_usage": safe_decisions_usage_metadata(result["decisions_usage"])}
+           if isinstance(result.get("decisions_usage"), dict) else {}),
         "send_allowed": False,
     }
     try:
@@ -2190,14 +2240,36 @@ def recover_source_upload(
             }.get(gps_city_match['status'])
             if gps_warning:
                 metadata.setdefault('warnings', []).append(gps_warning)
-    venue_proposal = (propose_verified_source_venue(candidate, metadata=metadata, preferences=photo_preferences)
+    venue_fallback_defaults = None
+    if (profile_decision.get('mode') == 'auto_fallback'
+            and not any(deterministic_fields.get(field) for field in ('service_entity', 'service_entity_type'))):
+        venue_fallback_defaults = (profiles.get(str(profile_decision.get('profile_key') or '')) or {}).get('defaults')
+    venue_proposal = (propose_verified_source_venue(candidate, metadata=metadata, preferences=photo_preferences,
+                                                 fallback_defaults=venue_fallback_defaults)
                       if source_kind == 'photo' else {})
+    agency_before_photo_defaults = (candidate.get('service_entity'), candidate.get('service_entity_type'))
     transport_before_photo_defaults = copy.deepcopy(candidate.get('transport') or {})
     apply_photo_defaults(
         candidate, preferences=load_photo_defaults(paths.ai_config), metadata=metadata,
         ai_recovery=ai_recovery, directory=read_json_list(paths.court_emails),
         explicit_profile=profile_decision.get('mode') == 'explicit_profile' or bool(capture_city_profile_venue),
     )
+    if (source_kind == 'photo' and not venue_proposal
+            and profile_decision.get('mode') != 'explicit_profile'
+            and not str(candidate.get('service_place') or '').strip()
+            and (candidate.get('photo_defaults_applied') or {}).get('venue_status') == 'missing_noncourt_venue'
+            and (candidate.get('service_entity_type') == 'ministerio_publico'
+                 or (candidate.get('service_entity_type') == 'police'
+                     and any(isinstance(venue, dict) and venue.get('source_city_basis') == 'verified_gps'
+                             and venue.get('service_entity_type') == 'police'
+                             for venue in (photo_preferences.get('verified_gps_venues')
+                                           if isinstance(photo_preferences.get('verified_gps_venues'), list) else []))))
+            and agency_before_photo_defaults != (candidate.get('service_entity'), candidate.get('service_entity_type'))):
+        # Photo policy can ground MP, or a configured reusable PJ source,
+        # after an initially unknown agency. Retry the same bounded matcher;
+        # a missing host still cannot come from the heading or city alone.
+        venue_proposal = propose_verified_source_venue(candidate, metadata=metadata,
+            preferences=photo_preferences, fallback_defaults=venue_fallback_defaults)
     if capture_city_profile_venue:
         # The existing profile supplies its established payer/contact/distance;
         # the physical city-level GNR label remains an editable user default.
@@ -4876,9 +4948,10 @@ def _signed_review_token(kind: str, fingerprint: str, manifest: str = "") -> str
 
 
 def _resolve_optional_path(raw_path: Any) -> Path:
-    path = Path(str(raw_path or "").strip())
-    if not str(path):
+    raw_text = str(raw_path or "").strip()
+    if not raw_text:
         raise IntakeError("Current prepared review is required before using this prepared payload.")
+    path = Path(raw_text)
     resolved = path if path.is_absolute() else ROOT / path
     return resolved.resolve()
 
@@ -5170,6 +5243,20 @@ def require_current_prepared_review(payload: dict[str, Any], payload_path: str |
             raise IntakeError("Prepared review is missing attachment content evidence. Prepare the PDF again from the reviewed request.")
         if not hmac.compare_digest(_prepared_file_sha256(attachment_path, "attachment"), expected_hash):
             raise IntakeError("Prepared attachment changed after review. Prepare the PDF again from the reviewed request.")
+    # The signed material retains the reviewed foreground evidence even though
+    # the compact Gmail payload does not. Recheck only this email's children,
+    # so late history blocks stale handoff/create/record without hiding siblings.
+    frozen = material.get('effective_intakes') or []
+    indices = list(target_summary.get('member_indices') or [])
+    if not indices:
+        indices = [index for index, item in enumerate(material.get('item_payloads') or [])
+                   if item.get('draft_payload') == payload_absolute]
+    if material.get('packet_mode'):
+        indices = list(range(len(frozen)))
+    for index in indices:
+        if type(index) is not int or not 0 <= index < len(frozen):
+            raise IntakeError('Prepared source review is stale. Prepare the PDF again from the reviewed request.')
+        _require_source_history_clear(frozen[index], paths)
     return dict(review)
 
 
@@ -5604,6 +5691,16 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
     if not value:
         return
 
+    if field == 'source_history_separate_service':
+        identity = completed_fee_source_identity(intake)
+        if value.lower() != 'separate-service' or identity is None:
+            raise IntakeError('Answer separate-service only after confirming that the edited identity is a separate service from the completed fee source.')
+        if not valid_source_case(intake.get('case_number')) or not _looks_like_iso_date(str(intake.get('service_date') or '')):
+            raise IntakeError('Enter the separate service case number and date before confirming it.')
+        intake['service_date_source'] = 'user_confirmed_exception'
+        intake['source_history_exception_fingerprint'] = source_history_exception_fingerprint(intake, identity)
+        return
+
     if field == 'mixed_notice_scope':
         if value.lower() not in {'interpreting-only', 'translation-only'}:
             raise IntakeError('Choose interpreting-only for the separate in-person service, or translation-only to set this notice aside.')
@@ -5627,6 +5724,9 @@ def apply_answer_to_intake(intake: dict[str, Any], field: str, answer: str) -> N
         if explicit_date:
             intake["service_date"] = explicit_date
             intake["service_date_source"] = "user_confirmed_exception"
+            identity = completed_fee_source_identity(intake)
+            if identity is not None:
+                intake['source_history_exception_fingerprint'] = source_history_exception_fingerprint(intake, identity)
             return
         intake["service_date_source"] = value
         return
@@ -5718,7 +5818,9 @@ def apply_numbered_answers(payload: dict[str, Any], paths: AppPaths) -> dict[str
     if not answer_text:
         raise IntakeError("Paste numbered answers before applying them.")
 
-    questions = missing_questions(intake)
+    source_check = source_history_blocker(intake, paths)
+    questions = (source_check['questions'] if source_check and source_check['status'] == 'needs_info'
+                 else missing_questions(intake))
     mapped = parse_numbered_answers(answer_text, questions)
     applied_fields: list[str] = []
     for question in questions:
@@ -5819,9 +5921,58 @@ def matching_duplicate_records(intake: dict[str, Any], paths: AppPaths) -> list[
 
 
 def _require_request_exclusion_clear(payload: dict[str, Any], paths: AppPaths) -> None:
+    for request in payload.get('underlying_requests') or [payload]:
+        _require_source_history_clear(request, paths)
     try:
         require_requests_not_excluded(payload, paths.duplicate_index)
     except RequestExclusionError as exc:
+        raise IntakeError(str(exc)) from exc
+
+
+def source_history_blocker(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any] | None:
+    """Only positive history changes review; source dates never become intake dates."""
+    match = completed_fee_history_match(intake, paths.duplicate_index, paths.draft_log)
+    if match is None:
+        return None
+    identity, exclusion, duplicate, active = (match[key] for key in ('identity', 'exclusion', 'duplicate', 'active'))
+    prefix = (f"Source service identity — history check only: {identity['case_number']} "
+              f"on {identity['service_date']}. The intake date has not been changed. ")
+    result: dict[str, Any] = {'source_history_identity': identity, 'source_history_binding': {
+        'source_sha256': intake.get('source_sha256'), 'source_text': intake.get('source_text'),
+        'case_number': intake.get('case_number', ''), 'service_date': intake.get('service_date', ''),
+        'service_period_label': intake.get('service_period_label', '')}, 'questions': [], 'send_allowed': False}
+    if exclusion:
+        result.update(status='excluded', exclusion=exclusion, message=prefix + format_request_exclusion(exclusion),
+                      next_safe_action=review_next_safe_action('excluded', exclusion=exclusion))
+    elif duplicate:
+        result.update(status='duplicate', duplicate=duplicate_payload(duplicate),
+                      message=prefix + format_duplicate_message(duplicate),
+                      next_safe_action=review_next_safe_action('duplicate', duplicate=duplicate))
+    else:
+        result.update(status='active_draft', active_gmail_drafts=[draft_payload(row) for row in active],
+                      message=prefix + 'An active Gmail draft is already recorded for this source service.',
+                      next_safe_action=review_next_safe_action('active_draft'))
+    if match['conflict']:
+        result['source_history_match'] = {key: result[key] for key in ('duplicate', 'exclusion', 'active_gmail_drafts') if key in result}
+        confirmed = match['confirmed']
+        if confirmed:
+            result.update(status='confirmed_separate_service',
+                          message=prefix + 'You confirmed the edited identity describes a separate service. Its normal review and history checks still apply.')
+        else:
+            questions = [{'number': 1, 'field': 'source_history_separate_service',
+                          'question': (f"The edited request identity conflicts with this completed fee source ({identity['case_number']} on {identity['service_date']}). "
+                                       'Does your edited case/date/service period describe a separate service?'),
+                          'answer_hint': 'Confirm the separate case/date/service period first, then answer 1. separate-service; otherwise keep this completed request stopped.'}]
+            result.update(status='needs_info', questions=questions, question_text=format_numbered_questions(questions),
+                          message=prefix + 'The edited request identity conflicts with this completed fee source. Confirm a separate service before preparation.',
+                          next_safe_action=review_next_safe_action('needs_info', questions=questions))
+    return result
+
+
+def _require_source_history_clear(intake: dict[str, Any], paths: AppPaths) -> None:
+    try:
+        require_completed_fee_history_clear(intake, paths.duplicate_index, paths.draft_log)
+    except (RequestExclusionError, ValueError) as exc:
         raise IntakeError(str(exc)) from exc
 
 
@@ -6056,7 +6207,35 @@ def effective_intake_for_profile(intake: dict[str, Any], paths: AppPaths) -> tup
         intake['service_place_phrase'] = build_service_place_clause({**intake, 'service_place_phrase': ''}, entity)
     _normalize_source_case_confirmation(intake)
     profile = selected_personal_profile(paths, intake)
+    if intake.get('source_kind') == 'photo' or intake.get('confirmed_source_location_evidence'):
+        confirmation = apply_confirmed_source_location(
+            intake, preferences=load_photo_defaults(paths.ai_config), directory=read_json_list(paths.court_emails),
+            personal_profile_id=str(profile.get('id') or ''),
+            personal_profile_origin=str(profile.get('travel_origin_label') or ''))
+        if confirmation['status'] in {'source_conflict', 'invalid_configuration'}:
+            raise IntakeError('Saved source-location confirmation needs review: ' + '; '.join(confirmation['conflicts']))
+        intake = confirmation['intake']
+        memory = intake.get('confirmed_source_location_evidence') or {}
+        if ((memory.get('fact_groups') or {}).get('physical_host') == intake.get('service_place')
+                and intake.get('service_place')):
+            clear_missing_venue_warning(intake)
     effective, provenance = apply_profile_defaults_to_intake(intake, profile)
+    memory = effective.get('confirmed_source_location_evidence') or {}
+    memory_fields = memory.get('applied_fields') or {}
+    if (memory_fields.get('service_place') == effective.get('service_place')
+            and effective.get('service_place')):
+        # Personal travel inferred from a remembered host belongs to that host
+        # for freshness cleanup; it is not a user-confirmed distance fact.
+        for field in ('transport.destination', 'transport.km_one_way'):
+            if field in provenance.get('applied', []):
+                memory_fields[field] = (effective.get('transport') or {}).get(field.split('.')[1])
+        transport = effective.get('transport') or {}
+        if (memory_fields.get('transport.destination') == transport.get('destination')
+                and transport.get('destination')):
+            memory.update(travel_personal_profile_id=str(profile.get('id') or ''),
+                          travel_origin=str(transport.get('origin') or ''),
+                          travel_destination=str(transport['destination']))
+        memory['applied_fields'] = memory_fields
     source_location = effective.get('source_location_evidence') or {}
     if (isinstance(source_location, dict) and source_location.get('source_sha256') == effective.get('source_sha256')
             and 'transport.km_one_way' in provenance.get('applied', [])
@@ -6339,9 +6518,10 @@ def reconcile_gmail_draft_not_found(payload: dict[str, Any], paths: AppPaths) ->
 
 
 def _load_prepared_draft_payload(payload_path: str | Path) -> tuple[Path, dict[str, Any]]:
-    raw_path = Path(str(payload_path or "").strip())
-    if not str(raw_path):
+    raw_text = str(payload_path or "").strip()
+    if not raw_text:
         raise IntakeError("Gmail draft creation requires a prepared draft payload path.")
+    raw_path = Path(raw_text)
     path = raw_path if raw_path.is_absolute() else ROOT / raw_path
     absolute = path.resolve()
     if not absolute.exists() or not absolute.is_file():
@@ -6581,6 +6761,12 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
             draft_payload=draft_payload,
             paths=paths,
         )
+        if gmail_status_payload(paths.gmail_config).get('reauthorization_required'):
+            previous = next((row for row in reversed(attempts) if row.get('state') == 'not_created'
+                             and row.get('payload') == str(payload_path)
+                             and row.get('failure_stage') == 'oauth_refresh' and row.get('error_code') == 'invalid_grant'
+                             and row.get('gmail_draft_create_called') is False), {})
+            return gmail_authorization_not_created_response(paths, attempt_id=previous.get('attempt_id', ''))
         manifest = load_json(Path(prepared_review["manifest"]))
         target = next(item for item in manifest["prepared_review_material"]["targets"]
                       if item["draft_payload"] == str(payload_path))
@@ -6595,6 +6781,11 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
         try:
             _require_request_exclusion_clear(draft_payload, paths)
             result = create_gmail_draft_from_payload(draft_payload, paths.gmail_config)
+        except GmailAuthorizationRequired:
+            update_attempt(attempt, state='not_created', error='Gmail authorization needs reconnecting.',
+                           failure_stage='oauth_refresh', error_code='invalid_grant', gmail_draft_create_called=False)
+            save_attempts(paths.draft_log, attempts)
+            return gmail_authorization_not_created_response(paths, attempt_id=attempt['attempt_id'])
         except GmailDraftCreateError as exc:
             update_attempt(attempt, state="uncertain" if exc.may_have_created else "not_created", error=str(exc))
             save_attempts(paths.draft_log, attempts)
@@ -6669,6 +6860,20 @@ def create_and_record_gmail_api_draft(payload: dict[str, Any], paths: AppPaths) 
             "draft_only": True,
             "send_allowed": False,
         }
+
+
+def gmail_authorization_not_created_response(paths: AppPaths, *, attempt_id: str = '') -> dict[str, Any]:
+    status = gmail_status_payload(paths.gmail_config)
+    status.update(connected=False, draft_create_ready=False, reauthorization_required=True,
+                  recommended_mode='manual_handoff', manual_handoff_ready=True,
+                  message='Gmail authorization needs reconnecting. Manual Draft Handoff remains ready.')
+    status['setup'] = {**(status.get('setup') or {}), 'status': 'reconnect_required',
+                       'next_step': status['message'], 'recommended_mode': 'manual_handoff', 'manual_handoff_ready': True}
+    return {'status': 'not_created', 'message': 'No Gmail draft was created by this attempt. Gmail authorization needs reconnecting. Your reviewed PDF is preserved; use Manual Draft Handoff or reconnect Gmail.',
+            'attempt_id': attempt_id, 'failure_stage': 'oauth_refresh', 'gmail_draft_create_called': False,
+            'reauthorization_required': True, 'create_retry_allowed': False,
+            'manual_handoff_ready': True, 'gmail_status': status,
+            'local_records_changed': False, 'draft_only': True, 'send_allowed': False}
 
 
 def gmail_attempt_response(attempt: dict[str, Any], *, error: str = "") -> dict[str, Any]:
@@ -6900,6 +7105,31 @@ def build_profile_intake(payload: dict[str, Any], paths: AppPaths) -> dict[str, 
 
 
 def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    role_error = documentary_case_role_error(intake)
+    if role_error:
+        questions = question_payload([question for question in missing_questions({**intake, 'case_number': ''})
+                                      if question['field'] == 'case_number'])
+        return {'status': 'needs_info', 'message': role_error, 'questions': questions,
+                'question_text': format_numbered_questions(questions),
+                'next_safe_action': review_next_safe_action('needs_info', questions=questions), 'send_allowed': False}
+    if not detect_translation_source(intake):
+        try:
+            source_check = source_history_blocker(intake, paths)
+        except (RequestExclusionError, IntakeError, OSError, json.JSONDecodeError) as exc:
+            return {'status': 'error', 'message': str(exc), 'questions': [],
+                    'next_safe_action': review_next_safe_action('error'), 'send_allowed': False}
+        if source_check and source_check['status'] != 'confirmed_separate_service':
+            return source_check
+        result = _review_intake_standard(intake, paths)
+        if source_check:
+            result.update(source_history_identity=source_check['source_history_identity'],
+                          source_history_match=source_check.get('source_history_match', {}),
+                          source_history_separate_service_confirmed=True)
+        return result
+    return _review_intake_standard(intake, paths)
+
+
+def _review_intake_standard(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
     translation_matches = detect_translation_source(intake)
     if translation_matches:
         return {
@@ -6921,6 +7151,16 @@ def review_intake(intake: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
             "send_allowed": False,
         }
 
+    result = _review_effective_intake_standard(effective_intake, profile, profile_provenance, paths)
+    # Duplicate/history outcomes still need the correctly bound location facts
+    # for review evidence. Zero questions alone is not a complete source review.
+    result.setdefault('effective_intake', effective_intake)
+    return result
+
+
+def _review_effective_intake_standard(effective_intake: dict[str, Any], profile: dict[str, Any],
+                                    profile_provenance: dict[str, Any], paths: AppPaths) -> dict[str, Any]:
+    intake = effective_intake
     questions = missing_questions(effective_intake)
     source_case_valid = bool(valid_source_case(effective_intake.get("case_number")))
     # Verified older history can contain a reference without the digit after
@@ -7169,6 +7409,8 @@ def build_source_email_groups(*, plans: list[dict[str, Any]], intakes: list[dict
                 raise IntakeError("A source email group child is blocked: " + "; ".join(errors))
             child = {key: child_payload.get(key, '') for key in ('case_number', 'service_date', 'service_period_label', 'service_start_time', 'service_end_time')}
             child.update({key: child_payload[key] for key in ('claim_interpreting', 'claim_transport', 'travel_group_id', 'travel_group_binding') if key in child_payload})
+            if child_payload.get('source_history_evidence'):
+                child['source_history_evidence'] = copy.deepcopy(child_payload['source_history_evidence'])
             child.update(source_sha256=plan["source_sha256"], personal_profile_id=plan["personal_profile_id"],
                          recipient=plan["recipient"], pdf=str(Path(item["pdf"]).resolve()),
                          pdf_sha256=file_sha256(Path(item["pdf"])), draft_payload=str(Path(item["draft_payload"]).resolve()),
@@ -7286,6 +7528,10 @@ def build_packet_result(
     packet_intake["service_period_label"] = "packet"
     packet_intake.pop("additional_attachment_files", None)
     packet_intake["underlying_requests"] = underlying_requests_for_packet(items)
+    for child, intake in zip(packet_intake['underlying_requests'], intakes):
+        evidence = source_history_evidence(intake)
+        if evidence is not None:
+            child['source_history_evidence'] = evidence
     custom_packet_body = str(packet_intake.get("packet_email_body") or "")
     packet_intake["email_body"] = custom_packet_body if custom_packet_body.strip() else default_packet_email_body(items, email_config, signature_name=signature_name)
 
@@ -7953,7 +8199,8 @@ def _record_draft_unlocked(
 
     if status in {"active", "drafted"} or (status == "sent" and not existing_sent_transition):
         raw = payload.get("payload") or payload.get("draft_payload")
-        loaded = load_json(_resolve_optional_path(raw)) if raw else {}
+        loaded_path = _resolve_optional_path(raw) if str(raw or "").strip() else None
+        loaded = load_json(loaded_path) if loaded_path and loaded_path.is_file() else {}
         _require_request_exclusion_clear(loaded or payload, paths)
     supersedes = _coerce_supersedes(payload.get("supersedes"))
     supersede_records: list[tuple[str, dict[str, Any]]] = []

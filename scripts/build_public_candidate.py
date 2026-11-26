@@ -48,7 +48,11 @@ SANITIZERS = [
     (re.compile(r"Rua\s+Lu[íi]s\s+de\s+Cam[õo]es\s+n[ºo.]?\s*6,\s*7960-011\s*Marmelar,\s*Pedr[óo]g[ãa]o,\s*Vidigueira", re.IGNORECASE), "Example Street 1, 1000-000 Example City"),
     (re.compile(r"C:[\\/]+Users[\\/]+FA507[^\s\"'`<>]+", re.IGNORECASE), "%USERPROFILE%/example-path"),
     (re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{8,}\b"), "sk-example"),
+    (re.compile(r"\b(?:AIza[0-9A-Za-z_\-]{35}|AQ\.[A-Za-z0-9_\-]{40,})\b"), "example-gemini-api-key"),
     (re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{8,}\b"), "GOCSPX-example"),
+    (re.compile(r"\bya29\.[A-Za-z0-9_\-\.]+\b"), "example-google-access-token"),
+    (re.compile(r"\b1//[A-Za-z0-9_\-\.]{20,}\b"), "example-google-refresh-token"),
+    (re.compile(r"\bgh[opsu]_[A-Za-z0-9_]{20,}\b"), "example-github-token"),
 ]
 
 
@@ -254,6 +258,15 @@ def _write_synthetic_runtime_files(target_root: Path) -> None:
         "redirect_uri": "http://127.0.0.1:8765/api/gmail/oauth/callback",
         "token_path": "config/gmail-token.local.json",
         "notes": "Copy to config/gmail.local.json for private local use. Do not commit real credentials or OAuth tokens.",
+    })
+    _write_json(target_root / "config" / "photo-defaults.example.json", {
+        "enabled": True,
+        "photo_day_as_service_date": True,
+        "photo_city_court": True,
+        "gnr_capture_city_venue": False,
+        "city_court_defaults": {},
+        "confirmed_source_locations": [],
+        "notes": "Copy to config/photo-defaults.local.json for private local defaults.",
     })
     _write_json(target_root / "data" / "court-emails.example.json", [{
         "key": "example-court",

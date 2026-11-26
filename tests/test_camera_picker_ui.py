@@ -348,6 +348,75 @@ console.log(JSON.stringify({calls,events,opened,closed:picker.snapshot(),unchang
         self.assertFalse(result['closed']['open'])
         self.assertFalse(result['closed']['busy'])
 
+    def test_coverage_warning_uses_safe_counts_and_survives_zero_results_and_pagination(self):
+        result = self.run_js("""
+await picker.initialize();listing={...listing,oversized_count:3,next_offset:50,total:51};await picker.open();
+const firstPage=picker.snapshot();await picker.load('',50);const secondPage=picker.snapshot();
+listing={...listing,items:[],oversized_count:1,total:0,next_offset:null,truncated:true};
+await picker.load('2026-11-01');const empty=picker.snapshot();
+listing={...listing,oversized_count:'C:\\private\\phone'};await picker.load('other');const invalid=picker.snapshot();
+console.log(JSON.stringify({firstPage,secondPage,empty,invalid,events,chosen,revision}));
+""")
+        warning = '3 photos exceed 25 MiB and are not shown.'
+        self.assertEqual(result['firstPage']['coverageWarning'], warning)
+        self.assertEqual(result['secondPage']['coverageWarning'], warning)
+        self.assertEqual(result['secondPage']['oversizedCount'], 3)
+        self.assertEqual(result['empty']['items'], [])
+        self.assertEqual(result['empty']['coverageWarning'], '1 photo exceeds 25 MiB and is not shown. This count matches the filename search. This count covers only the checked folder entries.')
+        self.assertEqual(result['invalid']['coverageWarning'], '')
+        self.assertEqual(result['invalid']['oversizedCount'], 0)
+        self.assertEqual(result['events'], [])
+        self.assertEqual(result['chosen'], [])
+        self.assertEqual(result['revision'], 7)
+
+    def test_new_listing_clears_previous_coverage_and_late_response_cannot_restore_it(self):
+        result = self.run_js("""
+await picker.initialize();listing={...listing,oversized_count:4};await picker.open();
+const old=deferred();requestOverride=()=>old.promise;const pending=picker.load('old');
+const loading=picker.snapshot();requestOverride=async()=>({...listing,oversized_count:2});await picker.load('new');
+old.resolve({...listing,oversized_count:99});await pending;const current=picker.snapshot();
+requestOverride=async()=>{throw new Error('offline')};await picker.load('failed');
+console.log(JSON.stringify({loading,current,failed:picker.snapshot()}));
+""")
+        self.assertEqual(result['loading']['coverageWarning'], '')
+        self.assertEqual(result['loading']['oversizedCount'], 0)
+        self.assertEqual(result['current']['query'], 'new')
+        self.assertEqual(result['current']['oversizedCount'], 2)
+        self.assertNotIn('99', result['current']['coverageWarning'])
+        self.assertEqual(result['failed']['coverageWarning'], '')
+        self.assertEqual(result['failed']['oversizedCount'], 0)
+
+    def test_renderer_shows_coverage_after_zero_results_search_and_refresh_without_source_changes(self):
+        result = self.run_js("""
+appListing={...appListing,oversized_count:3};await a.initializeCameraPicker();await element('#choose-camera-source').click();
+const populated=element('#camera-picker-status').textContent;
+element('#source-file').files=[new File(['selected'],'previous-source.jpg',{type:'image/jpeg'})];
+element('#camera-selected-source').textContent='previous-source.jpg';
+const before=JSON.stringify({revision:context.state.workflowRevision,prepared:context.state.lastPrepared,review:context.state.lastReview});
+appListing={...appListing,items:[],total:0,oversized_count:2,truncated:true};await context.state.cameraPicker.load('2026-11',50);
+const empty=element('#camera-picker-status').textContent;
+appListing={...appListing,oversized_count:1};await element('#camera-picker-refresh').click();
+const refreshed=element('#camera-picker-status').textContent;
+appListing={...appListing,oversized_count:0,truncated:false};await context.state.cameraPicker.load('other');
+console.log(JSON.stringify({populated,empty,refreshed,cleared:element('#camera-picker-status').textContent,
+ source:element('#source-file').files[0].name,selected:element('#camera-selected-source').textContent,
+ unchanged:before===JSON.stringify({revision:context.state.workflowRevision,prepared:context.state.lastPrepared,review:context.state.lastReview}),requests,recovered}));
+""", app=True)
+        self.assertIn('1 matching photos.', result['populated'])
+        self.assertIn('3 photos exceed 25 MiB and are not shown.', result['populated'])
+        self.assertIn('No matching photos.', result['empty'])
+        self.assertIn('2 photos exceed 25 MiB and are not shown.', result['empty'])
+        self.assertIn('This count matches the filename search.', result['empty'])
+        self.assertIn('This count covers only the checked folder entries.', result['empty'])
+        self.assertIn('1 photo exceeds 25 MiB and is not shown.', result['refreshed'])
+        self.assertNotIn('exceed', result['cleared'])
+        self.assertEqual(result['source'], 'previous-source.jpg')
+        self.assertEqual(result['selected'], 'previous-source.jpg')
+        self.assertTrue(result['unchanged'])
+        self.assertEqual(result['recovered'], [])
+        self.assertTrue(any(row['url'] == '/api/camera/files?query=2026-11&offset=50&limit=50' for row in result['requests']))
+        self.assertTrue(all(row['url'].startswith('/api/camera/status') or row['url'].startswith('/api/camera/files?') for row in result['requests']))
+
     def test_selected_photo_invalidates_before_download_and_accepts_new_revision(self):
         result = self.run_js("""
 await picker.initialize();await picker.open();const selected=await picker.select(first);

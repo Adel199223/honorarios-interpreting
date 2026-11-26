@@ -35,6 +35,7 @@ MAX_TEXT_BYTES = 1_500_000
 
 BLOCKED_PATH_PATTERNS = [
     ("AGENTS.md", "local machine/project operating instructions"),
+    ("GEMINI.md", "local machine/project operating instructions"),
     (".env", "environment secrets"),
     (".env.*", "environment secrets"),
     ("config/email.json", "local email defaults"),
@@ -50,11 +51,17 @@ BLOCKED_PATH_PATTERNS = [
     ("data/known-destinations.json", "local destination history"),
     ("data/service-profiles.json", "local service profile data"),
     ("data/*.local.json", "local runtime data"),
+    ("data/.*.lock", "local runtime lock state"),
 ]
 BLOCKED_PATH_PREFIXES = {
+    ".codex/": "local Codex agent state",
+    ".playwright-cli/": "browser automation runtime",
     ".playwright-mcp/": "browser automation runtime",
     ".tmp-test/": "temporary test runtime",
     ".worktrees/": "local worktree storage",
+    "worktrees/": "local worktree storage",
+    "build/": "build output artifacts",
+    "dist/": "distribution build artifacts",
     "output/": "generated artifacts",
     "tmp/": "temporary runtime artifacts",
 }
@@ -71,6 +78,7 @@ BLOCKED_ARTIFACT_SUFFIXES = {
 
 PRIVATE_PATTERNS = [
     ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b")),
+    ("gemini_api_key", re.compile(r"\b(?:AIza[0-9A-Za-z_\-]{35}|AQ\.[A-Za-z0-9_\-]{40,})\b")),
     ("google_client_secret", re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{10,}\b")),
     ("google_access_token", re.compile(r"\bya29\.[A-Za-z0-9_\-\.]+\b")),
     ("google_refresh_token", re.compile(r"\b1//[A-Za-z0-9_\-\.]{20,}\b")),

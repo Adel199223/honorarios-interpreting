@@ -115,7 +115,7 @@ function renderWorkspaceDraft() {
       : "Request inputs and the queue are saved locally in this browser. Resume them after reopening this same app workspace."))}</p>
     ${missing.length ? `<p>Unavailable supporting files: ${missing.map(name => `<code>${escapeHtml(name)}</code>`).join(", ")}. You can restore the facts without these files, then reattach them before preparing.</p>` : ""}
     ${draft.validation?.missing_sources?.length ? "<p>The original source file is unavailable. Reattach it to read the source again; recovered facts are retained for checking.</p>" : ""}
-    ${unavailableProfiles.length ? `<p>A saved personal profile is unavailable. Choose the intended replacement before resuming.</p><label>Profile for requests with an unavailable profile<select id="workspace-resume-profile"><option value="">Choose a profile</option>${(personalProfilesData().profiles || []).map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(personalProfileName(profile))}</option>`).join("")}</select></label>` : ""}
+    ${unavailableProfiles.length ? `<p>A saved personal profile is unavailable. Choose the intended replacement before resuming.</p><label>Profile for requests with an unavailable profile<select id="workspace-resume-profile"><option value="">Choose a profile</option>${(personalProfilesData().profiles || []).map(profile => `<option value="${escapeHtml(profile.id)}" ${draft.replacementProfile === profile.id ? "selected" : ""}>${escapeHtml(personalProfileName(profile))}</option>`).join("")}</select></label>` : ""}
     ${draft.pending || draft.readFailed ? `<div class="button-row">${draft.pending ? `<button type="button" id="resume-workspace-draft" ${draft.busy ? "disabled" : ""}>${missing.length ? "Resume without unavailable files" : "Resume unfinished work"}</button>` : ""}<button type="button" id="discard-workspace-draft" ${draft.busy ? "disabled" : ""}>Discard saved work</button></div>` : ""}
     ${draft.resumed && (state.currentIntake || draft.manualDirty) ? '<div class="button-row"><button type="button" class="primary-button" id="review-resumed-workspace">Review restored work</button></div>' : ""}`;
 }
@@ -152,6 +152,7 @@ function saveWorkspaceDraft() {
     if (!workspaceDraftHasWork(snapshot)) {
       window.localStorage.removeItem(workspaceDraftStorageKey(draft.workspaceId));
       draft.savedAt = "";
+      renderWorkspaceDraft();
       return;
     }
     const record = writeWorkspaceDraft(window.localStorage, draft.workspaceId, snapshot);
@@ -218,7 +219,10 @@ async function resumeWorkspaceDraft() {
       next_safe_action: { state: "fix_blocker", blocked: true, button_id: "review-resumed-workspace" } };
     $("#batch-email-grouping").value = snapshot.email_grouping;
     $("#batch-packet-mode").checked = snapshot.packet_mode;
-    if (selectedSourceCase()) selectSourceCase(snapshot.selected_case, { persist: false, focus: false });
+    if (!selectedSourceCase() && state.sourceCaseCandidates.length > 0) {
+      state.sourceCaseSelectedIndex = 0;
+    }
+    if (selectedSourceCase()) selectSourceCase(state.sourceCaseSelectedIndex, { persist: false, focus: false });
     else if (state.currentIntake) { fillFormFromIntake(state.currentIntake); updateHomeReviewCard(state.lastReview); }
     else if (snapshot.manual_fields) {
       fillFormFromIntake({ ...snapshot.manual_fields, service_profile_key: snapshot.manual_fields.profile,
@@ -254,7 +258,25 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function safeLocalArtifactUrl(value) {
+  const text = String(value || "").trim();
+  if (!text.startsWith("/") || text.startsWith("//") || text.startsWith("/\\") || /[\u0000-\u001f]/.test(text)) return "#";
+  return text;
+}
+
+function safeGooglePopupUrl(value, { allowSubdomains = false } = {}) {
+  const target = new URL(String(value || ""));
+  const hostOk = allowSubdomains
+    ? (target.hostname === "google.com" || target.hostname.endsWith(".google.com"))
+    : target.hostname === "accounts.google.com";
+  if (target.protocol !== "https:" || !hostOk || target.username || target.password) {
+    throw new Error("Unexpected authorization URL.");
+  }
+  return target.href;
 }
 
 function setStatus(status, message) {
@@ -342,23 +364,23 @@ const SAFE_ACTION_GATES = {
     reason: "Correction mode requires an active draft and a short correction reason.",
   },
   "copy-draft-args": {
-    states: ["review_gmail_draft_args"],
+    states: ["review_gmail_draft_args", "manual_draft_handoff"],
     reason: "Prepare the PDF and Gmail draft payload before copying draft args.",
   },
   "build-manual-handoff": {
-    states: ["review_gmail_draft_args"],
+    states: ["review_gmail_draft_args", "manual_draft_handoff"],
     reason: "Prepare the PDF and Gmail draft payload before building the manual handoff packet.",
   },
   "copy-manual-handoff-prompt": {
-    states: ["review_gmail_draft_args"],
+    states: ["review_gmail_draft_args", "manual_draft_handoff"],
     reason: "Build the manual handoff packet before copying its prompt.",
   },
   "autofill-record-from-prepared": {
-    states: ["review_gmail_draft_args"],
+    states: ["review_gmail_draft_args", "manual_draft_handoff"],
     reason: "Prepare the PDF and Gmail draft payload before autofilling record values.",
   },
   "record-parsed-prepared-draft": {
-    states: ["review_gmail_draft_args"],
+    states: ["review_gmail_draft_args", "manual_draft_handoff"],
     reason: "Prepare the payload, create the Gmail draft manually, then paste the Gmail response.",
   },
   "create-gmail-api-draft": {
@@ -366,7 +388,7 @@ const SAFE_ACTION_GATES = {
     reason: "Prepare the payload, review the PDF preview and exact Gmail args, then create the Gmail draft.",
   },
   "record-draft": {
-    states: ["review_gmail_draft_args"],
+    states: ["review_gmail_draft_args", "manual_draft_handoff"],
     reason: "Prepare the payload and paste Gmail draft IDs before recording locally.",
   },
 };
@@ -403,6 +425,10 @@ const SERVER_GATED_SELECTORS = [
   "#google-photos-picker-start",
   "#google-photos-picker-check",
   "#google-photos-picker-import",
+  "#check-active-drafts",
+  "#save-gmail-config",
+  "#connect-gmail-oauth",
+  "#verify-gmail-draft",
   "#run-public-readiness",
   "#build-public-candidate",
   "#refresh-diagnostics",
@@ -412,24 +438,31 @@ const SERVER_GATED_SELECTORS = [
   "#restore-local-backup",
   "#preview-legalpdf-import",
   "#export-legalpdf-import-report",
-  "#build-legalpdf-checklist",
-  "#build-legalpdf-import-plan",
+  "#build-legalpdf-integration-checklist",
+  "#build-legalpdf-adapter-import-plan",
   "#apply-legalpdf-import-plan",
   "#refresh-legalpdf-apply-history",
-  "#load-legalpdf-restore-plan",
-  "#apply-legalpdf-restore",
-  "#save-destination",
-  "#preview-destination",
-  "#save-court-email",
-  "#preview-court-email",
-  "#save-profile",
+  "[data-legalpdf-restore-plan]",
+  "[data-legalpdf-apply-restore-report-id]",
+  "#destination-form button[type=submit]",
+  "#preview-destination-change",
+  "#court-email-form button[type=submit]",
+  "#preview-court-email-change",
+  "#service-profile-form button[type=submit]",
   "#preview-profile-change",
-  "#rollback-profile-change",
-  "#save-personal-profile",
-  "#set-main-personal-profile",
-  "#delete-personal-profile",
-  "#preview-legalpdf-personal-profile-import",
-  "#apply-legalpdf-personal-profile-import",
+  "[data-rollback-change-id]",
+  "#add-personal-profile",
+  "#copy-legalpdf-personal-profiles",
+  "#personal-profile-form button[type=submit]",
+  "#pp_set_main",
+  "#pp_delete",
+  "#preview-legalpdf-personal-profiles",
+  "#apply-legalpdf-personal-profiles",
+  "[data-history-verify-draft]",
+  "[data-history-mark-sent]",
+  "[data-history-mark-not-found]",
+  "[data-history-archive-draft]",
+  "[data-recover-history-attempt]",
 ];
 
 function setActionGate(id, enabled, reason = "", actionState = "idle") {
@@ -589,7 +622,8 @@ function syncActionGates(action = state.currentNextSafeAction) {
     }
     if (id === "create-gmail-api-draft") {
       const handoffReviewed = Boolean($("#gmail_handoff_reviewed")?.checked);
-      const connected = Boolean(state.gmailStatus?.connected);
+      const connected = Boolean(state.gmailStatus?.connected) && !state.gmailStatus?.reauthorization_required
+        && state.gmailStatus?.draft_create_ready !== false;
       const targetPayload = preparedRecordTarget()?.draft_payload || "";
       if (!connected) {
         blockedReason = "Gmail Draft API is optional and not connected. Use Manual Draft Handoff now, or connect Gmail API before using this button.";
@@ -617,13 +651,16 @@ function syncActionGates(action = state.currentNextSafeAction) {
     }
     if (id === "record-draft") {
       const targetPayload = preparedRecordTarget()?.draft_payload || "";
-      if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
+      if (preparedPayloadAlreadyRecorded(targetPayload)) {
+        blockedReason = "This email was already recorded. Review the existing draft in Gmail.";
+      } else if (targetPayload && state.gmailCreateCompletedPayload === targetPayload) {
         blockedReason = "This prepared payload was already recorded through Gmail Draft API. Change the request or prepare again before recording another draft.";
       }
       enabled = enabled
         && Boolean($("#record_payload")?.value.trim())
         && Boolean($("#record_draft_id")?.value.trim())
         && Boolean($("#record_message_id")?.value.trim())
+        && !preparedPayloadAlreadyRecorded(targetPayload)
         && (!targetPayload || state.gmailCreateCompletedPayload !== targetPayload);
     }
     if (state.pendingPreparationRevision !== null) {
@@ -878,6 +915,15 @@ function renderGuidedStep(stateName = "idle") {
 function mergeFormIntoCurrentIntake() {
   if (!state.currentIntake) return null;
   const payload = collectProfilePayload();
+  // A textarea exposes LF even when the bound source contains CRLF or CR.
+  // Preserve that exact current source only when the visible text is unchanged;
+  // edited/cleared text still follows normal reconciliation and hash checks.
+  const sourceText = state.currentIntake.source_text;
+  if (/^[a-f0-9]{64}$/i.test(state.currentIntake.source_sha256 || "")
+      && typeof sourceText === "string"
+      && $("#source_text").value === sourceText.replace(/\r\n?/g, "\n")) {
+    payload.source_text = sourceText;
+  }
   const intake = { ...state.currentIntake };
   const cleared = new Set(Array.isArray(intake.review_cleared_fields) ? intake.review_cleared_fields : []);
   // Replacements need the same dependent-field reconciliation as a cleared
@@ -940,8 +986,10 @@ function mergeFormIntoCurrentIntake() {
   if (payload.profile) {
     intake.service_profile_key = payload.profile;
   }
-  if (payload.km_one_way) {
-    intake.transport = { ...(intake.transport || {}), km_one_way: Number(payload.km_one_way) || payload.km_one_way };
+  if (payload.km_one_way !== undefined && String(payload.km_one_way).trim() !== "") {
+    const normalizedKm = String(payload.km_one_way).trim().replace(",", ".");
+    const numericKm = Number(normalizedKm);
+    intake.transport = { ...(intake.transport || {}), km_one_way: Number.isFinite(numericKm) ? numericKm : payload.km_one_way };
   } else if (Object.prototype.hasOwnProperty.call(intake.transport || {}, "km_one_way")) {
     intake.transport = { ...intake.transport, km_one_way: "" };
   }
@@ -1441,6 +1489,15 @@ Melhores cumprimentos,
 
 Example Interpreter`;
 
+function defaultSupportingAttachmentEmailBody(intake = null) {
+  const data = personalProfilesData();
+  const selectedId = String(intake?.personal_profile_id || $("#personal_profile_id")?.value || data.primary_profile_id || "").trim();
+  const profiles = Array.isArray(data.profiles) ? data.profiles : [];
+  const activeProfile = profiles.find((item) => item?.id === selectedId) || data.main_profile || profiles[0] || null;
+  const signature = activeProfile ? personalProfileName(activeProfile) : "Example Interpreter";
+  return SUPPORTING_ATTACHMENT_EMAIL_BODY.replace("Example Interpreter", signature || "Example Interpreter");
+}
+
 function normalizeAttachmentList(value) {
   if (!value) return [];
   const values = Array.isArray(value) ? value : [value];
@@ -1451,7 +1508,7 @@ function ensureSupportingAttachmentEmailBody(intake) {
   if (!intake) return intake;
   const attachments = normalizeAttachmentList(intake.additional_attachment_files);
   if (attachments.length && !String(intake.email_body || "").trim()) {
-    intake.email_body = SUPPORTING_ATTACHMENT_EMAIL_BODY;
+    intake.email_body = defaultSupportingAttachmentEmailBody(intake);
   }
   return intake;
 }
@@ -1628,13 +1685,21 @@ function parseJsonFromText(text) {
   try {
     return JSON.parse(text);
   } catch (_) {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end > start) {
+    const candidates = [];
+    for (let index = 0; index < text.length; index += 1) {
+      const ch = text[index];
+      if (ch !== "{" && ch !== "[") continue;
+      const closeChar = ch === "{" ? "}" : "]";
+      const end = text.lastIndexOf(closeChar);
+      if (end > index) {
+        candidates.push(text.slice(index, end + 1));
+      }
+    }
+    for (const candidate of candidates) {
       try {
-        return JSON.parse(text.slice(start, end + 1));
+        return JSON.parse(candidate);
       } catch (_) {
-        return null;
+        // Keep scanning for a balanced JSON block.
       }
     }
   }
@@ -1644,9 +1709,25 @@ function parseJsonFromText(text) {
 function matchIdText(text, patterns) {
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match?.[1]) return match[1].trim().replace(/[",;]+$/g, "");
+    if (match?.[1]) return match[1].trim().replace(/^[`*"']+|[`*"',;.)]+$/g, "");
   }
   return "";
+}
+
+function unwrapGmailDraftObject(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  if (Array.isArray(parsed)) {
+    return parsed.length === 1 && parsed[0] && typeof parsed[0] === "object" ? unwrapGmailDraftObject(parsed[0]) : null;
+  }
+  if (Array.isArray(parsed.drafts)) {
+    return parsed.drafts.length === 1 && parsed.drafts[0] && typeof parsed.drafts[0] === "object" ? parsed.drafts[0] : null;
+  }
+  return parsed;
+}
+
+function isBareGmailMessageObject(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  return Boolean(parsed.id && !parsed.draft_id && !parsed.draftId && !parsed.DraftID && !parsed.draft && !parsed.Draft && !parsed.message && !parsed.Message && (parsed.threadId || parsed.thread_id || parsed.ThreadID || Array.isArray(parsed.labelIds)));
 }
 
 function parseGmailDraftIds(rawText) {
@@ -1655,59 +1736,87 @@ function parseGmailDraftIds(rawText) {
     throw new Error("Paste the Gmail _create_draft response before parsing IDs.");
   }
 
-  const parsed = parseJsonFromText(text);
+  const parsed = unwrapGmailDraftObject(parseJsonFromText(text));
+  const bareMessage = isBareGmailMessageObject(parsed);
   const ids = {
-    draft_id: parsed ? firstStringAtPath(parsed, [
+    draft_id: parsed && !bareMessage ? firstStringAtPath(parsed, [
       "draft_id",
       "draftId",
+      "DraftID",
       "draft.id",
+      "draft.ID",
+      "Draft.ID",
+      "Draft.id",
       "result.draft_id",
       "result.draftId",
+      "result.DraftID",
       "result.draft.id",
+      "result.draft.ID",
       "id",
+      "ID",
     ]) : "",
     message_id: parsed ? firstStringAtPath(parsed, [
       "message_id",
       "messageId",
+      "MessageID",
       "message.id",
+      "message.ID",
+      "Message.ID",
+      "Message.id",
       "draft.message.id",
+      "draft.message.ID",
+      "Draft.Message.ID",
       "result.message_id",
       "result.messageId",
+      "result.MessageID",
       "result.message.id",
+      "result.message.ID",
       "result.draft.message.id",
+      ...(bareMessage ? ["id", "ID"] : []),
     ]) : "",
     thread_id: parsed ? firstStringAtPath(parsed, [
       "thread_id",
       "threadId",
+      "ThreadID",
       "message.threadId",
       "message.thread_id",
+      "message.ThreadID",
+      "Message.ThreadID",
+      "Message.threadId",
+      "Message.thread_id",
       "draft.message.threadId",
       "draft.message.thread_id",
+      "draft.message.ThreadID",
+      "Draft.Message.ThreadID",
       "result.thread_id",
       "result.threadId",
+      "result.ThreadID",
       "result.message.threadId",
+      "result.message.thread_id",
       "result.draft.message.threadId",
+      "result.draft.message.thread_id",
     ]) : "",
   };
 
   if (!ids.draft_id) {
     ids.draft_id = matchIdText(text, [
-      /draft[_\s-]?id["':=\s]+([A-Za-z0-9_.:-]+)/i,
-      /draftId["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /(?:^|[\s*-])draft[_\s-]?id[*`"'():=\s]+([A-Za-z0-9_.:-]+)/im,
+      /(?:^|[\s*-])draftId[*`"'():=\s]+([A-Za-z0-9_.:-]+)/im,
+      /\bdraft\s+created\b(?:\s+with)?[^A-Za-z0-9]*(?:(?:draft[\s_-]*)?id[:=\s]+)?([rR]-[A-Za-z0-9_.:-]+|[rR]\d+[-A-Za-z0-9_.:]*)/i,
     ]);
   }
   if (!ids.message_id) {
     ids.message_id = matchIdText(text, [
-      /message[_\s-]?id["':=\s]+([A-Za-z0-9_.:-]+)/i,
-      /messageId["':=\s]+([A-Za-z0-9_.:-]+)/i,
-      /message\.id["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /(?:^|[\s*-])message[_\s-]?id[*`"'():=\s]+([A-Za-z0-9_.:-]+)/im,
+      /(?:^|[\s*-])messageId[*`"'():=\s]+([A-Za-z0-9_.:-]+)/im,
+      /message\.id[*`"'():=\s]+([A-Za-z0-9_.:-]+)/i,
     ]);
   }
   if (!ids.thread_id) {
     ids.thread_id = matchIdText(text, [
-      /thread[_\s-]?id["':=\s]+([A-Za-z0-9_.:-]+)/i,
-      /threadId["':=\s]+([A-Za-z0-9_.:-]+)/i,
-      /message\.threadId["':=\s]+([A-Za-z0-9_.:-]+)/i,
+      /(?:^|[\s*-])thread[_\s-]?id[*`"'():=\s]+([A-Za-z0-9_.:-]+)/im,
+      /(?:^|[\s*-])threadId[*`"'():=\s]+([A-Za-z0-9_.:-]+)/im,
+      /message\.threadId[*`"'():=\s]+([A-Za-z0-9_.:-]+)/i,
     ]);
   }
 
@@ -1718,9 +1827,9 @@ function parseGmailDraftIds(rawText) {
 }
 
 function applyParsedGmailDraftIds(ids) {
-  if (ids.draft_id) $("#record_draft_id").value = ids.draft_id;
-  if (ids.message_id) $("#record_message_id").value = ids.message_id;
-  if (ids.thread_id) $("#record_thread_id").value = ids.thread_id;
+  $("#record_draft_id").value = ids.draft_id || "";
+  $("#record_message_id").value = ids.message_id || "";
+  $("#record_thread_id").value = ids.thread_id || "";
   syncActionGates();
   return ids;
 }
@@ -1806,7 +1915,7 @@ function renderPreparedEmailTarget() {
   const previewItem = target.packet_mode ? target : members[state.preparedEmailMemberIndex] || target;
   const previewUrls = previewItem.png_preview_urls || [];
   $("#prepared-email-target-preview").innerHTML = previewUrls.length
-    ? previewUrls.map((url) => `<figure class="pdf-preview-figure"><img class="pdf-preview-image" src="${escapeHtml(url)}" alt="Selected email PDF for ${escapeHtml(previewItem.case_number || "packet")}"><figcaption>${escapeHtml(pathBasename(previewItem.pdf))} · ${escapeHtml(target.recipient || "")}</figcaption></figure>`).join("")
+    ? previewUrls.map((url) => `<figure class="pdf-preview-figure"><img class="pdf-preview-image" src="${escapeHtml(safeLocalArtifactUrl(url))}" alt="Selected email PDF for ${escapeHtml(previewItem.case_number || "packet")}"><figcaption>${escapeHtml(pathBasename(previewItem.pdf))} · ${escapeHtml(target.recipient || "")}</figcaption></figure>`).join("")
     : `<p>${escapeHtml(pathBasename(previewItem.pdf) || "Prepared PDF")} — inspect this PDF before drafting.</p>`;
 }
 
@@ -2470,6 +2579,7 @@ function duplicateSubmissionWording(record) {
 
 function sentHistorySummary(data, record) {
   const wording = duplicateSubmissionWording(record);
+  const sourceHistory = data.source_history_identity;
   const facts = [
     ["Case", record.case_number],
     ["Service date", record.service_date],
@@ -2485,6 +2595,7 @@ function sentHistorySummary(data, record) {
     <div class="beginner-outcome-banner blocked"><span>What happened</span>
       <strong>${stopped ? `Stopped: this fee request was already ${wording.verb}. No new PDF or Gmail draft was created.` : `This fee request was already ${wording.verb}. Another PDF or Gmail draft is blocked.`}</strong>
       <p>No further answers are needed for this ${wording.paper ? "submitted" : "sent"} request.</p>
+      ${sourceHistory ? `<p><strong>Source service identity — history check only:</strong> ${escapeHtml(sourceHistory.case_number)} on ${escapeHtml(sourceHistory.service_date)}. The intake date has not been changed.</p>` : ""}
     </div>
     <section class="beginner-key-facts" aria-label="${wording.paper ? "Matched paper submission details" : "Matched sent request details"}">
       <strong>${wording.paper ? "Recorded paper submission" : "Recorded sent details"}</strong><p>These details come from the matching ${wording.paper ? "paper-submission" : "sent-history"} record.</p>
@@ -2765,6 +2876,8 @@ function renderSourceEvidence(data) {
     : "not decided";
   const fieldEvidence = renderFieldEvidence(evidence.field_evidence || []);
   const sourceAttention = renderSourceAttention(evidence.attention || {});
+  const documentaryReferences = (evidence.documentary_case_references || []).map((item) =>
+    `<div class="source-evidence-row"><span>Documentary reference${item.documentary_only ? " — excluded from requests" : " — also appears independently"}</span><code>${escapeHtml(item.case_number)}: ${escapeHtml(item.excerpt)}</code></div>`).join("");
   const proposalPayload = profileProposal.payload || {};
   const proposal = profileProposal.status && profileProposal.status !== "not_needed"
     ? `<div class="profile-proposal-card">
@@ -2783,14 +2896,14 @@ function renderSourceEvidence(data) {
         <p>The app used the typed/pasted fields and source text to suggest service-profile defaults before any PDF or Gmail draft step.</p>
       </div>`
     : source.source_kind === "photo"
-    ? `<img class="source-preview-image" src="${escapeHtml(source.artifact_url)}" alt="Uploaded source preview">`
+    ? `<img class="source-preview-image" src="${escapeHtml(safeLocalArtifactUrl(source.artifact_url))}" alt="Uploaded source preview">`
     : renderedPageUrls.length
       ? `<div class="rendered-page-strip">
           <strong>Rendered PDF pages</strong>
-          ${renderedPageUrls.map((url, index) => `<img class="source-preview-image rendered-page-image" src="${escapeHtml(url)}" alt="Rendered PDF page ${index + 1}">`).join("")}
-          <a class="source-preview-link" href="${escapeHtml(source.artifact_url)}" target="_blank" rel="noreferrer">Open original PDF source</a>
+          ${renderedPageUrls.map((url, index) => `<img class="source-preview-image rendered-page-image" src="${escapeHtml(safeLocalArtifactUrl(url))}" alt="Rendered PDF page ${index + 1}">`).join("")}
+          <a class="source-preview-link" href="${escapeHtml(safeLocalArtifactUrl(source.artifact_url))}" target="_blank" rel="noreferrer">Open original PDF source</a>
         </div>`
-      : `<a class="source-preview-link" href="${escapeHtml(source.artifact_url)}" target="_blank" rel="noreferrer">Open uploaded PDF source</a>`;
+      : `<a class="source-preview-link" href="${escapeHtml(safeLocalArtifactUrl(source.artifact_url))}" target="_blank" rel="noreferrer">Open uploaded PDF source</a>`;
   body.innerHTML = `
     ${sourceAttention}
     <div class="source-evidence-layout">
@@ -2798,6 +2911,7 @@ function renderSourceEvidence(data) {
         <div class="source-evidence-row"><span>Filename</span><strong>${escapeHtml(evidence.filename || source.filename)}</strong></div>
         <div class="source-evidence-row"><span>Case</span><code>${escapeHtml(evidence.case_number || "not recovered")}</code></div>
         <div class="source-evidence-row"><span>Raw case</span><code>${escapeHtml(evidence.raw_case_number || "")}</code></div>
+        ${documentaryReferences}
         <div class="source-evidence-row"><span>Profile Decision</span><code>${escapeHtml(profileSummary)}</code></div>
         <div class="source-evidence-row"><span>Profile reason</span><code>${escapeHtml(profileDecision.reason || profileDecision.suggestion_reason || "")}</code></div>
         <div class="source-evidence-row"><span>Service date</span><code>${escapeHtml(evidence.service_date || "needs review")}</code></div>
@@ -2844,10 +2958,20 @@ function renderAiRecovery(aiRecovery) {
   const rawText = aiRecovery.raw_visible_text || "";
   chip.textContent = status.replaceAll("_", " ");
   chip.className = `status-chip ${status === "ok" ? "ready" : status === "failed" ? "error" : "info"}`;
+  const thinkingLevel = aiRecovery.thinking_level || "";
+  const decisions = aiRecovery.decisions && typeof aiRecovery.decisions === "object" ? aiRecovery.decisions : null;
+  const decisionAnswers = decisions?.answers && typeof decisions.answers === "object" ? decisions.answers : {};
+  const decisionFlags = Array.isArray(decisions?.flags) ? decisions.flags : [];
+  const decisionParts = [];
+  if (decisionAnswers.work_type?.choice) decisionParts.push(`work=${decisionAnswers.work_type.choice}`);
+  if (typeof decisionAnswers.is_already_handled_police_fee_form?.noul === "number") decisionParts.push(`police_form=${decisionAnswers.is_already_handled_police_fee_form.noul.toFixed(2)}`);
+  if (typeof decisionAnswers.is_psp_pac_procedure?.noul === "number") decisionParts.push(`psp_pac=${decisionAnswers.is_psp_pac_procedure.noul.toFixed(2)}`);
+  if (typeof decisionAnswers.source_legibility?.score === "number") decisionParts.push(`legibility=${decisionAnswers.source_legibility.score.toFixed(2)}/2`);
   body.innerHTML = `
     <div class="source-evidence-list ai-recovery-list">
-      <div><span>Provider</span><code>${escapeHtml(aiRecovery.provider || "openai")}</code></div>
+      <div><span>Provider</span><code>${escapeHtml(aiRecovery.provider || "gemini")}</code></div>
       <div><span>Model</span><code>${escapeHtml(aiRecovery.model || "")}</code></div>
+      ${thinkingLevel ? `<div><span>Thinking level</span><code>${escapeHtml(thinkingLevel)}</code></div>` : ""}
       <div><span>Schema</span><code>${escapeHtml(aiRecovery.schema_name || "")}</code></div>
       <div><span>Prompt version</span><code>${escapeHtml(aiRecovery.prompt_version || "")}</code></div>
       <div><span>Attempted</span><strong>${aiRecovery.attempted ? "yes" : "no"}</strong></div>
@@ -2856,6 +2980,7 @@ function renderAiRecovery(aiRecovery) {
       <div><span>Fields not found</span><code>${escapeHtml(missingFields.join(", ") || "none")}</code></div>
       <div><span>Warnings</span><code>${escapeHtml(warnings.join("; "))}</code></div>
       <div><span>Translation indicators</span><code>${escapeHtml(indicators.join("; "))}</code></div>
+      ${decisions ? `<div><span>Decisions API (${escapeHtml(decisions.model || "gemini-decision-1")})</span><code>${escapeHtml(`${decisions.status || "unknown"}${decisionParts.length ? ` · ${decisionParts.join(", ")}` : ""}${decisionFlags.length ? ` · flags: ${decisionFlags.map((flag) => flag.title || flag.code).join("; ")}` : ""}`)}</code></div>` : ""}
     </div>
     ${rawText ? `<details class="ai-raw-text"><summary>Raw visible text</summary><pre>${escapeHtml(rawText)}</pre></details>` : ""}
   `;
@@ -3107,6 +3232,7 @@ function renderCameraPicker(view) {
   $("#camera-picker-status").textContent = view.busy ? "Opening Camera… Keep your phone connected."
     : view.error || (view.items.length ? `${view.total} matching photos. Select one, then click Review source.${view.truncated ? " Only the first 5,000 folder entries were checked; use Choose another file for older photos." : ""}`
       : "No matching photos. Try another date or check that your phone is connected.");
+  if (!view.busy && view.coverageWarning) $("#camera-picker-status").textContent += ` ${view.coverageWarning}`;
   if (!state.cameraThumbnailGrid) state.cameraThumbnailGrid = createCameraThumbnailGrid({
     document, root: dialog, container: $("#camera-picker-files"),
     onChoose: item => state.cameraPicker.select(item),
@@ -3506,16 +3632,25 @@ function renderAiStatus(data) {
   const summary = $("#ai-status-summary");
   const pill = $("#ai-status-pill");
   if (!summary || !pill) return;
+  const provider = data?.provider || "gemini";
   const configured = Boolean(data?.configured);
   const keyConfigured = Boolean(data?.key_configured);
   pill.textContent = configured ? "ready" : keyConfigured ? "install needed" : "key missing";
   pill.className = `status-chip ${configured ? "ready" : "blocked"}`;
   if (configured) {
-    summary.textContent = `OpenAI recovery is available through ${data.key_source || "configured key"} using ${data.model || "default model"}.`;
+    if (provider === "gemini") {
+      const thinkingPart = data?.thinking_level ? `, ${data.thinking_level} thinking` : "";
+      const decisionsPart = data?.decisions_enabled && data?.decisions_model ? ` + ${data.decisions_model}` : "";
+      summary.textContent = `Gemini recovery (${data.model || "gemini-4-neon"}${thinkingPart}${decisionsPart}) is available through ${data.key_source || "configured key"}.`;
+    } else {
+      summary.textContent = `OpenAI recovery is available through ${data.key_source || "configured key"} using ${data.model || "default model"}.`;
+    }
   } else if (keyConfigured && data?.package_available === false) {
     summary.textContent = "An OpenAI key is configured, but the openai Python package is not installed in this environment.";
-  } else {
+  } else if (provider === "openai") {
     summary.textContent = "Set OPENAI_API_KEY or config/ai.local.json to enable OCR/autofill. The key is never shown here.";
+  } else {
+    summary.textContent = "Set GEMINI_API_KEY (or config/ai.local.json) for Gemini 4 Neon (xhigh) + Decisions API, or OPENAI_API_KEY for OpenAI fallback. Keys are never shown here.";
   }
 }
 
@@ -3573,11 +3708,12 @@ function renderGmailStatus(data) {
   const manualReady = Boolean(data?.manual_handoff_ready);
   const recommendedMode = data?.recommended_mode || (connected ? "gmail_api" : "manual_handoff");
   const text = data?.message || "Gmail Draft API status is not loaded yet.";
-  const chipText = recommendedMode === "gmail_api" ? "Gmail connected" : "Manual handoff";
+  const chipText = data?.reauthorization_required ? "Reconnect Gmail" : recommendedMode === "gmail_api" ? "Gmail connected" : "Manual handoff";
   const chipKind = recommendedMode === "gmail_api" ? "ready" : manualReady ? "info" : "blocked";
   if (summary) {
     summary.textContent = recommendedMode === "gmail_api"
       ? `${text} Manual Draft Handoff remains available as a safe fallback.`
+      : data?.reauthorization_required ? `${text} Your reviewed PDF remains available for Manual Draft Handoff.`
       : "Manual Draft Handoff is active: prepare the PDF and draft payload, use the exact _create_draft args, then record returned draft IDs locally.";
   }
   if (pill) {
@@ -3604,7 +3740,7 @@ function renderGmailStatus(data) {
     drawerStatus.textContent = `${text} Scope: ${data?.scope || "gmail.compose"}. Direct in-app creation stays optional; no send action exists.`;
   }
   if (drawerChip) {
-    drawerChip.textContent = connected ? "connected" : configured ? "optional" : "later";
+    drawerChip.textContent = data?.reauthorization_required ? "reconnect required" : connected ? "connected" : configured ? "optional" : "later";
     drawerChip.className = `status-chip ${chipKind}`;
   }
   renderGmailSetup(data);
@@ -3671,7 +3807,7 @@ async function startGmailOAuth(purpose = "") {
     });
   }
   if (data.authorization_url) {
-    window.open(data.authorization_url, "_blank", "noopener,noreferrer");
+    window.open(safeGooglePopupUrl(data.authorization_url), "_blank", "noopener,noreferrer");
   }
   return data;
 }
@@ -3830,6 +3966,8 @@ function renderGmailApiResult(data, kind = "") {
   const creationConfirmed = ["created", "created_unrecorded"].includes(status) && Boolean(confirmation.draft_id);
   const outcomeText = creationConfirmed
     ? status === "created_unrecorded" ? "The Gmail draft exists. Finish saving its local record; creating another draft is blocked." : "Created as a Gmail draft only. Review and send manually in Gmail."
+    : status === "not_created" && data.reauthorization_required
+      ? "Authorization failed before Gmail draft creation. Your reviewed PDF and Manual Draft Handoff are preserved. Reconnect Gmail before using direct creation again."
     : status === "creation_uncertain" ? "Check Gmail before choosing a recovery action. Reloading or preparing again will not create a second draft."
     : ["blocked", "error"].includes(status)
     ? "No Gmail draft creation was confirmed. Check Gmail before retrying if the request may have reached it."
@@ -3994,6 +4132,24 @@ async function createGmailApiDraft() {
         ...currentPreparedReviewFields(target.draft_payload),
       })),
     });
+    if (data.status === "not_created" && data.reauthorization_required && data.gmail_draft_create_called === false) {
+      state.gmailStatus = { ...(data.gmail_status || state.gmailStatus || {}), connected: false,
+        draft_create_ready: false, reauthorization_required: true, manual_handoff_ready: true,
+        recommended_mode: "manual_handoff" };
+      renderGmailStatus(state.gmailStatus);
+      if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
+        showAlert("The earlier email was not created because Gmail needs reconnecting. The current request and PDFs were preserved.", "blocked");
+        return data;
+      }
+      state.lastGmailCreateConfirmation = data;
+      renderGmailApiResult(data, "blocked");
+      setStatus("blocked", data.message);
+      showAlert(data.message, "blocked");
+      renderNextSafeAction({ state: "manual_draft_handoff", blocked: false,
+        title: "Use Manual Draft Handoff or reconnect Gmail", detail: data.message,
+        why: "Authorization failed before Gmail draft creation.", allowed_next: "Build the handoff for this reviewed PDF, or reconnect Gmail." });
+      return data;
+    }
     if (["creation_uncertain", "created_unrecorded"].includes(data.status)) {
       if (!isWorkflowResponseCurrent(captured.revision, state.workflowRevision, captured.prepared, state.lastPrepared)) {
         showAlert(data.message + " Return to the earlier email to recover it; another create remains blocked.", "blocked");
@@ -4118,7 +4274,7 @@ async function startGooglePhotosOAuth() {
     message: "OAuth window opened. Finish Google authorization, then return here and refresh status.",
   });
   if (data.authorization_url) {
-    window.open(data.authorization_url, "_blank", "noopener,noreferrer");
+    window.open(safeGooglePopupUrl(data.authorization_url), "_blank", "noopener,noreferrer");
   }
   return data;
 }
@@ -4135,7 +4291,7 @@ async function createGooglePhotosPickerSession() {
     message: "Picker session created. Choose one image in Google Photos, then check or import the selection.",
   });
   if (data.picker_uri) {
-    window.open(data.picker_uri, "_blank", "noopener,noreferrer");
+    window.open(safeGooglePopupUrl(data.picker_uri, { allowSubdomains: true }), "_blank", "noopener,noreferrer");
   }
   return data;
 }
@@ -4842,7 +4998,7 @@ function renderLegalPdfRestorePlan(data) {
             <input id="legalpdf-restore-phrase" autocomplete="off" placeholder="RESTORE LEGALPDF APPLY BACKUP">
           </label>
         </div>
-        <label class="checkbox-row">
+        <label class="check-row">
           <input id="confirm-legalpdf-restore" type="checkbox">
           <span>I reviewed the restore plan and want to restore this app's local reference data from the pre-apply backup.</span>
         </label>
@@ -5279,9 +5435,13 @@ function renderReference() {
   renderSavedCourtEmailOptions();
   const profiles = state.reference?.service_profiles || {};
   const profileSelect = $("#profile");
+  const previousProfile = profileSelect.value;
   profileSelect.innerHTML = `<option value="">Auto-detect profile - recommended for uploads</option>` + Object.entries(profiles)
     .map(([key, value]) => `<option value="${escapeHtml(key)}">${escapeHtml(key)} - ${escapeHtml(value.description || "")}</option>`)
     .join("");
+  if (previousProfile && Object.prototype.hasOwnProperty.call(profiles, previousProfile)) {
+    profileSelect.value = previousProfile;
+  }
   renderPersonalProfiles();
 
   $("#profile-list").innerHTML = Object.entries(profiles).map(([key, value]) => (
@@ -6173,7 +6333,20 @@ function sentDuplicateForReview(data, intake = state.currentIntake || {}) {
   // The server establishes the match. Check its identity again before attaching
   // a decision to the current screen; this is never an authorization to create.
   const reviewed = data.effective_intake || data.intake || intake;
-  const identity = { ...reviewed, service_date: reviewed.service_date || reviewed.photo_metadata_date || "" };
+  let identity = { ...reviewed, service_date: reviewed.service_date || reviewed.photo_metadata_date || "" };
+  const sourceIdentity = data.source_history_identity;
+  const sourceBinding = data.source_history_binding;
+  if (sourceIdentity?.provenance === "foreground_completed_fee_demand" && sourceBinding
+      && sourceIdentity.source_sha256 && sourceIdentity.source_sha256 === reviewed.source_sha256
+      && sourceBinding.source_sha256 === reviewed.source_sha256
+      && sourceBinding.source_text === reviewed.source_text
+      && sourceBinding.source_sha256 === intake.source_sha256
+      && sourceBinding.source_text === intake.source_text
+      && String(sourceBinding.case_number || "") === String(reviewed.case_number || "")
+      && String(sourceBinding.service_date || "") === String(reviewed.service_date || "")
+      && String(sourceBinding.service_period_label || "") === String(reviewed.service_period_label || "")) {
+    identity = { ...sourceIdentity, service_period_label: reviewed.service_period_label || "" };
+  }
   const date = String(identity.service_date || "");
   const parsed = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00Z`) : null;
   if (!parsed || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return null;
@@ -6390,7 +6563,7 @@ function renderPrepared(data) {
     previewPanel.classList.remove("hidden");
     previewBox.innerHTML = previewImages.map(({ url, item }) => (
       `<figure class="pdf-preview-figure">
-        <img class="pdf-preview-image" src="${escapeHtml(url)}" alt="Generated PDF preview for ${escapeHtml(item.case_number)}">
+        <img class="pdf-preview-image" src="${escapeHtml(safeLocalArtifactUrl(url))}" alt="Generated PDF preview for ${escapeHtml(item.case_number)}">
         <figcaption>${escapeHtml(item.case_number || "packet")} · ${escapeHtml(item.service_date || "packet")} ${item.packet_mode ? "· packet" : ""}</figcaption>
       </figure>`
     )).join("");
@@ -6632,6 +6805,7 @@ function resetWorkspace() {
 window.honorariosResetWorkspace = (event) => {
   event?.preventDefault?.();
   event?.stopPropagation?.();
+  event?.stopImmediatePropagation?.();
   resetWorkspace();
 };
 
@@ -6744,10 +6918,12 @@ function bindActions() {
   });
   const resetControl = $("#reset-workspace");
   if (resetControl) {
-    resetControl.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      resetWorkspace();
+    resetControl.addEventListener("keydown", (event) => {
+      if (event.key === " " || event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        resetWorkspace();
+      }
     });
   }
   document.addEventListener("click", (event) => {
@@ -7225,7 +7401,7 @@ function bindActions() {
     } catch (error) {
       renderHistoryDraftActionResult({status: "blocked", message: error.message}, "blocked");
     } finally {
-      button.disabled = false;
+      button.disabled = state.serverConnection?.connected === false || Boolean(state.workspaceDraft.runtimeChanged);
     }
   });
   const handleHistoryDraftAction = async (event) => {
@@ -7253,7 +7429,7 @@ function bindActions() {
       setStatus("blocked", error.message);
       showAlert(error.message, "blocked");
     } finally {
-      button.disabled = false;
+      button.disabled = state.serverConnection?.connected === false || Boolean(state.workspaceDraft.runtimeChanged);
     }
   };
   $("#duplicate-list").addEventListener("click", handleHistoryDraftAction);
@@ -7512,6 +7688,7 @@ function bindActions() {
   const packetMode = $("#batch-packet-mode");
   const packetModeCard = document.querySelector('label[for="batch-packet-mode"]');
   packetModeCard.addEventListener("click", (event) => {
+    if (event.target === packetMode) return;
     event.preventDefault();
     packetMode.checked = !packetMode.checked;
     packetMode.dispatchEvent(new Event("change", { bubbles: true }));
@@ -7734,12 +7911,29 @@ function bindActions() {
       closeReviewDrawer();
     }
   });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!$("#interpretation-review-drawer-backdrop").classList.contains("hidden")) {
+      closeReviewDrawer();
+    } else if (!$("#personal-profile-drawer-backdrop").classList.contains("hidden")) {
+      closePersonalProfileDrawer();
+    }
+  });
 }
 
 bindNavigation();
 bindActions();
-document.addEventListener("input", () => { state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1; scheduleWorkspaceDraftSave(); });
-document.addEventListener("change", () => { state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1; scheduleWorkspaceDraftSave(); });
+const _ignoredWorkspaceDraftTargets = new Set(["workspace-resume-profile", "camera-search", "history-sent-date"]);
+document.addEventListener("input", (event) => {
+  if (_ignoredWorkspaceDraftTargets.has(event.target?.id)) return;
+  state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1;
+  scheduleWorkspaceDraftSave();
+});
+document.addEventListener("change", (event) => {
+  if (_ignoredWorkspaceDraftTargets.has(event.target?.id)) return;
+  state.workspaceDraft.editVersion = (state.workspaceDraft.editVersion || 0) + 1;
+  scheduleWorkspaceDraftSave();
+});
 window.addEventListener("pagehide", saveWorkspaceDraft);
 window.addEventListener("beforeunload", (event) => {
   saveWorkspaceDraft();

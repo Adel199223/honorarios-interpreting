@@ -77,6 +77,58 @@ class VerifiedGpsCityTests(unittest.TestCase):
                 gps = {'latitude': math.degrees(distance / EARTH_RADIUS_M), 'longitude': 0, 'source': 'exif_gps'}
                 self.assertEqual(self.match([area], gps)['status'], expected)
 
+    def test_user_confirmed_city_area_retains_basis_without_mutating_original_evidence(self):
+        point = verified_area(radius_m=50, geometry_basis='user_confirmed_photo_venue',
+                              confirmation_source_sha256='a' * 64, confirmation_date='2026-11-01')
+        metadata = {'gps_coordinates': {'latitude': point['latitude'], 'longitude': point['longitude'], 'source': 'exif_gps'}}
+        preferences = {'verified_gps_areas': [point]}
+        before = deepcopy((metadata, preferences))
+        result = match_verified_gps_city(metadata, preferences)
+        self.assertEqual(result['status'], 'matched')
+        match = result['matches'][0]
+        for key in ('geometry_basis', 'confirmation_source_sha256', 'confirmation_date', 'source_url', 'radius_m'):
+            self.assertEqual(match[key], point[key])
+        self.assertNotIn('photo_metadata_city', metadata)
+        self.assertEqual((metadata, preferences), before)
+
+    def test_new_user_point_can_supply_city_outside_legacy_area_without_expanding_it(self):
+        legacy = verified_area(latitude=0, longitude=0, radius_m=100)
+        point = verified_area(latitude=math.degrees(250 / EARTH_RADIUS_M), longitude=0, radius_m=50,
+                              geometry_basis='user_confirmed_photo_venue', confirmation_source_sha256='b' * 64,
+                              confirmation_date='2026-11-01')
+        for offset, expected in ((49.99, 'matched'), (50.01, 'outside_verified_areas')):
+            with self.subTest(offset=offset):
+                gps = {'latitude': math.degrees((250 + offset) / EARTH_RADIUS_M), 'longitude': 0, 'source': 'exif_gps'}
+                self.assertEqual(self.match([legacy], gps)['status'], 'outside_verified_areas')
+                result = self.match([legacy, point], gps)
+                self.assertEqual(result['status'], expected)
+                if expected == 'matched':
+                    self.assertEqual(len(result['matches']), 1)
+                    self.assertEqual(result['matches'][0]['radius_m'], 50)
+        self.assertEqual(legacy['radius_m'], 100)
+
+    def test_user_point_invalid_or_incomplete_provenance_invalidates_whole_catalog(self):
+        point = verified_area(radius_m=50, geometry_basis='user_confirmed_photo_venue',
+                              confirmation_source_sha256='c' * 64, confirmation_date='2026-11-01')
+        invalid = []
+        for field in ('geometry_basis', 'confirmation_source_sha256', 'confirmation_date'):
+            missing = dict(point)
+            del missing[field]
+            invalid.append(missing)
+        for key, values in {
+            'geometry_basis': ['', None, 'public_building', True],
+            'radius_m': [50.01, 200, True, '50', 0],
+            'confirmation_source_sha256': ['', None, 'C' * 64, 'c' * 63],
+            'confirmation_date': ['', None, '2026-2-01', '2026-02-30', '2026-11-01T00:00:00'],
+        }.items():
+            invalid.extend({**point, key: value} for value in values)
+        for value in invalid:
+            with self.subTest(value=value):
+                self.assertEqual(match_verified_gps_city({}, {'verified_gps_areas': [verified_area(), value]})['status'],
+                                 'invalid_configuration')
+        # Existing independently configured areas retain their original limit.
+        self.assertEqual(self.match([verified_area(radius_m=500)])['status'], 'matched')
+
     def test_overlap_same_normalized_city_is_one_choice_but_two_cities_are_ambiguous(self):
         matched = self.match([verified_area(), verified_area(city=' CAPTURE   CITY ')])
         self.assertEqual(matched['status'], 'matched')
@@ -113,6 +165,15 @@ class ConfirmedVenueTravelTests(unittest.TestCase):
         profile = {'travel_distances_by_city': {'Capture City': 31, 'Other City': 29, 'GNR de Capture City': 43}}
         for venue, expected in (
             (host, (31, 'Capture City')),
+            ('Procuradoria do Juízo Local Criminal- 1ª Sec Inquéritos de Capture City', (31, 'Capture City')),
+            ('Serviços do Ministério Público - Palácio da Justiça de Capture City', (31, 'Capture City')),
+            ('Serviços do Ministério Público- Palácio da Justiça de Capture City', (31, 'Capture City')),
+            ('Juízo Local Criminal - Palácio da Justiça de Capture City', (31, 'Capture City')),
+            ('Tribunal Judicial - Palácio da Justiça de Capture City', (31, 'Capture City')),
+            ('Ministério Público - Palácio da Justiça de Capture City', (31, 'Capture City')),
+            ('Palácio da Justiça de Capture City', (31, 'Capture City')),
+            ('Serviços do Ministério Público - Palácio da Justiça de Capture City - Unidade de Other City', (None, '')),
+            ('Juízo Local Criminal - Palácio da Justiça de Capture City - Unidade de Other City', (None, '')),
             ('Ministério Público de Capture City', (31, 'Capture City')),
             ('Procuradoria de Capture City', (31, 'Capture City')),
             ('Procuradoria de Unknown City - Unidade de Capture City', (None, '')),

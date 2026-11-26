@@ -19,6 +19,30 @@ class SourceCaseEvidenceRegressionTests(unittest.TestCase):
                                 text=True, encoding="utf-8", capture_output=True, check=True, cwd=ROOT)
         return json.loads(result.stdout)
 
+    def test_saved_source_confirmation_badge_precedes_generic_defaults_only_for_current_value(self):
+        result = self.run_guidance("""
+const value='Tribunal de Fictional City';
+const intake={photo_defaults_applied:{service_place:value}};
+const data={review_evidence:{field_evidence:[{field:'service_place',value,source:'previously_confirmed_source_location'}]}};
+console.log(JSON.stringify({current:g.reviewFactOrigin('service_place',value,data,intake),
+ edited:g.reviewFactOrigin('service_place','Another venue',data,intake),
+ stale:g.reviewFactOrigin('service_place',value,{review_evidence:{field_evidence:[]}},intake)}));
+""")
+        self.assertEqual(result['current'], {'kind': 'default', 'label': 'Previously confirmed for this photo · editable'})
+        self.assertEqual(result['edited']['kind'], 'unknown')
+        self.assertNotIn('Previously confirmed', result['stale']['label'])
+
+    def test_reusable_gps_venue_badge_does_not_claim_new_photo_was_previously_confirmed(self):
+        result = self.run_guidance("""
+const value='Posto da GNR de Fictional City';
+const data={review_evidence:{field_evidence:[{field:'service_place',value,source:'reusable_verified_gps_source_venue'}]}};
+console.log(JSON.stringify({current:g.reviewFactOrigin('service_place',value,data),
+ edited:g.reviewFactOrigin('service_place','Manual host',data)}));
+""")
+        self.assertEqual(result['current'], {'kind': 'default', 'label': 'Reusable GPS + source venue · editable'})
+        self.assertNotIn('Previously confirmed for this photo', result['current']['label'])
+        self.assertEqual(result['edited']['kind'], 'unknown')
+
     def test_verified_gps_source_venue_is_an_editable_default_only_for_current_evidence(self):
         result = self.run_guidance("""
 const value='Posto da GNR de Example City';
@@ -652,3 +676,25 @@ console.log(JSON.stringify(['Tribunal de Capture City','Esquadra de Manual City'
         self.assertEqual(result[0], {'kind': 'default', 'label': 'Your photo-city court venue default \u00b7 editable'})
         self.assertNotEqual(result[1]['kind'], 'default')
         self.assertEqual(result[2]['kind'], 'missing')
+
+    def test_manual_draft_handoff_step_and_invalid_calendar_date_handling(self):
+        result = self.run_guidance("""
+console.log(JSON.stringify({
+  step: g.guidedStepForState('manual_draft_handoff'),
+  invalidDate: g.shortDateLabel('2026-02-30'),
+  validDate: g.shortDateLabel('2026-05-02'),
+}));
+""")
+        self.assertEqual(result['step'], 5)
+        self.assertEqual(result['invalidDate'], '2026-02-30')
+        self.assertNotEqual(result['validDate'], '2026-05-02')
+
+    def test_gemini_ocr_provenance_sources_map_to_ai_kind(self):
+        result = self.run_guidance("""
+console.log(JSON.stringify([
+  g.reviewFactOrigin('case_number','710/26.0TSTXX',{source_evidence:{field_evidence:[{field:'case_number',value:'710/26.0TSTXX',source:'gemini_ocr',confidence:'medium'}]}}),
+  g.reviewFactOrigin('service_date','2026-09-28',{source_evidence:{field_evidence:[{field:'service_date',value:'2026-09-28',source:'gemini_and_photo_metadata',confidence:'low'}]}}),
+]));
+""")
+        self.assertEqual(result[0], {'kind': 'ai', 'label': 'AI-read · check source'})
+        self.assertEqual(result[1], {'kind': 'ai', 'label': 'AI suggestion · check source'})

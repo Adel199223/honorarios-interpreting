@@ -253,8 +253,15 @@ def _extract_iva_text(phrase: str) -> str:
 
 
 def _extract_irs_text(phrase: str) -> str:
-    if "não está sujeito" in phrase.casefold() or "nao esta sujeito" in phrase.casefold() or "sem reten" in phrase.casefold():
+    text = _text(phrase)
+    lowered = text.casefold()
+    if "não está sujeito" in lowered or "nao esta sujeito" in lowered or "sem reten" in lowered:
         return "Sem retenção"
+    match = re.search(r"\be\s+([^.;]*(?:irs|reten)[^.;]*)", text, re.IGNORECASE)
+    if match:
+        clause = _text(match.group(1)).rstrip(".")
+        if clause:
+            return clause
     return "Sem retenção"
 
 
@@ -343,7 +350,7 @@ def lookup_profile_distance(profile: dict[str, Any], destination: str) -> tuple[
             matches.append((label_fold, label_text, km))
     # Exact destinations precede longer institution descriptions. Substring
     # aliases cannot choose the first of overlapping or conflicting cities.
-    if not matches and re.match(r'^(?:tribunal|juizo|posto|esquadra|gnr|psp|hospital|gabinete|instituto|ministerio publico|procuradoria)\b', query_fold):
+    if not matches and re.match(r'^(?:tribunal|juizo|posto|esquadra|gnr|psp|hospital|gabinete|instituto|ministerio publico|procuradoria|servicos do ministerio publico|palacio da justica)\b', query_fold):
         # A confirmed venue may append a unit after the building/city. Only
         # the venue head can supply its destination; a city in the appended
         # description cannot. Keep all known-city mentions for ambiguity checks.
@@ -353,8 +360,10 @@ def lookup_profile_distance(profile: dict[str, Any], destination: str) -> tuple[
             # rather than being an appended district/agency description. Only
             # this named unit separator belongs to the venue head. All known
             # cities below still participate in the ambiguity check.
-            venue_label = re.sub(r'\s+[—–-]\s+(?=(?:\d+[ªº]?\s+)?sec(?:cao)?\.?\s+(?:de\s+)?inqueritos\b)',
+            venue_label = re.sub(r'(?:\s+[—–-]\s*|\s*[—–-]\s+)(?=(?:\d+[ªº]?\s+)?sec(?:cao)?\.?\s+(?:de\s+)?inqueritos\b)',
                                  ' ', venue_label)
+        if re.match(r'^(?:tribunal|juizo|ministerio publico|procuradoria|servicos do ministerio publico)\b', query_fold):
+            venue_label = re.sub(r'(?:\s+[—–-]\s*|\s*[—–-]\s+)(?=palacio\s+da\s+justica\b)', ' ', venue_label)
         venue_head = re.split(r'\s+[—–-]\s+|\s+\(', venue_label, maxsplit=1)[0].strip()
         for label, km in distances.items():
             label_text = _text(label)

@@ -118,6 +118,8 @@ After PDF preparation, use **Email draft for** to choose the photo's email or an
 
 When the app reports that Gmail is connected, review all selected PDFs and exact email details, tick the **Gmail handoff checklist**, then use **Create Gmail Draft**. This creates one unsent draft with all listed attachments; review it in Gmail and send it yourself. An error is not confirmation that a draft was created.
 
+If authorization is rejected before draft creation, the app explicitly says that no draft was created by that attempt. Your reviewed PDF stays available, **Reconnect Gmail** replaces the connected status and **Manual Draft Handoff** opens as the alternative. Reconnect through the normal OAuth flow before using direct creation again, or create the reviewed draft through the handoff and record its genuine returned IDs. The app does not retry automatically. This definite pre-create result is separate from an uncertain Gmail creation result.
+
 If Gmail created the draft but local recording failed, use **Finish local recording**. This records the existing draft without creating another. If the result is uncertain, check Gmail first and use the recovery actions to record the existing draft or explicitly confirm that none exists. **Recent Work** retains unfinished attempts after a reload or restart. Repeated clicking or preparing again cannot bypass that check. Prepared PDFs keep distinct filenames, so later corrections preserve the earlier document.
 
 When Gmail is disconnected, or you prefer the fallback, open **Manual Draft Handoff** and click **Build handoff packet**. Check its recipient/body/attachments, then use **Copy handoff prompt**. Building or copying the packet does not create or send an email.

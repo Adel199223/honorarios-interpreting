@@ -494,3 +494,66 @@ class PublicEmailTests(PublicCandidateSmokeTests):
         check = next(check for check in report["checks"] if check["name"] == "gmail_api_verify_mismatch_read_only")
         self.assertEqual(check["status"], "ready")
         self.assertFalse(check["details"]["local_records_changed"])
+
+    def test_gmail_hardening_guards_and_sent_sync_auth_recovery(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from honorarios_app.gmail_draft_api import (
+            GmailAuthorizationRequired,
+            _google_error_message,
+            build_mime_message,
+            save_gmail_local_config,
+        )
+        from honorarios_app.gmail_sent_sync import sync_gmail_sent_status
+        from honorarios_app.runtime import create_synthetic_runtime, runtime_path_overrides
+        from honorarios_app.services import AppPaths
+        from scripts.generate_pdf import IntakeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            create_synthetic_runtime(runtime_root)
+            paths = AppPaths(**runtime_path_overrides(runtime_root))
+            for bad_token_path in ("../outside.json", "data/token.json", "config/token.txt"):
+                with self.subTest(bad_token_path=bad_token_path):
+                    with self.assertRaisesRegex(IntakeError, "inside config/"):
+                        save_gmail_local_config({
+                            "client_id": "12345.apps.googleusercontent.com",
+                            "client_secret": "example-secret",
+                            "token_path": bad_token_path,
+                        }, paths.gmail_config)
+
+            fake_response = SimpleNamespace(
+                json=lambda: {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": "Bad draft"}},
+                text="",
+            )
+            self.assertEqual(_google_error_message(fake_response, "fallback"), "INVALID_ARGUMENT - Bad draft - 400")
+
+            dummy_pdf = runtime_root / "sample.pdf"
+            dummy_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+            with self.assertRaisesRegex(IntakeError, "invalid"):
+                build_mime_message({
+                    "to": "court@example.test\r\nBcc: evil@example.test",
+                    "subject": "Assunto válido",
+                    "body": "Texto",
+                    "attachment_files": [str(dummy_pdf)],
+                })
+
+            paths.draft_log.write_text(json.dumps([{
+                "draft_id": "draft-auth-check",
+                "message_id": "msg-auth-check",
+                "status": "active",
+                "recipient": "court@example.test",
+                "subject": "Processo 710/26.0TSTXX",
+                "draft_payload": str(paths.draft_output_dir / "missing.draft.json"),
+                "attachment_files": [str(dummy_pdf)],
+                "case_number": "710/26.0TSTXX",
+                "service_date": "2026-05-02",
+            }]), encoding="utf-8")
+            with patch("honorarios_app.gmail_sent_sync._synthetic_mode", return_value=False), \
+                 patch("honorarios_app.gmail_sent_sync.gmail_api.gmail_sent_read_ready", return_value=True), \
+                 patch("honorarios_app.gmail_sent_sync._snapshot", return_value={"record": {"draft_id": "draft-auth-check"}, "binding": "b", "rotation_position": 0}), \
+                 patch("honorarios_app.gmail_sent_sync.gmail_api.gmail_access_token", side_effect=GmailAuthorizationRequired()), \
+                 patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HONORARIOS_FAKE_GMAIL_SENT_SYNC", None)
+                sync_result = sync_gmail_sent_status(paths, force=True, apply_confirmed=lambda *_a: None)
+            self.assertEqual(sync_result["status"], "authorization_required")

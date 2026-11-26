@@ -14,7 +14,7 @@ const element=selector=>{
       addEventListener(event,listener){this.listeners[event]=listener;},
       classList:{add(){},remove(){},toggle(name,value){this.values??={};this.values[name]=value??!this.values[name];},contains(){return false}},setAttribute(){},getAttribute(){return ''},removeAttribute(){},
       focus(){context.document.activeElement=this;},showModal(){this.open=true;this.openCount=(this.openCount||0)+1;},close(){this.open=false;},scrollIntoView(){},reset(){},querySelector(s){return element(s)},querySelectorAll(){return []}});
-    Object.defineProperty(elements.get(selector),'value',{get(){return this._value||''},set(v){this._value=String(v??'')}});
+    Object.defineProperty(elements.get(selector),'value',{get(){return this._value||''},set(v){const text=String(v??'');this._value=selector==='#source_text'?text.replace(/\r\n?/g,'\n'):text}});
   }return elements.get(selector);
 };
 const calls=[],copied=[];let deferred=null;let responseOverride=null;let responseFailure=null;let routeOverrides={};let deferredRoute='';
@@ -58,9 +58,10 @@ const intakeStart=fullApp.indexOf('  const intakeChanged =');
 app+='\n'+fullApp.slice(intakeStart,fullApp.indexOf('  $("#source-case-list").addEventListener',intakeStart));
 app+='\nthis.initialLoadReference=loadReference;loadReference=async()=>{referenceLoads+=1};this.api={uploadSource,uploadSupportingAttachments,buildIntakeFromProfile,updateHomeReviewCard,state,fillFormFromIntake,mergeFormIntoCurrentIntake,renderSavedCourtEmailOptions,chooseSavedCourtEmail,renderReference,renderPrepared,selectPreparedEmailTarget,selectPreparedEmailMember,preparedRecordTarget,preparedTargetIntake,preparedTargetIntakes,copyPreparedDraftArgs,buildManualHandoffPacket,autofillRecordFormFromPrepared,currentPreparedReviewFields,recordPreparedDraftFromForm,recordDraft,activeCheck,createGmailApiDraft,renderGmailApiResult,verifyGmailDraft,verifyCreatedGmailDraft,clearPreparedArtifacts,refreshHomeWorkflow,batchPreflightSignature,currentBatchEmailGrouping,preflightBatchIntakes,prepareBatchIntakes,prepareIntake,prepareSourceEmailReplacement,canPrepareSourceEmailReplacement};';
 app+='\nthis.api.recoverGmailAttempt=recoverGmailAttempt;this.api.renderGmailStatus=renderGmailStatus;this.api.renderHistoryDraftActionResult=renderHistoryDraftActionResult;';
-app+='\nObject.assign(this.api,{applyReview,reviewIntake,resolveSentDuplicateDecision,renderSourceCaseList,syncActionGates,syncManualEntryGate,setServerConnected,setServerDisconnected});';
+app+='\nObject.assign(this.api,{applyReview,reviewIntake,resolveSentDuplicateDecision,sentDuplicateForReview,renderSourceCaseList,syncActionGates,syncManualEntryGate,setServerConnected,setServerDisconnected});';
 app+='\nObject.assign(this.api,{importGooglePhotosPickerSelection,recoverLocalSourceFile,openPersonalProfileDrawer,closePersonalProfileDrawer,saveCurrentPersonalProfile,renderDraftLifecycle,renderHistoryRecords});';
 app+='\nObject.assign(this.api,{historyRecordStatus,historyStatusCounts,archiveHistoryDraft,markHistoryDraftNotFound});';
+app+='\nObject.assign(this.api,{escapeHtml,safeLocalArtifactUrl,parseGmailDraftIds,applyParsedGmailDraftIds,renderNextSafeAction,syncActionGates});';
 vm.runInNewContext(app,context);const a=context.api;
 const intake=(n,city)=>({case_number:`${n}/26.0TSTXX`,service_date:'2026-10-01',service_place:'Police '+city,payment_entity:'Court '+city,recipient_email:city.toLowerCase()+'@example.test',source_sha256:city+'-source',personal_profile_id:'main'});
 const alpha=intake(710,'Alpha'),beta=intake(711,'Beta');
@@ -83,6 +84,63 @@ class EmailRoutingUiTests(unittest.TestCase):
         result=subprocess.run(['node','--input-type=module','-'],input=script,text=True,encoding='utf-8',capture_output=True,timeout=20,cwd=ROOT)
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
+
+    def test_unchanged_source_textarea_roundtrip_retains_exact_current_text_and_bound_proof(self):
+        result = self.run_js(r"""
+const rows=[];
+for(const separator of ['\r\n','\n','\r']){
+ const text='  Source header'+separator+'Local unit'+separator;
+ const proof={source_sha256:'a'.repeat(64),source_text_sha256:'frozen-exact-text-proof'};
+ const source={...alpha,source_sha256:'a'.repeat(64),source_text:text,source_location_evidence:proof};
+ a.state.currentIntake=source;a.fillFormFromIntake(source);
+ const visible=element('#source_text').value;
+ await a.reviewIntake({openDrawer:false});
+ const posted=calls.filter(call=>call.url==='/api/review').at(-1).body.intake;
+ rows.push({raw:text,visible,posted,current:a.state.currentIntake});
+}
+console.log(JSON.stringify(rows));
+""")
+        for row in result:
+            self.assertNotIn('\r', row['visible'])
+            self.assertEqual(row['posted']['source_text'], row['raw'])
+            self.assertEqual(row['current']['source_text'], row['raw'])
+            self.assertEqual(row['posted']['source_location_evidence'],
+                             {'source_sha256': 'a' * 64, 'source_text_sha256': 'frozen-exact-text-proof'})
+
+    def test_source_text_changes_clear_and_unbound_inputs_do_not_borrow_raw_source_text(self):
+        result = self.run_js(r"""
+const original='Source header\r\nLocal unit',rows=[];
+for(const edited of ['Changed header\nLocal unit','Source header\nLocal unit ',' Source header\nLocal unit','']){
+ a.state.currentIntake={...alpha,source_sha256:'a'.repeat(64),source_text:original};
+ a.fillFormFromIntake(a.state.currentIntake);a.state.lastPrepared={sentinel:true};
+ element('#source_text').value=edited;
+ element('#intake-form').listeners.input({target:element('#source_text')});
+ const cleared=a.state.lastPrepared===null;
+ a.mergeFormIntoCurrentIntake();rows.push({edited,cleared,intake:a.state.currentIntake});
+}
+const unbound=[];
+for(const hash of [undefined,'','not-a-source-hash']){
+ a.state.currentIntake={...alpha,source_sha256:hash,source_text:original};a.fillFormFromIntake(a.state.currentIntake);
+ a.mergeFormIntoCurrentIntake();unbound.push(a.state.currentIntake.source_text);
+}
+a.state.currentIntake={...alpha,source_sha256:'a'.repeat(64),source_text:original};a.fillFormFromIntake(a.state.currentIntake);
+a.state.currentIntake={...beta,source_sha256:'b'.repeat(64),source_text:'Replacement source\r\nDifferent unit'};
+a.mergeFormIntoCurrentIntake();const replacement=a.state.currentIntake;
+a.state.currentIntake={...beta,source_sha256:'c'.repeat(64),source_text:'Source header\nLocal unit'};
+a.mergeFormIntoCurrentIntake();const sameVisibleNewSource=a.state.currentIntake;
+console.log(JSON.stringify({rows,unbound,replacement,sameVisibleNewSource}));
+""")
+        for row in result['rows']:
+            self.assertTrue(row['cleared'])
+            self.assertEqual(row['intake']['source_text'], row['edited'].strip())
+            self.assertNotEqual(row['intake']['source_text'], 'Source header\r\nLocal unit')
+            if not row['edited']:
+                self.assertIn('source_text', row['intake']['review_cleared_fields'])
+        self.assertEqual(result['unbound'], ['Source header\nLocal unit'] * 3)
+        self.assertEqual(result['replacement']['source_text'], 'Source header\nLocal unit')
+        self.assertEqual(result['replacement']['source_sha256'], 'b' * 64)
+        self.assertEqual(result['sameVisibleNewSource']['source_text'], 'Source header\nLocal unit')
+        self.assertEqual(result['sameVisibleNewSource']['source_sha256'], 'c' * 64)
 
     def test_removed_draft_history_uses_lifecycle_without_losing_canonical_status(self):
         result=self.run_js("""
@@ -442,6 +500,27 @@ console.log(JSON.stringify({mixed,mixedSummary,allPaper:element('#source-case-su
         self.assertIn('already submitted.',result['mixedSummary'])
         self.assertIn('already submitted on paper.',result['allPaper'])
         self.assertEqual(result['paperRows'].count('Already submitted on paper'),2)
+        self.assertEqual(result['calls'],[])
+
+    def test_completed_source_history_summary_keeps_capture_date_and_rejects_stale_binding(self):
+        result=self.run_js("""
+const current={...alpha,service_date:'2026-11-05',photo_metadata_date:'2026-11-05',service_date_source:'photo_metadata',source_sha256:'a'.repeat(64),source_text:'Fictional completed fee source'};
+a.state.currentIntake=current;a.fillFormFromIntake(current);
+const paper=sentReview();paper.duplicate={case_number:alpha.case_number,service_date:alpha.service_date,status:'sent',submission_channel:'paper',submission_evidence:'user_confirmed'};
+paper.intake={...current};paper.effective_intake={...current};
+paper.source_history_identity={case_number:alpha.case_number,service_date:alpha.service_date,source_sha256:current.source_sha256,provenance:'foreground_completed_fee_demand'};
+paper.source_history_binding={source_sha256:current.source_sha256,source_text:current.source_text,case_number:current.case_number,service_date:current.service_date,service_period_label:current.service_period_label||''};
+a.applyReview(paper);const title=element('#sent-duplicate-title').textContent,details=element('#sent-duplicate-details').textContent;
+element('#sent-duplicate-stop').listeners.click();const summary=element('#interpretation-review-home-result').innerHTML,kept=a.state.currentIntake.service_date;
+const visible=a.sentDuplicateForReview(paper);a.state.currentIntake={...current,source_text:'Changed source'};const stale=a.sentDuplicateForReview(paper);
+console.log(JSON.stringify({title,details,summary,kept,visible:!!visible,stale:!!stale,calls}));
+""")
+        self.assertEqual(result['title'],'This fee request was already submitted on paper')
+        self.assertIn('Source service identity — history check only',result['summary'])
+        self.assertIn('intake date has not been changed',result['summary'])
+        self.assertEqual(result['kept'],'2026-11-05')
+        self.assertTrue(result['visible'])
+        self.assertFalse(result['stale'])
         self.assertEqual(result['calls'],[])
 
     def test_paper_wording_requires_confirmed_completed_evidence_on_raw_history_too(self):
@@ -1200,6 +1279,35 @@ const panels=cases.map(data=>{a.renderGmailApiResult(data);return element('#gmai
         self.assertIn('fictional-draft',result['panels'][4])
         self.assertEqual(result['calls'],0)
 
+    def test_known_oauth_failure_preserves_pdf_and_opens_manual_handoff_without_retry(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());const prepared=a.state.lastPrepared;
+element('#gmail_handoff_reviewed').checked=true;
+responseOverride={status:'not_created',attempt_id:'fictional-auth-attempt',failure_stage:'oauth_refresh',gmail_draft_create_called:false,reauthorization_required:true,create_retry_allowed:false,
+ message:'No Gmail draft was created by this attempt. Reconnect Gmail or use Manual Draft Handoff.',gmail_status:{configured:true,connected:false,draft_create_ready:false,reauthorization_required:true,manual_handoff_ready:true,recommended_mode:'manual_handoff',message:'Gmail authorization needs reconnecting.'}};
+await a.createGmailApiDraft();const resultPanel=element('#gmail-api-result').innerHTML;
+const beforeCalls=calls.length;responseOverride=null;await a.buildManualHandoffPacket();
+console.log(JSON.stringify({samePrepared:prepared===a.state.lastPrepared,payload:element('#record_payload').value,created:a.state.gmailCreateCompletedPayload,recorded:a.state.locallyRecordedPayload,
+ createDisabled:element('#create-gmail-api-draft').disabled,manualOpen:element('#manual-handoff-card').open,pill:element('#gmail-api-status-pill').textContent,
+ panel:resultPanel,ids:element('#record_draft_id').value,beforeCalls,calls,connected:a.state.gmailStatus.connected}));
+""")
+        self.assertTrue(result['samePrepared']);self.assertEqual(result['payload'],'/fictional/alpha.json')
+        self.assertEqual(result['created'],'');self.assertEqual(result['recorded'],'');self.assertEqual(result['ids'],'')
+        self.assertTrue(result['createDisabled']);self.assertTrue(result['manualOpen']);self.assertFalse(result['connected'])
+        self.assertEqual(result['pill'],'Reconnect Gmail');self.assertEqual(result['beforeCalls'],1)
+        self.assertEqual(len(result['calls']),2);self.assertEqual(result['calls'][1]['url'],'/api/gmail/manual-handoff')
+        self.assertIn('Authorization failed before Gmail draft creation',result['panel'])
+        self.assertNotIn('Created as a Gmail draft only',result['panel'])
+
+    def test_late_known_auth_failure_updates_connection_without_overwriting_selected_email(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());element('#gmail_handoff_reviewed').checked=true;let release;deferred=new Promise(resolve=>release=resolve);
+const pending=a.createGmailApiDraft();a.selectPreparedEmailTarget(1);
+responseOverride={status:'not_created',gmail_draft_create_called:false,reauthorization_required:true,message:'Reconnect Gmail.',gmail_status:{configured:true,connected:false,draft_create_ready:false,reauthorization_required:true,manual_handoff_ready:true,recommended_mode:'manual_handoff'}};
+release();await pending;console.log(JSON.stringify({payload:element('#record_payload').value,ids:element('#record_draft_id').value,recorded:a.state.locallyRecordedPayload,connected:a.state.gmailStatus.connected,calls:calls.length}));
+""")
+        self.assertEqual(result,{'payload':'/fictional/beta.json','ids':'','recorded':'','connected':False,'calls':1})
+
     def test_uncertain_creation_blocks_new_create_without_claiming_local_recording(self):
         result=self.run_js("""
 a.renderPrepared(prepare());a.state.gmailStatus={connected:true};element('#gmail_handoff_reviewed').checked=true;
@@ -1597,6 +1705,62 @@ await element('#prepare-source-email-replacement').listeners.click();console.log
         self.assertIsNone(result['prepared'])
         self.assertEqual(result['status'],'blocked')
         self.assertIn('Resolve every case',result['alert'])
+
+    def test_antigravity_handoff_gates_safe_urls_and_draft_id_parser(self):
+        result=self.run_js("""
+a.renderPrepared(prepare());
+a.renderNextSafeAction({state:'manual_draft_handoff',title:'Prepare Manual Draft Handoff',button_id:'build-manual-handoff'});
+const gateBeforeIds={
+  drawerState:context.document.body.dataset.drawerWorkflowState,
+  copyDisabled:element('#copy-prepared-draft-args').disabled,
+  buildDisabled:element('#build-manual-handoff').disabled,
+  recordDisabled:element('#record-draft').disabled,
+  apiDisabled:element('#create-gmail-api-draft').disabled,
+};
+element('#record_message_id').value='stale-msg';
+element('#record_thread_id').value='stale-thread';
+const cliIds=a.applyParsedGmailDraftIds(a.parseGmailDraftIds('Draft created: r-cli-999'));
+const clearedStale={msg:element('#record_message_id').value,thread:element('#record_thread_id').value};
+a.applyParsedGmailDraftIds(a.parseGmailDraftIds('Draft created: r-cli-999\\nMessage ID: m-cli-999'));
+const gateAfterIds={
+  recordDisabled:element('#record-draft').disabled,
+  apiDisabled:element('#create-gmail-api-draft').disabled,
+};
+const arrIds=a.parseGmailDraftIds('[{"ID":"r-go-1","Message":{"ID":"m-go-1","ThreadID":"t-go-1"}}]');
+const wrapIds=a.parseGmailDraftIds('{"drafts":[{"draftId":"r-wrap-2","message":{"id":"m-wrap-2","threadId":"t-wrap-2"}}]}');
+const bareIds=a.parseGmailDraftIds('{"id":"m-bare-3","threadId":"t-bare-3"}');
+const mdIds=a.parseGmailDraftIds('- **Draft ID:** `r-md-4`\\n- **Message ID:** `m-md-4`');
+console.log(JSON.stringify({
+  gateBeforeIds,
+  gateAfterIds,
+  cliIds,
+  clearedStale,
+  arrIds,
+  wrapIds,
+  bareIds,
+  mdIds,
+  escaped:a.escapeHtml("O'Hara & <test>"),
+  safeApi:a.safeLocalArtifactUrl('/api/artifacts/foo.png'),
+  safeFictional:a.safeLocalArtifactUrl('/fictional/alpha.png'),
+  badJs:a.safeLocalArtifactUrl('javascript:alert(1)'),
+  badHost:a.safeLocalArtifactUrl('https://evil.example/a.png'),
+  badProtoRel:a.safeLocalArtifactUrl('//evil.example/a.png'),
+}));
+""")
+        self.assertEqual(result['gateBeforeIds'], {'drawerState':'manual_draft_handoff','copyDisabled':False,'buildDisabled':False,'recordDisabled':True,'apiDisabled':True})
+        self.assertEqual(result['gateAfterIds'], {'recordDisabled':False,'apiDisabled':True})
+        self.assertEqual(result['cliIds'], {'draft_id':'r-cli-999','message_id':'','thread_id':''})
+        self.assertEqual(result['clearedStale'], {'msg':'','thread':''})
+        self.assertEqual(result['arrIds'], {'draft_id':'r-go-1','message_id':'m-go-1','thread_id':'t-go-1'})
+        self.assertEqual(result['wrapIds'], {'draft_id':'r-wrap-2','message_id':'m-wrap-2','thread_id':'t-wrap-2'})
+        self.assertEqual(result['bareIds'], {'draft_id':'','message_id':'m-bare-3','thread_id':'t-bare-3'})
+        self.assertEqual(result['mdIds'], {'draft_id':'r-md-4','message_id':'m-md-4','thread_id':''})
+        self.assertEqual(result['escaped'], 'O&#39;Hara &amp; &lt;test&gt;')
+        self.assertEqual(result['safeApi'], '/api/artifacts/foo.png')
+        self.assertEqual(result['safeFictional'], '/fictional/alpha.png')
+        self.assertEqual(result['badJs'], '#')
+        self.assertEqual(result['badHost'], '#')
+        self.assertEqual(result['badProtoRel'], '#')
 
 
 if __name__=='__main__':

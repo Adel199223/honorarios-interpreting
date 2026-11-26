@@ -508,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
         from request_exclusions import RequestExclusionError, require_requests_not_excluded
     try:
         intake = load_json(args.intake)
+        from honorarios_app.source_history import require_completed_fee_history_clear
+        require_completed_fee_history_clear(intake, args.duplicate_index)
         require_requests_not_excluded(intake, args.duplicate_index)
         if not args.allow_duplicate:
             duplicate = find_duplicate_record(intake, args.duplicate_index, strict=True)
@@ -520,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
         html_preview = args.html_preview or DEFAULT_HTML_DIR / f"{output_path.stem}.html"
         render_html(args.template, rendered, html_preview)
         generate_pdf(rendered, output_path)
-    except (IntakeError, RequestExclusionError) as exc:
+    except (IntakeError, RequestExclusionError, ValueError) as exc:
         print(f"Cannot generate PDF: {exc}", file=sys.stderr)
         return 2
 

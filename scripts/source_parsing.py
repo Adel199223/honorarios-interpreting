@@ -62,7 +62,7 @@ PLACE_END_RE = re.compile(
 )
 NON_PLACE_START_RE = re.compile(
     r"^(?:(?:no|na|nos|nas|em|o|a|os|as|proprio|propria|mesmo|mesma)\s+)*"
-    r"(?:dia|data|ambito|periodo|prazo|processo|diligencia|audiencia|"
+    r"(?:dia|data|ambito|periodo|prazo|processo|diligencia|audiencia|pagamento|"
     r"interpretacao|servico|lingua|portugues|ingles|arabe)\b"
 )
 WRAPPED_PLACE_LINK_RE = re.compile(r"\b(?:no|na|nos|nas|em)\s*$")
@@ -172,6 +172,29 @@ def service_date_evidence(text: str, *, source_kind: str = "") -> ServiceDateEvi
     return ServiceDateEvidence()
 
 
+def interpreting_appointment_dates(text: str) -> tuple[str, ...]:
+    """Return appointment/summons dates bound to an interpreting context."""
+    normalized = re.sub(
+        r"(\b\d{1,2}[/-]\d{1,2}[/-])\s*\n\s*(20\d{2}\b)",
+        r"\1\2",
+        normalize_text(text or ""),
+    )
+    appointments: list[str] = []
+    for match in DATE_RE.finditer(normalized):
+        iso_year, iso_month, iso_day, eu_day, eu_month, eu_year, named_day, named_month, named_year = match.groups()
+        try:
+            value = datetime(
+                int(iso_year or eu_year or named_year),
+                int(iso_month or eu_month or PORTUGUESE_MONTHS.get(named_month, 0)),
+                int(iso_day or eu_day or named_day),
+            ).date().isoformat()
+        except ValueError:
+            continue
+        if _date_role(normalized, match.start(), match.end(), notification=True) == "appointment":
+            appointments.append(value)
+    return tuple(dict.fromkeys(appointments))
+
+
 def _place_tail(raw_text: str) -> str:
     normalized = normalize_text(raw_text)
     if NON_PLACE_START_RE.search(normalized.strip()):
@@ -259,7 +282,10 @@ def ministerio_publico_venue_evidence(text: str) -> MinisterioPublicoVenueEviden
     reference so callers cannot replace it with an unrelated court default.
     """
     normalized = normalize_text(text or '')
-    premises = re.search(r'\bnas\s+instalacoes\s+d(?:estes|esses|os)\s+servicos\s+do\s+ministerio\s+publico\b', normalized)
+    premises = re.search(
+        r'\b(?:nas\s+instalacoes\s+d(?:estes|esses|os)|(?:compareceu|presente)\s+n(?:estes|esses))\s+servicos\s+do\s+ministerio\s+publico\b',
+        normalized,
+    )
     if not premises:
         return MinisterioPublicoVenueEvidence()
     header = (text or '')[:premises.start()]

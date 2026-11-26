@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import math
+import re
+from datetime import date
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -10,6 +12,29 @@ from scripts.entity_rules import normalize_text
 MAX_VERIFIED_AREAS = 100
 MAX_RADIUS_M = 500
 EARTH_RADIUS_M = 6_371_008.8
+
+
+def _geometry_metadata(value: dict[str, Any]) -> dict[str, Any] | None:
+    """Retain complete point provenance; legacy areas keep their existing cap.
+
+    A user-confirmed photo point has a separate, tighter 50 m maximum. The
+    accompanying source URL supports its address, not public coordinate proof.
+    """
+    if 'geometry_basis' not in value:
+        return None if any(key in value for key in ('confirmation_source_sha256', 'confirmation_date')) else {}
+    confirmation_date = value.get('confirmation_date')
+    try:
+        valid_date = (isinstance(confirmation_date, str)
+                      and date.fromisoformat(confirmation_date).isoformat() == confirmation_date)
+    except ValueError:
+        valid_date = False
+    if (value['geometry_basis'] != 'user_confirmed_photo_venue'
+            or not _number(value.get('radius_m'), 0, 50) or value['radius_m'] == 0
+            or not isinstance(value.get('confirmation_source_sha256'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', value['confirmation_source_sha256']) or not valid_date):
+        return None
+    return {key: value[key] for key in
+            ('geometry_basis', 'confirmation_source_sha256', 'confirmation_date')}
 
 
 def _number(value: Any, minimum: float, maximum: float) -> bool:
@@ -35,7 +60,11 @@ def _area(value: Any) -> dict[str, Any] | None:
     if (not _number(value.get('latitude'), -90, 90) or not _number(value.get('longitude'), -180, 180)
             or not _number(value.get('radius_m'), 0, MAX_RADIUS_M) or value['radius_m'] == 0):
         return None
-    return {key: value[key] for key in ('latitude', 'longitude', 'radius_m', 'source_url')} | {'city': ' '.join(city.split())}
+    geometry = _geometry_metadata(value)
+    if geometry is None:
+        return None
+    return {key: value[key] for key in ('latitude', 'longitude', 'radius_m', 'source_url')} | {
+        'city': ' '.join(city.split()), **geometry}
 
 
 def _distance_m(latitude: float, longitude: float, area: dict[str, Any]) -> float:
